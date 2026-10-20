@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) dist=$1; shift ;;
   esac
 done
-[ -n "$version" ] && [ -d "$dist" ] || die "usage: release-assets.sh --version <version> <dist-dir>"
+if [ -z "$version" ] || [ ! -d "$dist" ]; then die "usage: release-assets.sh --version <version> <dist-dir>"; fi
 
 for t in $targets; do
   [ -s "$dist/flux-$version-$t.tar.gz" ] || die "missing flux-$version-$t.tar.gz in $dist"

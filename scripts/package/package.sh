@@ -44,7 +44,7 @@ done
 [ -n "$target" ] || die "--target is required"
 [ -n "$version" ] || die "--version is required"
 case "$version" in v*) die "--version takes the bare version (0.1.0), not the tag" ;; esac
-[ -f "$bin" ] && [ -x "$bin" ] || die "--bin: not an executable file: ${bin:-<unset>}"
+if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then die "--bin: not an executable file: ${bin:-<unset>}"; fi
 [ -f "$web/index.html" ] || die "--web: no index.html in ${web:-<unset>} (build it with VITE_FLUX_API=/ pnpm build)"
 [ -f "$third_party" ] || die "--third-party: no such file: ${third_party:-<unset>}"
 [ -f "$license" ] || die "no LICENSE at $license"
