@@ -91,9 +91,16 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # GitHub's macOS VM passes VideoToolbox's test encode, but its
+      # virtualized encoder has flushed a run one frame short (287 of 288
+      # in phase_d's vfr_transcode_keeps_every_frame), so the macOS tests
+      # transcode with libx264. VideoToolbox is checked on Apple hardware
+      # (docs/ENCODERS.md); the step after this one shows what flux picks.
       - name: Test
         id: test
-        run: cargo test --locked --workspace
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then export FLUX_VIDEO_ENCODER=libx264; fi
+          cargo test --locked --workspace
       # Which ffmpeg tools and H.264 encoder this runner gives flux (the
       # transcode tests use the same detection).
       - name: Media tools (flux-server --check)

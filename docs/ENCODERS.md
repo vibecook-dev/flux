@@ -52,9 +52,9 @@ binary once and caches the result (`flux_hls::encoders::FfmpegCaps`):
    test encode is ten 320×240 frames from `testsrc2` with the exact encoder
    options a transcode uses, so an ffmpeg too old for one of them (say
    `-forced_idr` on an old `h264_qsv`) rejects that encoder here instead of
-   failing every transcode. A GitHub macOS runner, for example, has
-   `h264_videotoolbox` in its ffmpeg but no hardware encoder, and lands on
-   libx264.
+   failing every transcode. A GitHub macOS runner (a VM) passes the
+   `h264_videotoolbox` test encode and uses it; Linux runners have no GPU
+   and land on libx264 (CI's `flux-server --check` step records this).
 3. The first candidate that passes is used for every video transcode until
    the server restarts. With none, video transcodes fail with a message
    that points at `flux-server --check`; remux and audio transcodes still
@@ -223,6 +223,14 @@ real:
   detected (`FLUX_VIDEO_ENCODER=libx264` to force the software path).
 - `flux-hls::encoders` unit tests pin each encoder's filter chain and
   arguments.
+
+CI runs these on Linux (libx264) and on a GitHub macOS VM with
+`FLUX_VIDEO_ENCODER=libx264`. That VM's VideoToolbox passes the test
+encode, but once flushed a run one frame short (287 of 288 frames in
+`vfr_transcode_keeps_every_frame`; the run that ends a file has no
+`-frames:v`, so its last piece takes what the encoder emits). VideoToolbox
+is therefore verified on Apple hardware, by running the suite without
+`FLUX_VIDEO_ENCODER`.
 
 To run the suite against the corpus:
 
