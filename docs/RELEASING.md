@@ -17,6 +17,14 @@ PR (`chore(main): release 0.1.0-alpha.1`), run the
 [release dry run](#release-dry-run) on `main` and check that its summary
 shows the sidecar bundled in all four packages.
 
+The release PR's own `pull_request` CI run waits for approval (*Actions →
+the run → Approve and run*, or
+`gh api -X POST repos/vibecook-dev/flux/actions/runs/<id>/approve`):
+`github-actions[bot]` counts as a first-time contributor until one of its
+PRs is merged. Until it is approved, the PR shows no checks and stays
+blocked, even after the CI run that `release-please.yml` dispatches has
+passed.
+
 ## How a release happens
 
 1. **Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/):**
