@@ -7,26 +7,15 @@ publishes the release.
 
 ## Before the first release
 
-The first release, **v0.1.0-alpha.1**, waits for **Truffle 0.7.20**, the
-Truffle release with flux's changes. Until it is on crates.io, `Cargo.toml`
-takes `truffle-core` from the commit that merged them
-(vibecook-dev/truffle#218, marked `TODO(truffle-0.7.20)`), and packages carry
-no Truffle sidecar: `fetch-sidecar.sh` only bundles the sidecar of a
-crates.io release whose checksums are pinned. The release PR stays open
-meanwhile. Once `truffle-core` 0.7.20 is published, in one PR:
-
-1. In `Cargo.toml`, replace the git `truffle-core` line and its TODO with
-   `truffle-core = "0.7.20"`, then run `cargo update -p truffle-core`.
-2. Pin the sidecars: `scripts/package/fetch-sidecar.sh --pin 0.7.20`, and
-   check the recorded SHA-256 against the release's own digests:
-   `gh api repos/vibecook-dev/truffle/releases/tags/truffle-v0.7.20 --jq '.assets[] | .name + " " + .digest'`.
-3. Point the `[patch]` examples in `CONTRIBUTING.md` and
-   `.cargo/config.toml.example` at `crates-io`, and drop the "pinned commit"
-   wording in `README.md` and `docs/ARCHITECTURE.md`.
-
-After it merges, run the [release dry run](#release-dry-run) and check that
-its summary shows the sidecar bundled in all four packages. Then merge the
-release PR (`chore(main): release 0.1.0-alpha.1`) to cut v0.1.0-alpha.1.
+The first release, **v0.1.0-alpha.1**, needed **Truffle 0.7.20**, the
+Truffle release with flux's changes: `Cargo.toml` takes
+`truffle-core = "0.7.20"` from crates.io, and
+`scripts/package/truffle-sidecar.sha256` pins that release's sidecars
+(checked against the release's own asset digests and Truffle's
+`crates/truffle-sidecar/sidecar-checksums.json`). Before merging the release
+PR (`chore(main): release 0.1.0-alpha.1`), run the
+[release dry run](#release-dry-run) on `main` and check that its summary
+shows the sidecar bundled in all four packages.
 
 ## How a release happens
 
@@ -175,7 +164,7 @@ least-privilege `permissions:` per job. These settings are needed once:
   GitHub Actions to create and approve pull requests* (Release Please opens
   its PR with `GITHUB_TOKEN`). If the organization restricts it, enable it
   under the `vibecook-dev` organization's Actions settings first.
-- **Ruleset `main`** (Settings → Rules → Rulesets), on the default branch:
+- **Ruleset `protect-main`** (Settings → Rules → Rulesets), on the default branch:
   - changes land through a pull request (0 approvals needed; squash merge
     only, titled by the PR title, so each PR is one Conventional Commit);
   - the status check **`CI OK`** (GitHub Actions) must pass, on a branch

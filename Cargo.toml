@@ -41,9 +41,9 @@ flux-net = { path = "crates/flux-net" }
 # Tailscale), both from vibecook-dev. To build against local checkouts, add a
 # [patch] to an untracked .cargo/config.toml (see CONTRIBUTING.md).
 mille-core = { git = "https://github.com/vibecook-dev/mille", rev = "c9708f4c08d5334a57e0c3c054f0ea264fdfb88f" }
-# TODO(truffle-0.7.20): switch to `truffle-core = "0.7.20"` from crates.io once
-# it is published (docs/RELEASING.md, "Before the first release").
-truffle-core = { git = "https://github.com/vibecook-dev/truffle", rev = "dff60338cadf0cad267f2e46fa1aa22cbf5a5d85" }
+# Release packages bundle the sidecar of this Truffle release
+# (scripts/package/truffle-sidecar.sha256): bump both together.
+truffle-core = "0.7.20"
 
 # Common
 anyhow = "1"
