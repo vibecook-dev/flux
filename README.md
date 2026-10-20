@@ -5,7 +5,7 @@
 
 flux is an open-source media server for personal movie and TV libraries, written in Rust. It scans your folders, serves a web client, and streams to browsers by direct play or HLS. For remote access you sign in with Tailscale instead of opening ports.
 
-> **Status: research prototype.** flux has no releases yet. It has only been run on macOS (Apple Silicon), and it depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
+> **Status: research prototype.** flux has no releases yet. It was developed and benchmarked on macOS (Apple Silicon), and CI also builds and tests it on Linux (x86_64 and arm64). It depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
 
 ## Why flux
 
@@ -43,10 +43,10 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 
 ## Feature status
 
-### Works today (on macOS)
+### Works today
 
 - **Scanning.** A Mille directory walk (`getattrlistbulk`) and in-process header probes for MKV/WebM, MP4/MOV, MPEG-TS/M2TS and AVI, with ffprobe only as a fallback. Then a filename and folder parser, and a SQLite catalog. Items are browsable as soon as they are probed. A rescan that finds no changes opens no files and writes nothing. A filesystem watcher picks up changes. A drive or NAS that is offline makes its items *unavailable*, never deleted. A rename keeps watch state and resume points.
-- **Playback.** Direct play with HTTP Range. Otherwise HLS (fMP4/CMAF), remuxed in process from MKV, MP4 and MPEG-TS/M2TS. ffmpeg transcodes audio per segment (TrueHD, DTS and others) and transcodes video when the client can't decode it (H.264 out through VideoToolbox, with HDR → SDR tone mapping). Text subtitles (SRT, ASS) play as WebVTT. Audio switching happens inside the session. Resume and watched state are kept.
+- **Playback.** Direct play with HTTP Range. Otherwise HLS (fMP4/CMAF), remuxed in process from MKV, MP4 and MPEG-TS/M2TS. ffmpeg transcodes audio per segment (TrueHD, DTS and others) and transcodes video when the client can't decode it (H.264 out through the first encoder that works: VideoToolbox, NVENC, Quick Sync, VAAPI or libx264, with HDR → SDR tone mapping; see [docs/ENCODERS.md](docs/ENCODERS.md)). Text subtitles (SRT, ASS) play as WebVTT. Audio switching happens inside the session. Resume and watched state are kept.
 - **Web client** (React 19, hls.js). Home, library grids (tested at 12,000 titles), search, item pages, a player with a stats overlay, and an Admin screen with live scan progress. The final product walk in Chrome passed 36/36 steps ([e2e.md](docs/prototype/e2e.md)).
 - **Artwork and metadata.** Background jobs cut frame posters and backdrops from the files (no AI); they pause during playback and scans. Offline matching against TMDB's daily ID exports needs no key. It suggests candidates for review but auto-accepts none, because the exports carry no year or runtime. The TMDB API client takes your own key (`TMDB_READ_TOKEN` or `TMDB_API_KEY`).
 - **Hardening.** A Host allowlist against DNS rebinding (421), a CSRF header on unsafe API calls (403), caps on connections and event streams, write timeouts and bounded caches. An adversarial review found 37 defects. All are fixed, each with a regression test. A re-verification then tried variants against every fix and hardened five of them further ([review.md](docs/prototype/review.md), [reverify.md](docs/prototype/reverify.md)).
@@ -64,7 +64,7 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
   - The first play of an MPEG-TS reads the whole file to index it. From a cold HDD or NAS that would take seconds (not measured).
 - **Metadata.** The TMDB API client has never run against the live API, because testing had no key. TMDB data is not yet refreshed within the API terms' 6-month cache limit.
 - **Clients.** Chrome is the only browser driven end to end. Safari, iOS and Firefox are covered by unit tests only. There are no native or TV apps yet. Jellyfin-API compatibility is not planned: flux builds its own web client and apps ([DECISIONS.md](docs/DECISIONS.md)).
-- **Operations.** HTTP/1.1 only. No releases, packages, Docker image or service files yet (see [Install](#install)).
+- **Operations.** HTTP/1.1 only. No release yet. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new: CI builds and smoke-tests the packages and the image, but none of them has run as a long-lived service.
 
 The full lists are in [fixes.md §7](docs/prototype/fixes.md#7-open-items), [e2e.md §5](docs/prototype/e2e.md#5-remaining-gaps-by-priority), [benchmarks.md §8](docs/prototype/benchmarks.md#8-gaps) and each component report in `docs/prototype/`.
 
@@ -80,7 +80,7 @@ flux only ever runs `ffmpeg` and `ffprobe` as separate processes and never links
 
 **Prerequisites**
 
-- macOS on Apple Silicon, the only platform tested so far.
+- macOS or Linux (x86_64 or arm64). flux was developed on macOS (Apple Silicon); CI builds and tests it on both. On Linux you also need a C compiler and `make` (Debian/Ubuntu: `build-essential`) for the bundled SQLite and jemalloc.
 - Rust stable. The workspace's `rust-version` is 1.89; CI lints and tests with 1.99.1.
 - `ffmpeg` and `ffprobe`, on `PATH` or from Homebrew (developed with 9.0.2). flux uses them for transcodes, frame posters and probe fallbacks.
 - Node.js and pnpm (`pnpm@11.13.1`), to build the web UI.
@@ -102,7 +102,7 @@ target/release/flux-server \
   --library TV:shows:/path/to/TV
 ```
 
-Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` unless you pass `--data-dir`.
+Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` (macOS) or `~/.local/share/flux` (Linux) unless you pass `--data-dir`.
 
 **Options** (`flux-server --help`). Each flag can also come from its environment variable, or from a TOML file (`--config`). Flags win over variables, and variables win over the file.
 
