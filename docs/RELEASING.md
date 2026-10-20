@@ -42,10 +42,11 @@ release PR (`chore(main): release 0.1.0-alpha.1`) to cut v0.1.0-alpha.1.
    `docker/compose.yaml`, and writes `CHANGELOG.md`. The workflow then runs
    `cargo metadata` on the release branch, which rewrites the workspace
    crates' entries in `Cargo.lock` and `web/scripts/golden-rs/Cargo.lock`
-   (nothing else), and commits that to the PR. The bot's PR starts no
-   `pull_request` workflows (GitHub doesn't run them for `GITHUB_TOKEN`
-   changes), so the workflow dispatches CI on the release branch; its checks
-   land on the PR.
+   (nothing else), and commits that to the PR. The PR's own `pull_request`
+   CI runs wait for a maintainer's approval (*Actions → the run → Approve
+   and run*): `github-actions[bot]` counts as a first-time contributor. The
+   workflow also dispatches CI on the release branch; its checks land on
+   the PR's head commit.
 3. **Merging the release PR** makes Release Please create the tag
    `v<version>` and a **draft** GitHub release with the changelog, then call
    `.github/workflows/release.yml` in the same run, which:
@@ -263,6 +264,7 @@ records their SHA-256.
 | MSRV | `rust-version` in `Cargo.toml`; the `MSRV` job reads it. Raise it when a dependency needs a newer Rust. |
 | Node and pnpm | Node in `ci.yml`/`build.yml` (`node-version`); pnpm from `web/package.json` `packageManager`. |
 | Action versions | Every action is pinned to a commit SHA with its version in a comment. Update the SHA and the comment together. |
+| Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. |
 | cargo-deny, cargo-about, actionlint, hadolint | Versions (and checksums) in `ci.yml` and `build.yml`. |
 | Licence policy | `deny.toml` (CI gate) and `scripts/package/about.toml` (THIRD_PARTY_LICENSES); keep the allowed lists in step. npm licences: `scripts/package/web-licenses.mjs`. |
 | jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)). |

@@ -84,9 +84,9 @@ jobs:
             git push origin "HEAD:$BRANCH"
           fi
 
-      # A PR opened or updated with GITHUB_TOKEN starts no pull_request
-      # workflows, so run CI on the release branch explicitly; its checks
-      # land on the PR's head commit and satisfy branch protection.
+      # The PR's own pull_request runs wait for a maintainer's approval
+      # (github-actions[bot] counts as a first-time contributor), so also run
+      # CI on the release branch; its checks land on the PR's head commit.
       - name: Run CI on the release PR
         if: steps.pr.outputs.branch != ''
         env:

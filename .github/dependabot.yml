@@ -1,5 +1,8 @@
 # Weekly dependency updates, one grouped pull request per ecosystem for minor
-# and patch bumps; major bumps arrive as their own pull requests.
+# and patch bumps; major bumps arrive as their own pull requests. Version
+# updates wait until a release is a week old (`cooldown`), so a compromised
+# release is usually yanked before it reaches a PR; security updates don't
+# wait.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,6 +11,8 @@ updates:
       - /web/scripts/golden-rs
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
@@ -24,6 +29,8 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
@@ -40,6 +47,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: ci
