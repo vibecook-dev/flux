@@ -96,8 +96,11 @@ jobs:
       # in phase_d's vfr_transcode_keeps_every_frame), so the macOS tests
       # transcode with libx264. VideoToolbox is checked on Apple hardware
       # (docs/ENCODERS.md); the step after this one shows what flux picks.
+      # Normally ~5 min; a hung test fails here instead of holding the
+      # runner (and this branch's CI queue) for the job's full hour.
       - name: Test
         id: test
+        timeout-minutes: 25
         run: |
           if [ "$RUNNER_OS" = macOS ]; then export FLUX_VIDEO_ENCODER=libx264; fi
           cargo test --locked --workspace
