@@ -39,6 +39,7 @@ else
   rm -rf "$dir"
   mkdir -p "$dir"
 fi
+dir=$(cd "$dir" && pwd) # absolute, for the symlink below
 pid=""
 cleanup() {
   if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then kill -9 "$pid" 2> /dev/null || true; fi
