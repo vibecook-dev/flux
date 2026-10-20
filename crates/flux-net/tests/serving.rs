@@ -322,30 +322,37 @@ async fn a_client_that_stops_reading_is_dropped_after_the_write_timeout() {
 }
 
 /// The write timeout counts time without progress, not response length: a
-/// slow reader keeps its stream.
+/// client that reads slower than the server writes, for longer than the
+/// write timeout, keeps its stream.
+///
+/// The reader must still let the server make progress within the timeout.
+/// Linux wakes a blocked writer only once about half of its send buffer has
+/// drained, and on loopback it autotunes that buffer to megabytes, so a
+/// reader behind a 4 KiB receive window (a few KB every 200 ms) leaves the
+/// server without progress for longer than 2 s and is rightly dropped. This
+/// reader takes at most 64 KiB every 20 ms (about 3 MB/s, far below what the
+/// endless body could deliver) for 3x the write timeout.
 #[tokio::test]
 async fn a_slow_but_reading_client_keeps_its_stream() {
     let dropped = Arc::new(AtomicBool::new(false));
     let mut config = local_config();
     config.limits.write_timeout = Some(Duration::from_secs(2));
     let net = FluxNet::start(config, endless(dropped.clone())).await.unwrap();
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.set_recv_buffer_size(4096).unwrap();
-    let mut slow = socket.connect(net.local_addr()).await.unwrap();
+    let mut slow = TcpStream::connect(net.local_addr()).await.unwrap();
     slow.write_all(b"GET /endless HTTP/1.1\r\nHost: flux\r\n\r\n")
         .await
         .unwrap();
     let mut buf = vec![0u8; 64 * 1024];
     let mut got = 0usize;
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(5) {
+    while t0.elapsed() < Duration::from_secs(6) {
         let n = tokio::time::timeout(Duration::from_secs(5), slow.read(&mut buf))
             .await
             .expect("data keeps coming")
             .unwrap();
         assert!(n > 0, "the server closed a stream that was being read");
         got += n;
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(!dropped.load(Ordering::SeqCst), "body dropped after {got} bytes");
     drop(slow);
