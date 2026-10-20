@@ -24,6 +24,10 @@ on:
         description: '"all" or "linux".'
         type: string
         default: all
+      require-sidecar:
+        description: Fail when a package can't bundle Truffle's sidecar (releases); otherwise it is only a warning.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -164,6 +168,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+      - name: Truffle sidecar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRE_SIDECAR: ${{ inputs.require-sidecar }}
+        run: |
+          scripts/package/fetch-sidecar.sh --target "$TARGET" --out sidecar
+          if [ "$REQUIRE_SIDECAR" = true ] && [ ! -f sidecar/sidecar-slim ]; then
+            echo "::error title=No Truffle sidecar::A release must bundle Truffle's sidecar; see the warning above and docs/RELEASING.md."
+            exit 1
+          fi
       - name: Build flux-server
         run: cargo build --locked --release -p flux-server --target "$TARGET"
 
@@ -174,10 +188,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: third-party-licenses
-      - name: Truffle sidecar (optional)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/package/fetch-sidecar.sh --target "$TARGET" --out sidecar
       - name: Package
         run: |
           args=(--target "$TARGET" --version "$VERSION"

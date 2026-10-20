@@ -14,6 +14,11 @@ name: Release dry run
 
 on:
   workflow_dispatch:
+    inputs:
+      require-sidecar:
+        description: Fail, as a release does, when a package can't bundle Truffle's sidecar.
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -61,6 +66,7 @@ jobs:
       ref: ${{ needs.prepare.outputs.ref }}
       version: ${{ needs.prepare.outputs.version }}
       targets: all
+      require-sidecar: ${{ inputs.require-sidecar }}
 
   assets:
     name: Assets (kept as an artifact)

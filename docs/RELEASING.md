@@ -246,6 +246,10 @@ in `Cargo.lock` and checks it against
 `scripts/package/truffle-sidecar.sha256`. It bundles nothing (with a
 warning) when `truffle-core` isn't a crates.io release, when that version
 has no pinned checksums, or when the release has no asset for the target.
+A release doesn't accept that: `release.yml` calls `build.yml` with
+`require-sidecar: true`, so a package without the sidecar fails the build
+before anything is uploaded, pushed or published. The release dry run only
+warns, unless it is run with `-f require-sidecar=true`.
 
 When flux moves to a new Truffle version, pin its sidecars in the same PR:
 
