@@ -175,13 +175,27 @@ least-privilege `permissions:` per job. These settings are needed once:
   GitHub Actions to create and approve pull requests* (Release Please opens
   its PR with `GITHUB_TOKEN`). If the organization restricts it, enable it
   under the `vibecook-dev` organization's Actions settings first.
-- **Branch protection (or a ruleset) on `main`:** require the status check
-  **`CI OK`**, which fails when any CI job fails (rustfmt, clippy, tests and
-  docs on macOS and Linux, MSRV, web, cargo-deny, workflow/script lint). The
-  individual checks are `Rustfmt`, `Rust (ubuntu-24.04)`,
-  `Rust (ubuntu-24.04-arm)`, `Rust (macos-15)`, `MSRV`, `Web`, `cargo-deny`
-  and `Lint workflows, scripts and Dockerfile`, should you prefer those.
-  Allow squash merges so each PR lands as one Conventional Commit.
+- **Ruleset `main`** (Settings → Rules → Rulesets), on the default branch:
+  - changes land through a pull request (0 approvals needed; squash merge
+    only, titled by the PR title, so each PR is one Conventional Commit);
+  - the status check **`CI OK`** (GitHub Actions) must pass, on a branch
+    that is up to date with `main`. It fails when any CI job fails:
+    `Rustfmt`, `Rust (ubuntu-24.04)`, `Rust (ubuntu-24.04-arm)`,
+    `Rust (macos-15)`, `MSRV`, `Web`, `cargo-deny` and
+    `Lint workflows, scripts and Dockerfile`;
+  - no force pushes and no deletion of `main`;
+  - repository admins may bypass it **only through a pull request** (merge
+    a PR with a red check in an emergency, `gh pr merge --admin`); nobody
+    pushes to `main` directly.
+
+  Release Please's PR gets its `CI OK` from the CI run that
+  `release-please.yml` dispatches on the release branch. To recreate the
+  ruleset: `gh api repos/vibecook-dev/flux/rulesets` lists it, and
+  `gh api -X POST repos/vibecook-dev/flux/rulesets --input <file>` takes the
+  same JSON.
+- **Other repository settings:** squash merging only, branches deleted on
+  merge, Dependabot alerts and security updates, secret scanning with push
+  protection, and private vulnerability reporting (`SECURITY.md`).
 - **The container package:** after the first push, open
   <https://github.com/orgs/vibecook-dev/packages/container/flux/settings>
   and set the visibility to *Public* (new packages start private). The image
