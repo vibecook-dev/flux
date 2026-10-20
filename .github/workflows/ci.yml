@@ -92,7 +92,19 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
+        id: test
         run: cargo test --locked --workspace
+      # Which ffmpeg tools and H.264 encoder this runner gives flux (the
+      # transcode tests use the same detection).
+      - name: Media tools (flux-server --check)
+        if: ${{ !cancelled() && steps.test.conclusion != 'skipped' }}
+        run: |
+          {
+            echo "### flux-server --check (${{ matrix.os }})"
+            echo '```'
+            cargo run --locked -q -p flux-server -- --check 2>&1 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings
