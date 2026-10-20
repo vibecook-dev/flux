@@ -79,10 +79,9 @@ impl EmbeddedConfig {
 }
 
 /// Find the Truffle Go sidecar: `explicit`, then `TRUFFLE_SIDECAR_PATH`,
-/// then `sidecar-slim` next to the running executable (how a packaged flux
-/// ships it). Build one from the Truffle worktree with
-/// `go build -trimpath -ldflags "-s -w" -o <dir>/sidecar-slim .` in
-/// `packages/sidecar-slim` (see docs/prototype/truffle-changes.md).
+/// then `sidecar-slim` next to the running executable (how a release package
+/// ships it). `scripts/package/fetch-sidecar.sh` downloads the one that
+/// matches truffle-core (docs/RELEASING.md, "The Truffle sidecar").
 pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
     let mut tried = Vec::new();
     let candidates = explicit
@@ -101,9 +100,10 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
         tried.push(candidate.display().to_string());
     }
     Err(NetError::SidecarNotFound(format!(
-        "tried {}; build it from the Truffle worktree's packages/sidecar-slim with \
-         `go build -trimpath -ldflags \"-s -w\" -o <dir>/sidecar-slim .` and set \
-         TRUFFLE_SIDECAR_PATH",
+        "tried {}; release packages ship it next to flux-server as sidecar-slim. \
+         Otherwise download the tsnet-sidecar asset for this platform from the Truffle \
+         release that matches truffle-core (https://github.com/vibecook-dev/truffle/releases) \
+         and set TRUFFLE_SIDECAR_PATH to it",
         if tried.is_empty() {
             "nothing".to_string()
         } else {
