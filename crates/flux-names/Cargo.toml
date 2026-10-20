@@ -1,0 +1,42 @@
+[package]
+name = "flux-names"
+description = "Movie/TV filename and folder parser: canonical fast path, then guessit-style fallback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["hunch"]
+# The guessit-port fallback for names the fast path cannot explain. Without it
+# flux-names is regex + hand-written rules only (smaller, no TOML rule engine).
+hunch = ["dep:hunch"]
+
+[dependencies]
+flux-core.workspace = true
+regex = "1.12"
+unicode-normalization = "0.1.25"
+# MIT. 2.0.x is the first SemVer-stable API (internal modules made private).
+hunch = { version = "2.0.2", default-features = false, optional = true }
+# Only the evaluation harness (`eval` module, `names-eval` binary) uses these.
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Corpus location (FLUX_TEST_MEDIA) for the real-media tests.
+flux-test-media = { path = "../flux-test-media" }
+
+[[bin]]
+name = "names-eval"
+path = "src/bin/names-eval.rs"
+
+# Dev-half disagreement analysis (flux fast path vs hunch) on guessit's fixtures.
+[[example]]
+name = "compare"
+required-features = ["hunch"]

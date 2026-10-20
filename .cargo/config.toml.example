@@ -1,0 +1,27 @@
+# Local Cargo settings for flux development. Copy this file to
+# .cargo/config.toml (git ignores it) and uncomment what you need.
+# See CONTRIBUTING.md.
+
+# Put build output somewhere other than ./target, e.g. a scratch disk.
+# The CARGO_TARGET_DIR environment variable overrides this.
+# [build]
+# target-dir = "/path/to/scratch/target/flux"
+
+# Build against local checkouts of Mille and Truffle instead of the versions
+# Cargo.toml asks for. Relative paths are resolved from the repo root (the
+# directory that holds .cargo/); these assume sibling checkouts.
+#
+# Mille is a git dependency on github.com/vibecook-dev/mille:
+# [patch."https://github.com/vibecook-dev/mille"]
+# mille-core = { path = "../mille/crates/mille-core" }
+#
+# Truffle: while Cargo.toml pins truffle-core to a git rev (see the
+# TODO(truffle-0.7.20) there), patch the git source:
+# [patch."https://github.com/vibecook-dev/truffle"]
+# truffle-core = { path = "../truffle/crates/truffle-core" }
+#
+# Once truffle-core comes from crates.io, patch crates-io instead. A local
+# checkout must then carry a version that satisfies Cargo.toml's requirement,
+# or Cargo ignores the patch with a warning.
+# [patch.crates-io]
+# truffle-core = { path = "../truffle/crates/truffle-core" }

@@ -1,0 +1,83 @@
+# cargo-deny: licences, advisories, bans and sources for the flux workspace.
+# https://embarkstudios.github.io/cargo-deny/
+#
+#   cargo deny check                 # everything (CI: the `deny` job in ci.yml)
+#   cargo deny check licenses        # one section
+#
+# flux is MIT. Every dependency must carry a licence that lets an MIT binary
+# be redistributed: permissive licences, plus MPL-2.0 (file-level copyleft:
+# changes to MPL files stay MPL, the rest of flux is unaffected). GPL, LGPL
+# and AGPL crates fail the check. FFmpeg is not a dependency: flux only runs
+# the ffmpeg/ffprobe programs as separate processes (docs/INSTALL.md).
+
+[graph]
+# The release targets (.github/workflows/release.yml). Crates only used on
+# other platforms (Windows, wasm, …) are left out of every check.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# Vulnerabilities, unsound and unmaintained crates fail the check. To accept
+# one, add its ID with a reason. Revisit these when the dependency changes.
+[advisories]
+ignore = [
+    # Unmaintained, with no fixed release; none is a known vulnerability.
+    { id = "RUSTSEC-2025-0141", reason = "bincode 2 is unmaintained (development stopped); used by mille-core's crash-resume snapshots. Mille should move to another encoding." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; flux-meta shapes poster text with it. Replace when flux-meta's text rendering is revisited." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; reached through ab_glyph and rustybuzz in flux-meta. Same follow-up as rustybuzz." },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # File-level copyleft; fine to link from an MIT program.
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+# The Independent JPEG Group licence is permissive; binaries must say "this
+# software is based in part on the work of the Independent JPEG Group", which
+# THIRD_PARTY_LICENSES does (scripts/package/third-party-licenses.sh).
+[[licenses.exceptions]]
+crate = "jpeg-encoder"
+allow = ["IJG"]
+
+[bans]
+# Several versions of one crate cost build time and binary size but are not
+# an error: shown as warnings so they can be cleaned up over time.
+multiple-versions = "warn"
+# Workspace crates use path dependencies without a version.
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Mille (walking and watching) comes from its public repository until it is
+# published on crates.io; Cargo.lock pins the commit. truffle-core comes from
+# a pinned commit of Truffle until 0.7.20 is on crates.io
+# (TODO(truffle-0.7.20): drop the Truffle entry then).
+allow-git = [
+    "https://github.com/vibecook-dev/mille",
+    "https://github.com/vibecook-dev/truffle",
+]

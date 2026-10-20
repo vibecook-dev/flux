@@ -1,0 +1,61 @@
+{
+  "adult": false,
+  "backdrop_path": "/ncEsesgOJDNrTUED89hYbA117wo.jpg",
+  "belongs_to_collection": {
+    "id": 2344,
+    "name": "The Matrix Collection",
+    "poster_path": "/bV9qTVHTVf0gkW0j7p7M0ILD4pG.jpg",
+    "backdrop_path": "/bRm2DEgUiYciDw3myHuYFInD7la.jpg"
+  },
+  "budget": 63000000,
+  "genres": [{"id": 28, "name": "Action"}, {"id": 878, "name": "Science Fiction"}],
+  "homepage": "http://www.warnerbros.com/matrix",
+  "id": 603,
+  "imdb_id": "tt0133093",
+  "origin_country": ["US"],
+  "original_language": "en",
+  "original_title": "The Matrix",
+  "overview": "Set in the 22nd century, The Matrix tells the story of a computer hacker...",
+  "popularity": 48.129,
+  "poster_path": "/p96dm7sCMn4VYAStA6siNz30G1r.jpg",
+  "production_companies": [{"id": 79, "logo_path": "/at4uYdwAAgNRKhZuuFX8ShKSybw.png", "name": "Village Roadshow Pictures", "origin_country": "US"}],
+  "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
+  "release_date": "1999-03-31",
+  "revenue": 463517383,
+  "runtime": 136,
+  "spoken_languages": [{"english_name": "English", "iso_639_1": "en", "name": "English"}],
+  "status": "Released",
+  "tagline": "Welcome to the Real World.",
+  "title": "The Matrix",
+  "video": false,
+  "vote_average": 8.2,
+  "vote_count": 26845,
+  "images": {
+    "backdrops": [
+      {"aspect_ratio": 1.778, "height": 1080, "iso_639_1": null, "file_path": "/ncEsesgOJDNrTUED89hYbA117wo.jpg", "vote_average": 5.6, "vote_count": 12, "width": 1920}
+    ],
+    "logos": [
+      {"aspect_ratio": 3.8, "height": 600, "iso_639_1": "en", "file_path": "/fd7A4Y6TjCzDlo8nQEfF1zQqEc3.png", "vote_average": 5.3, "vote_count": 4, "width": 2280}
+    ],
+    "posters": [
+      {"aspect_ratio": 0.667, "height": 3000, "iso_639_1": "en", "file_path": "/p96dm7sCMn4VYAStA6siNz30G1r.jpg", "vote_average": 5.9, "vote_count": 20, "width": 2000}
+    ]
+  },
+  "external_ids": {
+    "imdb_id": "tt0133093",
+    "wikidata_id": "Q83495",
+    "facebook_id": "TheMatrixMovie",
+    "instagram_id": null,
+    "twitter_id": null
+  },
+  "release_dates": {
+    "results": [
+      {"iso_3166_1": "US", "release_dates": [
+        {"certification": "R", "descriptors": [], "iso_639_1": "", "note": "", "release_date": "1999-03-30T00:00:00.000Z", "type": 3}
+      ]},
+      {"iso_3166_1": "DE", "release_dates": [
+        {"certification": "16", "descriptors": [], "iso_639_1": "", "note": "", "release_date": "1999-06-17T00:00:00.000Z", "type": 3}
+      ]}
+    ]
+  }
+}

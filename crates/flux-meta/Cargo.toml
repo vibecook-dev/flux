@@ -1,0 +1,51 @@
+[package]
+name = "flux-meta"
+description = "Metadata providers (TMDB), matching, AI hypothesis hooks, and artwork (frame posters, genAI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Fonts in assets/fonts are SIL OFL 1.1 (see assets/fonts/OFL-*.txt).
+include = ["src/**", "assets/**", "Cargo.toml"]
+
+[lints]
+workspace = true
+
+[dependencies]
+flux-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+futures.workspace = true
+bytes.workspace = true
+xxhash-rust.workspace = true
+reqwest.workspace = true
+
+# Offline TMDB export index
+flate2 = "1.1"
+# Title normalisation (NFKD + strip combining marks) and similarity
+unicode-normalization = "0.1.26"
+strsim = "0.11.1"
+
+# Artwork: pixels, typography, encoding
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+jpeg-encoder = "0.7.1"
+blurhash = "0.2.3"
+ab_glyph = "0.2.32"
+rustybuzz = "0.20.1"
+base64 = "0.22"
+
+[dev-dependencies]
+# Corpus (FLUX_TEST_MEDIA), bench output (FLUX_BENCH_RESULTS) and clips
+# made with ffmpeg.
+flux-test-media = { path = "../flux-test-media" }
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = "0.6.5"
+tempfile = "3.27"
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+libc = "0.2"

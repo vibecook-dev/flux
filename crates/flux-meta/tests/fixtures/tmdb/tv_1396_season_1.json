@@ -1,0 +1,15 @@
+{
+  "_id": "52542282760ee313280017f9",
+  "air_date": "2008-01-20",
+  "episodes": [
+    {"air_date": "2008-01-20", "episode_number": 1, "episode_type": "standard", "id": 62085, "name": "Pilot", "overview": "When an unassuming high school chemistry teacher discovers he has a rare form of lung cancer...", "production_code": "", "runtime": 59, "season_number": 1, "show_id": 1396, "still_path": "/ydlY3iPfeOAvu8gVqrxPoMvzNCn.jpg", "vote_average": 8.0, "vote_count": 200, "crew": [], "guest_stars": []},
+    {"air_date": "2008-01-27", "episode_number": 2, "episode_type": "standard", "id": 62086, "name": "Cat's in the Bag...", "overview": "Walt and Jesse attempt to tie up loose ends.", "production_code": "", "runtime": 49, "season_number": 1, "show_id": 1396, "still_path": "/tjDyMuJYhjeo1jHcZW2t7Qp0mHo.jpg", "vote_average": 7.7, "vote_count": 150, "crew": [], "guest_stars": []},
+    {"air_date": "2008-03-09", "episode_number": 7, "episode_type": "finale", "id": 62091, "name": "A No-Rough-Stuff-Type Deal", "overview": "Walter accepts his new identity...", "production_code": "", "runtime": 48, "season_number": 1, "show_id": 1396, "still_path": null, "vote_average": 8.0, "vote_count": 120, "crew": [], "guest_stars": []}
+  ],
+  "name": "Season 1",
+  "overview": "High school chemistry teacher Walter White's life is suddenly transformed...",
+  "id": 3572,
+  "poster_path": "/1BP4xYv9ZG4ZVHkL7ocOziBbSYH.jpg",
+  "season_number": 1,
+  "vote_average": 8.3
+}

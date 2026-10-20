@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in flux doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. For security problems, please use private reporting instead (see SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start flux-server with …
+        2. Open …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: flux version or commit
+      placeholder: "0.1.0, or the commit SHA you built"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run flux?
+      options:
+        - Built from source
+        - Release binary
+        - Docker image
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and hardware
+      placeholder: "macOS 26 on M1 Max; Ubuntu 26.04 on N100; …"
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client
+      description: Browser and version, or other client, if relevant.
+      placeholder: "Chrome 141, Safari 26, …"
+  - type: textarea
+    id: media
+    attributes:
+      label: Media details
+      description: For scan or playback problems, the container and codecs (for example the `ffprobe -hide_banner FILE` output), and where the files live (local disk, NAS over SMB, …). Please don't attach copyrighted media.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant `flux-server` output (`--log debug` helps). Remove anything private.
+      render: text

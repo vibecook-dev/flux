@@ -1,0 +1,417 @@
+<!doctype html>
+<!--
+  flux-hls browser check page. Served by browser/run.mjs next to hls.js; the
+  driver calls window.fluxRun(config) and gets one JSON result per case.
+
+  Modes: "hlsjs" (MSE through hls.js: Chrome, Firefox) and "native"
+  (video.src = master.m3u8: Safari).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>flux-hls browser check</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 12px ui-monospace, monospace; }
+  video { width: 640px; height: 360px; background: #000; display: block; }
+</style>
+<script src="/hls.js"></script>
+</head>
+<body>
+<video id="v" playsinline></video>
+<pre id="log"></pre>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- MSE hooks
+// Exceptions thrown by appendBuffer/remove and SourceBuffer 'error' events are
+// what a broken segment looks like from inside MSE; hls.js reports some of
+// them too, but not always with the browser's message.
+const mse = { exceptions: [], sbErrors: [], sourceBuffers: [], appends: 0, appendedBytes: 0 };
+(function hookMse() {
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  for (const C of [window.MediaSource, window.ManagedMediaSource].filter(Boolean)) {
+    const add = C.prototype.addSourceBuffer;
+    C.prototype.addSourceBuffer = function (mime) {
+      try {
+        const sb = add.call(this, mime);
+        mse.sourceBuffers.push(mime);
+        sb.addEventListener("error", () => mse.sbErrors.push({ mime, t: performance.now() }));
+        return sb;
+      } catch (e) {
+        mse.exceptions.push({ op: "addSourceBuffer", mime, name: e.name, message: e.message });
+        throw e;
+      }
+    };
+  }
+  const SB = window.SourceBuffer || (window.ManagedSourceBuffer && window.ManagedSourceBuffer.__proto__);
+  if (!SB) return;
+  const append = SB.prototype.appendBuffer;
+  SB.prototype.appendBuffer = function (data) {
+    mse.appends++;
+    mse.appendedBytes += data.byteLength || 0;
+    try {
+      return append.call(this, data);
+    } catch (e) {
+      mse.exceptions.push({ op: "appendBuffer", name: e.name, message: e.message });
+      throw e;
+    }
+  };
+  const remove = SB.prototype.remove;
+  SB.prototype.remove = function (a, b) {
+    try {
+      return remove.call(this, a, b);
+    } catch (e) {
+      mse.exceptions.push({ op: "remove", name: e.name, message: e.message });
+      throw e;
+    }
+  };
+  void MS;
+})();
+
+// ---------------------------------------------------------------- helpers
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const now = () => performance.now();
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; };
+
+function waitEvent(target, name, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, ms);
+    const fire = () => { if (!done) { done = true; clearTimeout(t); resolve(true); } };
+    if (target.addEventListener) target.addEventListener(name, fire, { once: true });
+    else target.once(name, fire); // hls.js instance
+  });
+}
+
+async function waitFor(pred, ms, step = 25) {
+  const t0 = now();
+  while (now() - t0 < ms) {
+    if (pred()) return true;
+    await sleep(step);
+  }
+  return pred();
+}
+
+function stats(xs) {
+  if (!xs.length) return null;
+  const v = xs.slice().sort((a, b) => a - b);
+  const q = (p) => v[Math.min(v.length - 1, Math.round((v.length - 1) * p))];
+  return { n: v.length, min: v[0], p50: q(0.5), p95: q(0.95), max: v[v.length - 1],
+           mean: v.reduce((a, b) => a + b, 0) / v.length };
+}
+
+function ranges(tr) {
+  const out = [];
+  for (let i = 0; i < tr.length; i++) out.push([+tr.start(i).toFixed(3), +tr.end(i).toFixed(3)]);
+  return out;
+}
+
+function quality(v) {
+  const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+  return q ? { decoded: q.totalVideoFrames, dropped: q.droppedVideoFrames, corrupted: q.corruptedVideoFrames ?? null } : null;
+}
+
+// Codec support of this browser (calibrates flux's client presets).
+function codecSupport() {
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  const types = {
+    "avc1 High": 'video/mp4; codecs="avc1.640028"',
+    "hvc1 Main": 'video/mp4; codecs="hvc1.1.6.L120.90"',
+    "hvc1 Main10": 'video/mp4; codecs="hvc1.2.4.L153.90"',
+    "hev1 Main10": 'video/mp4; codecs="hev1.2.4.L153.90"',
+    "dvh1.05": 'video/mp4; codecs="dvh1.05.06"',
+    "av01 Main 10-bit": 'video/mp4; codecs="av01.0.08M.10"',
+    "vp09 in mp4": 'video/mp4; codecs="vp09.00.40.08"',
+    "mp4a AAC-LC": 'audio/mp4; codecs="mp4a.40.2"',
+    "mp4a MP3": 'audio/mp4; codecs="mp4a.40.34"',
+    "mp4a.6B MP3": 'audio/mp4; codecs="mp4a.6B"',
+    "ac-3": 'audio/mp4; codecs="ac-3"',
+    "ec-3": 'audio/mp4; codecs="ec-3"',
+    "Opus in mp4": 'audio/mp4; codecs="opus"',
+    "fLaC in mp4": 'audio/mp4; codecs="flac"',
+  };
+  const out = {};
+  for (const [k, t] of Object.entries(types)) {
+    out[k] = { mse: MS ? MS.isTypeSupported(t) : null, canPlay: document.createElement("video").canPlayType(t) };
+  }
+  out.nativeHls = document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+  return out;
+}
+window.fluxCodecSupport = codecSupport;
+
+// ---------------------------------------------------------------- the run
+//
+// cfg: { url, mode: "hlsjs"|"native", seeks: [s…], seg0: s, frameDur: s,
+//        subtitle: { expectFirstCue: s } | null, timeouts }
+window.fluxRun = async function (cfg) {
+  const T = Object.assign({ start: 30000, seek: 30000, playAfter: 20000, audio: 20000, subs: 20000 }, cfg.timeouts || {});
+  const v = document.getElementById("v");
+  v.volume = cfg.volume ?? 0.0;
+  v.muted = !!cfg.muted;
+  const res = {
+    url: cfg.url, mode: cfg.mode, ok: true, problems: [], warnings: [],
+    hlsErrors: [], videoErrors: [], console: [],
+    ttffMs: null, playingMs: null, pastSeg0Ms: null,
+    seeks: [], audioSwitch: null, subtitles: null,
+    drift: null, quality: {}, mse: null, levels: null, audioTracks: null,
+    events: { stalls: 0, waiting: 0 },
+  };
+  window.__fluxRes = res; // partial result, if the driver times out
+  const problem = (s) => { res.ok = false; res.problems.push(s); };
+  const warn = (s) => { if (!res.warnings.includes(s)) res.warnings.push(s); };
+
+  // Frame callbacks: presented frames with mediaTime vs the playback clock.
+  const frames = [];
+  let rvfcOn = true;
+  const hasRvfc = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+  if (hasRvfc) {
+    const cb = (t, m) => {
+      if (!rvfcOn) return;
+      // The clock-predicted media time at this frame's display time.
+      const expected = v.currentTime + (m.expectedDisplayTime - t) / 1000 * (v.playbackRate || 1);
+      frames.push({ t: now(), mediaTime: m.mediaTime, expected, presented: m.presentedFrames, paused: v.paused, seeking: v.seeking });
+      v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+  }
+  v.addEventListener("error", () => {
+    const e = v.error;
+    res.videoErrors.push({ code: e && e.code, message: e && e.message, t: now() });
+  });
+  v.addEventListener("waiting", () => res.events.waiting++);
+  v.addEventListener("stalled", () => res.events.stalls++);
+
+  let hls = null;
+  const t0 = now();
+  const firstFrameAfter = (since, minMedia) => frames.find((f) => f.t >= since && !f.seeking && (minMedia == null || f.mediaTime >= minMedia));
+
+  if (cfg.mode === "hlsjs") {
+    if (!window.Hls || !Hls.isSupported()) {
+      problem("hls.js not supported");
+      return res;
+    }
+    hls = new Hls(cfg.hlsConfig || {});
+    let recovered = 0;
+    hls.on(Hls.Events.ERROR, (_, d) => {
+      const e = { t: Math.round(now() - t0), type: d.type, details: d.details, fatal: !!d.fatal,
+                  reason: d.reason || (d.error && d.error.message) || null,
+                  frag: d.frag ? { sn: d.frag.sn, type: d.frag.type, start: d.frag.start } : null,
+                  response: d.response ? { code: d.response.code, text: d.response.text } : null };
+      res.hlsErrors.push(e);
+      if (d.fatal && d.type === Hls.ErrorTypes.MEDIA_ERROR && recovered < 1) {
+        recovered++;
+        hls.recoverMediaError();
+      }
+    });
+    hls.loadSource(cfg.url);
+    hls.attachMedia(v);
+    await waitEvent(hls, Hls.Events.MANIFEST_PARSED, T.start);
+  } else {
+    v.src = cfg.url;
+  }
+  v.play().catch((e) => problem("play(): " + e.name + ": " + e.message));
+  const playing = await waitEvent(v, "playing", T.start);
+  res.playingMs = playing ? Math.round(now() - t0) : null;
+  await waitFor(() => frames.length > 0 || !hasRvfc, T.start);
+  res.ttffMs = frames.length ? Math.round(frames[0].t - t0) : null;
+  if (res.ttffMs == null && hasRvfc) {
+    problem("no frame presented");
+    return finish();
+  }
+
+  if (hls) {
+    res.levels = hls.levels.map((l) => ({ codecs: [l.videoCodec, l.audioCodec].filter(Boolean).join(","), w: l.width, h: l.height, audioGroups: l.audioGroups || null }));
+    res.audioTracks = hls.allAudioTracks.map((a) => ({ id: a.id, name: a.name, group: a.groupId, codec: a.audioCodec || null, lang: a.lang || null }));
+  }
+
+  // Play past segment 0.
+  // Past segment 0 (or to the end of a one-segment file).
+  const past = Math.min(cfg.seg0 + 0.5, (cfg.duration || Infinity) - 0.3);
+  const okPast = await waitFor(() => v.currentTime >= past || v.ended, T.playAfter + cfg.seg0 * 1000);
+  res.pastSeg0Ms = okPast ? Math.round(now() - t0) : null;
+  if (!okPast) problem(`did not play past segment 0 (${cfg.seg0.toFixed(2)} s): currentTime ${v.currentTime.toFixed(2)}`);
+  res.quality.afterStart = quality(v);
+
+  // Seeks.
+  for (const target of cfg.seeks || []) {
+    const s = { target, ok: false };
+    const ts = now();
+    v.currentTime = target;
+    // A short file may have ended (and paused) on the previous step.
+    if (v.paused) v.play().catch(() => {});
+    const seeked = await waitEvent(v, "seeked", T.seek);
+    s.seekedMs = seeked ? Math.round(now() - ts) : null;
+    const gotFrame = await waitFor(() => !!firstFrameAfter(ts, target - 1), T.seek);
+    const ff = firstFrameAfter(ts, target - 1);
+    s.firstFrameMs = ff ? Math.round(ff.t - ts) : null;
+    s.firstFrameMedia = ff ? +ff.mediaTime.toFixed(4) : null;
+    // Exact seek: the frame shown is the one presented at `target`.
+    s.frameErrorMs = ff ? +((ff.mediaTime - target) * 1000).toFixed(1) : null;
+    const playTo = Math.min(target + 1.0, (v.duration || Infinity) - 0.3);
+    const moved = await waitFor(() => v.currentTime >= playTo || v.ended, T.playAfter);
+    s.playedOn = moved;
+    s.currentTime = +v.currentTime.toFixed(3);
+    if (hls && hls.media) {
+      try {
+        const ms = hls.media;
+        s.buffered = ranges(ms.buffered);
+      } catch (_) {}
+    }
+    s.ok = seeked && gotFrame && moved;
+    if (!s.ok) problem(`seek to ${target}: seeked=${seeked} frame=${gotFrame} played=${moved} (t=${v.currentTime.toFixed(2)})`);
+    if (ff && Math.abs(ff.mediaTime - target) > Math.max(0.25, 3 * (cfg.frameDur || 0.042))) {
+      s.inexact = true;
+    }
+    res.seeks.push(s);
+  }
+  res.quality.afterSeeks = quality(v);
+
+  // Audio rendition switch (every other rendition once, then back).
+  if (hls && hls.allAudioTracks.length > 1) {
+    const sw = { tracks: hls.allAudioTracks.length, switches: [] };
+    const all = hls.allAudioTracks.slice();
+    const startTrack = hls.audioTracks[hls.audioTrack];
+    const order = all.filter((a) => a !== startTrack).concat(startTrack ? [startTrack] : []);
+    const family = (c) => (c || "").slice(0, 4).toLowerCase();
+    let prev = startTrack;
+    for (const a of order) {
+      const r = { to: a.name, group: a.groupId, codec: a.audioCodec || null, from: prev ? prev.audioCodec || null : null };
+      r.crossCodec = !!prev && family(prev.audioCodec) !== family(a.audioCodec);
+      const ts = now();
+      // Done when an audio fragment of the new rendition is buffered (hls.js
+      // does not always emit AUDIO_TRACK_SWITCHED on a cross-group switch).
+      let bufferedAt = null;
+      const onBuf = (_, d) => {
+        if (d.frag && d.frag.type === "audio" && bufferedAt == null) {
+          const cur = hls.audioTracks[hls.audioTrack];
+          if (cur && cur.name === a.name && cur.groupId === a.groupId) bufferedAt = now();
+        }
+      };
+      hls.on(Hls.Events.FRAG_BUFFERED, onBuf);
+      const errBefore = res.hlsErrors.length;
+      const chosen = hls.setAudioOption(a);
+      r.accepted = !!chosen;
+      await waitFor(() => bufferedAt != null, T.audio);
+      hls.off(Hls.Events.FRAG_BUFFERED, onBuf);
+      r.switchedMs = bufferedAt != null ? Math.round(bufferedAt - ts) : null;
+      // Near the end of a short file, playing to the end counts.
+      if (v.ended || v.currentTime > (v.duration || Infinity) - 2) {
+        v.currentTime = Math.max(0, Math.min(cfg.seg0 || 0, (v.duration || 2) - 2));
+        await waitEvent(v, "seeked", T.seek);
+        if (v.paused) v.play().catch(() => {});
+      }
+      const ct = v.currentTime;
+      const playTo = Math.min(ct + 1.5, (v.duration || Infinity) - 0.3);
+      r.playedOn = await waitFor(() => v.currentTime >= playTo || v.ended, T.playAfter);
+      r.errors = res.hlsErrors.slice(errBefore).map((e) => e.details);
+      r.ok = r.accepted && bufferedAt != null && r.playedOn && !r.errors.includes("bufferAppendingError");
+      if (!r.ok) {
+        const msg = `audio switch ${r.from} → "${a.name}" (${r.codec}): accepted=${r.accepted} buffered=${bufferedAt != null} played=${r.playedOn} errors=${r.errors.join(",")}`;
+        // hls.js 1.7.3 misses the SourceBuffer changeType when switching back
+        // from a FLAC/Opus rendition (its codec check knows only "fLaC"/"Opus",
+        // Chrome's SourceBuffer reports "flac"/"opus"), so the AAC append fails.
+        if (r.crossCodec) warn("hls.js cross-codec audio switch failed: " + msg);
+        else problem(msg);
+      }
+      sw.switches.push(r);
+      prev = a;
+      if (!r.ok && r.crossCodec) break;
+    }
+    res.audioSwitch = sw;
+  }
+
+  // WebVTT subtitles: the first track shows its cues at the source times.
+  if (cfg.subtitle && hls && hls.subtitleTracks.length > 0) {
+    const st = { tracks: hls.allSubtitleTracks.map((s) => s.name) };
+    hls.subtitleDisplay = true;
+    hls.subtitleTrack = 0;
+    const tt = () => Array.from(v.textTracks).find((t) => t.mode === "showing" && t.cues && t.cues.length > 0);
+    // Cues load with the subtitle fragment covering the playhead.
+    v.currentTime = cfg.subtitle.expectFirstCue + 0.2;
+    st.loaded = await waitFor(() => !!tt(), T.subs);
+    const track = tt();
+    if (track) {
+      st.cues = track.cues.length;
+      st.firstCueStart = +track.cues[0].startTime.toFixed(3);
+      st.firstCueText = track.cues[0].text.slice(0, 60);
+      st.firstCueErrorMs = +((track.cues[0].startTime - cfg.subtitle.expectFirstCue) * 1000).toFixed(1);
+      await waitFor(() => track.activeCues && track.activeCues.length > 0, 3000);
+      st.activeAtCue = track.activeCues ? track.activeCues.length : 0;
+    }
+    st.ok = !!st.loaded && st.activeAtCue > 0 && Math.abs(st.firstCueErrorMs ?? 1e9) <= 50;
+    if (!st.ok) problem(`subtitles: loaded=${st.loaded} active=${st.activeAtCue} firstCueError=${st.firstCueErrorMs} ms`);
+    res.subtitles = st;
+  }
+
+  // I-frame (trick play) variant through hls.js's I-frame player: each
+  // loadMediaAt(t) should show the keyframe at or before t.
+  if (hls && hls.iframeVariants && hls.iframeVariants.length > 0 && hls.createIFramePlayer) {
+    const ir = { variants: hls.iframeVariants.length, frames: [] };
+    try {
+      const v2 = document.createElement("video");
+      v2.muted = true;
+      document.body.appendChild(v2);
+      const ifp = hls.createIFramePlayer();
+      if (!ifp) throw new Error("createIFramePlayer returned null");
+      const iErr = [];
+      ifp.on(Hls.Events.ERROR, (_, d) => iErr.push(`${d.details}${d.fatal ? " (fatal)" : ""}`));
+      const parsed = waitEvent(ifp, Hls.Events.MEDIA_ATTACHED, 10000);
+      ifp.attachMedia(v2);
+      await parsed;
+      for (const t of (cfg.seeks || []).slice(0, 3)) {
+        const ts = now();
+        let shown = null;
+        if ("requestVideoFrameCallback" in v2) v2.requestVideoFrameCallback((_, m) => { shown = m.mediaTime; });
+        ifp.loadMediaAt(t);
+        const got = await waitFor(() => shown != null, 15000);
+        // The keyframe at or before t is shown (within a long GOP).
+        const okFrame = got && shown <= t + 0.05 && shown > t - 15;
+        ir.frames.push({ t, ok: okFrame, ms: got ? Math.round(now() - ts) : null, mediaTime: shown, currentTime: +v2.currentTime.toFixed(3), readyState: v2.readyState });
+      }
+      ir.errors = iErr;
+      ir.ok = ir.frames.every((f) => f.ok) && !iErr.some((e) => e.includes("fatal"));
+      ifp.destroy();
+      v2.remove();
+    } catch (e) {
+      ir.ok = false;
+      ir.exception = String(e && e.message || e);
+    }
+    if (!ir.ok) warn(`I-frame player: ${JSON.stringify(ir).slice(0, 300)}`);
+    res.iframes = ir;
+  }
+
+  return finish();
+
+  function finish() {
+  // A/V drift: presented frame vs the (audio-driven) playback clock, while playing.
+  rvfcOn = false;
+  const playingFrames = frames.filter((f, i) => i > 0 && !f.paused && !f.seeking && frames[i - 1].presented + 1 === f.presented);
+  res.drift = stats(playingFrames.map((f) => (f.mediaTime - f.expected) * 1000));
+  res.framesSeen = frames.length;
+  res.quality.final = quality(v);
+  res.mse = { exceptions: mse.exceptions, sbErrors: mse.sbErrors, sourceBuffers: mse.sourceBuffers, appends: mse.appends, appendedMB: +(mse.appendedBytes / 1048576).toFixed(1) };
+  res.wallMs = Math.round(now() - t0);
+  if (v.error) problem(`video.error ${v.error.code}: ${v.error.message}`);
+  for (const e of res.hlsErrors) if (e.fatal) problem(`hls.js fatal ${e.type}/${e.details}: ${e.reason || ""}`);
+  // QuotaExceededError is MSE's "buffer full": hls.js reports a non-fatal
+  // bufferFullError, shrinks its forward buffer and retries (high bitrates
+  // with a 30 s buffer exceed Chrome's ~150 MB video quota). Anything else is
+  // a broken append.
+  const quota = mse.exceptions.filter((e) => e.name === "QuotaExceededError");
+  const other = mse.exceptions.filter((e) => e.name !== "QuotaExceededError");
+  if (quota.length) warn(`${quota.length} QuotaExceededError append(s) (MSE buffer full; hls.js retried)`);
+  if (other.length) problem(`${other.length} MSE exception(s): ${other[0].name} ${other[0].message}`);
+  if (mse.sbErrors.length && !res.warnings.some((w) => w.startsWith("hls.js cross-codec"))) problem(`${mse.sbErrors.length} SourceBuffer error event(s)`);
+  if (hls) {
+    res.levels = res.levels || hls.levels.map((l) => ({ codecs: [l.videoCodec, l.audioCodec].filter(Boolean).join(","), w: l.width, h: l.height }));
+    hls.destroy();
+  }
+  v.removeAttribute("src");
+  v.load();
+  return res;
+  }
+};
+log("ready");
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+.grid {
+  position: relative;
+  width: 100%;
+  /* No paint containment: hover lift and focus rings may overflow the grid box. */
+  contain: layout style;
+}
+
+.row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: grid;
+  will-change: transform;
+}
+
+.cell {
+  min-width: 0;
+}

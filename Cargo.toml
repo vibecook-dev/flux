@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/flux-core",
+    "crates/flux-probe",
+    "crates/flux-names",
+    "crates/flux-catalog",
+    "crates/flux-scan",
+    "crates/flux-hls",
+    "crates/flux-meta",
+    "crates/flux-net",
+    "crates/flux-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/vibecook-dev/flux"
+homepage = "https://github.com/vibecook-dev/flux"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+# Internal
+flux-core = { path = "crates/flux-core" }
+flux-probe = { path = "crates/flux-probe" }
+flux-names = { path = "crates/flux-names" }
+flux-catalog = { path = "crates/flux-catalog" }
+flux-scan = { path = "crates/flux-scan" }
+flux-hls = { path = "crates/flux-hls" }
+flux-meta = { path = "crates/flux-meta" }
+flux-net = { path = "crates/flux-net" }
+
+# Mille (filesystem walking and watching) and Truffle (remote access over
+# Tailscale), both from vibecook-dev. To build against local checkouts, add a
+# [patch] to an untracked .cargo/config.toml (see CONTRIBUTING.md).
+mille-core = { git = "https://github.com/vibecook-dev/mille", rev = "c9708f4c08d5334a57e0c3c054f0ea264fdfb88f" }
+# TODO(truffle-0.7.20): switch to `truffle-core = "0.7.20"` from crates.io once
+# it is published (docs/RELEASING.md, "Before the first release").
+truffle-core = { git = "https://github.com/vibecook-dev/truffle", rev = "dff60338cadf0cad267f2e46fa1aa22cbf5a5d85" }
+
+# Common
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1.53", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+bytes = "1"
+futures = "0.3"
+smallvec = { version = "1", features = ["serde"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+axum = "0.8"
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["fs", "cors", "trace"] }
+mp4-atom = "0.16"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The flux-server binary's global allocator (the libraries stay
+# allocator-agnostic); see docs/prototype/server.md "Phase E: memory".
+tikv-jemallocator = "0.7"
+tikv-jemalloc-sys = "0.7.1"
+
+[profile.release]
+debug = 1          # keep symbols for profiling the prototype
+lto = "thin"
+
+[profile.bench]
+debug = 1

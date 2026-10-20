@@ -1,0 +1,13 @@
+/target
+*.log
+.DS_Store
+/.env
+__pycache__/
+
+# Local, per-machine settings: copy the .example files and edit them
+# (see CONTRIBUTING.md). Never commit these.
+/.cargo/config.toml
+/web/.npmrc
+
+# web/scripts/golden-rs is its own Cargo workspace (pnpm golden)
+/web/scripts/golden-rs/target/

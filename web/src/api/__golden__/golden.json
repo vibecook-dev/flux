@@ -1,0 +1,1241 @@
+{
+  "display": {
+    "Codec": {
+      "aac": "AAC",
+      "ac3": "AC-3",
+      "alac": "ALAC",
+      "ass": "ASS",
+      "av1": "AV1",
+      "dts": "DTS",
+      "dvb_sub": "DVB",
+      "eac3": "E-AC-3",
+      "flac": "FLAC",
+      "h264": "H.264",
+      "hevc": "HEVC",
+      "mjpeg": "MJPEG",
+      "mov_text": "MP4 text",
+      "mp2": "MP2",
+      "mp3": "MP3",
+      "mpeg2_video": "MPEG-2",
+      "mpeg4_part2": "MPEG-4 Part 2",
+      "opus": "Opus",
+      "other": "Other",
+      "pcm": "PCM",
+      "pgs": "PGS",
+      "pro_res": "ProRes",
+      "ssa": "SSA",
+      "subrip": "SRT",
+      "true_hd": "TrueHD",
+      "vc1": "VC-1",
+      "vob_sub": "VobSub",
+      "vorbis": "Vorbis",
+      "vp8": "VP8",
+      "vp9": "VP9",
+      "web_vtt": "WebVTT"
+    },
+    "Container": {
+      "avi": "AVI",
+      "m2ts": "M2TS",
+      "matroska": "MKV",
+      "mov": "MOV",
+      "mp4": "MP4",
+      "mpeg_ts": "MPEG-TS",
+      "unknown": "Unknown",
+      "web_m": "WebM"
+    },
+    "HdrFormat": {
+      "dolby_vision": "Dolby Vision",
+      "hdr10": "HDR10",
+      "hdr10_plus": "HDR10+",
+      "hlg": "HLG",
+      "sdr": "SDR"
+    }
+  },
+  "enums": {
+    "ArtSource": [
+      "provider",
+      "local",
+      "frame",
+      "generated"
+    ],
+    "BitstreamFix": [
+      "dovi_p7_to81",
+      "strip_inband_parameter_sets"
+    ],
+    "Codec": [
+      "h264",
+      "hevc",
+      "av1",
+      "vp9",
+      "vp8",
+      "mpeg2_video",
+      "mpeg4_part2",
+      "vc1",
+      "pro_res",
+      "mjpeg",
+      "aac",
+      "ac3",
+      "eac3",
+      "true_hd",
+      "dts",
+      "flac",
+      "opus",
+      "vorbis",
+      "mp3",
+      "mp2",
+      "pcm",
+      "alac",
+      "subrip",
+      "ass",
+      "ssa",
+      "web_vtt",
+      "mov_text",
+      "pgs",
+      "vob_sub",
+      "dvb_sub",
+      "other"
+    ],
+    "Container": [
+      "matroska",
+      "web_m",
+      "mp4",
+      "mov",
+      "mpeg_ts",
+      "m2ts",
+      "avi",
+      "unknown"
+    ],
+    "DeliveryFormat": [
+      "progressive_file",
+      "hls_fmp4",
+      "hls_ts"
+    ],
+    "ExtraKind": [
+      "trailer",
+      "featurette",
+      "behind_the_scenes",
+      "deleted_scene",
+      "interview",
+      "short",
+      "scene",
+      "other"
+    ],
+    "GuessKind": [
+      "movie",
+      "episode",
+      "extra",
+      "sample",
+      "unknown"
+    ],
+    "HdrFormat": [
+      "sdr",
+      "hdr10",
+      "hdr10_plus",
+      "hlg",
+      "dolby_vision"
+    ],
+    "ItemFilter": [
+      "unwatched",
+      "in_progress",
+      "4k",
+      "hdr"
+    ],
+    "ItemKind": [
+      "movie",
+      "show",
+      "season",
+      "episode",
+      "extra"
+    ],
+    "ItemSort": [
+      "title",
+      "-title",
+      "year",
+      "-year",
+      "added",
+      "-added"
+    ],
+    "LibraryKind": [
+      "movies",
+      "shows",
+      "mixed"
+    ],
+    "Role": [
+      "owner",
+      "admin",
+      "viewer",
+      "kid",
+      "guest"
+    ],
+    "ScanState": [
+      "idle",
+      "scanning",
+      "watching",
+      "unavailable",
+      "error"
+    ],
+    "TailnetMode": [
+      "off",
+      "embedded",
+      "system"
+    ],
+    "TailnetState": [
+      "off",
+      "starting",
+      "needs_login",
+      "needs_approval",
+      "running",
+      "unavailable",
+      "error"
+    ],
+    "TrackKind": [
+      "video",
+      "audio",
+      "subtitle",
+      "attachment",
+      "data"
+    ]
+  },
+  "plan_labels": [
+    [
+      {
+        "audio": [
+          {
+            "op": {
+              "op": "copy"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "progressive_file",
+        "demuxed_audio": false,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [],
+        "subtitles": [],
+        "video": {
+          "fixes": [],
+          "op": "copy"
+        },
+        "video_track": 0
+      },
+      "Direct play"
+    ],
+    [
+      {
+        "audio": [
+          {
+            "op": {
+              "op": "copy"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "hls_fmp4",
+        "demuxed_audio": true,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [
+          {
+            "container": "matroska",
+            "reason": "container_unsupported"
+          }
+        ],
+        "subtitles": [
+          {
+            "op": {
+              "op": "burn_in"
+            },
+            "track": 2
+          }
+        ],
+        "video": {
+          "fixes": [
+            "dovi_p7_to81"
+          ],
+          "op": "copy"
+        },
+        "video_track": 0
+      },
+      "Direct stream"
+    ],
+    [
+      {
+        "audio": [
+          {
+            "op": {
+              "bitrate": 640000,
+              "channels": 6,
+              "codec": "aac",
+              "op": "transcode"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "hls_fmp4",
+        "demuxed_audio": true,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [
+          {
+            "container": "matroska",
+            "reason": "container_unsupported"
+          }
+        ],
+        "subtitles": [
+          {
+            "op": {
+              "op": "web_vtt"
+            },
+            "track": 2
+          },
+          {
+            "op": {
+              "op": "client_render"
+            },
+            "track": 3
+          }
+        ],
+        "video": {
+          "fixes": [
+            "dovi_p7_to81"
+          ],
+          "op": "copy"
+        },
+        "video_track": 0
+      },
+      "Audio conversion"
+    ],
+    [
+      {
+        "audio": [
+          {
+            "op": {
+              "bitrate": 640000,
+              "channels": 6,
+              "codec": "aac",
+              "op": "transcode"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "hls_ts",
+        "demuxed_audio": true,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [
+          {
+            "container": "matroska",
+            "reason": "container_unsupported"
+          }
+        ],
+        "subtitles": [
+          {
+            "op": {
+              "op": "web_vtt"
+            },
+            "track": 2
+          },
+          {
+            "op": {
+              "op": "client_render"
+            },
+            "track": 3
+          }
+        ],
+        "video": {
+          "bitrate": 8000000,
+          "burn_subtitle": 3,
+          "codec": "h264",
+          "hardware": true,
+          "height": 1080,
+          "op": "transcode",
+          "tonemap": true,
+          "width": 1920
+        },
+        "video_track": 0
+      },
+      "Transcode"
+    ]
+  ],
+  "reasons": [
+    [
+      {
+        "container": "matroska",
+        "reason": "container_unsupported"
+      },
+      "This device can't open MKV files directly, so flux repackages the streams (no quality loss)"
+    ],
+    [
+      {
+        "codec": "hevc",
+        "reason": "video_codec_unsupported"
+      },
+      "This device can't decode HEVC video"
+    ],
+    [
+      {
+        "codec": "hevc",
+        "profile": "Main 10",
+        "reason": "video_profile_unsupported"
+      },
+      "This device can't decode HEVC Main 10 video"
+    ],
+    [
+      {
+        "codec": "h264",
+        "level": 52,
+        "max": 51,
+        "reason": "video_level_too_high"
+      },
+      "H.264 level 52 is above this device's limit (51)"
+    ],
+    [
+      {
+        "bit_depth": 10,
+        "reason": "video_bit_depth_unsupported"
+      },
+      "This device can't decode 10-bit video"
+    ],
+    [
+      {
+        "height": 2160,
+        "reason": "video_resolution_too_high",
+        "width": 3840
+      },
+      "3840×2160 is above this device's maximum resolution"
+    ],
+    [
+      {
+        "format": "dolby_vision",
+        "reason": "hdr_unsupported"
+      },
+      "This display can't show Dolby Vision, so flux tone-maps to SDR"
+    ],
+    [
+      {
+        "profile": 7,
+        "reason": "dovi_profile_unsupported"
+      },
+      "This device can't play Dolby Vision profile 7"
+    ],
+    [
+      {
+        "codec": "true_hd",
+        "reason": "audio_codec_unsupported"
+      },
+      "This device can't decode TrueHD audio"
+    ],
+    [
+      {
+        "channels": 8,
+        "max": 2,
+        "reason": "audio_channels_too_many"
+      },
+      "8-channel audio is more than this device supports (2)"
+    ],
+    [
+      {
+        "codec": "pgs",
+        "reason": "subtitle_needs_burn_in"
+      },
+      "PGS subtitles can't be shown by this device, so they're drawn into the picture"
+    ],
+    [
+      {
+        "bitrate": 60000000,
+        "max": 20000000,
+        "reason": "bitrate_too_high"
+      },
+      "The file's bitrate (60 Mb/s) is above this connection's capacity (20 Mb/s)"
+    ],
+    [
+      {
+        "reason": "no_index"
+      },
+      "The file has no seek index, so flux transcodes it"
+    ],
+    [
+      {
+        "codec": "true_hd",
+        "reason": "codec_not_packageable"
+      },
+      "TrueHD can't be carried in an HLS stream, so flux converts it"
+    ],
+    [
+      {
+        "note": "Samsung 2026 MSE is limited to FHD",
+        "reason": "client_quirk"
+      },
+      "Samsung 2026 MSE is limited to FHD"
+    ]
+  ],
+  "samples": {
+    "CreateLibrary": {
+      "kind": "movies",
+      "name": "Movies",
+      "roots": [
+        "/m"
+      ]
+    },
+    "Events": [
+      {
+        "library_id": 1,
+        "status": {
+          "dirs_unavailable": 1,
+          "files_probed": 50,
+          "files_seen": 100,
+          "files_total": 240,
+          "finished_at": null,
+          "items_added": 40,
+          "items_removed": 1,
+          "items_updated": 2,
+          "last_error": null,
+          "started_at": 1760000000000,
+          "state": "scanning"
+        },
+        "type": "scan_progress"
+      },
+      {
+        "added": [
+          1
+        ],
+        "library_id": 1,
+        "removed": [
+          2
+        ],
+        "type": "items_changed",
+        "updated": []
+      },
+      {
+        "available": false,
+        "library_id": 1,
+        "root": "/m",
+        "type": "source_availability"
+      },
+      {
+        "info": {
+          "approve_url": null,
+          "auth_url": "https://login.tailscale.com/a/abc123",
+          "dns_name": null,
+          "key_expiry": null,
+          "last_error": null,
+          "mode": "embedded",
+          "owner_login": null,
+          "state": "needs_login",
+          "system_tailscale": false,
+          "tailnet_name": null,
+          "url": null
+        },
+        "type": "tailnet"
+      }
+    ],
+    "Home": {
+      "continue_watching": [
+        {
+          "added_at": 1760000000000,
+          "available": true,
+          "backdrop": null,
+          "badges": [
+            "4K",
+            "HDR10"
+          ],
+          "child_count": null,
+          "id": 7,
+          "kind": "movie",
+          "parent_title": null,
+          "poster": {
+            "attribution": "TMDB",
+            "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+            "generator": null,
+            "height": 1500,
+            "source": "provider",
+            "url": "/api/v1/art/7",
+            "width": 1000
+          },
+          "progress": {
+            "duration_ms": 9960000,
+            "position_ms": 1000,
+            "updated_at": 1760000000000,
+            "watched": false
+          },
+          "subtitle": null,
+          "title": "Dune: Part Two",
+          "unwatched_count": null,
+          "year": 2024
+        },
+        {
+          "added_at": 1760000000000,
+          "available": false,
+          "backdrop": null,
+          "badges": [
+            "1080p"
+          ],
+          "child_count": null,
+          "id": 12,
+          "kind": "episode",
+          "parent_title": "Breaking Bad",
+          "poster": {
+            "attribution": null,
+            "blurhash": null,
+            "generator": "openai/gpt-image-1",
+            "height": 1500,
+            "source": "generated",
+            "url": "/api/v1/art/9",
+            "width": 1000
+          },
+          "progress": null,
+          "subtitle": "S01E02",
+          "title": "Cat's in the Bag...",
+          "unwatched_count": null,
+          "year": 2008
+        }
+      ],
+      "recently_added": [],
+      "rows": [
+        {
+          "items": [
+            {
+              "added_at": 1760000000000,
+              "available": true,
+              "backdrop": null,
+              "badges": [
+                "4K",
+                "HDR10"
+              ],
+              "child_count": null,
+              "id": 7,
+              "kind": "movie",
+              "parent_title": null,
+              "poster": {
+                "attribution": "TMDB",
+                "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+                "generator": null,
+                "height": 1500,
+                "source": "provider",
+                "url": "/api/v1/art/7",
+                "width": 1000
+              },
+              "progress": {
+                "duration_ms": 9960000,
+                "position_ms": 1000,
+                "updated_at": 1760000000000,
+                "watched": false
+              },
+              "subtitle": null,
+              "title": "Dune: Part Two",
+              "unwatched_count": null,
+              "year": 2024
+            }
+          ],
+          "library_id": 1,
+          "title": "Movies"
+        }
+      ]
+    },
+    "ItemDetail": {
+      "added_at": 1760000000000,
+      "assets": [
+        {
+          "available": true,
+          "container": "matroska",
+          "duration_ms": 9960000,
+          "edition": "IMAX",
+          "hdr": "hdr10",
+          "id": 70,
+          "label": "4K HEVC HDR10 · TrueHD 7.1",
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).mkv",
+          "probe": {
+            "attachments": [
+              {
+                "mime": "font/ttf",
+                "name": "font.ttf",
+                "size": 1234
+              }
+            ],
+            "bitrate": 48000000,
+            "bytes_read": 131072,
+            "chapters": [
+              {
+                "end_ms": 300000,
+                "start_ms": 0,
+                "title": "Opening"
+              }
+            ],
+            "container": "matroska",
+            "duration_ms": 9960000,
+            "faststart": null,
+            "has_index": true,
+            "needs_frame_sei": false,
+            "probe_version": 2,
+            "reads": 3,
+            "title": "Dune Part Two",
+            "tracks": [
+              {
+                "bit_depth": 10,
+                "bitrate": 40000000,
+                "channels": null,
+                "codec": "hevc",
+                "codec_tag": "V_MPEGH/ISO/HEVC",
+                "color": {
+                  "full_range": false,
+                  "matrix": 9,
+                  "primaries": 9,
+                  "transfer": 16
+                },
+                "default": true,
+                "forced": false,
+                "frame_rate": {
+                  "den": 1001,
+                  "num": 24000
+                },
+                "hdr": {
+                  "cll": {
+                    "max_cll": 1000,
+                    "max_fall": 400
+                  },
+                  "dovi": {
+                    "bl_present": true,
+                    "bl_signal_compat_id": 1,
+                    "el_present": false,
+                    "level": 6,
+                    "profile": 8,
+                    "rpu_present": true
+                  },
+                  "format": "hdr10",
+                  "mastering": {
+                    "max_luminance": 10000000,
+                    "min_luminance": 50,
+                    "primaries": [
+                      [
+                        13250,
+                        34500
+                      ],
+                      [
+                        7500,
+                        3000
+                      ],
+                      [
+                        34000,
+                        16000
+                      ]
+                    ],
+                    "white_point": [
+                      15635,
+                      16450
+                    ]
+                  }
+                },
+                "hearing_impaired": false,
+                "height": 2160,
+                "id": 1,
+                "index": 0,
+                "interlaced": false,
+                "kind": "video",
+                "language": null,
+                "level": 153,
+                "profile": "Main 10",
+                "sample_aspect_ratio": {
+                  "den": 1,
+                  "num": 1
+                },
+                "sample_rate": null,
+                "title": null,
+                "width": 3840
+              },
+              {
+                "bit_depth": 24,
+                "bitrate": null,
+                "channels": 8,
+                "codec": "true_hd",
+                "codec_tag": "A_TRUEHD",
+                "color": null,
+                "default": true,
+                "forced": false,
+                "frame_rate": null,
+                "hdr": null,
+                "hearing_impaired": false,
+                "height": null,
+                "id": 2,
+                "index": 1,
+                "interlaced": null,
+                "kind": "audio",
+                "language": "eng",
+                "level": null,
+                "profile": null,
+                "sample_aspect_ratio": null,
+                "sample_rate": 48000,
+                "title": "TrueHD Atmos 7.1",
+                "width": null
+              }
+            ],
+            "warnings": [
+              "example warning"
+            ]
+          },
+          "size": 60000000000
+        }
+      ],
+      "available": true,
+      "backdrop": null,
+      "badges": [
+        "4K",
+        "HDR10"
+      ],
+      "child_count": null,
+      "episode_numbers": [],
+      "external_ids": [
+        [
+          "tmdb",
+          "693134"
+        ]
+      ],
+      "genres": [
+        "Science Fiction"
+      ],
+      "id": 7,
+      "kind": "movie",
+      "match_confidence": 0.9200000166893005,
+      "match_evidence": [
+        "fast path: Title (Year)/"
+      ],
+      "overview": "Paul Atreides unites with the Fremen.",
+      "parent_title": null,
+      "poster": {
+        "attribution": "TMDB",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+        "generator": null,
+        "height": 1500,
+        "source": "provider",
+        "url": "/api/v1/art/7",
+        "width": 1000
+      },
+      "progress": {
+        "duration_ms": 9960000,
+        "position_ms": 1000,
+        "updated_at": 1760000000000,
+        "watched": false
+      },
+      "runtime_ms": 9960000,
+      "season_number": null,
+      "show_id": null,
+      "subtitle": null,
+      "title": "Dune: Part Two",
+      "unwatched_count": null,
+      "year": 2024
+    },
+    "ItemsParams": {
+      "cursor": "c1",
+      "filter": "4k",
+      "limit": 100,
+      "sort": "-added"
+    },
+    "Library": {
+      "id": 1,
+      "item_count": 10,
+      "kind": "movies",
+      "name": "Movies",
+      "roots": [
+        {
+          "available": true,
+          "last_seen": 1760000000000,
+          "path": "/m"
+        },
+        {
+          "available": false,
+          "last_seen": null,
+          "path": "/Volumes/NAS/Movies"
+        }
+      ],
+      "scan": {
+        "dirs_unavailable": 1,
+        "files_probed": 50,
+        "files_seen": 100,
+        "files_total": 240,
+        "finished_at": null,
+        "items_added": 40,
+        "items_removed": 1,
+        "items_updated": 2,
+        "last_error": null,
+        "started_at": 1760000000000,
+        "state": "scanning"
+      }
+    },
+    "MarkWatched": {
+      "watched": true
+    },
+    "NameGuess": {
+      "absolute_episode": 1,
+      "air_date": null,
+      "confidence": 0.8999999761581421,
+      "edition": null,
+      "episode_title": null,
+      "episodes": [
+        1,
+        2
+      ],
+      "evidence": [
+        "fast path"
+      ],
+      "extra": "featurette",
+      "ids": {
+        "imdb": "tt0903747",
+        "tmdb": 1396,
+        "tvdb": null
+      },
+      "kind": "episode",
+      "part": null,
+      "release_group": "NTb",
+      "resolution": "1080p",
+      "season": 1,
+      "source": "WEB-DL",
+      "title": "Breaking Bad",
+      "video_codec": "x264",
+      "year": 2008
+    },
+    "PageItemSummary": {
+      "items": [
+        {
+          "added_at": 1760000000000,
+          "available": true,
+          "backdrop": null,
+          "badges": [
+            "4K",
+            "HDR10"
+          ],
+          "child_count": null,
+          "id": 7,
+          "kind": "movie",
+          "parent_title": null,
+          "poster": {
+            "attribution": "TMDB",
+            "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+            "generator": null,
+            "height": 1500,
+            "source": "provider",
+            "url": "/api/v1/art/7",
+            "width": 1000
+          },
+          "progress": {
+            "duration_ms": 9960000,
+            "position_ms": 1000,
+            "updated_at": 1760000000000,
+            "watched": false
+          },
+          "subtitle": null,
+          "title": "Dune: Part Two",
+          "unwatched_count": null,
+          "year": 2024
+        },
+        {
+          "added_at": 1760000000000,
+          "available": true,
+          "backdrop": null,
+          "badges": [],
+          "child_count": 5,
+          "id": 10,
+          "kind": "show",
+          "parent_title": null,
+          "poster": {
+            "attribution": "TMDB",
+            "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+            "generator": null,
+            "height": 1500,
+            "source": "provider",
+            "url": "/api/v1/art/7",
+            "width": 1000
+          },
+          "progress": null,
+          "subtitle": null,
+          "title": "Breaking Bad",
+          "unwatched_count": 61,
+          "year": 2024
+        },
+        {
+          "added_at": 1760000000000,
+          "available": false,
+          "backdrop": null,
+          "badges": [
+            "1080p"
+          ],
+          "child_count": null,
+          "id": 12,
+          "kind": "episode",
+          "parent_title": "Breaking Bad",
+          "poster": {
+            "attribution": null,
+            "blurhash": null,
+            "generator": "openai/gpt-image-1",
+            "height": 1500,
+            "source": "generated",
+            "url": "/api/v1/art/9",
+            "width": 1000
+          },
+          "progress": null,
+          "subtitle": "S01E02",
+          "title": "Cat's in the Bag...",
+          "unwatched_count": null,
+          "year": 2008
+        }
+      ],
+      "next": "c1",
+      "total": 3
+    },
+    "PlanPreview": {
+      "asset_id": 70,
+      "explain": [
+        "This device can't open MKV files directly, so flux repackages the streams (no quality loss)"
+      ],
+      "label": "Audio conversion",
+      "plan": {
+        "audio": [
+          {
+            "op": {
+              "bitrate": 640000,
+              "channels": 6,
+              "codec": "aac",
+              "op": "transcode"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "hls_fmp4",
+        "demuxed_audio": true,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [
+          {
+            "container": "matroska",
+            "reason": "container_unsupported"
+          }
+        ],
+        "subtitles": [
+          {
+            "op": {
+              "op": "web_vtt"
+            },
+            "track": 2
+          },
+          {
+            "op": {
+              "op": "client_render"
+            },
+            "track": 3
+          }
+        ],
+        "video": {
+          "fixes": [
+            "dovi_p7_to81"
+          ],
+          "op": "copy"
+        },
+        "video_track": 0
+      }
+    },
+    "PlayRequest": {
+      "asset_id": 70,
+      "audio_track": 1,
+      "caps": {
+        "audio": [
+          {
+            "codec": "aac",
+            "max_channels": 8
+          }
+        ],
+        "client": "web/chrome-141/macos",
+        "delivery": [
+          "progressive_file",
+          "hls_fmp4"
+        ],
+        "display_hdr": true,
+        "max_bitrate": null,
+        "needs_demuxed_audio": false,
+        "progressive_containers": [
+          "mp4",
+          "web_m"
+        ],
+        "subtitles": [
+          "web_vtt"
+        ],
+        "video": [
+          {
+            "codec": "hevc",
+            "dovi_profiles": [
+              8
+            ],
+            "hdr": [
+              "hdr10"
+            ],
+            "max_bit_depth": 10,
+            "max_height": 2160,
+            "max_level": 153,
+            "max_width": 3840,
+            "profiles": [
+              "main",
+              "main10"
+            ]
+          }
+        ]
+      },
+      "item_id": 7,
+      "start_ms": null,
+      "subtitle_track": null
+    },
+    "PlayResponse": {
+      "asset_id": 70,
+      "audio": [
+        {
+          "channels": 6,
+          "codec": "eac3",
+          "default": true,
+          "label": "TrueHD Atmos 7.1 (E-AC-3 5.1)",
+          "language": "eng",
+          "rendition": "1-eac36",
+          "track": 1
+        },
+        {
+          "channels": 2,
+          "codec": "aac",
+          "default": false,
+          "label": "TrueHD Atmos 7.1 (AAC Stereo)",
+          "language": "eng",
+          "rendition": "1-aac2",
+          "track": 1
+        }
+      ],
+      "duration_ms": 9960000,
+      "explain": [
+        "This device can't open MKV files directly, so flux repackages the streams (no quality loss)",
+        "This device can't decode HEVC video"
+      ],
+      "plan": {
+        "audio": [
+          {
+            "op": {
+              "bitrate": 640000,
+              "channels": 6,
+              "codec": "aac",
+              "op": "transcode"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "hls_fmp4",
+        "demuxed_audio": true,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [
+          {
+            "container": "matroska",
+            "reason": "container_unsupported"
+          }
+        ],
+        "subtitles": [
+          {
+            "op": {
+              "op": "web_vtt"
+            },
+            "track": 2
+          },
+          {
+            "op": {
+              "op": "client_render"
+            },
+            "track": 3
+          }
+        ],
+        "video": {
+          "fixes": [
+            "dovi_p7_to81"
+          ],
+          "op": "copy"
+        },
+        "video_track": 0
+      },
+      "prefetch": [
+        "/media/p1/v/init.mp4"
+      ],
+      "session_id": "s1",
+      "start_ms": 0,
+      "subtitles": [
+        {
+          "forced": false,
+          "label": "English",
+          "language": "eng",
+          "track": 2,
+          "url": "/media/p1/s/2.vtt"
+        }
+      ],
+      "url": "/media/p1/master.m3u8"
+    },
+    "ProgressReport": {
+      "dropped_frames": 3,
+      "last_seek_ms": 80,
+      "paused": false,
+      "position_ms": 1000,
+      "stalls": 0,
+      "ttff_ms": 240
+    },
+    "ServerInfo": {
+      "name": "flux",
+      "path": "tailnet-direct",
+      "tailnet_name": "flux.tail1234.ts.net",
+      "version": "0.1.0",
+      "you": {
+        "display_name": "James",
+        "login_name": "james@example.com",
+        "node_name": "macbook",
+        "profile_pic_url": null,
+        "role": "owner",
+        "tags": []
+      }
+    },
+    "SessionDiagnostics": {
+      "bytes_served": 1000000,
+      "client": {
+        "dropped_frames": 3,
+        "last_seek_ms": 80,
+        "paused": false,
+        "position_ms": 1000,
+        "stalls": 0,
+        "ttff_ms": 240
+      },
+      "explain": [],
+      "path": "lan",
+      "plan": {
+        "audio": [
+          {
+            "op": {
+              "op": "copy"
+            },
+            "track": 1
+          }
+        ],
+        "delivery": "progressive_file",
+        "demuxed_audio": false,
+        "est_cpu_ms_per_min": 120,
+        "reasons": [],
+        "subtitles": [],
+        "video": {
+          "fixes": [],
+          "op": "copy"
+        },
+        "video_track": 0
+      },
+      "segment_ms_p50": 1.5,
+      "segment_ms_p95": 3,
+      "segments_served": 3,
+      "session_id": "s1"
+    },
+    "TailnetConnect": {
+      "mode": "embedded"
+    },
+    "TailnetInfo": {
+      "approve_url": null,
+      "auth_url": null,
+      "dns_name": "flux.tail1234.ts.net",
+      "key_expiry": null,
+      "last_error": null,
+      "mode": "embedded",
+      "owner_login": "james@example.com",
+      "state": "running",
+      "system_tailscale": true,
+      "tailnet_name": "tail1234.ts.net",
+      "url": "http://flux.tail1234.ts.net:8096"
+    }
+  }
+}

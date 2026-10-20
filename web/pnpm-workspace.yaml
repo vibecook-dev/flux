@@ -1,0 +1,6 @@
+# Standalone package (not a monorepo); this file only carries pnpm settings.
+packages:
+  - .
+# msw's postinstall only copies mockServiceWorker.js; we keep that file in public/ via `msw init`.
+allowBuilds:
+  msw: false

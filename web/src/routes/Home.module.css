@@ -1,0 +1,147 @@
+.home {
+  display: grid;
+}
+
+.hero {
+  position: relative;
+  display: grid;
+  align-items: end;
+  min-height: clamp(380px, 62vh, 680px);
+  margin-bottom: clamp(8px, 2vw, 24px);
+  isolation: isolate;
+}
+
+.heroArt {
+  position: absolute !important;
+  inset: 0;
+  z-index: -2;
+  aspect-ratio: auto !important;
+  border-radius: 0 !important;
+  /* Feather the picture into the room on all sides but the top. */
+  mask-image: linear-gradient(180deg, #000 55%, transparent 100%), linear-gradient(90deg, transparent 0, #000 12%);
+  mask-composite: intersect;
+}
+
+.heroArt::after {
+  display: none;
+}
+
+.heroShade {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--bg) 92%, transparent) 0%, color-mix(in srgb, var(--bg) 55%, transparent) 38%, transparent 70%),
+    linear-gradient(0deg, var(--bg) 0%, transparent 45%);
+}
+
+.heroBody {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  max-width: min(760px, 92%);
+  padding: 0 var(--gutter) clamp(24px, 4vw, 48px);
+}
+
+.heroBody h1 {
+  max-width: 14ch;
+}
+
+.heroMeta {
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.heroProgress {
+  width: min(320px, 70%);
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  overflow: hidden;
+}
+
+.heroProgress span {
+  display: block;
+  height: 100%;
+  background: var(--text);
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.rows {
+  display: grid;
+  gap: clamp(30px, 3.6vw, 48px);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  justify-content: space-between;
+  margin: 0 var(--gutter);
+  padding: 18px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.banner p {
+  max-width: 62ch;
+}
+
+.bannerTitle {
+  font-weight: 700;
+  font-size: 1.02rem;
+}
+
+@media (max-width: 699px) {
+  .banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .hero {
+    min-height: 62vh;
+  }
+
+  /* No side feather on phones: the picture spans the full width. */
+  .heroArt {
+    mask-image: linear-gradient(180deg, #000 50%, transparent 100%);
+  }
+
+  .heroShade {
+    background: linear-gradient(0deg, var(--bg) 6%, color-mix(in srgb, var(--bg) 70%, transparent) 42%, transparent 75%);
+  }
+}
+
+.heroSkeleton {
+  height: clamp(380px, 62vh, 680px);
+  border-radius: 0;
+  margin-bottom: 24px;
+}
+
+.skeletonRow {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: clamp(118px, 13.5vw, 184px);
+  gap: 20px;
+  padding: 0 var(--gutter);
+  overflow: hidden;
+}
+
+.skeletonRow span {
+  aspect-ratio: 2 / 3;
+}
+
+.error {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  padding: 90px var(--gutter);
+  max-width: 640px;
+}

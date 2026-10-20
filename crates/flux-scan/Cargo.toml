@@ -1,0 +1,43 @@
+[package]
+name = "flux-scan"
+description = "Library scan orchestrator: Mille walk, identity, probe, name parse, catalog diff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flux-core.workspace = true
+flux-catalog.workspace = true
+flux-probe.workspace = true
+flux-names.workspace = true
+mille-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true
+# Bounded MPMC channels with timeouts (walk → workers → batcher).
+crossbeam-channel = "0.5"
+# statfs (device class), getrusage (bench).
+libc = "0.2"
+
+[dev-dependencies]
+# Corpus (FLUX_TEST_MEDIA), bench output (FLUX_BENCH_RESULTS) and scratch
+# copies for the tests and the pipeline_smoke example.
+flux-test-media = { path = "../flux-test-media" }
+
+[[example]]
+name = "pipeline_smoke"
+# Also run its #[test] (library-tiny end to end) under `cargo test`.
+test = true
+
+[[bin]]
+name = "flux-scan-bench"
+path = "src/bin/flux-scan-bench.rs"

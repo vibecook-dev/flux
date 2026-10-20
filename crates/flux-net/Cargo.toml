@@ -1,0 +1,48 @@
+[package]
+name = "flux-net"
+description = "Networking: embedded Tailscale via Truffle (WhoIs identity), LAN listener, hyper serving"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["embedded"]
+# Embedded Tailscale through Truffle (Go sidecar). Without it flux-net still
+# serves localhost/LAN and "use this machine's Tailscale" (system tailscaled).
+embedded = ["dep:truffle-core"]
+
+[dependencies]
+flux-core.workspace = true
+truffle-core = { workspace = true, optional = true }
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tower.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Paused-clock tests of the write timeout.
+tokio = { workspace = true, features = ["test-util"] }
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+bytes.workspace = true
+futures.workspace = true
+libc = "0.2"
+
+[[example]]
+name = "embedded"
+required-features = ["embedded"]
+
+[[example]]
+name = "bench_throughput"

@@ -1,0 +1,34 @@
+# cargo-about configuration for THIRD_PARTY_LICENSES
+# (scripts/package/third-party-licenses.sh). Keep `accepted` in step with
+# deny.toml's [licenses] allow list. Where a crate offers a choice
+# ("MIT OR Apache-2.0"), the first match in this list is the one quoted.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+]
+# The release targets: only crates that end up in one of these binaries.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+workarounds = ["ring", "rustls"]
+
+# jpeg-encoder is "(MIT OR Apache-2.0) AND IJG" (deny.toml has the exception).
+[jpeg-encoder]
+accepted = ["IJG"]

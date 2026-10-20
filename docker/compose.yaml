@@ -1,0 +1,34 @@
+# flux with Docker Compose. Copy this file, edit the paths and host names,
+# then: docker compose up -d. docs/INSTALL.md explains each setting.
+services:
+  flux:
+    # A release; :latest is the newest stable one, :edge the tip of main.
+    image: ghcr.io/vibecook-dev/flux:0.1.0-alpha.1 # x-release-please-version
+    container_name: flux
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    environment:
+      # Libraries to create on first start (NAME:KIND:PATH, ';'-separated).
+      # LAN callers can't add libraries from the web client: only the Owner
+      # can (docs/INSTALL.md, "Who is the Owner in a container").
+      FLUX_LIBRARIES: "Movies:movies:/media/movies;TV:shows:/media/tv"
+      # The names your browsers use to reach this machine: flux answers
+      # other names with 421. localhost always works.
+      FLUX_ALLOW_HOSTS: "nas.local,192.168.1.10"
+    volumes:
+      # Catalog, artwork, caches. A named volume starts out owned by the
+      # image's user (1000); a host directory must be writable by uid 1000.
+      - flux-config:/config
+      - /path/to/movies:/media/movies:ro
+      - /path/to/tv:/media/tv:ro
+    # Hardware transcoding (Intel/AMD VAAPI or QSV): pass the GPU through and
+    # add the group that owns /dev/dri/renderD128 on the host
+    # (getent group render).
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "993"
+
+volumes:
+  flux-config:

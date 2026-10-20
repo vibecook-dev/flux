@@ -1,0 +1,18 @@
+[package]
+name = "flux-core"
+description = "Shared domain types for flux: media facts, name guesses, playback plans, API DTOs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

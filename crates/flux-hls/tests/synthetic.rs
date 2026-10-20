@@ -1,0 +1,293 @@
+//! probe → index → HLS segment → transcode on clips made with ffmpeg at
+//! test time (`flux_test_media::clip`), so CI exercises the real paths on
+//! every platform. The video transcodes are forced through libx264 (the
+//! Linux software path; `EngineConfig::video_encoder`), and checked with
+//! ffprobe: every source frame is there, and every piece starts on an IDR.
+//! Each test skips, with the reason, when ffmpeg, ffprobe or an encoder a
+//! clip needs is missing.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use flux_core::{PlaybackPlan, VideoOp};
+use flux_hls::playlist::{HlsResource, Rendition};
+use flux_hls::{presets, Asset, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder};
+use flux_test_media::{clip, ffprobe_video_frames, Clip};
+use mp4_atom::{Any, Decode};
+
+fn hls_only() -> PlanPrefs {
+    PlanPrefs {
+        allow_direct_play: false,
+        ..Default::default()
+    }
+}
+
+/// An engine whose video transcodes use libx264, or `None` (with the
+/// reason) when this ffmpeg has none.
+fn x264_engine() -> Option<HlsEngine> {
+    if !flux_test_media::has_encoder("libx264") {
+        return None;
+    }
+    Some(HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    }))
+}
+
+/// (tfdt, [(duration, cts, sync)]) of the first traf of a media segment.
+fn trun(seg: &[u8]) -> (u64, Vec<(u32, i32, bool)>) {
+    let mut cur = std::io::Cursor::new(seg);
+    loop {
+        match Any::decode(&mut cur).expect("box") {
+            Any::Moof(m) => {
+                let traf = &m.traf[0];
+                let tfdt = traf.tfdt.as_ref().expect("tfdt").base_media_decode_time;
+                let s = traf.trun[0]
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        let flags = e.flags.unwrap_or(0);
+                        (
+                            e.duration.unwrap_or(0),
+                            e.cts.unwrap_or(0),
+                            flags & 0x0001_0000 == 0,
+                        )
+                    })
+                    .collect();
+                return (tfdt, s);
+            }
+            _ => continue,
+        }
+    }
+}
+
+/// First VCL NAL unit type of a media segment's first sample (5 = IDR).
+fn first_vcl(seg: &[u8]) -> Option<u8> {
+    let mut p = 0;
+    while p + 8 <= seg.len() {
+        let size = u32::from_be_bytes(seg[p..p + 4].try_into().ok()?) as usize;
+        if &seg[p + 4..p + 8] == b"mdat" {
+            let (mut o, end) = (p + 8, (p + size).min(seg.len()));
+            while o + 5 <= end {
+                let n = u32::from_be_bytes(seg[o..o + 4].try_into().ok()?) as usize;
+                let t = seg[o + 4] & 0x1f;
+                if t == 1 || t == 5 {
+                    return Some(t);
+                }
+                o += 4 + n;
+            }
+            return None;
+        }
+        if size < 8 {
+            return None;
+        }
+        p += size;
+    }
+    None
+}
+
+/// Init + every segment of a rendition, written to `<dir>/<name>`.
+async fn write_rendition(
+    engine: &HlsEngine,
+    asset: &Arc<Asset>,
+    plan: &PlaybackPlan,
+    r: Rendition,
+    dir: &Path,
+    name: &str,
+) -> (PathBuf, Vec<Vec<u8>>) {
+    let init = engine
+        .serve(asset, plan, HlsResource::Init(r))
+        .await
+        .unwrap()
+        .body
+        .into_bytes()
+        .await
+        .unwrap();
+    let mut all = init.to_vec();
+    let mut segs = Vec::new();
+    for n in 0..engine.segment_count(asset, plan, &r) as u32 {
+        let b = engine
+            .media_segment(asset, plan, &r, n)
+            .await
+            .unwrap_or_else(|e| panic!("{name} segment {n}: {e}"))
+            .into_bytes()
+            .await
+            .unwrap()
+            .to_vec();
+        all.extend_from_slice(&b);
+        segs.push(b);
+    }
+    let p = dir.join(name);
+    std::fs::write(&p, &all).unwrap();
+    (p, segs)
+}
+
+/// Remux (or, for the AVI, transcode) every clip for Chrome: the video
+/// rendition has every source frame, as ffprobe counts them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clips_play_as_hls() {
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let Some(engine) = x264_engine() else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-remux");
+    for c in [
+        Clip::H264AacMp4,
+        Clip::HevcAc3Mkv,
+        Clip::H264AacTs,
+        Clip::HevcAacTs,
+        Clip::Mpeg4Mp2Avi,
+    ] {
+        let Some(p) = clip(c) else { continue };
+        let name = c.file_name();
+        let asset = engine.prepare(&p).await.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+        let master = engine.master_playlist(&asset, &plan).unwrap();
+        assert!(master.starts_with("#EXTM3U"), "{name}: {master}");
+        // MPEG-4 Part 2 is transcoded; everything else is remuxed.
+        assert_eq!(
+            matches!(plan.video, VideoOp::Transcode { .. }),
+            c == Clip::Mpeg4Mp2Avi,
+            "{name}: {:?}",
+            plan.explain()
+        );
+        let (file, segs) = write_rendition(
+            &engine,
+            &asset,
+            &plan,
+            Rendition::Video,
+            &dir,
+            &format!("{name}.mp4"),
+        )
+        .await;
+        assert!(!segs.is_empty(), "{name}");
+        let frames = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(frames.len() as u32, c.frames().unwrap(), "{name}: frames out");
+        assert!(frames[0].1, "{name}: starts on a keyframe");
+        // Every audio rendition decodes (AC-3 and MP2 become AAC for Chrome).
+        for a in &plan.audio {
+            let r = Rendition::Audio(flux_hls::AudioKey::from_plan(a));
+            let (file, segs) = write_rendition(
+                &engine,
+                &asset,
+                &plan,
+                r,
+                &dir,
+                &format!("{name}.a{}.mp4", a.track),
+            )
+            .await;
+            assert!(
+                !segs.is_empty() && std::fs::metadata(&file).unwrap().len() > 1000,
+                "{name}"
+            );
+        }
+    }
+}
+
+/// The software encoder end to end: HEVC (and an open-GOP HEVC TS, and an
+/// AVI the index can only predict) transcoded to H.264 by libx264 for an
+/// H.264-only client. Every piece starts with an IDR (in the bytes and
+/// where ffprobe puts its keyframes), pieces are contiguous, and the
+/// output has every source frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn libx264_transcode_pieces_start_on_idrs_and_keep_every_frame() {
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let Some(engine) = x264_engine() else { return };
+    let caps = engine.video_caps().await;
+    assert_eq!(caps.chosen(), Some(VideoEncoder::Libx264), "{caps:?}");
+    let dir = flux_test_media::scratch("hls-synthetic-x264");
+    let mut ran = 0;
+    for c in [
+        Clip::HevcAc3Mkv,
+        Clip::HevcAacTs,
+        Clip::Mpeg4Mp2Avi,
+        Clip::Hdr10HevcMkv,
+    ] {
+        let Some(p) = clip(c) else { continue };
+        let name = c.file_name();
+        let asset = engine.prepare(&p).await.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let plan = engine.plan(&asset, &presets::legacy_h264(), &hls_only());
+        let VideoOp::Transcode { tonemap, .. } = plan.video else {
+            panic!("{name}: {:?}", plan.explain())
+        };
+        assert_eq!(tonemap, c == Clip::Hdr10HevcMkv, "{name}");
+        let pieces = engine.segment_count(&asset, &plan, &Rendition::Video);
+        assert!(pieces >= 3, "{name}: {pieces} pieces");
+        let (file, segs) = write_rendition(
+            &engine,
+            &asset,
+            &plan,
+            Rendition::Video,
+            &dir,
+            &format!("{name}.x264.mp4"),
+        )
+        .await;
+        let v = asset.index.video_track().unwrap();
+        let ts = v.timescale as f64;
+        let mut starts = Vec::new();
+        let mut next_dts = None;
+        for (n, s) in segs.iter().enumerate() {
+            let (tfdt, samples) = trun(s);
+            assert!(
+                samples[0].2,
+                "{name}: piece {n} does not start with a sync sample"
+            );
+            assert_eq!(
+                first_vcl(s),
+                Some(5),
+                "{name}: piece {n} does not start with an IDR"
+            );
+            if let Some(d) = next_dts {
+                assert_eq!(tfdt, d, "{name}: piece {n} is not contiguous");
+            }
+            next_dts = Some(tfdt + samples.iter().map(|x| x.0 as u64).sum::<u64>());
+            starts.push((tfdt as f64 + samples[0].1 as f64) / ts);
+        }
+        let frames = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(frames.len() as u32, c.frames().unwrap(), "{name}: frames out");
+        let fps = v.frame_rate.map(|r| r.as_f64()).unwrap_or(25.0);
+        // ffprobe's clock may be shifted by an edit list: align the first frame.
+        let shift = frames[0].0 - starts[0];
+        for (n, t) in starts.iter().map(|t| t + shift).enumerate() {
+            let at = frames
+                .iter()
+                .find(|(pts, _)| (pts - t).abs() < 0.5 / fps)
+                .unwrap_or_else(|| panic!("{name}: no frame at piece {n}'s start {t:.3} s"));
+            assert!(
+                at.1,
+                "{name}: piece {n} at {t:.3} s is not a keyframe for ffprobe"
+            );
+        }
+        let keys = frames.iter().filter(|f| f.1).count();
+        assert_eq!(keys, pieces, "{name}: one IDR per piece, none elsewhere");
+        ran += 1;
+    }
+    eprintln!("{ran} clips transcoded by libx264");
+}
+
+/// A piece's bytes do not depend on how it was reached with libx264: two
+/// fresh engines asked for the same piece cold (a seek) produce identical
+/// bytes (same run, same deterministic encoder).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn libx264_pieces_are_deterministic() {
+    let Some(p) = clip(Clip::HevcAc3Mkv) else { return };
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        let Some(engine) = x264_engine() else { return };
+        let asset = engine.prepare(&p).await.unwrap();
+        let plan = engine.plan(&asset, &presets::legacy_h264(), &hls_only());
+        let b = engine
+            .media_segment(&asset, &plan, &Rendition::Video, 2)
+            .await
+            .unwrap()
+            .into_bytes()
+            .await
+            .unwrap();
+        got.push(b);
+    }
+    assert_eq!(got[0], got[1], "piece 2 differs between two cold runs");
+}

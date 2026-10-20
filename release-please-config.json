@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "prerelease": true,
+  "prerelease-type": "alpha",
+  "versioning": "prerelease",
+  "initial-version": "0.1.0-alpha.1",
+  "draft": true,
+  "force-tag-creation": true,
+  "packages": {
+    ".": {
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "json",
+          "path": "web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "generic",
+          "path": "docker/compose.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "docs/INSTALL.md"
+        }
+      ]
+    }
+  }
+}

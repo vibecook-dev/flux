@@ -1,0 +1,242 @@
+//! Startup and shutdown.
+//!
+//! ```text
+//! data dir → catalog (migrate) → libraries from the config → HlsEngine
+//!   → scanner → web UI → router → flux-net listeners        = "API ready"
+//! then, in the background: watch every library (the first watch catches up
+//!   with a Quick scan at Scheduled priority), background jobs (after a
+//!   delay), the video encoder detection, tailscaled probe.
+//! ```
+
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::Context;
+use flux_catalog::{read, Catalog, CatalogConfig};
+use flux_core::api::{CreateLibrary, Event};
+use flux_hls::{EngineConfig, HlsEngine};
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::art::ArtStore;
+use crate::config::{persisted_tailnet, Config, LibrarySpec};
+use crate::events::EventBus;
+use crate::guard::HostAllowlist;
+use crate::net::{NetControl, TailnetView};
+use crate::play::PlayState;
+use crate::scan::ScanService;
+use crate::state::{Activity, AppState, Users};
+use crate::web::WebUi;
+use crate::{api, jobs, net, scan};
+
+/// A running server.
+pub struct Server {
+    pub state: Arc<AppState>,
+    pub local_addr: SocketAddr,
+    pub lan_addr: Option<SocketAddr>,
+    /// From `t0` (process start) until the listeners accepted connections.
+    pub ready_ms: f64,
+    net: NetControl,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+/// Builds the shared state without listening (router tests drive
+/// [`crate::api::router`] directly). `scanner` overrides the configured one.
+pub async fn build_state(
+    cfg: Config,
+    t0: Instant,
+    scanner: Option<Arc<dyn ScanService>>,
+) -> anyhow::Result<(Arc<AppState>, Option<broadcast::Receiver<Event>>)> {
+    std::fs::create_dir_all(&cfg.data_dir)
+        .with_context(|| format!("creating the data dir {}", cfg.data_dir.display()))?;
+    let db = cfg.catalog_path();
+    let catalog = tokio::task::spawn_blocking(move || Catalog::open(&db, CatalogConfig::default()))
+        .await?
+        .with_context(|| format!("opening the catalog {}", cfg.catalog_path().display()))?;
+    let catalog = Arc::new(catalog);
+    ensure_libraries(&catalog, &cfg.libraries).await?;
+
+    let engine = HlsEngine::new(EngineConfig {
+        // The catalog caches playback indexes (asset.play_index).
+        index_cache_dir: None,
+        ffmpeg: cfg.ffmpeg.clone(),
+        ffprobe: cfg.ffprobe.clone(),
+        video_encoder: cfg.video_encoder,
+        vaapi_device: cfg.vaapi_device.clone(),
+        ..EngineConfig::default()
+    });
+    let (scanner, scan_events) = match scanner {
+        Some(s) => {
+            let rx = s.subscribe();
+            (s, rx)
+        }
+        None => scan::start(catalog.clone(), cfg.scan, cfg.ffprobe.clone()),
+    };
+    let web = cfg.web_dir.as_deref().and_then(WebUi::load);
+    match (&cfg.web_dir, &web) {
+        (Some(dir), None) => {
+            tracing::warn!(dir = %dir.display(), "no built web client there (index.html missing)")
+        }
+        (None, _) => tracing::info!("no web client configured (--web-dir); serving the API only"),
+        _ => {}
+    }
+    let state = Arc::new(AppState {
+        play: PlayState::new(&cfg.data_dir, engine.config().asset_cache_bytes),
+        art: ArtStore::new(&cfg.data_dir),
+        catalog,
+        scanner,
+        engine,
+        events: EventBus::default(),
+        web,
+        users: Users::default(),
+        tailnet: TailnetView::default(),
+        hosts: HostAllowlist::new(&crate::config::host_name(), &cfg.allow_hosts),
+        activity: Activity::default(),
+        started: t0,
+        shutdown: CancellationToken::new(),
+        cfg,
+    });
+    Ok((state, scan_events))
+}
+
+/// Starts a server (see the module docs); `t0` is when the process started.
+pub async fn start_at(cfg: Config, t0: Instant) -> anyhow::Result<Server> {
+    start_with(cfg, t0, None).await
+}
+
+/// [`start_at`] with a scanner of the caller's (tests).
+pub async fn start_with(
+    cfg: Config,
+    t0: Instant,
+    scanner: Option<Arc<dyn ScanService>>,
+) -> anyhow::Result<Server> {
+    let (state, scan_events) = build_state(cfg.clone(), t0, scanner).await?;
+    let choice = if cfg.tailnet_explicit {
+        cfg.tailnet
+    } else {
+        persisted_tailnet(&cfg.data_dir).unwrap_or(cfg.tailnet)
+    };
+    let mut tasks = Vec::new();
+    if let Some(rx) = scan_events {
+        tasks.push(state.events.forward(rx));
+    }
+    let router = api::router(state.clone());
+    let net = net::start(&cfg, choice, router, state.clone())
+        .await
+        .context("starting the listeners")?;
+    let ready_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    tracing::info!(
+        url = %format!("http://{}", net.local_addr),
+        lan = ?net.lan_addr,
+        tailnet = choice.as_str(),
+        ready_ms = format!("{ready_ms:.1}"),
+        "flux is ready"
+    );
+
+    // Background work, after the API is up.
+    {
+        let st = state.clone();
+        tasks.push(tokio::spawn(async move {
+            let s = st.clone();
+            let _ = tokio::task::spawn_blocking(move || s.play.prune_plan_files()).await;
+            if st.cfg.scan {
+                // watch() catches up with a Quick scan (Scheduled priority)
+                // the first time, then follows changes. Without watching,
+                // the startup Quick scan runs on its own.
+                let libs = st.catalog.read(read::list_libraries).await.unwrap_or_default();
+                for lib in libs {
+                    if st.cfg.watch {
+                        st.scanner.watch(lib.id);
+                    } else if let Err(e) =
+                        st.scanner
+                            .scan_library(lib.id, scan::ScanMode::Quick, scan::Priority::Scheduled)
+                    {
+                        tracing::info!(library_id = lib.id, "not scanning: {e}");
+                    }
+                }
+            }
+        }));
+    }
+    if cfg.jobs {
+        tasks.push(jobs::spawn(state.clone()));
+    }
+    if cfg.detect_encoder_at_start {
+        // Which H.264 encoder video transcodes use (logged), so the first
+        // transcode doesn't wait for the probes and test encodes.
+        let engine = state.engine.clone();
+        tasks.push(tokio::spawn(async move {
+            engine.video_caps().await;
+        }));
+    }
+    if cfg.probe_system_tailscale {
+        net::probe_system_tailscale(state.clone());
+    }
+    Ok(Server {
+        local_addr: net.local_addr,
+        lan_addr: net.lan_addr,
+        ready_ms,
+        net,
+        tasks,
+        state,
+    })
+}
+
+/// [`start_at`] with the clock starting now.
+pub async fn start(cfg: Config) -> anyhow::Result<Server> {
+    start_at(cfg, Instant::now()).await
+}
+
+impl Server {
+    /// Graceful shutdown: stop accepting, let in-flight requests finish for
+    /// up to `grace`, stop scans/jobs/transcodes, commit and close the catalog.
+    pub async fn shutdown(self, grace: Duration) {
+        let Server {
+            state, net, tasks, ..
+        } = self;
+        state.shutdown.cancel();
+        net.shutdown(grace).await;
+        let scanner = state.scanner.clone();
+        let _ = tokio::task::spawn_blocking(move || scanner.shutdown(grace)).await;
+        state.engine.shutdown();
+        for t in tasks {
+            t.abort();
+        }
+        let w = state.catalog.writer().clone();
+        if let Err(e) = w.flush().await {
+            tracing::debug!(error = %e, "catalog flush at shutdown");
+        }
+        if let Err(e) = w.shutdown().await {
+            tracing::debug!(error = %e, "catalog writer shutdown");
+        }
+        tracing::info!("flux stopped");
+    }
+}
+
+/// Creates the configured libraries that don't exist yet (matched by name).
+async fn ensure_libraries(catalog: &Catalog, specs: &[LibrarySpec]) -> anyhow::Result<()> {
+    if specs.is_empty() {
+        return Ok(());
+    }
+    let existing = catalog.read(read::list_libraries).await?;
+    for s in specs {
+        if existing.iter().any(|l| l.name == s.name) {
+            continue;
+        }
+        if !Path::new(&s.path).exists() {
+            tracing::warn!(library = %s.name, path = %s.path, "library folder not found; it will show as unavailable");
+        }
+        let lib = catalog
+            .writer()
+            .create_library(CreateLibrary {
+                name: s.name.clone(),
+                kind: s.kind,
+                roots: vec![s.path.clone()],
+            })
+            .await?;
+        tracing::info!(library = %lib.name, id = lib.id, "library created");
+    }
+    Ok(())
+}

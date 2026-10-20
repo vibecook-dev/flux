@@ -1,0 +1,147 @@
+# Release dry run: everything a release builds, nothing it publishes.
+#
+# Builds and packages flux-server for all four release targets (build.yml,
+# with the smoke tests), adds the jellyfin-ffmpeg source and SHA256SUMS
+# (scripts/package/release-assets.sh, as release.yml does), and builds and
+# smoke-tests the linux/amd64 + linux/arm64 image (.github/actions/flux-image,
+# as docker.yml does). The packages and SHA256SUMS are kept as the workflow
+# artifact `release-dry-run`. No tag, GitHub release, attestation or ghcr.io
+# push is made; every job has read-only repository access.
+#
+# Run it from the Actions tab or with `gh workflow run release-dry-run.yml`.
+# See docs/RELEASING.md.
+name: Release dry run
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      ref: ${{ steps.check.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The packages carry the version in Cargo.toml, as a release's would,
+      # so the smoke tests check `flux-server --version` against it.
+      - id: check
+        run: |
+          cargo=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          web=$(jq -r .version web/package.json)
+          if [ "$cargo" != "$web" ]; then
+            echo "::error::Cargo.toml ($cargo) and web/package.json ($web) disagree."
+            exit 1
+          fi
+          {
+            echo "version=$cargo"
+            echo "ref=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Dry run of **$cargo** from \`$(git rev-parse HEAD)\`. Nothing is published." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      version: ${{ needs.prepare.outputs.version }}
+      targets: all
+
+  assets:
+    name: Assets (kept as an artifact)
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Source tarball and SHA256SUMS
+        run: |
+          scripts/package/release-assets.sh --version "$VERSION" dist
+          { echo '### SHA256SUMS'; echo '```'; cat dist/SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # A release must bundle Truffle's sidecar; say loudly when it doesn't.
+      - name: Truffle sidecar in each package
+        run: |
+          missing=""
+          {
+            echo "### Truffle sidecar"
+            echo
+            echo "| Package | bin/sidecar-slim |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in dist/flux-*.tar.gz; do
+            name=$(basename "$f" .tar.gz)
+            tar -tzf "$f" > "$RUNNER_TEMP/list"
+            if grep -qx "$name/bin/sidecar-slim" "$RUNNER_TEMP/list"; then
+              echo "| $name | bundled |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $name | **MISSING** |" >> "$GITHUB_STEP_SUMMARY"
+              missing+=" $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            {
+              echo
+              echo "> [!WARNING]"
+              echo "> **No Truffle sidecar in:${missing}.** These packages can't run \`--tailnet embedded\`."
+              echo "> truffle-core must come from a crates.io release whose sidecar checksums are pinned"
+              echo "> in scripts/package/truffle-sidecar.sha256 (docs/RELEASING.md). Don't cut a release like this."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Truffle sidecar missing::No sidecar in:${missing}"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  image:
+    name: Image (not pushed)
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: package-*-linux-gnu
+          path: packages
+          merge-multiple: true
+      - uses: ./.github/actions/flux-image
+        with:
+          packages: packages
+          version: ${{ needs.prepare.outputs.version }}
+          push: "false"

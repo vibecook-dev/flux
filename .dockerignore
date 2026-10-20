@@ -1,0 +1,4 @@
+# The image is assembled from release packages passed in the `dist` build
+# context (docker/README.md); the main context only needs docker/.
+*
+!docker/

@@ -1,0 +1,14 @@
+[package]
+name = "flux-test-media"
+description = "Test media for flux's tests, examples and benches: the optional real-media corpus (FLUX_TEST_MEDIA), bench result output (FLUX_BENCH_RESULTS) and small synthetic clips made with ffmpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Dev-only: used as a dev-dependency by the other crates, never shipped.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]

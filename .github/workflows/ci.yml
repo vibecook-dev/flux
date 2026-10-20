@@ -1,0 +1,257 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  # Release Please opens its PR with GITHUB_TOKEN, which starts no
+  # pull_request runs; release-please.yml dispatches this workflow instead.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: short
+  # Lints and tests run on a pinned toolchain so a new stable release can't
+  # turn main red overnight. Bump it in a PR of its own (docs/RELEASING.md).
+  RUST_TOOLCHAIN: "1.99.1"
+  # A developer's .cargo/config.toml may point target-dir at a local disk.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # PR caches would evict main's from the 10 GB budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The synthetic-clip tests run ffmpeg/ffprobe. Ubuntu's ffmpeg has
+      # libx264; Homebrew's has libx264 and VideoToolbox. Tests that need the
+      # media corpus skip themselves unless FLUX_TEST_MEDIA is set.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: brew install ffmpeg
+      - name: Record toolchain and ffmpeg
+        run: |
+          {
+            echo "### ${{ matrix.os }}"
+            echo '```'
+            rustc --version
+            ffmpeg -hide_banner -version | sed -n 1p
+            echo "H.264 encoders: $(ffmpeg -hide_banner -encoders 2>/dev/null | awk '$2 ~ /^(libx264|h264_)/ {print $2}' | paste -sd ' ' -)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          v=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "MSRV: \`$v\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --locked --workspace
+
+  web:
+    name: Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Version from web/package.json "packageManager".
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # LTS
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Build (as served by flux-server)
+        env:
+          VITE_FLUX_API: /
+        run: pnpm build
+      - name: Bundle size
+        run: |
+          {
+            echo "### Web bundle"
+            echo '```'
+            du -sh dist
+            find dist -type f \( -name '*.js' -o -name '*.css' \) -exec du -k {} + | sort -rn | sed -n 1,10p
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The TypeScript API mirror is checked against flux-core's serde output.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: web/scripts/golden-rs -> ../../../target
+          key: golden
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: golden-rs builds against flux-core
+        working-directory: web/scripts/golden-rs
+        run: cargo check --locked
+      - name: Golden samples are current
+        run: |
+          node scripts/gen-golden.mjs
+          if ! git diff --exit-code -- src/api/__golden__; then
+            echo "::error::src/api/__golden__ is stale: run 'pnpm golden' and commit the result."
+            exit 1
+          fi
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Licences, bans and sources
+        run: cargo deny --locked check licenses bans sources
+      - name: Advisories
+        run: cargo deny --locked check advisories
+
+  lint:
+    name: Lint workflows, scripts and Dockerfile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      HADOLINT_VERSION: "2.15.1"
+      HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint and hadolint
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz -C bin actionlint
+          curl -fsSLo bin/hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          echo "${HADOLINT_SHA256}  bin/hadolint" | sha256sum -c -
+          chmod +x bin/hadolint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # actionlint also runs shellcheck (preinstalled) on every `run:` block.
+      - name: actionlint
+        run: actionlint -color
+      - name: shellcheck
+        run: shellcheck --severity=style scripts/package/*.sh
+      - name: hadolint
+        run: hadolint Dockerfile
+
+  # One stable check for branch protection: it fails if any job above did.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [fmt, rust, msrv, web, deny, lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo "## CI"
+            echo
+            echo "| Job | Result |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if jq -e 'to_entries | any(.value.result != "success")' <<< "$NEEDS" > /dev/null; then
+            echo "::error::A CI job failed or was cancelled; see the table in the summary."
+            exit 1
+          fi

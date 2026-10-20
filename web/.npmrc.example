@@ -1,0 +1,5 @@
+# Local pnpm settings for the web client. Copy this file to web/.npmrc
+# (git ignores it) and uncomment what you need. See CONTRIBUTING.md.
+
+# Keep pnpm's content-addressable store on another disk.
+# store-dir=/path/to/scratch/pnpm-store

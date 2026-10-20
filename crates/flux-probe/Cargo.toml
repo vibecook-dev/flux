@@ -1,0 +1,31 @@
+[package]
+name = "flux-probe"
+description = "Sans-IO media header probe (Matroska/WebM, MP4/MOV, MPEG-TS/M2TS, AVI) driven by range reads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+flux-core.workspace = true
+thiserror.workspace = true
+# Only the ffprobe oracle/fallback module parses JSON.
+serde_json.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+# Corpus (FLUX_TEST_MEDIA) and clips made with ffmpeg for the tests.
+flux-test-media = { path = "../flux-test-media" }
+
+[[bin]]
+name = "probe-diff"
+path = "src/bin/probe-diff.rs"
+
+[[bin]]
+name = "probe-bench"
+path = "src/bin/probe-bench.rs"

@@ -1,0 +1,691 @@
+//! Configuration: command-line flags > environment variables > TOML file >
+//! defaults. `flux-server --help` lists every flag with its variable.
+//!
+//! TOML keys are the long flag names with `_` (`data_dir`, `port`, `lan`,
+//! `tailnet`, `web_dir`, …) plus `[[library]]` tables:
+//!
+//! ```toml
+//! data_dir = "/srv/flux"
+//! port = 8096
+//! tailnet = "off"            # off | embedded | system
+//! allow_host = ["media.example.com"]
+//! watch = true
+//! [[library]]
+//! name = "Movies"
+//! kind = "movies"            # movies | shows | mixed
+//! path = "/srv/media/Movies"
+//! video_encoder = "auto"     # auto | videotoolbox | nvenc | qsv | vaapi | libx264
+//! ```
+
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{bail, Context};
+use clap::builder::BoolishValueParser;
+use clap::{ArgAction, Parser, ValueEnum};
+use flux_core::api::Role;
+use flux_core::LibraryKind;
+use flux_hls::encoders::VideoEncoder;
+use serde::Deserialize;
+
+/// A library to create on first run: `NAME:KIND:PATH`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LibrarySpec {
+    pub name: String,
+    #[serde(deserialize_with = "de_kind")]
+    pub kind: LibraryKind,
+    pub path: String,
+}
+
+fn parse_kind(s: &str) -> Result<LibraryKind, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "movies" | "movie" | "films" => Ok(LibraryKind::Movies),
+        "shows" | "show" | "tv" | "series" => Ok(LibraryKind::Shows),
+        "mixed" => Ok(LibraryKind::Mixed),
+        other => Err(format!("unknown library kind {other:?} (movies, shows or mixed)")),
+    }
+}
+
+fn de_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibraryKind, D::Error> {
+    let s = String::deserialize(d)?;
+    parse_kind(&s).map_err(serde::de::Error::custom)
+}
+
+impl std::str::FromStr for LibrarySpec {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let mut parts = s.splitn(3, ':');
+        let (Some(name), Some(kind), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!("expected NAME:KIND:PATH, got {s:?}"));
+        };
+        if name.trim().is_empty() || path.trim().is_empty() {
+            return Err(format!("expected NAME:KIND:PATH, got {s:?}"));
+        }
+        Ok(LibrarySpec {
+            name: name.trim().to_string(),
+            kind: parse_kind(kind)?,
+            path: path.trim().to_string(),
+        })
+    }
+}
+
+/// How flux reaches the tailnet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TailnetChoice {
+    /// No tailnet listener (default).
+    #[default]
+    Off,
+    /// flux's own node through Truffle ("Connect with Tailscale").
+    Embedded,
+    /// This machine's tailscaled.
+    System,
+}
+
+impl TailnetChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TailnetChoice::Off => "off",
+            TailnetChoice::Embedded => "embedded",
+            TailnetChoice::System => "system",
+        }
+    }
+
+    pub fn from_api(m: flux_core::api::TailnetMode) -> Self {
+        match m {
+            flux_core::api::TailnetMode::Off => TailnetChoice::Off,
+            flux_core::api::TailnetMode::Embedded => TailnetChoice::Embedded,
+            flux_core::api::TailnetMode::System => TailnetChoice::System,
+        }
+    }
+
+    pub fn to_api(self) -> flux_core::api::TailnetMode {
+        match self {
+            TailnetChoice::Off => flux_core::api::TailnetMode::Off,
+            TailnetChoice::Embedded => flux_core::api::TailnetMode::Embedded,
+            TailnetChoice::System => flux_core::api::TailnetMode::System,
+        }
+    }
+}
+
+/// The role of callers on this machine's loopback interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalRole {
+    /// The server's owner (default: a personal machine).
+    #[default]
+    Owner,
+    Admin,
+    Viewer,
+    Kid,
+    Guest,
+    /// No identity, like a LAN caller (shared or multi-user machines).
+    None,
+}
+
+impl LocalRole {
+    pub fn to_role(self) -> Option<Role> {
+        match self {
+            LocalRole::Owner => Some(Role::Owner),
+            LocalRole::Admin => Some(Role::Admin),
+            LocalRole::Viewer => Some(Role::Viewer),
+            LocalRole::Kid => Some(Role::Kid),
+            LocalRole::Guest => Some(Role::Guest),
+            LocalRole::None => None,
+        }
+    }
+}
+
+/// Command line. Every flag can also come from the environment variable
+/// named in `--help`, or from the TOML file.
+#[derive(Debug, Default, Parser)]
+#[command(
+    name = "flux-server",
+    version,
+    about = "flux media server: browse, play and stream your movie and TV library",
+    after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}."
+)]
+pub struct Cli {
+    /// TOML config file.
+    #[arg(long, env = "FLUX_CONFIG", value_name = "FILE")]
+    pub config: Option<PathBuf>,
+    /// Where flux keeps its catalog, caches and artwork
+    /// [default: ~/Library/Application Support/flux on macOS, ~/.local/share/flux elsewhere].
+    #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR")]
+    pub data_dir: Option<PathBuf>,
+    /// A library to create on first run (repeatable; ';'-separated in the
+    /// variable). KIND is movies, shows or mixed.
+    #[arg(
+        long = "library",
+        env = "FLUX_LIBRARIES",
+        value_name = "NAME:KIND:PATH",
+        value_delimiter = ';'
+    )]
+    pub libraries: Vec<LibrarySpec>,
+    /// Local port [default: 8096].
+    #[arg(long, env = "FLUX_PORT")]
+    pub port: Option<u16>,
+    /// Local listener address [default: 127.0.0.1]. Callers on it are the
+    /// Owner; use --lan for other machines.
+    #[arg(long, env = "FLUX_BIND", value_name = "IP")]
+    pub bind: Option<IpAddr>,
+    /// Also listen on the LAN, e.g. 0.0.0.0:8097. LAN callers are anonymous.
+    #[arg(long, env = "FLUX_LAN", value_name = "ADDR:PORT")]
+    pub lan: Option<SocketAddr>,
+    /// Remote access over Tailscale [default: off].
+    #[arg(long, env = "FLUX_TAILNET", value_enum)]
+    pub tailnet: Option<TailnetChoice>,
+    /// The built web client (web/dist) [default: ./web/dist or next to the binary].
+    #[arg(long, env = "FLUX_WEB_DIR", value_name = "DIR")]
+    pub web_dir: Option<PathBuf>,
+    /// Server name shown to clients and used for the tailnet device [default: host name].
+    #[arg(long, env = "FLUX_NAME")]
+    pub name: Option<String>,
+    /// Don't scan libraries (at startup or on request).
+    #[arg(long, env = "FLUX_NO_SCAN", action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
+    pub no_scan: bool,
+    /// Don't run background jobs (matching, frame posters).
+    #[arg(long, env = "FLUX_NO_JOBS", action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
+    pub no_jobs: bool,
+    /// Don't watch library folders for changes: scan at startup and when
+    /// asked ("Scan now") only.
+    #[arg(long, env = "FLUX_NO_WATCH", action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
+    pub no_watch: bool,
+    /// Also answer to these host names or addresses (repeatable;
+    /// comma-separated in the variable), e.g. a reverse proxy's name.
+    /// localhost, this machine's name and addresses and the tailnet's name
+    /// are always allowed; requests naming any other host get 421.
+    #[arg(
+        long = "allow-host",
+        env = "FLUX_ALLOW_HOSTS",
+        value_name = "HOST",
+        value_delimiter = ','
+    )]
+    pub allow_hosts: Vec<String>,
+    /// Role of callers on this machine (loopback) [default: owner]. Use
+    /// `none` on a machine other people can log in to.
+    #[arg(long, env = "FLUX_LOCALHOST_ROLE", value_enum)]
+    pub localhost_role: Option<LocalRole>,
+    /// The tailnet login that owns this server [default: the login that
+    /// owns its tailnet node, learned when the tailnet starts].
+    #[arg(long, env = "FLUX_OWNER_LOGIN", value_name = "LOGIN")]
+    pub owner_login: Option<String>,
+    /// ffmpeg binary [default: from PATH or Homebrew].
+    #[arg(long, env = "FLUX_FFMPEG", value_name = "PATH")]
+    pub ffmpeg: Option<PathBuf>,
+    /// ffprobe binary [default: next to ffmpeg].
+    #[arg(long, env = "FLUX_FFPROBE", value_name = "PATH")]
+    pub ffprobe: Option<PathBuf>,
+    /// H.264 encoder of video transcodes: auto (detect: VideoToolbox, NVENC,
+    /// QSV, VAAPI, then libx264), videotoolbox, nvenc, qsv, vaapi or libx264
+    /// [default: auto].
+    #[arg(long, env = "FLUX_VIDEO_ENCODER", value_name = "ENCODER", value_parser = parse_encoder)]
+    pub video_encoder: Option<EncoderChoice>,
+    /// VAAPI render node [default: /dev/dri/renderD128].
+    #[arg(long, env = "FLUX_VAAPI_DEVICE", value_name = "PATH")]
+    pub vaapi_device: Option<PathBuf>,
+    /// Print what ffmpeg and ffprobe can do for flux (paths, versions, the
+    /// encoder per codec, hardware acceleration, tone mapping, what is
+    /// missing) and exit: non-zero when ffmpeg or ffprobe is missing.
+    #[arg(long, alias = "doctor")]
+    pub check: bool,
+    /// Directory with TMDB daily ID exports (`movie_ids_*.json.gz`) for
+    /// offline matching [default: <data_dir>/tmdb-exports].
+    #[arg(long, env = "FLUX_TMDB_EXPORTS", value_name = "DIR")]
+    pub tmdb_exports: Option<PathBuf>,
+    /// Log filter (tracing `EnvFilter` syntax) [default: info, or RUST_LOG].
+    #[arg(long, env = "FLUX_LOG")]
+    pub log: Option<String>,
+}
+
+/// The TOML file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileConfig {
+    data_dir: Option<PathBuf>,
+    #[serde(default, rename = "library")]
+    libraries: Vec<LibrarySpec>,
+    port: Option<u16>,
+    bind: Option<IpAddr>,
+    lan: Option<SocketAddr>,
+    tailnet: Option<TailnetChoice>,
+    web_dir: Option<PathBuf>,
+    name: Option<String>,
+    scan: Option<bool>,
+    jobs: Option<bool>,
+    watch: Option<bool>,
+    allow_host: Option<Vec<String>>,
+    localhost_role: Option<LocalRole>,
+    owner_login: Option<String>,
+    ffmpeg: Option<PathBuf>,
+    ffprobe: Option<PathBuf>,
+    #[serde(default, deserialize_with = "de_encoder")]
+    video_encoder: Option<EncoderChoice>,
+    vaapi_device: Option<PathBuf>,
+    tmdb_exports: Option<PathBuf>,
+    log: Option<String>,
+}
+
+/// `--video-encoder`: `auto` or one encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderChoice(pub Option<VideoEncoder>);
+
+fn parse_encoder(s: &str) -> Result<EncoderChoice, String> {
+    VideoEncoder::parse_choice(s).map(EncoderChoice)
+}
+
+fn de_encoder<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<EncoderChoice>, D::Error> {
+    let s = String::deserialize(d)?;
+    parse_encoder(&s).map(Some).map_err(serde::de::Error::custom)
+}
+
+/// Resolved configuration.
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub data_dir: PathBuf,
+    pub libraries: Vec<LibrarySpec>,
+    /// Local listener (`127.0.0.1:8096`; port 0 = any, for tests).
+    pub local_addr: SocketAddr,
+    pub lan_addr: Option<SocketAddr>,
+    pub tailnet: TailnetChoice,
+    /// The tailnet mode came from the command line or the environment; a
+    /// mode chosen in the UI (persisted in the data dir) does not override it.
+    pub tailnet_explicit: bool,
+    pub web_dir: Option<PathBuf>,
+    pub name: String,
+    pub scan: bool,
+    pub jobs: bool,
+    /// Watch library folders for changes (`--no-watch` turns it off).
+    pub watch: bool,
+    /// Extra host names/addresses the server answers to (`--allow-host`).
+    pub allow_hosts: Vec<String>,
+    /// Role of loopback callers (`None`: anonymous, like the LAN).
+    pub localhost_role: Option<Role>,
+    /// The owner's tailnet login, pinned (`None`: learned from the tailnet).
+    pub owner_login: Option<String>,
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
+    /// The H.264 encoder of video transcodes (`None`: detect).
+    pub video_encoder: Option<VideoEncoder>,
+    /// The VAAPI render node.
+    pub vaapi_device: PathBuf,
+    /// Detect the video encoder in the background at startup (else on the
+    /// first transcode).
+    pub detect_encoder_at_start: bool,
+    pub tmdb_exports: PathBuf,
+    pub log: String,
+    /// Delay before background jobs start (lets startup scans go first).
+    pub jobs_delay: Duration,
+    /// Probe this machine's tailscaled once (read-only `tailscale status`)
+    /// to fill `TailnetInfo::system_tailscale`.
+    pub probe_system_tailscale: bool,
+}
+
+impl Config {
+    /// Merge flags/env (already in `cli`) with the TOML file and defaults.
+    pub fn resolve(cli: Cli) -> anyhow::Result<Config> {
+        let file: FileConfig = match &cli.config {
+            Some(path) => {
+                let text = std::fs::read_to_string(path)
+                    .with_context(|| format!("reading config {}", path.display()))?;
+                toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?
+            }
+            None => FileConfig::default(),
+        };
+        let data_dir = cli
+            .data_dir
+            .or(file.data_dir)
+            .map(expand_home)
+            .unwrap_or_else(default_data_dir);
+        let mut libraries = file.libraries;
+        for l in cli.libraries {
+            if !libraries.iter().any(|x| x.name == l.name) {
+                libraries.push(l);
+            }
+        }
+        for l in &mut libraries {
+            l.path = expand_home(PathBuf::from(&l.path)).to_string_lossy().into_owned();
+            if !Path::new(&l.path).is_absolute() {
+                bail!("library {:?}: path {:?} must be absolute", l.name, l.path);
+            }
+        }
+        let port = cli.port.or(file.port).unwrap_or(flux_net::DEFAULT_PORT);
+        let bind = cli.bind.or(file.bind).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let tailnet_explicit = cli.tailnet.is_some();
+        let tailnet = cli.tailnet.or(file.tailnet).unwrap_or_default();
+        let ffmpeg = cli.ffmpeg.or(file.ffmpeg).unwrap_or_else(|| find_tool("ffmpeg"));
+        let ffprobe = cli.ffprobe.or(file.ffprobe).unwrap_or_else(|| {
+            let sibling = ffmpeg.with_file_name(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
+            if sibling.is_file() {
+                sibling
+            } else {
+                find_tool("ffprobe")
+            }
+        });
+        let video_encoder = cli.video_encoder.or(file.video_encoder).and_then(|c| c.0);
+        let vaapi_device = cli
+            .vaapi_device
+            .or(file.vaapi_device)
+            .unwrap_or_else(|| PathBuf::from(flux_hls::encoders::DEFAULT_VAAPI_DEVICE));
+        let web_dir = cli
+            .web_dir
+            .or(file.web_dir)
+            .map(expand_home)
+            .or_else(default_web_dir);
+        let tmdb_exports = cli
+            .tmdb_exports
+            .or(file.tmdb_exports)
+            .map(expand_home)
+            .unwrap_or_else(|| data_dir.join("tmdb-exports"));
+        let mut allow_hosts = file.allow_host.unwrap_or_default();
+        allow_hosts.extend(cli.allow_hosts);
+        allow_hosts.retain(|h| !h.trim().is_empty());
+        let owner_login = cli
+            .owner_login
+            .or(file.owner_login)
+            .filter(|l| !l.trim().is_empty());
+        Ok(Config {
+            libraries,
+            local_addr: SocketAddr::new(bind, port),
+            lan_addr: cli.lan.or(file.lan),
+            tailnet,
+            tailnet_explicit,
+            web_dir,
+            name: cli.name.or(file.name).unwrap_or_else(host_name),
+            scan: !cli.no_scan && file.scan.unwrap_or(true),
+            jobs: !cli.no_jobs && file.jobs.unwrap_or(true),
+            watch: !cli.no_watch && file.watch.unwrap_or(true),
+            allow_hosts,
+            localhost_role: cli
+                .localhost_role
+                .or(file.localhost_role)
+                .unwrap_or_default()
+                .to_role(),
+            owner_login,
+            ffmpeg,
+            ffprobe,
+            video_encoder,
+            vaapi_device,
+            detect_encoder_at_start: true,
+            tmdb_exports,
+            log: cli
+                .log
+                .or(file.log)
+                .or_else(|| std::env::var("RUST_LOG").ok())
+                .unwrap_or_else(|| "info".into()),
+            jobs_delay: Duration::from_secs(10),
+            probe_system_tailscale: true,
+            data_dir,
+        })
+    }
+
+    /// A configuration for tests: everything under `data_dir`, an ephemeral
+    /// port on 127.0.0.1, no scanning, no jobs, no tailnet, no web UI.
+    pub fn for_tests(data_dir: impl Into<PathBuf>) -> Config {
+        let data_dir = data_dir.into();
+        Config {
+            libraries: Vec::new(),
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            lan_addr: None,
+            tailnet: TailnetChoice::Off,
+            tailnet_explicit: true,
+            web_dir: None,
+            name: "flux-test".into(),
+            scan: false,
+            jobs: false,
+            watch: false,
+            allow_hosts: Vec::new(),
+            localhost_role: Some(Role::Owner),
+            owner_login: None,
+            ffmpeg: find_tool("ffmpeg"),
+            ffprobe: find_tool("ffprobe"),
+            video_encoder: VideoEncoder::from_env(),
+            vaapi_device: flux_hls::encoders::vaapi_device_from_env(),
+            detect_encoder_at_start: false,
+            tmdb_exports: data_dir.join("tmdb-exports"),
+            log: "warn".into(),
+            jobs_delay: Duration::ZERO,
+            probe_system_tailscale: false,
+            data_dir,
+        }
+    }
+
+    pub fn catalog_path(&self) -> PathBuf {
+        self.data_dir.join("catalog.db")
+    }
+}
+
+fn expand_home(p: PathBuf) -> PathBuf {
+    match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => p,
+    }
+}
+
+/// `~/Library/Application Support/flux` (macOS), `$XDG_DATA_HOME/flux` or
+/// `~/.local/share/flux` (elsewhere).
+pub fn default_data_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        if let Some(h) = home {
+            return h.join("Library/Application Support/flux");
+        }
+    }
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|x| !x.is_empty()) {
+        return PathBuf::from(x).join("flux");
+    }
+    match home {
+        Some(h) => h.join(".local/share/flux"),
+        None => PathBuf::from("flux-data"),
+    }
+}
+
+/// `./web/dist`, then `<exe dir>/web`, then `<exe dir>/../share/flux/web`.
+fn default_web_dir() -> Option<PathBuf> {
+    let mut candidates = vec![PathBuf::from("web/dist")];
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        candidates.push(dir.join("web"));
+        candidates.push(dir.join("../share/flux/web"));
+    }
+    candidates
+        .into_iter()
+        .find(|c| c.join("index.html").is_file())
+        .map(|c| c.canonicalize().unwrap_or(c))
+}
+
+/// A tool from `PATH`, else the usual Homebrew/system locations, else the
+/// bare name (with the platform's executable suffix).
+pub fn find_tool(name: &str) -> PathBuf {
+    flux_hls::ffmpeg_tools::find_or_name(name)
+}
+
+/// The machine's host name without `.local`.
+pub fn host_name() -> String {
+    let name = system_host_name();
+    let name = name.trim_end_matches(".local").to_string();
+    if name.is_empty() {
+        "flux".into()
+    } else {
+        name
+    }
+}
+
+#[cfg(unix)]
+fn system_host_name() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most `len` bytes into the buffer we own.
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc == 0 {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Not Unix (Windows): the computer name from the environment.
+#[cfg(not(unix))]
+fn system_host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+/// Where the tailnet mode chosen in the UI is remembered.
+pub fn tailnet_choice_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("tailnet-mode")
+}
+
+/// The tailnet mode last chosen in the UI, if any.
+pub fn persisted_tailnet(data_dir: &Path) -> Option<TailnetChoice> {
+    let s = std::fs::read_to_string(tailnet_choice_path(data_dir)).ok()?;
+    TailnetChoice::from_str(s.trim(), true).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_specs_parse() {
+        let l: LibrarySpec = "Movies:movies:/srv/media/Movies".parse().unwrap();
+        assert_eq!(l.kind, LibraryKind::Movies);
+        assert_eq!(l.path, "/srv/media/Movies");
+        let l: LibrarySpec = "TV:tv:/a:b/c".parse().unwrap();
+        assert_eq!((l.kind, l.path.as_str()), (LibraryKind::Shows, "/a:b/c"));
+        assert!("Movies:/x".parse::<LibrarySpec>().is_err());
+        assert!("Movies:films2:/x".parse::<LibrarySpec>().is_err());
+    }
+
+    #[test]
+    fn flags_beat_the_file_and_defaults_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        std::fs::write(
+            &file,
+            r#"
+port = 9000
+tailnet = "system"
+jobs = false
+allow_host = ["nas.example.com"]
+localhost_role = "none"
+[[library]]
+name = "Movies"
+kind = "movies"
+path = "/m"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from([
+            "flux-server",
+            "--config",
+            file.to_str().unwrap(),
+            "--port",
+            "9100",
+            "--library",
+            "TV:shows:/tv",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--allow-host",
+            "media.example.com,10.0.0.5",
+            "--no-watch",
+        ])
+        .unwrap();
+        let cfg = Config::resolve(cli).unwrap();
+        assert_eq!(
+            cfg.allow_hosts,
+            ["nas.example.com", "media.example.com", "10.0.0.5"]
+        );
+        assert!(!cfg.watch);
+        assert_eq!(cfg.localhost_role, None, "from the file");
+        assert_eq!(cfg.owner_login, None);
+        assert_eq!(cfg.local_addr.port(), 9100);
+        assert_eq!(cfg.local_addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(cfg.tailnet, TailnetChoice::System);
+        assert!(!cfg.tailnet_explicit);
+        assert!(!cfg.jobs && cfg.scan);
+        let names: Vec<&str> = cfg.libraries.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Movies", "TV"]);
+        assert_eq!(cfg.tmdb_exports, dir.path().join("tmdb-exports"));
+    }
+
+    #[test]
+    fn watching_and_localhost_owner_are_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["flux-server", "--data-dir", dir.path().to_str().unwrap()]).unwrap();
+        let cfg = Config::resolve(cli).unwrap();
+        assert!(cfg.watch && cfg.allow_hosts.is_empty());
+        assert_eq!(cfg.localhost_role, Some(Role::Owner));
+        let cli = Cli::try_parse_from([
+            "flux-server",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--localhost-role",
+            "viewer",
+            "--owner-login",
+            "me@example.com",
+        ])
+        .unwrap();
+        let cfg = Config::resolve(cli).unwrap();
+        assert_eq!(cfg.localhost_role, Some(Role::Viewer));
+        assert_eq!(cfg.owner_login.as_deref(), Some("me@example.com"));
+    }
+
+    #[test]
+    fn unknown_toml_keys_are_rejected() {
+        assert!(toml::from_str::<FileConfig>("prot = 1").is_err());
+    }
+
+    #[test]
+    fn video_encoder_from_flag_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        std::fs::write(
+            &file,
+            "video_encoder = \"vaapi\"\nvaapi_device = \"/dev/dri/renderD129\"\n",
+        )
+        .unwrap();
+        let d = dir.path().to_str().unwrap();
+        let f = file.to_str().unwrap();
+        let cfg =
+            Config::resolve(Cli::try_parse_from(["flux-server", "--data-dir", d, "--config", f]).unwrap())
+                .unwrap();
+        // The variables beat the file (a run forcing an encoder sets them).
+        if std::env::var_os("FLUX_VIDEO_ENCODER").is_none() {
+            assert_eq!(cfg.video_encoder, Some(VideoEncoder::Vaapi));
+        }
+        if std::env::var_os("FLUX_VAAPI_DEVICE").is_none() {
+            assert_eq!(cfg.vaapi_device, PathBuf::from("/dev/dri/renderD129"));
+        }
+        let cli = Cli::try_parse_from([
+            "flux-server",
+            "--data-dir",
+            d,
+            "--config",
+            f,
+            "--video-encoder",
+            "libx264",
+        ]);
+        assert_eq!(
+            Config::resolve(cli.unwrap()).unwrap().video_encoder,
+            Some(VideoEncoder::Libx264)
+        );
+        let cli = Cli::try_parse_from([
+            "flux-server",
+            "--data-dir",
+            d,
+            "--config",
+            f,
+            "--video-encoder",
+            "auto",
+        ]);
+        assert_eq!(Config::resolve(cli.unwrap()).unwrap().video_encoder, None);
+        assert!(Cli::try_parse_from(["flux-server", "--video-encoder", "h265"]).is_err());
+        assert!(toml::from_str::<FileConfig>("video_encoder = \"x265\"").is_err());
+        assert!(Cli::try_parse_from(["flux-server", "--check"]).unwrap().check);
+        assert!(Cli::try_parse_from(["flux-server", "--doctor"]).unwrap().check);
+    }
+}

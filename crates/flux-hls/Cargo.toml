@@ -1,0 +1,59 @@
+[package]
+name = "flux-hls"
+description = "Playback planner and stateless index-driven remux to HLS fMP4 (CMAF), with ffmpeg audio/video transcode fallback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["tools"]
+# Dev/bench binaries (hls-validate, hls-serve, hls-bench). The library itself
+# does not need axum; flux-server brings its own router.
+tools = ["dep:axum", "dep:anyhow", "dep:tracing-subscriber"]
+
+[dependencies]
+flux-core.workspace = true
+# ffprobe codec-name table (`flux_probe::ffprobe::codec_of`), shared with the
+# catalog's probe so both name codecs the same way.
+flux-probe.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+bytes.workspace = true
+futures.workspace = true
+mp4-atom.workspace = true
+# killpg(2) for the ffprobe index scans' process groups.
+libc = "0.2"
+
+axum = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Corpus (FLUX_TEST_MEDIA), bench output (FLUX_BENCH_RESULTS) and clips
+# made with ffmpeg for the tests.
+flux-test-media = { path = "../flux-test-media" }
+
+[[bin]]
+name = "hls-validate"
+path = "src/bin/hls_validate.rs"
+required-features = ["tools"]
+
+[[bin]]
+name = "hls-serve"
+path = "src/bin/hls_serve.rs"
+required-features = ["tools"]
+
+[[bin]]
+name = "hls-bench"
+path = "src/bin/hls_bench.rs"
+required-features = ["tools"]

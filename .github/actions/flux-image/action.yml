@@ -1,0 +1,119 @@
+# Builds the flux container image from Linux release packages: lays out the
+# build context, builds linux/amd64 and smoke-tests it, then builds
+# linux/amd64 + linux/arm64 and pushes them only when `push` is "true".
+# Used by docker.yml (releases, main, pull requests) and release-dry-run.yml
+# (never pushes). A pushing caller logs in to ghcr.io before this action and
+# attests the returned digest after it.
+name: flux image
+description: Build, smoke-test and optionally push ghcr.io/vibecook-dev/flux.
+
+inputs:
+  packages:
+    description: Directory holding the flux-<version>-<target>.tar.gz Linux packages.
+    required: true
+  version:
+    description: Version in the package names ("dev" outside releases).
+    required: true
+  release-version:
+    description: Release version to tag the image with; empty for none.
+    default: ""
+  prerelease:
+    description: '"true" keeps a release off :latest.'
+    default: "true"
+  push:
+    description: '"true" pushes the image (log in first).'
+    default: "false"
+
+outputs:
+  digest:
+    description: Digest of the multi-arch image (empty when not pushed).
+    value: ${{ steps.build.outputs.digest }}
+  tags:
+    description: Tags the image was built with.
+    value: ${{ steps.meta.outputs.tags }}
+
+runs:
+  using: composite
+  steps:
+    - name: Lay out the build context
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        VERSION: ${{ inputs.version }}
+      run: scripts/package/docker-context.sh --version "$VERSION" "$PACKAGES" docker-dist
+
+    - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      with:
+        platforms: arm64
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - id: meta
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+      env:
+        DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+      with:
+        images: ghcr.io/vibecook-dev/flux
+        flavor: latest=false
+        tags: |
+          type=raw,value=${{ inputs.release-version }},enable=${{ inputs.release-version != '' }}
+          type=raw,value=latest,enable=${{ inputs.release-version != '' && inputs.prerelease != 'true' }}
+          type=raw,value=edge,enable=${{ inputs.release-version == '' && github.ref == 'refs/heads/main' }}
+          type=sha,prefix=sha-,format=short,enable=${{ inputs.release-version == '' && github.ref == 'refs/heads/main' }}
+          type=ref,event=pr
+        labels: |
+          org.opencontainers.image.title=flux
+          org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library
+          org.opencontainers.image.licenses=MIT
+          org.opencontainers.image.vendor=vibecook
+          org.opencontainers.image.documentation=https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md
+        annotations: |
+          org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library
+          org.opencontainers.image.licenses=MIT
+
+    # Smoke-test the amd64 image before anything is pushed.
+    - name: Build amd64 for the smoke test
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        build-contexts: dist=docker-dist
+        platforms: linux/amd64
+        load: true
+        push: false
+        tags: flux:smoke
+        cache-from: type=gha,scope=flux-image
+    - name: Smoke test
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: scripts/package/docker-smoke-test.sh flux:smoke "$VERSION"
+
+    - id: build
+      name: Build linux/amd64 + linux/arm64${{ inputs.push == 'true' && ' and push' || '' }}
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        build-contexts: dist=docker-dist
+        platforms: linux/amd64,linux/arm64
+        push: ${{ inputs.push == 'true' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        annotations: ${{ steps.meta.outputs.annotations }}
+        provenance: mode=max
+        sbom: true
+        cache-from: type=gha,scope=flux-image
+        cache-to: type=gha,scope=flux-image,mode=max
+
+    - name: Summary
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+        TAGS: ${{ steps.meta.outputs.tags }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        {
+          if [ "$PUSH" = "true" ]; then echo "### Image pushed"; else echo "### Image built for linux/amd64 + linux/arm64 (not pushed)"; fi
+          echo '```'
+          echo "${TAGS:-(no tags)}"
+          echo "digest: ${DIGEST:-n/a}"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,104 @@
+/*
+ * flux design tokens.
+ *
+ * Idea: the interface is a dark room and the films are the only light in it.
+ * Chrome stays neutral (no brand accent); colour arrives from artwork through
+ * the ambient "bias light" layer. Semantic colours exist only for playback
+ * paths: phosphor = direct, blue = repackaged, amber = converted, tally = transcoded.
+ *
+ * The resolved theme is set on <html data-theme> before first paint (index.html).
+ */
+
+@property --ambient {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: #20202a;
+}
+
+:root {
+  color-scheme: dark;
+
+  --font-display: 'Archivo Variable', 'Archivo', 'Arial Narrow', sans-serif;
+  --font-body: 'Atkinson Hyperlegible Next Variable', 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+  --font-mono: 'Atkinson Hyperlegible Mono Variable', 'Atkinson Hyperlegible Mono', ui-monospace, monospace;
+
+  /* Room */
+  --bg: #0b0b0e;
+  --bg-raised: #121217;
+  --surface: #18181e;
+  --surface-2: #212128;
+  --surface-3: #2c2c35;
+  --line: rgb(255 255 255 / 0.08);
+  --line-strong: rgb(255 255 255 / 0.17);
+  --scrim: rgb(6 6 9 / 0.74);
+
+  /* Light (text) */
+  --text: #f3f1ec;
+  --text-2: #b7b4be;
+  --text-3: #8d8a97;
+  --focus: #ffffff;
+
+  /* The one call to action: a lit screen. */
+  --cta-bg: #f3f1ec;
+  --cta-fg: #0b0b0e;
+  --cta-bg-hover: #ffffff;
+
+  /* Playback paths */
+  --direct: #74dcaa;
+  --stream: #9ec9ff;
+  --convert: #f2c46d;
+  --transcode: #ff8a7a;
+  --danger: #ff8a7a;
+
+  --ambient-strength: 46%;
+  --poster-shade: rgb(0 0 0 / 0.0);
+
+  /* Shape & motion */
+  --r-poster: 6px;
+  --r: 10px;
+  --r-lg: 16px;
+  --shadow-lift: 0 26px 48px -20px rgb(0 0 0 / 0.85);
+  --shadow-panel: 0 30px 80px -30px rgb(0 0 0 / 0.9);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --t-fast: 140ms;
+  --t: 220ms;
+  --t-ambient: 900ms;
+
+  /* Layout */
+  --gutter: clamp(16px, 3.6vw, 52px);
+  --sidebar: 248px;
+  --rail: 76px;
+  --tabbar: 64px;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #ebeaee;
+  --bg-raised: #f4f3f6;
+  --surface: #ffffff;
+  --surface-2: #f2f1f5;
+  --surface-3: #e4e3e9;
+  --line: rgb(16 14 24 / 0.09);
+  --line-strong: rgb(16 14 24 / 0.18);
+  --scrim: rgb(235 234 238 / 0.8);
+
+  --text: #131217;
+  --text-2: #4a4853;
+  --text-3: #6a6774;
+  --focus: #131217;
+
+  --cta-bg: #131217;
+  --cta-fg: #ffffff;
+  --cta-bg-hover: #000000;
+
+  --direct: #0c7a50;
+  --stream: #1f5fae;
+  --convert: #8a5a00;
+  --transcode: #b8382a;
+  --danger: #b8382a;
+
+  --ambient-strength: 30%;
+  --shadow-lift: 0 22px 40px -22px rgb(20 16 40 / 0.45);
+  --shadow-panel: 0 30px 70px -30px rgb(20 16 40 / 0.35);
+}

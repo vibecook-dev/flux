@@ -1,0 +1,124 @@
+# Release Please keeps a release PR open on main (version bumps in
+# Cargo.toml, Cargo.lock, web/package.json and web/scripts/golden-rs, plus
+# CHANGELOG.md). Merging it creates a draft GitHub release and the v<version>
+# tag; the `release` job then builds, attests and uploads the packages,
+# pushes the Docker image and publishes the release. See docs/RELEASING.md.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # release branch, lockfile commit, tag, draft release
+      pull-requests: write # the release PR
+      issues: write # labels on the release PR
+      actions: write # dispatch CI on the release PR
+    env:
+      RUST_TOOLCHAIN: "1.99.1"
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Resolve the release PR branch
+        id: pr
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        run: |
+          branch=$(jq -r '.headBranchName // empty' <<< "$PR_JSON")
+          if [ -z "$branch" ]; then
+            echo "::error::Release Please reported a PR but no branch: $PR_JSON"
+            exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # Release Please bumps [workspace.package] version but can't regenerate
+      # lockfiles. Any unlocked cargo command rewrites the workspace crates'
+      # entries (and nothing else), so commit that to the release PR.
+      - name: Check out the release PR
+        if: steps.pr.outputs.branch != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          persist-credentials: true # pushes the lockfile commit below
+      - if: steps.pr.outputs.branch != ''
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Sync the Cargo.lock files
+        if: steps.pr.outputs.branch != ''
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        run: |
+          cargo metadata --format-version 1 > /dev/null
+          (cd web/scripts/golden-rs && cargo metadata --format-version 1 > /dev/null)
+          if git diff --quiet -- Cargo.lock web/scripts/golden-rs/Cargo.lock; then
+            echo "The lockfiles already carry the new version."
+          else
+            git diff --stat -- Cargo.lock web/scripts/golden-rs/Cargo.lock
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock web/scripts/golden-rs/Cargo.lock
+            git commit -m "chore(release): sync the Cargo.lock files"
+            git push origin "HEAD:$BRANCH"
+          fi
+
+      # A PR opened or updated with GITHUB_TOKEN starts no pull_request
+      # workflows, so run CI on the release branch explicitly; its checks
+      # land on the PR's head commit and satisfy branch protection.
+      - name: Run CI on the release PR
+        if: steps.pr.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          echo "Dispatched CI on \`$BRANCH\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        env:
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
+        run: |
+          if [ "$RELEASE_CREATED" = "true" ]; then
+            echo "Created draft release **$TAG**; the release job builds and publishes it." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PRS_CREATED" = "true" ]; then
+            echo "Opened or updated the release PR." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing to release." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release:
+    name: Release
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write # upload assets, publish the release
+      packages: write # push ghcr.io/vibecook-dev/flux
+      id-token: write # artifact attestations (Sigstore)
+      attestations: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}

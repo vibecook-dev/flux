@@ -1,0 +1,16 @@
+# Emits golden JSON from flux-core's serde types so the hand-written TS mirror
+# (web/src/api/types.ts) can be checked against the real wire format.
+# Run via `pnpm golden` (web/scripts/gen-golden.mjs). Not part of the flux workspace.
+[package]
+name = "flux-web-golden"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+flux-core = { path = "../../../crates/flux-core" }
+serde = "1"
+serde_json = "1"

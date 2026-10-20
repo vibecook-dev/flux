@@ -1,0 +1,102 @@
+# The flux container image, ghcr.io/vibecook-dev/flux, for linux/amd64 and
+# linux/arm64. The image is built from the Linux release packages (no
+# compiling inside Docker): docker/README.md. The build and smoke test are in
+# .github/actions/flux-image, shared with release-dry-run.yml.
+#
+#   pull_request (Docker files changed): build and smoke-test, no push
+#   push to main:                        :edge and :sha-<short>
+#   called by release.yml:               :<version>, and :latest for stable
+name: Docker
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - scripts/package/**
+      - .github/workflows/docker.yml
+      - .github/workflows/build.yml
+      - .github/actions/flux-image/**
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      version:
+        description: Release version (no "v").
+        type: string
+        required: true
+      prerelease:
+        type: boolean
+        default: true
+      ref:
+        description: Commit the packages were built from.
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: docker-${{ inputs.version || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/vibecook-dev/flux
+
+jobs:
+  # Release runs reuse the packages release.yml already built in this run.
+  build:
+    name: Build
+    if: ${{ !inputs.version }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      targets: linux
+
+  image:
+    name: Image
+    needs: build
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+      id-token: write # Sigstore signing of the attestation
+      attestations: write
+    env:
+      VERSION: ${{ inputs.version || 'dev' }}
+      PUSH: ${{ github.repository == 'vibecook-dev/flux' && (inputs.version != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: package-*-linux-gnu
+          path: packages
+          merge-multiple: true
+      - name: Log in to ghcr.io
+        if: env.PUSH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: image
+        uses: ./.github/actions/flux-image
+        with:
+          packages: packages
+          version: ${{ env.VERSION }}
+          release-version: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          push: ${{ env.PUSH }}
+      - name: Attest
+        if: env.PUSH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
