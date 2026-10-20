@@ -101,9 +101,10 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
     }
     Err(NetError::SidecarNotFound(format!(
         "tried {}; release packages ship it next to flux-server as sidecar-slim. \
-         Otherwise download the tsnet-sidecar asset for this platform from the Truffle \
-         release that matches truffle-core (https://github.com/vibecook-dev/truffle/releases) \
-         and set TRUFFLE_SIDECAR_PATH to it",
+         Otherwise set TRUFFLE_SIDECAR_PATH to the tsnet-sidecar asset for this platform \
+         from the Truffle release that matches truffle-core \
+         (https://github.com/vibecook-dev/truffle/releases), or to a sidecar-slim built \
+         with `go build` in Truffle's packages/sidecar-slim",
         if tried.is_empty() {
             "nothing".to_string()
         } else {
@@ -587,7 +588,10 @@ mod tests {
         let missing = Path::new("/nonexistent/flux/sidecar-slim");
         let err = resolve_sidecar(Some(missing)).unwrap_err().to_string();
         assert!(
-            err.contains("/nonexistent/flux/sidecar-slim") && err.contains("go build"),
+            err.contains("/nonexistent/flux/sidecar-slim")
+                && err.contains("TRUFFLE_SIDECAR_PATH")
+                && err.contains("go build")
+                && !err.contains("worktree"),
             "{err}"
         );
         let exe = std::env::current_exe().unwrap();
