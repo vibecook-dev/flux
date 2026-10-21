@@ -9,9 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flux_core::{PlaybackPlan, VideoOp};
+use flux_core::{AudioOp, Codec, PlaybackPlan, VideoOp};
 use flux_hls::playlist::{HlsResource, Rendition};
-use flux_hls::{presets, Asset, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder};
+use flux_hls::{presets, Asset, AudioKey, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder};
 use flux_test_media::{clip, ffprobe_video_frames, Clip};
 use mp4_atom::{Any, Decode};
 
@@ -290,4 +290,162 @@ async fn libx264_pieces_are_deterministic() {
         got.push(b);
     }
     assert_eq!(got[0], got[1], "piece 2 differs between two cold runs");
+}
+
+/// Stream `map` of a file decoded by ffmpeg to mono 48 kHz samples.
+fn decode_pcm(path: &Path, map: &str) -> Vec<i16> {
+    let ff = flux_test_media::ffmpeg().expect("ffmpeg");
+    let out = std::process::Command::new(ff)
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-map", map, "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run ffmpeg");
+    assert!(
+        out.status.success(),
+        "decoding {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
+/// Where each tone burst starts: the first sample at a quarter of the peak
+/// after at least 100 ms below it.
+fn burst_onsets(pcm: &[i16]) -> Vec<usize> {
+    let threshold = (pcm.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0) / 4).max(1);
+    let mut onsets = Vec::new();
+    let mut last_loud: Option<usize> = None;
+    for (i, x) in pcm.iter().enumerate() {
+        if x.unsigned_abs() >= threshold {
+            if last_loud.is_none_or(|l| i - l > 4800) {
+                onsets.push(i);
+            }
+            last_loud = Some(i);
+        }
+    }
+    onsets
+}
+
+/// AC-3 and E-AC-3 in Matroska with their frames laced 8 to a block
+/// (256 ms per block, as many releases are muxed), transcoded to AAC for
+/// Chrome. Each segment (and each of its parallel parts) once lost the
+/// frames of the laced block that began before its window: frames went
+/// missing at the seams (21–256 ms holes) and the rest of the segment slid
+/// earlier. Every segment must hold all its grid frames and end exactly
+/// where the next begins, and every tone burst must sit where it is in the
+/// copied original (a constant offset, across seams and part joins).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laced_ac3_in_matroska_transcodes_without_gaps() {
+    if flux_test_media::ffmpeg().is_none() {
+        return;
+    }
+    let Some(p) = clip(Clip::LacedAc3Eac3Mkv) else {
+        return;
+    };
+    // 2 s segments (one per GOP): 4 seams, and each segment is encoded as
+    // two parallel parts, so 5 part joins as well.
+    let engine = HlsEngine::new(EngineConfig {
+        target_segment: std::time::Duration::from_secs(2),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+    assert_eq!(plan.audio.len(), 2, "{:?}", plan.explain());
+    // The reference: the same tracks copied for Safari, frame for frame.
+    let safari = engine.plan(&asset, &presets::safari_macos(), &hls_only());
+    let dir = flux_test_media::scratch("hls-synthetic-laced-ac3");
+    // Burst onsets on a rendition's timeline (48 kHz ticks).
+    let onsets = |file: &Path, segs: &[Vec<u8>]| -> Vec<i64> {
+        let t0 = trun(&segs[0]).0 as i64;
+        burst_onsets(&decode_pcm(file, "0:a:0"))
+            .into_iter()
+            .map(|i| t0 + i as i64)
+            .collect()
+    };
+    for a in &plan.audio {
+        let t = asset.index.track(a.track).expect("track");
+        let name = format!("{:?} track {}", t.codec, a.track);
+        assert!(
+            matches!(
+                a.op,
+                AudioOp::Transcode {
+                    codec: Codec::Aac,
+                    ..
+                }
+            ),
+            "{name}: {:?}",
+            a.op
+        );
+        assert_eq!(t.sample_rate, Some(48_000), "{name}");
+        let (file, segs) = write_rendition(
+            &engine,
+            &asset,
+            &plan,
+            Rendition::Audio(AudioKey::from_plan(a)),
+            &dir,
+            &format!("laced.a{}.mp4", a.track),
+        )
+        .await;
+        assert!(segs.len() >= 5, "{name}: {} segments", segs.len());
+        let mut next = None;
+        for (n, s) in segs.iter().enumerate() {
+            let (tfdt, samples) = trun(s);
+            assert!(samples.iter().all(|x| x.0 == 1024), "{name}: segment {n}");
+            if let Some(end) = next {
+                assert_eq!(
+                    tfdt,
+                    end,
+                    "{name}: segment {n} starts {:.1} ms after segment {} ends",
+                    (tfdt as f64 - end as f64) / 48.0,
+                    n - 1
+                );
+            }
+            next = Some(tfdt + 1024 * samples.len() as u64);
+        }
+        // Each AAC burst against the nearest burst of the copied original.
+        // The first burst is skipped: an encode loses its encoder delay at
+        // the very start of the stream.
+        let copy = safari
+            .audio
+            .iter()
+            .find(|c| c.track == a.track && matches!(c.op, AudioOp::Copy))
+            .unwrap_or_else(|| panic!("{name}: not copied for Safari: {:?}", safari.audio));
+        let (copy_file, copy_segs) = write_rendition(
+            &engine,
+            &asset,
+            &safari,
+            Rendition::Audio(AudioKey::from_plan(copy)),
+            &dir,
+            &format!("laced.a{}.copy.mp4", a.track),
+        )
+        .await;
+        let reference = onsets(&copy_file, &copy_segs);
+        assert!(reference.len() >= 38, "{name}: {} bursts", reference.len());
+        let lags: Vec<i64> = onsets(&file, &segs)
+            .into_iter()
+            .filter(|&at| at > reference[0] + 4800)
+            .map(|at| {
+                let near = reference.iter().min_by_key(|&&r| (r - at).abs()).unwrap();
+                at - near
+            })
+            .collect();
+        assert!(
+            lags.len() + 2 >= reference.len(),
+            "{name}: {} bursts out of {}",
+            lags.len(),
+            reference.len()
+        );
+        // An AAC frame is 1024 ticks (21.3 ms); onsets agree within 2 ms.
+        assert!(
+            lags.iter().all(|l| l.abs() <= 96),
+            "{name}: burst offsets from the copy (ticks) {lags:?}"
+        );
+    }
 }
