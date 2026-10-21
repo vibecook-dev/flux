@@ -277,7 +277,7 @@ In order:
      doesn't smoke-test, answers `/api/v1/server` and serves the web client
      under Rosetta.
    - README's Status, Install and Operations lines now describe the
-     release (see [After the release](#after-the-release)).
+     release (#12; see [After the release](#after-the-release)).
 5. **Done:** **Make the container package public** (org Packages → flux →
    Settings → Change visibility). Anonymous pulls now succeed.
 6. **The ruleset named `main`** was added by the owner to protect `main`, but
@@ -308,7 +308,7 @@ Checked on 2026-10-21 against the published v0.1.0-alpha.1 (the tag and
 `main` both at `f5b29ac`), with the results in [Open items](#open-items) 3
 and 4.
 
-Fixed in this PR (docs only):
+Fixed in #12 (docs only):
 
 - README said there were no releases yet (Status, Install, Operations) and
   never linked INSTALL.md from its Install section.
