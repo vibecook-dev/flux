@@ -259,6 +259,10 @@ struct Apply<'c> {
     placed_parent: bool,
     /// Extras that went pending in this batch (no point retrying them).
     pending_now: HashSet<Id>,
+    /// Folders a film's file was placed directly in by this batch: files
+    /// already placed as films in an extras-named subfolder of one may now
+    /// be its extras (see [`group::extras_folder_by_word`]).
+    movie_dirs: BTreeSet<String>,
     /// Snapshot guards for `missing` and `moves` (see [`ExpectedRow`]).
     expect: HashMap<Id, ExpectedRow>,
     /// Items this job deleted: works merged into the work their last file
@@ -296,6 +300,7 @@ impl<'c> Apply<'c> {
                 out: ApplyOutcome::default(),
                 placed_parent: false,
                 pending_now: HashSet::new(),
+                movie_dirs: BTreeSet::new(),
                 expect: HashMap::new(),
                 deleted: BTreeSet::new(),
             },
@@ -364,7 +369,11 @@ pub(crate) fn apply_batch(
         ap.apply_move(m)?;
     }
     // Extras last, so a parent movie in the same batch already exists.
-    let is_extra = |u: &&FileUpsert| u.guess.as_ref().is_some_and(|g| g.kind == GuessKind::Extra);
+    let is_extra = |u: &&FileUpsert| {
+        u.guess
+            .as_ref()
+            .is_some_and(|g| g.kind == GuessKind::Extra || word_extra_candidate(g, &u.facts.rel_path))
+    };
     for u in b
         .upserts
         .iter()
@@ -376,6 +385,7 @@ pub(crate) fn apply_batch(
     if ap.placed_parent {
         ap.retry_pending()?;
     }
+    ap.regroup_word_extras()?;
     if let Some(cursor) = &b.cursor {
         conn.prepare_cached("UPDATE root SET cursor = ?2 WHERE id = ?1")?
             .execute(params![b.root_id, cursor])?;
@@ -777,8 +787,16 @@ impl Apply<'_> {
                 self.out.files_ignored += 1;
             }
             Placement::Movie { work, edition, part } => {
+                if let Some((film, x)) = self.word_extra(guess, rel_path)? {
+                    let item = group::resolve_extra(conn, &mut self.r, film, &x)?;
+                    self.link(file_id, current, &[item], None, None, guess, probe)?;
+                    return Ok(());
+                }
                 let item = group::resolve_work(conn, &mut self.r, "movie", &work, None)?;
                 self.placed_parent = true;
+                if let Some((dir, _)) = rel_path.rsplit_once('/') {
+                    self.movie_dirs.insert(dir.to_string());
+                }
                 self.link(file_id, current, &[item], edition.as_deref(), part, guess, probe)?;
             }
             Placement::Episodes {
@@ -982,6 +1000,79 @@ impl Apply<'_> {
         if !c.deleted.is_empty() {
             self.r.forget(&c.deleted);
             self.deleted.extend(c.deleted);
+        }
+        Ok(())
+    }
+
+    /// A film-like file in an extras-named subfolder of a folder that holds
+    /// exactly one film directly (`Film/1080p/Bonus Clips)/Song.mkv`
+    /// beside `Film/1080p/Film.mkv`): that film and the extra to place it
+    /// under. `None` keeps the file a film of its own.
+    fn word_extra(&self, guess: &NameGuess, rel_path: &str) -> Result<Option<(Id, group::ExtraTarget)>> {
+        if !word_extra_candidate(guess, rel_path) {
+            return Ok(None);
+        }
+        let Some((kind, dir)) = group::extras_folder_by_word(rel_path) else {
+            return Ok(None);
+        };
+        let Some(film) = group::sole_movie_in_dir(self.conn, self.root_id, dir)? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            film,
+            group::ExtraTarget {
+                title: group::clean_filename(rel_path),
+                kind,
+                parent_dir: Some(dir.to_string()),
+                parent_title: None,
+                parent_year: None,
+            },
+        )))
+    }
+
+    /// Files an earlier batch placed as films because the film beside their
+    /// extras-named folder wasn't cataloged yet (scan batches follow probe
+    /// order, not folder order): for each folder this batch placed a film
+    /// in, move them under that film now.
+    fn regroup_word_extras(&mut self) -> Result<()> {
+        for dir in std::mem::take(&mut self.movie_dirs) {
+            if group::sole_movie_in_dir(self.conn, self.root_id, &dir)?.is_none() {
+                continue;
+            }
+            let lo = format!("{dir}/");
+            let hi = format!("{dir}0");
+            // Paths first (index only); the few in an extras-named
+            // subfolder are then checked against their item.
+            let paths: Vec<(Id, String)> = {
+                let mut stmt = self.conn.prepare_cached(
+                    "SELECT id, rel_path FROM file WHERE root_id = ?1 AND rel_path >= ?2 AND rel_path < ?3",
+                )?;
+                let rows = stmt.query_map(params![self.root_id, lo, hi], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            let in_extras_folder =
+                |rel: &str| group::extras_folder_by_word(rel).is_some_and(|(_, d)| d == dir.as_str());
+            for (id, rel_path) in paths.into_iter().filter(|(_, rel)| in_extras_folder(rel)) {
+                let row: Option<(Id, Option<String>)> = self
+                    .conn
+                    .prepare_cached(
+                        "SELECT a.id, m.guess FROM file f
+                           JOIN asset a ON a.file_id = f.id
+                           JOIN item i ON i.id = a.item_id
+                           LEFT JOIN file_meta m ON m.file_id = f.id
+                          WHERE f.id = ?1 AND f.state <> 'missing'
+                            AND i.kind = 'movie' AND i.parent_id IS NULL",
+                    )?
+                    .query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?;
+                let Some((asset, Some(guess))) = row else { continue };
+                let Some(guess) = parse_stored::<NameGuess>(id, "guess", &guess) else {
+                    continue;
+                };
+                if word_extra_candidate(&guess, &rel_path) {
+                    self.place(id, &rel_path, Some(asset), &guess, ProbeSrc::Keep)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1201,6 +1292,14 @@ pub(crate) fn attach_fingerprints(
         ap.retry_pending()?;
     }
     ap.finish()
+}
+
+/// A film (or unrecognised) guess without provider ids, in an extras-named
+/// folder ([`group::extras_folder_by_word`]): it may be a film's extra.
+fn word_extra_candidate(guess: &NameGuess, rel_path: &str) -> bool {
+    matches!(guess.kind, GuessKind::Movie | GuessKind::Unknown)
+        && guess.ids.is_empty()
+        && group::extras_folder_by_word(rel_path).is_some()
 }
 
 /// No asset links to the item and no asset names it as primary.

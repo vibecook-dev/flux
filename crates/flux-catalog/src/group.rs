@@ -10,6 +10,8 @@
 //!   (S01E01-E02) is one asset linked to several episode items.
 //! - **Extras** attach to the movie/show that owns their folder
 //!   (`Movie (2010)/Featurettes/x.mkv`), or to the item named by the guess.
+//!   A folder named for extras by one of its words (`Film/Bonus Clips)/`,
+//!   [`extras_folder_by_word`]) holds extras of the one film beside it.
 //! - **Show folders**: a show owns the folders its episodes are in; a
 //!   subfolder that isn't a season (`Show/alt versions/`) is the same show,
 //!   so its files become more versions of the same episodes.
@@ -263,6 +265,53 @@ pub fn extras_parent_dir(rel_path: &str) -> Option<String> {
     } else {
         Some(dir.to_string())
     }
+}
+
+/// Words that mark a folder as a film's extras when they are among the
+/// folder name's words, though the name isn't exactly an extras folder
+/// (`Bonus Clips)`, `Bonus Trailers`). Plural forms only: "Extra",
+/// "Short" or "Trailer" alone are likelier to be part of a title.
+const EXTRA_FOLDER_WORDS: &[(&[&str], ExtraKind)] = &[
+    (&["behind", "the", "scenes"], ExtraKind::BehindTheScenes),
+    (&["deleted", "scenes"], ExtraKind::DeletedScene),
+    (&["featurettes"], ExtraKind::Featurette),
+    (&["trailers"], ExtraKind::Trailer),
+    (&["interviews"], ExtraKind::Interview),
+    (&["shorts"], ExtraKind::Short),
+    (&["clips"], ExtraKind::Other),
+    (&["extras"], ExtraKind::Other),
+];
+
+/// A file in a folder named for extras by one of its words, below another
+/// folder: `Film/1080p/Bonus Clips)/Song.mkv` → `(Other, "Film/1080p")`.
+/// Returns the extra kind and the folder that should hold the film.
+///
+/// Conservative, because a miss only leaves the file as a film of its own:
+/// never at the root (there is no film folder above), never for a folder
+/// with a year in its name (`Shorts (2009)/` is a film's own folder).
+/// [`crate::Writer::apply`] also requires that the folder above holds the
+/// files of exactly one film directly; otherwise the file stays a film.
+pub fn extras_folder_by_word(rel_path: &str) -> Option<(ExtraKind, &str)> {
+    let (dir, _) = rel_path.rsplit_once('/')?;
+    let (parent, name) = dir.rsplit_once('/')?;
+    if parent.is_empty() {
+        return None;
+    }
+    let lower = name.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_year = |w: &&str| {
+        w.len() == 4 && w.chars().all(|c| c.is_ascii_digit()) && (w.starts_with("19") || w.starts_with("20"))
+    };
+    if words.iter().any(is_year) {
+        return None;
+    }
+    EXTRA_FOLDER_WORDS
+        .iter()
+        .find(|(seq, _)| words.windows(seq.len()).any(|w| w == *seq))
+        .map(|&(_, kind)| (kind, parent))
 }
 
 // ---- placement (pure) -------------------------------------------------------
@@ -1051,7 +1100,8 @@ pub(crate) fn find_extra_parent(
                   ORDER BY instr(substr(f.rel_path, ?4), '/') = 0 DESC, f.rel_path
                   LIMIT 1",
             )?
-            .query_row(params![root_id, lo, hi, lo.len() as i64 + 1], |row| {
+            // `substr` counts characters, not bytes (non-ASCII folder names).
+            .query_row(params![root_id, lo, hi, lo.chars().count() as i64 + 1], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
@@ -1086,6 +1136,35 @@ pub(crate) fn find_extra_parent(
         return Ok(found);
     }
     Ok(None)
+}
+
+/// The one film whose files sit directly in `dir` (not in its subfolders);
+/// `None` when there is none, or more than one (a flat folder of films
+/// gives no single owner for extras).
+pub(crate) fn sole_movie_in_dir(conn: &Connection, root_id: Id, dir: &str) -> Result<Option<Id>> {
+    if dir.is_empty() {
+        return Ok(None);
+    }
+    let lo = format!("{dir}/");
+    let hi = format!("{dir}0");
+    let ids: Vec<Id> = conn
+        .prepare_cached(
+            "SELECT DISTINCT i.id FROM file f
+               JOIN asset a ON a.file_id = f.id
+               JOIN item i ON i.id = a.item_id
+              WHERE f.root_id = ?1 AND f.rel_path >= ?2 AND f.rel_path < ?3
+                AND instr(substr(f.rel_path, ?4), '/') = 0
+                AND f.state <> 'missing' AND i.kind = 'movie' AND i.parent_id IS NULL
+              LIMIT 2",
+        )?
+        .query_map(params![root_id, lo, hi, lo.chars().count() as i64 + 1], |row| {
+            row.get(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(match ids.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
