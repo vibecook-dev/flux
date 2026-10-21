@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "flux-catalog"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flume",
  "flux-core",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "flux-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "flux-hls"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "flux-meta"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "flux-names"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flux-core",
  "flux-test-media",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "flux-net"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "flux-probe"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flux-core",
  "flux-test-media",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "flux-scan"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "crossbeam-channel",
  "flux-catalog",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "flux-server"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "flux-test-media"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "fnv"
