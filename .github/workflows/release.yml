@@ -1,4 +1,4 @@
-# Builds and publishes one release: packages for four targets, SHA256SUMS,
+# Builds and publishes one release: packages for five targets, SHA256SUMS,
 # build-provenance attestations, the Docker image, then flips the draft
 # release that Release Please created to published. Called by
 # release-please.yml; run it by hand (Actions → Release → Run workflow) to
@@ -139,7 +139,9 @@ jobs:
       # an image pushed to a registry, so this is the default made explicit.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/flux-*.tar.gz
+          subject-path: |
+            dist/flux-*.tar.gz
+            dist/flux-*.zip
           create-storage-record: false
       # --clobber replaces the assets an earlier, failed run of this draft
       # uploaded. Check again that it is still a draft: it may have been

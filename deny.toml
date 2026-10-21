@@ -11,13 +11,14 @@
 # the ffmpeg/ffprobe programs as separate processes (docs/INSTALL.md).
 
 [graph]
-# The release targets (.github/workflows/release.yml). Crates only used on
-# other platforms (Windows, wasm, …) are left out of every check.
+# The release targets (.github/workflows/build.yml). Crates only used on
+# other platforms (wasm, …) are left out of every check.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
 ]
 all-features = true
 
