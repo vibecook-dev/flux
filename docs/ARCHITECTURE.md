@@ -136,7 +136,7 @@ Dependencies point strictly downward, with no cycles:
 
 ## Dogfooding: Truffle and Mille
 
-flux dogfoods two libraries by the same maintainer: [Mille](https://github.com/vibecook-dev/mille) (file walking and watching) and [Truffle](https://github.com/vibecook-dev/truffle) (embedded Tailscale). The changes flux needed were developed on `flux/dogfood` branches of each and are upstreamed from there. flux consumes Mille as a git dependency on `vibecook-dev/mille`, and Truffle's `truffle-core` from a pinned commit of `vibecook-dev/truffle` until the release with these changes (0.7.20) is on crates.io. To build against local checkouts, use the untracked `.cargo/config.toml` `[patch]` setup in [CONTRIBUTING.md](../CONTRIBUTING.md).
+flux dogfoods two libraries by the same maintainer: [Mille](https://github.com/vibecook-dev/mille) (file walking and watching) and [Truffle](https://github.com/vibecook-dev/truffle) (embedded Tailscale). The changes flux needed were developed on `flux/dogfood` branches of each and are upstreamed from there. flux consumes Mille as a git dependency on `vibecook-dev/mille`, and Truffle's `truffle-core` 0.7.20 (the release with these changes) from crates.io. To build against local checkouts, use the untracked `.cargo/config.toml` `[patch]` setup in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 - **Mille.** Changes:
   - A media-grade scan record (`ScanEntry` with dev, ino, btime, ns mtime) and a streaming `walk_scan` visitor with filter pushdown.

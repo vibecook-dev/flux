@@ -37,7 +37,7 @@ Some tests are `#[ignore]`d on purpose because they need a network service, a ke
 
 ## Local Mille and Truffle checkouts
 
-flux uses two libraries by the same maintainer: [Mille](https://github.com/vibecook-dev/mille) (file walking and watching) and [Truffle](https://github.com/vibecook-dev/truffle) (embedded Tailscale). `Cargo.toml` takes Mille as a git dependency on `vibecook-dev/mille`, and Truffle's `truffle-core` from a pinned commit of `vibecook-dev/truffle` until truffle-core 0.7.20 is on crates.io (then from crates.io).
+flux uses two libraries by the same maintainer: [Mille](https://github.com/vibecook-dev/mille) (file walking and watching) and [Truffle](https://github.com/vibecook-dev/truffle) (embedded Tailscale). `Cargo.toml` takes Mille as a git dependency on `vibecook-dev/mille`, and Truffle's `truffle-core` from crates.io.
 
 To work on flux against local checkouts of either, override them in a `.cargo/config.toml` at the repo root. That file is in `.gitignore`, so it never gets committed. Start from [`.cargo/config.toml.example`](.cargo/config.toml.example), or write:
 
@@ -48,13 +48,8 @@ To work on flux against local checkouts of either, override them in a `.cargo/co
 [patch."https://github.com/vibecook-dev/mille"]
 mille-core = { path = "../mille/crates/mille-core" }
 
-# While Cargo.toml pins truffle-core to a git commit:
-[patch."https://github.com/vibecook-dev/truffle"]
+[patch.crates-io]
 truffle-core = { path = "../truffle/crates/truffle-core" }
-
-# Once truffle-core comes from crates.io, use this instead:
-# [patch.crates-io]
-# truffle-core = { path = "../truffle/crates/truffle-core" }
 ```
 
 Then `cargo build` uses your checkouts. Check `cargo tree -i mille-core` and `cargo tree -i truffle-core` to confirm that it does: a crates.io patch must carry a version that satisfies `Cargo.toml`'s requirement, or Cargo ignores the patch and prints a warning. Don't commit the `Cargo.lock` changes a patch causes. Changes to Mille or Truffle themselves go to those repositories as their own pull requests.

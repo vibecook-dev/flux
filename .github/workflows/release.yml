@@ -76,6 +76,9 @@ jobs:
       ref: ${{ needs.prepare.outputs.ref }}
       version: ${{ needs.prepare.outputs.version }}
       targets: all
+      # A package without the sidecar can't run --tailnet embedded: fail the
+      # build, so nothing is uploaded, pushed or published.
+      require-sidecar: true
 
   assets:
     name: Upload assets

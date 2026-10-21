@@ -5,8 +5,10 @@ on:
   push:
     branches: [main]
   merge_group:
-  # Release Please opens its PR with GITHUB_TOKEN, which starts no
-  # pull_request runs; release-please.yml dispatches this workflow instead.
+  # Release Please's PR comes from github-actions[bot], which counts as a
+  # first-time contributor, so the PR's own pull_request runs wait for
+  # approval; release-please.yml also dispatches this workflow on the
+  # release branch (docs/RELEASING.md).
   workflow_dispatch:
 
 permissions:
@@ -50,6 +52,11 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      # The synthetic-clip tests skip themselves without ffmpeg, ffprobe or
+      # an encoder they need. Here that would hide a broken runner, so
+      # crates/flux-test-media/tests/required_tools.rs fails instead.
+      FLUX_TEST_REQUIRE_FFMPEG: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,8 +103,11 @@ jobs:
       # in phase_d's vfr_transcode_keeps_every_frame), so the macOS tests
       # transcode with libx264. VideoToolbox is checked on Apple hardware
       # (docs/ENCODERS.md); the step after this one shows what flux picks.
+      # Normally ~5 min; a hung test fails here instead of holding the
+      # runner (and this branch's CI queue) for the job's full hour.
       - name: Test
         id: test
+        timeout-minutes: 25
         run: |
           if [ "$RUNNER_OS" = macOS ]; then export FLUX_VIDEO_ENCODER=libx264; fi
           cargo test --locked --workspace
