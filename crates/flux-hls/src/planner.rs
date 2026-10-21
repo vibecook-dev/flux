@@ -250,7 +250,17 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         && selected_is_default
         && burn_in.is_none()
         && bitrate_issue.is_none();
-    if direct_ok {
+    // The file as is would play but for its sample entry: the remux below
+    // writes `hvc1`/`dvh1` (parameter sets in the sample entry).
+    let entry_quirk = direct_ok && quirks(&caps.client).needs_hvc1 && video.is_some_and(inband_hevc_entry);
+    if entry_quirk {
+        reasons.push(Reason::ClientQuirk {
+            note: "Apple players need HEVC parameter sets in the sample entry (hvc1), \
+                   so flux repackages this hev1 file (no quality loss)"
+                .into(),
+        });
+    }
+    if direct_ok && !entry_quirk {
         let audio = selected_audio
             .map(|a| AudioPlan {
                 track: a.index,
@@ -561,14 +571,32 @@ pub struct Quirks {
     /// proportional to the position. Open-GOP HEVC is transcoded for these
     /// clients. (Open-GOP H.264, non-IDR I pictures, seeks fine there.)
     pub idr_random_access_only: bool,
+    /// Apple's players (AVFoundation: Safari, every iOS browser, tvOS)
+    /// play HEVC in MP4 only from `hvc1`/`dvh1` sample entries, which hold
+    /// the parameter sets; a `hev1`/`dvhe` file (parameter sets in-band)
+    /// doesn't play as a file, and Apple's HLS spec requires `hvc1`. Such a
+    /// file is remuxed, which writes `hvc1`/`dvh1`.
+    pub needs_hvc1: bool,
 }
 
 /// The quirks of a client id such as `"web/firefox-157/macos"`.
 pub fn quirks(client: &str) -> Quirks {
     let c = client.to_ascii_lowercase();
+    let apple_native = ["ios/", "ipados/", "tvos/", "visionos/", "macos/"]
+        .iter()
+        .any(|p| c.starts_with(p));
+    // On iOS every browser is WebKit.
+    let webkit = c.starts_with("web/safari") || (c.starts_with("web/") && c.ends_with("/ios"));
     Quirks {
         idr_random_access_only: c.starts_with("web/firefox") && c.ends_with("/macos"),
+        needs_hvc1: apple_native || webkit,
     }
+}
+
+/// HEVC whose MP4 sample entry keeps the parameter sets in-band (`hev1`,
+/// or Dolby Vision's `dvhe`).
+fn inband_hevc_entry(v: &Track) -> bool {
+    v.codec == Codec::Hevc && matches!(v.codec_tag.as_str(), "hev1" | "dvhe")
 }
 
 /// Plans `probe` for a client whose quirks need facts only the playback
@@ -1448,5 +1476,127 @@ mod tests {
                 container: Container::Matroska
             })
         );
+    }
+
+    /// A 4K Dolby Vision profile 5 MP4 (`dvhe`, no compatible base layer),
+    /// 2.4:1, with AC-3 5.1.
+    fn dovi_p5_mp4() -> ProbeResult {
+        let v = Track {
+            codec_tag: "dvhe".into(),
+            profile: Some("Main 10".into()),
+            level: Some(150),
+            bit_depth: Some(10),
+            width: Some(3832),
+            height: Some(1592),
+            hdr: Some(HdrInfo {
+                format: HdrFormat::DolbyVision,
+                mastering: None,
+                cll: None,
+                dovi: Some(flux_core::DoviConfig {
+                    profile: 5,
+                    level: 6,
+                    rpu_present: true,
+                    el_present: false,
+                    bl_present: true,
+                    bl_signal_compat_id: 0,
+                }),
+            }),
+            ..track(0, TrackKind::Video, Codec::Hevc)
+        };
+        let a = Track {
+            channels: Some(6),
+            ..track(1, TrackKind::Audio, Codec::Ac3)
+        };
+        probe(Container::Mp4, vec![v, a])
+    }
+
+    /// Without Dolby Vision support the picture is tone-mapped (with the RPU
+    /// reshaping, see `encoders`) at the source's shape; a client that plays
+    /// profile 5 gets the video copied, in `dvh1` for Apple.
+    #[test]
+    fn dolby_vision_profile_5_tonemaps_or_copies() {
+        let p = dovi_p5_mp4();
+        let chrome = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
+        assert_eq!(
+            chrome.reasons.first(),
+            Some(&Reason::DoviProfileUnsupported { profile: 5 })
+        );
+        match chrome.video {
+            VideoOp::Transcode {
+                tonemap,
+                width,
+                height,
+                ..
+            } => assert_eq!((tonemap, width, height), (true, 1920, 796)),
+            other => panic!("{other:?}"),
+        }
+        let safari = plan(&p, &presets::safari_macos(), &PlanPrefs::default());
+        assert_eq!(safari.delivery, DeliveryFormat::HlsFmp4);
+        assert!(matches!(safari.video, VideoOp::Copy { .. }), "{safari:?}");
+        assert_eq!(safari.audio[0].op, AudioOp::Copy);
+        assert!(
+            matches!(safari.reasons[..], [Reason::ClientQuirk { .. }]),
+            "{:?}",
+            safari.reasons
+        );
+        // The same plan from the catalog's probe (no index): /plan and /play agree.
+        assert_eq!(
+            plan_from_probe(&p, &presets::safari_macos(), &PlanPrefs::default()),
+            safari
+        );
+    }
+
+    /// Apple's players need `hvc1`: a `hev1` MP4 that Chrome plays as a file
+    /// is remuxed (no transcode) for Safari, tvOS and iOS browsers.
+    #[test]
+    fn hev1_mp4_is_remuxed_for_apple_players() {
+        let hev1 = |tag: &str| {
+            let v = Track {
+                codec_tag: tag.into(),
+                profile: Some("Main".into()),
+                bit_depth: Some(8),
+                width: Some(1920),
+                height: Some(1080),
+                ..track(0, TrackKind::Video, Codec::Hevc)
+            };
+            let a = Track {
+                channels: Some(2),
+                ..track(1, TrackKind::Audio, Codec::Aac)
+            };
+            probe(Container::Mp4, vec![v, a])
+        };
+        let chrome = presets::chrome_desktop();
+        assert!(plan(&hev1("hev1"), &chrome, &PlanPrefs::default()).is_direct());
+        let safari = presets::safari_macos();
+        assert!(plan(&hev1("hvc1"), &safari, &PlanPrefs::default()).is_direct());
+        let p = plan(&hev1("hev1"), &safari, &PlanPrefs::default());
+        assert_eq!(p.delivery, DeliveryFormat::HlsFmp4);
+        assert_eq!(p.label(), "Direct stream");
+        assert!(p.explain()[0].contains("hvc1"), "{:?}", p.explain());
+
+        for (client, apple) in [
+            ("web/safari-26/macos", true),
+            ("web/chrome-141/ios", true),
+            ("tvos/appletv4k-gen4", true),
+            ("web/chrome-141/macos", false),
+            ("web/firefox-157/macos", false),
+            ("web/edge-141/windows", false),
+        ] {
+            assert_eq!(quirks(client).needs_hvc1, apple, "{client}");
+        }
+    }
+
+    /// No size known (an unrecognised sample entry): the 1080p box is kept
+    /// and the transcode pads instead of stretching (`encoders`).
+    #[test]
+    fn transcode_of_unknown_size_uses_the_1080p_box() {
+        let p = probe(
+            Container::Mp4,
+            vec![track(0, TrackKind::Video, Codec::Mpeg4Part2)],
+        );
+        match plan(&p, &presets::chrome_desktop(), &PlanPrefs::default()).video {
+            VideoOp::Transcode { width, height, .. } => assert_eq!((width, height), (1920, 1080)),
+            other => panic!("{other:?}"),
+        }
     }
 }
