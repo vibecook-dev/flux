@@ -160,6 +160,11 @@
       "shows",
       "mixed"
     ],
+    "MetadataSource": [
+      "none",
+      "tmdb",
+      "exports"
+    ],
     "Role": [
       "owner",
       "admin",
@@ -1171,6 +1176,9 @@
       "ttff_ms": 240
     },
     "ServerInfo": {
+      "metadata": {
+        "source": "tmdb"
+      },
       "name": "flux",
       "path": "tailnet-direct",
       "tailnet_name": "flux.tail1234.ts.net",

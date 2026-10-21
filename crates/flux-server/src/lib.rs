@@ -23,6 +23,7 @@ pub mod guard;
 pub mod jobs;
 mod lru;
 pub mod media;
+pub mod metadata;
 pub mod net;
 pub mod play;
 pub mod roots;

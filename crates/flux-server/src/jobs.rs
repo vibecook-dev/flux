@@ -101,18 +101,7 @@ impl Ctx {
     }
 
     fn export_files(dir: &Path) -> (Option<PathBuf>, Option<PathBuf>) {
-        let latest = |prefix: &str| -> Option<PathBuf> {
-            std::fs::read_dir(dir)
-                .ok()?
-                .flatten()
-                .filter(|e| {
-                    let n = e.file_name().to_string_lossy().into_owned();
-                    n.starts_with(prefix) && n.ends_with(".json.gz")
-                })
-                .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-                .map(|e| e.path())
-        };
-        (latest("movie_ids_"), latest("tv_series_ids_"))
+        crate::metadata::export_files(dir)
     }
 
     fn can_match(&self, st: &AppState) -> bool {
@@ -350,11 +339,17 @@ async fn claim(st: &AppState, kind: &str, limit: u32, lease: Duration) -> Vec<Jo
 }
 
 async fn finish(st: &AppState, job: &JobLease, result: JobResult) {
+    let reason = match &result {
+        JobResult::Fail(e) | JobResult::Retry(e) => Some(e.clone()),
+        JobResult::Done => None,
+    };
     match st.catalog.writer().finish_job(job.id, job.attempt, result).await {
         Ok(Finished::LeaseLost) => {
             tracing::debug!(job = job.id, kind = %job.kind, "lease lost; result discarded")
         }
-        Ok(Finished::Failed) => tracing::debug!(job = job.id, kind = %job.kind, "job failed"),
+        Ok(Finished::Failed) => {
+            tracing::debug!(job = job.id, kind = %job.kind, reason = reason.as_deref().unwrap_or("?"), "job failed")
+        }
         Ok(_) => {}
         Err(e) => tracing::debug!(job = job.id, error = %e, "finish_job failed"),
     }

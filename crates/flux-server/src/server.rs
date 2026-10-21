@@ -135,6 +135,7 @@ pub async fn start_with(
         ready_ms = format!("{ready_ms:.1}"),
         "flux is ready"
     );
+    crate::metadata::log_startup(&cfg.tmdb_exports);
 
     // Background work, after the API is up.
     {

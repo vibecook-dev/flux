@@ -1,5 +1,6 @@
 //! Setting up libraries: a folder another library already has is refused
-//! however it is spelled (API and `--library` flags).
+//! however it is spelled (API and `--library` flags), and the server says
+//! when nothing can match titles (no TMDB key, no offline exports).
 
 mod common;
 
@@ -7,6 +8,7 @@ use std::time::Instant;
 
 use axum::http::StatusCode;
 use common::*;
+use flux_core::api::{MetadataSource, ServerInfo};
 use flux_core::LibraryKind;
 use flux_server::config::LibrarySpec;
 use flux_server::{api::router, build_state, Config};
@@ -95,4 +97,32 @@ async fn library_flags_for_the_same_folder_stop_the_start() {
     let (st, _) = build_state(cfg, Instant::now(), None).await.unwrap();
     let libs = st.catalog.read(flux_catalog::read::list_libraries).await.unwrap();
     assert_eq!(libs.len(), 1);
+}
+
+/// `GET /api/v1/server` says where titles come from: nothing, until TMDB's
+/// ID exports appear in the exports folder (a TMDB key in this test's
+/// environment, if any, wins over both).
+#[tokio::test]
+async fn server_info_names_the_metadata_source() {
+    let dir = scratch("metadata-source");
+    let cfg = Config::for_tests(dir.path().join("data"));
+    let exports = cfg.tmdb_exports.clone();
+    let (st, _) = build_state(cfg, Instant::now(), None).await.unwrap();
+    let app = router(st);
+    let key = flux_meta::tmdb::TmdbAuth::from_env().is_some();
+    let source = |s: MetadataSource| if key { MetadataSource::Tmdb } else { s };
+
+    let info: ServerInfo = get(&app, "/api/v1/server").await.json();
+    assert_eq!(info.metadata.source, source(MetadataSource::None));
+    let raw: serde_json::Value = get(&app, "/api/v1/server").await.json();
+    assert_eq!(
+        raw["metadata"]["source"],
+        if key { "tmdb" } else { "none" },
+        "{raw}"
+    );
+
+    std::fs::create_dir_all(&exports).unwrap();
+    std::fs::write(exports.join("movie_ids_10_18_2026.json.gz"), b"").unwrap();
+    let info: ServerInfo = get(&app, "/api/v1/server").await.json();
+    assert_eq!(info.metadata.source, source(MetadataSource::Exports));
 }

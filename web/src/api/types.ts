@@ -318,6 +318,20 @@ export interface ServerInfo {
   path: NetworkPath;
   /** MagicDNS name when the server is on a tailnet; `null` = not connected. */
   tailnet_name: string | null;
+  /** Where titles and artwork come from. */
+  metadata: MetadataInfo;
+}
+
+export const METADATA_SOURCES = ['none', 'tmdb', 'exports'] as const;
+/**
+ * What the server matches titles against: nothing (file names and video
+ * frames only), TMDB online with the server's key, or TMDB's offline ID
+ * exports (suggestions only).
+ */
+export type MetadataSource = (typeof METADATA_SOURCES)[number];
+
+export interface MetadataInfo {
+  source: MetadataSource;
 }
 
 export interface CreateLibrary {

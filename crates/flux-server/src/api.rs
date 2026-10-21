@@ -69,6 +69,7 @@ async fn server_info(State(st): State<Arc<AppState>>, caller: Caller) -> Json<Se
             .tailnet_name
             .clone()
             .or_else(|| st.tailnet.info().dns_name),
+        metadata: crate::metadata::info(&st.cfg.tmdb_exports),
     })
 }
 
