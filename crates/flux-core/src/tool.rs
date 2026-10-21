@@ -51,6 +51,7 @@ pub fn background_command(program: impl AsRef<OsStr>) -> Command {
 
 /// [`command`] at `priority`.
 pub fn with_priority(program: impl AsRef<OsStr>, priority: Priority) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
