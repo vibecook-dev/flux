@@ -52,6 +52,11 @@ fn main() -> ExitCode {
             std::env::var_os("NO_COLOR"),
         ))
         .init();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        data_dir = %cfg.data_dir.display(),
+        "starting"
+    );
 
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

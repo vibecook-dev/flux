@@ -104,14 +104,14 @@ target/release/flux-server \
   --library TV:shows:/path/to/TV
 ```
 
-Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` (macOS) or `~/.local/share/flux` (Linux) unless you pass `--data-dir`.
+Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` (macOS) or `~/.local/share/flux` (Linux) unless you pass `--data-dir`; the log's first line names the folder.
 
 **Options** (`flux-server --help`). Each flag can also come from its environment variable, or from a TOML file (`--config`). Flags win over variables, and variables win over the file.
 
 | Flag | Variable | Default and meaning |
 |---|---|---|
 | `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. |
-| `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `~/.local/share/flux` elsewhere |
+| `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `%LOCALAPPDATA%\flux` on Windows, `$XDG_DATA_HOME/flux` or `~/.local/share/flux` elsewhere |
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |
 | `--tailnet off\|embedded\|system` | `FLUX_TAILNET` | `off`. See [Remote access](#remote-access). |

@@ -150,8 +150,9 @@ pub struct Cli {
     /// TOML config file.
     #[arg(long, env = "FLUX_CONFIG", value_name = "FILE")]
     pub config: Option<PathBuf>,
-    /// Where flux keeps its catalog, caches and artwork
-    /// [default: ~/Library/Application Support/flux on macOS, ~/.local/share/flux elsewhere].
+    /// Where flux keeps its catalog, caches and artwork [default:
+    /// ~/Library/Application Support/flux on macOS, %LOCALAPPDATA%\flux on
+    /// Windows, $XDG_DATA_HOME/flux or ~/.local/share/flux elsewhere].
     #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
     /// A library to create on first run (repeatable; ';'-separated in the
@@ -333,11 +334,13 @@ impl Config {
             }
             None => FileConfig::default(),
         };
-        let data_dir = cli
-            .data_dir
-            .or(file.data_dir)
-            .map(expand_home)
-            .unwrap_or_else(default_data_dir);
+        let data_dir = match cli.data_dir.or(file.data_dir) {
+            Some(d) => expand_home(d),
+            None => default_data_dir()?,
+        };
+        // Logged at startup and shown by --check as the folder flux uses,
+        // whatever the working directory was.
+        let data_dir = std::path::absolute(&data_dir).unwrap_or(data_dir);
         let mut libraries = file.libraries;
         for l in cli.libraries {
             if !libraries.iter().any(|x| x.name == l.name) {
@@ -456,28 +459,50 @@ impl Config {
     }
 }
 
+/// `~/x` → `$HOME/x` (on Windows `%USERPROFILE%` when `HOME` is unset).
 fn expand_home(p: PathBuf) -> PathBuf {
-    match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| cfg!(windows).then(|| std::env::var_os("USERPROFILE")).flatten());
+    match (p.strip_prefix("~"), home) {
         (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => p,
     }
 }
 
-/// `~/Library/Application Support/flux` (macOS), `$XDG_DATA_HOME/flux` or
-/// `~/.local/share/flux` (elsewhere).
-pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "macos") {
-        if let Some(h) = home {
-            return h.join("Library/Application Support/flux");
-        }
+/// `~/Library/Application Support/flux` (macOS), `%LOCALAPPDATA%\flux`
+/// (Windows), `$XDG_DATA_HOME/flux` or `~/.local/share/flux` (elsewhere).
+pub fn default_data_dir() -> anyhow::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        // The known folder, not HOME: OpenSSH and Git shells set HOME to the
+        // profile folder, where a Unix-style `.local/share` doesn't belong.
+        crate::win32::local_app_data()
+            .map(|d| d.join("flux"))
+            .context("finding %LOCALAPPDATA% for the data dir; pass --data-dir")
     }
-    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|x| !x.is_empty()) {
-        return PathBuf::from(x).join("flux");
-    }
-    match home {
-        Some(h) => h.join(".local/share/flux"),
-        None => PathBuf::from("flux-data"),
+    #[cfg(not(windows))]
+    Ok(unix_data_dir(
+        std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("XDG_DATA_HOME")
+            .filter(|x| !x.is_empty())
+            .map(PathBuf::from),
+        cfg!(target_os = "macos"),
+    ))
+}
+
+/// [`default_data_dir`] off Windows, from `HOME` and `XDG_DATA_HOME`;
+/// without either, `flux-data` in the working directory (which
+/// [`Config::resolve`] makes absolute).
+#[cfg_attr(windows, allow(dead_code))]
+fn unix_data_dir(home: Option<PathBuf>, xdg_data_home: Option<PathBuf>, macos: bool) -> PathBuf {
+    match (home, xdg_data_home) {
+        (Some(h), _) if macos => h.join("Library/Application Support/flux"),
+        (_, Some(x)) => x.join("flux"),
+        (Some(h), None) => h.join(".local/share/flux"),
+        (None, None) => PathBuf::from("flux-data"),
     }
 }
 
@@ -641,6 +666,36 @@ path = "/m"
     #[test]
     fn unknown_toml_keys_are_rejected() {
         assert!(toml::from_str::<FileConfig>("prot = 1").is_err());
+    }
+
+    /// Windows used `%HOME%\.local/share/flux` (OpenSSH sets HOME) or, with
+    /// no HOME, `flux-data` in whatever the working directory was.
+    #[test]
+    fn the_data_dir_is_per_user_and_absolute() {
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            unix_data_dir(home.clone(), None, true),
+            Path::new("/home/u/Library/Application Support/flux")
+        );
+        assert_eq!(
+            unix_data_dir(home.clone(), None, false),
+            Path::new("/home/u/.local/share/flux")
+        );
+        assert_eq!(
+            unix_data_dir(home, Some("/x".into()), false),
+            Path::new("/x/flux")
+        );
+        assert_eq!(unix_data_dir(None, None, false), Path::new("flux-data"));
+        #[cfg(windows)]
+        {
+            let local = crate::win32::local_app_data().unwrap();
+            assert_eq!(default_data_dir().unwrap(), local.join("flux"));
+        }
+        let cfg =
+            Config::resolve(Cli::try_parse_from(["flux-server", "--data-dir", "rel-data"]).unwrap()).unwrap();
+        assert!(cfg.data_dir.is_absolute(), "{}", cfg.data_dir.display());
+        assert!(cfg.data_dir.ends_with("rel-data"));
+        assert_eq!(cfg.tmdb_exports, cfg.data_dir.join("tmdb-exports"));
     }
 
     #[test]
