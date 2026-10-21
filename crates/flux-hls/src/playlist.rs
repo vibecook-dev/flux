@@ -17,7 +17,9 @@
 use std::fmt::Write as _;
 
 use flux_core::api::AudioRef;
-use flux_core::{AudioOp, AudioPlan, Codec, DeliveryFormat, PlaybackPlan, SubtitleOp, TrackKind};
+use flux_core::{
+    AudioOp, AudioPlan, Codec, DeliveryFormat, PlaybackPlan, SubtitleOp, SubtitlePlan, TrackKind,
+};
 
 use crate::asset::Asset;
 use crate::index::{bcp47, IndexTrack};
@@ -338,7 +340,45 @@ fn language_name(code: &str) -> &str {
         "ger" | "deu" | "de" => "German",
         "spa" | "es" => "Spanish",
         "ita" | "it" => "Italian",
+        "chi" | "zho" | "zh" => "Chinese",
+        "zh-Hans" => "Chinese (Simplified)",
+        "zh-Hant" => "Chinese (Traditional)",
+        "kor" | "ko" => "Korean",
         other => other,
+    }
+}
+
+/// How subtitle rendition `p` of a plan is shown: (name, language, forced),
+/// from the track of `asset` it is, or from its subtitle file (the title
+/// its name carries, else its language). `None` when it is neither.
+pub fn subtitle_label(asset: &Asset, p: &SubtitlePlan) -> Option<(String, Option<String>, bool)> {
+    match &p.file {
+        Some(f) => {
+            let lang = f.language.as_deref().map(language_name);
+            let mut name = f
+                .title
+                .clone()
+                .filter(|t| !t.is_empty())
+                .or_else(|| lang.map(str::to_string))
+                .unwrap_or_else(|| "Subtitles".to_string());
+            if f.hearing_impaired && f.title.is_none() {
+                name.push_str(" SDH");
+            }
+            Some((name, f.language.clone(), f.forced))
+        }
+        None => {
+            let t = asset
+                .index
+                .track(p.track)
+                .filter(|t| t.kind == TrackKind::Subtitle)?;
+            let lang = t.language.as_deref().map(language_name).unwrap_or("Unknown");
+            let name = t
+                .name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| lang.to_string());
+            Some((name, t.language.clone(), t.forced))
+        }
     }
 }
 
@@ -449,24 +489,13 @@ pub fn master_playlist(asset: &Asset, plan: &PlaybackPlan) -> String {
         }
     }
 
-    // Subtitles
-    let subs: Vec<u32> = plan
-        .subtitles
-        .iter()
-        .filter(|p| p.op == SubtitleOp::WebVtt)
-        .map(|p| p.track)
-        .collect();
+    // Subtitles: text tracks of the file and text subtitle files beside it.
     let mut sub_names: Vec<String> = Vec::new();
-    for &track in &subs {
-        let Some(t) = asset.index.track(track).filter(|t| t.kind == TrackKind::Subtitle) else {
+    for p in plan.subtitles.iter().filter(|p| p.op == SubtitleOp::WebVtt) {
+        let track = p.track;
+        let Some((mut name, language, forced)) = subtitle_label(asset, p) else {
             continue;
         };
-        let lang = t.language.as_deref().map(language_name).unwrap_or("Unknown");
-        let mut name = t
-            .name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| lang.to_string());
         while sub_names.contains(&name) {
             name.push('\'');
         }
@@ -476,14 +505,14 @@ pub fn master_playlist(asset: &Asset, plan: &PlaybackPlan) -> String {
             "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"{}\"",
             quote(&name)
         );
-        if let Some(l) = &t.language {
+        if let Some(l) = &language {
             let _ = write!(s, ",LANGUAGE=\"{}\"", bcp47(l));
         }
         let _ = writeln!(
             s,
             ",DEFAULT=NO,AUTOSELECT={},FORCED={},URI=\"{}\"",
-            if t.forced { "YES" } else { "NO" },
-            if t.forced { "YES" } else { "NO" },
+            if forced { "YES" } else { "NO" },
+            if forced { "YES" } else { "NO" },
             HlsResource::Playlist(Rendition::Subtitle(track)).path()
         );
     }

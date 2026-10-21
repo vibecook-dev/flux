@@ -832,9 +832,60 @@ pub fn pipeline(
     }
 }
 
+/// [`pipeline`] with software decode and filters, still encoding with
+/// `enc`: for a run that draws subtitles into the picture, whose overlay
+/// needs the frames in memory ([`crate::burn`]). Returns it with `filters`
+/// ending in the encoder's software pixel format, and the filter that then
+/// hands the frames to the encoder, if it needs one (`hwupload`, VAAPI).
+pub fn software_pipeline(
+    caps: &FfmpegCaps,
+    enc: VideoEncoder,
+    inp: &PipelineInput,
+    vaapi_device: &Path,
+) -> (VideoPipeline, Option<&'static str>) {
+    // Without hwaccels every encoder takes its software chain.
+    let sw = FfmpegCaps {
+        hwaccels: Default::default(),
+        ..caps.clone()
+    };
+    let mut p = pipeline(&sw, enc, inp, vaapi_device);
+    let upload = match p.filters.strip_suffix(",hwupload") {
+        Some(f) => {
+            p.filters = f.to_string();
+            Some("hwupload")
+        }
+        None => None,
+    };
+    (p, upload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn burn_in_runs_decode_in_software() {
+        let c = caps(
+            &["scale_cuda", "scale_vaapi", "scale_vt", "tonemapx"],
+            &["cuda", "vaapi", "videotoolbox"],
+            &[],
+        );
+        for enc in [
+            VideoEncoder::Nvenc,
+            VideoEncoder::VideoToolbox,
+            VideoEncoder::Libx264,
+        ] {
+            let (p, upload) = software_pipeline(&c, enc, &input(Codec::H264), Path::new(DEV));
+            assert!(!p.hw_decode && p.input_args.is_empty(), "{enc}: {p:?}");
+            assert!(p.filters.starts_with("scale=1280:720"), "{enc}: {}", p.filters);
+            assert_eq!(upload, None);
+        }
+        // VAAPI encodes from its own surfaces: upload after the overlay.
+        let (p, upload) = software_pipeline(&c, VideoEncoder::Vaapi, &input(Codec::H264), Path::new(DEV));
+        assert!(!p.hw_decode && !p.filters.contains("hwupload"), "{p:?}");
+        assert!(p.filters.ends_with("format=nv12"), "{}", p.filters);
+        assert_eq!(upload, Some("hwupload"));
+    }
 
     fn caps(filters: &[&str], hwaccels: &[&str], decoders: &[&str]) -> FfmpegCaps {
         FfmpegCaps {
