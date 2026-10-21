@@ -13,6 +13,9 @@ therefore run on the **release dry run** artifacts
 Truffle 0.7.20's sidecar. Attestations and the versioned Docker image only
 exist after a real release; they are listed under [Open items](#open-items).
 
+v0.1.0-alpha.1 was published on 2026-10-21. What was checked then, and what
+is still open, is in [After the release](#after-the-release).
+
 | Area | Result |
 |---|---|
 | [Leaks](#1-leaks) | No secrets, personal paths, private notes or private tailnet data. One error message referred to the dev setup; fixed in #10 |
@@ -232,27 +235,57 @@ In order:
    ```markdown
    - **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64, where video transcodes use libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs. Windows compiles but is not supported.
    ```
-3. **Cut v0.1.0-alpha.1.** Run the release dry run on `main` and check that its
-   summary shows the sidecar in all four packages. Approve the release PR's
-   `pull_request` CI run if it shows *action required*, then merge #1. This is
-   the first time `release.yml` runs for real (publish, attestations, the
-   versioned image); if a step fails, re-run *Release* with the tag
-   (RELEASING.md).
-4. **After the release:**
-   - `gh release view v0.1.0-alpha.1`;
-   - `gh attestation verify <tarball> --repo vibecook-dev/flux` for each
-     package;
-   - `docker buildx imagetools inspect ghcr.io/vibecook-dev/flux:0.1.0-alpha.1`
-     (amd64 and arm64);
-   - update the README lines that say there are no releases yet (Status,
-     Install, Operations).
+3. **Done: v0.1.0-alpha.1 is out.** Release Please's PR #1 was
+   squash-merged as `f5b29ac` (2026-10-21, 05:22 UTC). Release Please
+   tagged `v0.1.0-alpha.1` at that commit and called `release.yml` in run
+   [39549172609](https://github.com/vibecook-dev/flux/actions/runs/39549172609):
+   12 jobs passed, and *Release / Docker / Build* was skipped as designed
+   (the release builds the image from its own packages). The run published
+   <https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1> as a
+   pre-release at 05:32:50 UTC.
+4. **Done: after the release.** The checks, from a fresh clone of the tag
+   and the downloaded assets:
+   - `gh release view v0.1.0-alpha.1`: a pre-release, not a draft, target
+     `f5b29ac`, with the four packages,
+     `jellyfin-ffmpeg-8.1.3-1-source.tar.gz` and `SHA256SUMS`.
+     `gh api repos/vibecook-dev/flux/releases/latest` returns 404: an alpha
+     is not the Latest release, as intended. `shasum -a 256 -c SHA256SUMS`
+     passes, and each package's `bin/sidecar-slim` matches its pin.
+   - `gh attestation verify <tarball> --repo vibecook-dev/flux` passes for
+     all four packages, also with
+     `--signer-workflow vibecook-dev/flux/.github/workflows/release.yml` and
+     `--source-digest` set to the tagged commit. `--source-ref
+     refs/tags/v0.1.0-alpha.1` fails, because the attestation records
+     `refs/heads/main` (Release Please runs the release from the push to
+     `main`); INSTALL.md now shows the stronger command.
+   - The image, read through the anonymous registry API instead of
+     `docker buildx imagetools inspect` (no Docker daemon was used):
+     `ghcr.io/vibecook-dev/flux:0.1.0-alpha.1` is the index
+     `sha256:f2c7e6d739f6e613c428c58f80faf91980c7866bd15b6a235fcb47493dd4c62e`,
+     with linux/amd64 (`sha256:05e192e6…`), linux/arm64 (`sha256:7a0203f0…`)
+     and their SBOM and provenance attestation manifests. The labels give
+     version `0.1.0-alpha.1` and revision `f5b29ac`, and the image runs as
+     1000:1000. `gh attestation verify
+     oci://ghcr.io/vibecook-dev/flux:0.1.0-alpha.1 --repo vibecook-dev/flux`
+     passes with no login, because the package is public. There is no
+     `latest` tag, as intended for a pre-release, and `edge` is `f5b29ac`
+     too.
+   - The packages run. `flux-server --version` prints `0.1.0-alpha.1`.
+     `scripts/package/smoke-test.sh` passes on the aarch64-apple-darwin
+     package, started through a symlink, and INSTALL's release steps work on
+     macOS (Apple Silicon). The x86_64-apple-darwin package, which CI
+     doesn't smoke-test, answers `/api/v1/server` and serves the web client
+     under Rosetta.
+   - README's Status, Install and Operations lines now describe the
+     release (see [After the release](#after-the-release)).
 5. **Done:** **Make the container package public** (org Packages → flux →
    Settings → Change visibility). Anonymous pulls now succeed.
 6. **The ruleset named `main`** was added by the owner to protect `main`, but
    its include list is empty, so it applies to nothing. `protect-main` is the
    one in force on the default branch.
-7. **Dependabot PRs #2–#5** were opened against the initial commit and fail
-   CI. Rebase or close them.
+7. **Dependabot PRs #2–#5** were opened against the initial commit and
+   failed CI. After the release, `gh pr checks` shows `CI OK` passing on #2,
+   #3 and #4. #5 (msw 2.15.0 → 3.0.3) fails its `Web` job: fix or close it.
 8. Optional hardening: turn on *Require actions to be pinned to a full-length
    commit SHA* (Settings → Actions); everything already complies.
 9. **Run the corpus tests** from a fresh clone. Use no `.cargo/config.toml`
@@ -268,3 +301,44 @@ In order:
       (ENCODERS.md).
     - flux-net's sidecar lookup has no `.exe` on Windows.
     - The packages ship the unused `mockServiceWorker.js`.
+
+## After the release
+
+Checked on 2026-10-21 against the published v0.1.0-alpha.1 (the tag and
+`main` both at `f5b29ac`), with the results in [Open items](#open-items) 3
+and 4.
+
+Fixed in this PR (docs only):
+
+- README said there were no releases yet (Status, Install, Operations) and
+  never linked INSTALL.md from its Install section.
+- INSTALL's systemd unit reads `/etc/flux.toml`, which no step created.
+  `flux-server --config <missing file>` exits 2, so the service could not
+  start. INSTALL now creates the file, with libraries and `lan`, and
+  the unit sets `NO_COLOR=1` so the journal gets no colour codes.
+- Running INSTALL's steps again for a new version moved it *into*
+  `/opt/flux` and kept the old binary on `PATH`. INSTALL now has an
+  Upgrading section.
+- INSTALL promised macOS 11 for the whole package, but the bundled sidecar
+  needs macOS 13 (below).
+- Smaller fixes: INSTALL's attestation command now checks the workflow and
+  the commit; the macOS quarantine note comes before the install steps;
+  INSTALL no longer says ffmpeg goes "next to" `flux-server`, a place flux
+  never looks; RELEASING's manifest line and its description of the image
+  smoke test (linux/amd64 only); and SECURITY's supported versions now
+  include pre-releases.
+
+Still open:
+
+- **The macOS sidecar needs macOS 13.** Truffle 0.7.20's macOS
+  `sidecar-slim` is built with Go 1.27.2 and declares `minos 13.0`
+  (`otool -l`), while `flux-server` declares `minos 11.0`. Go 1.27 requires
+  macOS 13 Ventura or later (its release notes), so `--tailnet embedded`
+  needs macOS 13 even though the server runs on 11. The docs now say so.
+  How the sidecar fails on macOS 11 or 12 was not tested (no such machine).
+  To support them, Truffle would have to build its macOS sidecars with
+  Go 1.24 (macOS 11) or Go 1.26 (macOS 12). A `minos` check in the package
+  smoke test would catch the next rise.
+- **The README inside the v0.1.0-alpha.1 packages and image** is the old one
+  that says there are no releases. The published assets stay as they are;
+  v0.1.0-alpha.2 will carry the new README.
