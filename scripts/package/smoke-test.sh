@@ -2,7 +2,9 @@
 # Unpacks a flux release package and checks it runs: `flux-server --version`,
 # then a server on 127.0.0.1:<port> with an empty library and a scratch data
 # dir, `GET /` (the web client) and `GET /api/v1/server`, then SIGTERM.
-# The tailnet stays off.
+# The server is started through a symlink, as docs/INSTALL.md installs it,
+# so it must find its web client next to the real binary. The tailnet stays
+# off.
 #
 # Usage: scripts/package/smoke-test.sh dist/flux-<version>-<target>.tar.gz
 #          [--port 18097] [--dir DIR] [--keep]
@@ -37,6 +39,7 @@ else
   rm -rf "$dir"
   mkdir -p "$dir"
 fi
+dir=$(cd "$dir" && pwd) # absolute, for the symlink below
 pid=""
 cleanup() {
   if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then kill -9 "$pid" 2> /dev/null || true; fi
@@ -65,8 +68,10 @@ if case "$help" in *--check*) true ;; *) false ;; esac; then
   "$bin" --check || echo "(--check reported a problem; not fatal here)"
 fi
 
-mkdir -p "$dir/data" "$dir/library"
+mkdir -p "$dir/data" "$dir/library" "$dir/link"
 log="$dir/server.log"
+# Like `ln -sf /opt/flux/bin/flux-server /usr/local/bin/flux-server`.
+ln -s "$bin" "$dir/link/flux-server"
 # Run from an empty directory so ./web/dist can't stand in for the bundled
 # client: the server must find share/flux/web next to its binary. No FLUX_*
 # variable from the caller's environment (FLUX_LAN, FLUX_WEB_DIR, …) applies.
@@ -74,7 +79,7 @@ unset_flux=()
 while IFS= read -r v; do unset_flux+=(-u "$v"); done < <(compgen -e | grep '^FLUX_' || true)
 (
   cd "$dir"
-  exec env ${unset_flux[@]+"${unset_flux[@]}"} FLUX_TAILNET=off "$bin" \
+  exec env ${unset_flux[@]+"${unset_flux[@]}"} FLUX_TAILNET=off "$dir/link/flux-server" \
     --data-dir "$dir/data" --bind 127.0.0.1 --port "$port" \
     --library "Smoke:movies:$dir/library" --tailnet off
 ) > "$log" 2>&1 &
@@ -95,7 +100,9 @@ if [ "$version" != dev ]; then
 fi
 
 page=$(curl -fsS "$base/") || { cat "$log" >&2; die "GET / failed"; }
-case "$page" in *'<div id="root">'* | *'<!doctype html>'* | *'<!DOCTYPE html>'*) ;; *) die "GET / is not the web client" ;; esac
+# Only the built client has the root element; the page flux serves when it
+# can't find the client is HTML too.
+case "$page" in *'<div id="root">'*) ;; *) cat "$log" >&2; die "GET / is not the web client" ;; esac
 echo "== GET /: $(printf '%s' "$page" | wc -c | tr -d ' ') bytes of HTML"
 
 kill -TERM "$pid"

@@ -89,8 +89,11 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
         .into_iter()
         .chain(std::env::var_os("TRUFFLE_SIDECAR_PATH").map(PathBuf::from))
         .chain(
+            // The real binary's directory, also when it was started through
+            // a symlink (macOS reports the symlink's path).
             std::env::current_exe()
                 .ok()
+                .map(|exe| exe.canonicalize().unwrap_or(exe))
                 .and_then(|exe| exe.parent().map(|dir| dir.join("sidecar-slim"))),
         );
     for candidate in candidates {
