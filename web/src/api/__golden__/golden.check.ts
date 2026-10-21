@@ -286,7 +286,31 @@ export const goldenItemDetail = {
           "example warning"
         ]
       },
-      "size": 60000000000
+      "size": 60000000000,
+      "subtitle_files": [
+        {
+          "codec": "subrip",
+          "forced": true,
+          "hearing_impaired": false,
+          "language": "zh-Hans",
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt",
+          "size": 48213,
+          "title": null,
+          "track": 1048580
+        },
+        {
+          "codec": "pgs",
+          "forced": false,
+          "hearing_impaired": false,
+          "language": null,
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Subs/Dune Part Two (2024).Commentary.sup",
+          "size": 9000000,
+          "title": "Commentary",
+          "track": 1048581
+        }
+      ]
     }
   ],
   "available": true,
@@ -542,16 +566,35 @@ export const goldenPlayResponse = {
     ],
     "subtitles": [
       {
+        "file": null,
         "op": {
           "op": "web_vtt"
         },
         "track": 2
       },
       {
+        "file": null,
         "op": {
           "op": "client_render"
         },
         "track": 3
+      },
+      {
+        "file": {
+          "codec": "subrip",
+          "forced": true,
+          "hearing_impaired": false,
+          "language": "zh-Hans",
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt",
+          "size": 48213,
+          "title": null,
+          "track": 1048580
+        },
+        "op": {
+          "op": "web_vtt"
+        },
+        "track": 1048580
       }
     ],
     "video": {
@@ -745,16 +788,35 @@ export const goldenPlanPreview = {
     ],
     "subtitles": [
       {
+        "file": null,
         "op": {
           "op": "web_vtt"
         },
         "track": 2
       },
       {
+        "file": null,
         "op": {
           "op": "client_render"
         },
         "track": 3
+      },
+      {
+        "file": {
+          "codec": "subrip",
+          "forced": true,
+          "hearing_impaired": false,
+          "language": "zh-Hans",
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt",
+          "size": 48213,
+          "title": null,
+          "track": 1048580
+        },
+        "op": {
+          "op": "web_vtt"
+        },
+        "track": 1048580
       }
     ],
     "video": {
@@ -830,6 +892,7 @@ export const goldenPlans = [
     ],
     "subtitles": [
       {
+        "file": null,
         "op": {
           "op": "burn_in"
         },
@@ -867,16 +930,35 @@ export const goldenPlans = [
     ],
     "subtitles": [
       {
+        "file": null,
         "op": {
           "op": "web_vtt"
         },
         "track": 2
       },
       {
+        "file": null,
         "op": {
           "op": "client_render"
         },
         "track": 3
+      },
+      {
+        "file": {
+          "codec": "subrip",
+          "forced": true,
+          "hearing_impaired": false,
+          "language": "zh-Hans",
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt",
+          "size": 48213,
+          "title": null,
+          "track": 1048580
+        },
+        "op": {
+          "op": "web_vtt"
+        },
+        "track": 1048580
       }
     ],
     "video": {
@@ -910,16 +992,35 @@ export const goldenPlans = [
     ],
     "subtitles": [
       {
+        "file": null,
         "op": {
           "op": "web_vtt"
         },
         "track": 2
       },
       {
+        "file": null,
         "op": {
           "op": "client_render"
         },
         "track": 3
+      },
+      {
+        "file": {
+          "codec": "subrip",
+          "forced": true,
+          "hearing_impaired": false,
+          "language": "zh-Hans",
+          "mtime_ns": 1760000000000000000,
+          "path": "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt",
+          "size": 48213,
+          "title": null,
+          "track": 1048580
+        },
+        "op": {
+          "op": "web_vtt"
+        },
+        "track": 1048580
       }
     ],
     "video": {

@@ -465,6 +465,7 @@ export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
         hdr,
         available: fileAvailable(f),
         probe: { ...probe, bitrate: Math.round(mbps * 1e6) },
+        subtitle_files: [],
       };
     });
 
