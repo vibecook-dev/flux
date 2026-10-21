@@ -893,6 +893,26 @@ fn track_from_trak(
     let sample_count = tables.sample_count;
     tables.check(src.len(), t.codec == Codec::Pcm)?;
 
+    // A `hev1`/`dvhe` entry may hold no parameter sets at all (they are only
+    // in-band): complete its record from the first sync sample, so the SPS
+    // facts below are known and a remux to `hvc1`/`dvh1`, which strips the
+    // in-band sets, still decodes.
+    if t.codec == Codec::Hevc && t.inband_parameter_sets {
+        let empty = hevc::HevcConfig::parse(&t.codec_private).filter(|c| c.nalus(33).next().is_none());
+        if let (Some(c), Some((off, size))) = (empty, first_sync_sample(&tables)) {
+            if size < (16 << 20) {
+                let bytes = src.read_at(off, size as usize)?;
+                if let Some(rec) = complete_hvcc(&t.codec_private, &bytes, c.length_size as usize) {
+                    t.codec_private = rec;
+                    warnings.push(format!(
+                        "track {}: hvcC without parameter sets: taken from the first keyframe",
+                        t.id
+                    ));
+                }
+            }
+        }
+    }
+
     // Codec facts
     let mut vui_sar = None;
     match t.codec {
@@ -1017,11 +1037,7 @@ fn track_from_trak(
             .map(|fd| ticks_to_ns(fd as i64, timescale) as u64);
         // In-band parameter sets / HDR SEI: look at the first sync sample.
         if let (Some(fl), true) = (flavor, sample_count > 0) {
-            let first_sync = match &tables.sync {
-                None => Some(0),
-                Some(list) => list.first().map(|&k| k.saturating_sub(1)),
-            };
-            if let Some((off, size)) = first_sync.and_then(|i| tables.sample_location(i)) {
+            if let Some((off, size)) = first_sync_sample(&tables) {
                 if size < (16 << 20) {
                     let bytes = src.read_at(off, size as usize)?;
                     if !t.inband_parameter_sets {
@@ -1241,6 +1257,58 @@ fn stbl_sample_count(stbl: &mp4_atom::Stbl) -> u32 {
         StszSamples::Identical { count, .. } => *count,
         StszSamples::Different { sizes } => sizes.len() as u32,
     }
+}
+
+/// (file offset, size) of a track's first sync sample.
+fn first_sync_sample(t: &Mp4Tables) -> Option<(u64, u32)> {
+    let i = match &t.sync {
+        None => 0,
+        Some(list) => list.first()?.saturating_sub(1),
+    };
+    t.sample_location(i)
+}
+
+/// An `hvcC` record with no SPS, completed with the VPS/SPS/PPS found
+/// in-band in `sample` (marked complete: the remux strips in-band sets).
+/// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS.
+fn complete_hvcc(rec: &[u8], sample: &[u8], length_size: usize) -> Option<Vec<u8>> {
+    let c = hevc::HevcConfig::parse(rec)?;
+    let mut sets: [(u8, Vec<&[u8]>); 3] = [(32, Vec::new()), (33, Vec::new()), (34, Vec::new())];
+    for (_, nal) in crate::bits::length_prefixed_nals(sample, length_size) {
+        let Some(&h) = nal.first() else { continue };
+        if let Some(s) = sets.iter_mut().find(|s| s.0 == ((h >> 1) & 0x3F)) {
+            if !s.1.contains(&nal) {
+                s.1.push(nal);
+            }
+        }
+    }
+    if sets[1].1.is_empty() || sets[2].1.is_empty() {
+        return None;
+    }
+    let mut arrays: Vec<(u8, bool, Vec<&[u8]>)> = sets
+        .iter()
+        .filter(|s| !s.1.is_empty())
+        .map(|s| (s.0, true, s.1.clone()))
+        .collect();
+    for a in c.arrays.iter().filter(|a| !(32..=34).contains(&a.nal_type)) {
+        arrays.push((
+            a.nal_type,
+            a.completeness,
+            a.nalus.iter().map(|n| n.as_slice()).collect(),
+        ));
+    }
+    // The 22 header bytes, then numOfArrays and the arrays (ISO/IEC 14496-15 §8.3.3.1).
+    let mut out = rec.get(..22)?.to_vec();
+    out.push(arrays.len() as u8);
+    for (ty, complete, nalus) in arrays {
+        out.push(ty | if complete { 0x80 } else { 0 });
+        out.extend_from_slice(&(nalus.len() as u16).to_be_bytes());
+        for n in nalus {
+            out.extend_from_slice(&(n.len() as u16).to_be_bytes());
+            out.extend_from_slice(n);
+        }
+    }
+    Some(out)
 }
 
 /// (file offset, size) of a track's first sample, without expanding tables.
@@ -1490,8 +1558,8 @@ mod tests {
     const DVCC_P5: [u8; 24] = {
         let mut d = [0u8; 24];
         d[0] = 1; // version 1.0
-        d[2] = (5 << 1) | (6 >> 5);
-        d[3] = ((6 & 0x1F) << 3) | 0b101; // level low bits, rpu, no el, bl
+        d[2] = 5 << 1; // profile 5, level's top bit 0
+        d[3] = (6 << 3) | 0b101; // level 6, rpu, no el, bl
         d
     };
     /// `dac3`: 48 kHz, bsid 8, acmod 7 (3/2), LFE on, 448 kb/s.
@@ -1529,18 +1597,30 @@ mod tests {
                 entry: audio,
             },
         ]);
-        // Length-prefixed NAL units: an IDR, then trailing pictures.
-        let nal = |t: u8| {
-            let mut v = vec![0, 0, 0, 20, t << 1, 1];
-            v.extend([0x55u8; 18]);
-            SampleData::Bytes(v.into())
+        // Length-prefixed NAL units: an IDR, then trailing pictures. With a
+        // `hev1`/`dvhe` entry the parameter sets are only in-band (the
+        // `hvcC` has none), before the IDR.
+        let nal = |t: u8, len: usize| {
+            let mut v = vec![0, 0, 0, len as u8, t << 1, 1];
+            v.extend(std::iter::repeat_n(0x55u8, len - 2));
+            v
         };
+        let inband = matches!(video, b"hev1" | b"dvhe");
         let video_samples = (0..4)
-            .map(|i| Sample {
-                duration: 1001,
-                cts: 0,
-                sync: i == 0,
-                data: nal(if i == 0 { 19 } else { 1 }),
+            .map(|i| {
+                let mut data = Vec::new();
+                if i == 0 && inband {
+                    for ps in [32, 33, 34] {
+                        data.extend(nal(ps, 8));
+                    }
+                }
+                data.extend(nal(if i == 0 { 19 } else { 1 }, 20));
+                Sample {
+                    duration: 1001,
+                    cts: 0,
+                    sync: i == 0,
+                    data: SampleData::Bytes(data.into()),
+                }
             })
             .collect();
         let audio_samples = (0..4)
@@ -1615,11 +1695,32 @@ mod tests {
             );
 
             // The remux writes `dvh1` with the record, and CODECS says so.
+            // A `dvhe` record without parameter sets is completed from the
+            // first keyframe (the remux strips the in-band ones).
             let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
-            let EntrySpec::Video { fourcc, dovi, .. } = asset.video_entry().unwrap() else {
+            let EntrySpec::Video {
+                fourcc, dovi, config, ..
+            } = asset.video_entry().unwrap()
+            else {
                 panic!("not video");
             };
             assert_eq!((&fourcc, dovi.is_some()), (b"dvh1", true));
+            let hvcc = hevc::HevcConfig::parse(&config).unwrap();
+            let sets: Vec<(u8, bool, usize)> = hvcc
+                .arrays
+                .iter()
+                .map(|a| (a.nal_type, a.completeness, a.nalus.len()))
+                .collect();
+            if inband {
+                assert_eq!(sets, [(32, true, 1), (33, true, 1), (34, true, 1)]);
+                assert_eq!(&config[..22], &HVCC_MAIN10[..22]);
+                assert!(idx
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("hvcC without parameter sets")));
+            } else {
+                assert!(sets.is_empty());
+            }
             assert_eq!(
                 crate::playlist::video_codec_string(&asset).as_deref(),
                 Some("dvh1.05.06")
