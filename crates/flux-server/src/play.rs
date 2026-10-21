@@ -41,7 +41,7 @@ use flux_catalog::{read, scan_support, AssetLocation, PlayIndex};
 use flux_core::api::{
     AssetInfo, Id, PlanPreview, PlayRequest, PlayResponse, ProgressReport, SessionDiagnostics, SubtitleRef,
 };
-use flux_core::{ClientCaps, DeliveryFormat, HdrFormat, PlaybackPlan, SubtitleOp};
+use flux_core::{ClientCaps, DeliveryFormat, HdrFormat, PlaybackPlan, SubtitleFile, SubtitleOp};
 use flux_hls::index::{INDEX_FORMAT_BINARY, INDEX_VERSION};
 use flux_hls::{Asset, AudioKey, HlsError, PlanPrefs, PlaybackIndex, Rendition};
 use serde::{Deserialize, Serialize};
@@ -1008,12 +1008,22 @@ pub fn quantize_caps(caps: &ClientCaps) -> ClientCaps {
     caps
 }
 
-fn prefs_of(req: &PlayRequest) -> PlanPrefs {
+fn prefs_of(req: &PlayRequest, subtitle_files: Vec<SubtitleFile>) -> PlanPrefs {
     PlanPrefs {
         audio_track: req.audio_track,
         subtitle_track: req.subtitle_track,
+        subtitle_files,
         ..PlanPrefs::default()
     }
+}
+
+/// The subtitle files beside an asset's video (sidecars), as the catalog
+/// matches them ([`flux_catalog::sidecar::asset_subtitle_files`]).
+async fn subtitle_files(st: &AppState, asset_id: Id) -> ApiResult<Vec<SubtitleFile>> {
+    Ok(st
+        .catalog
+        .read(move |c| flux_catalog::sidecar::asset_subtitle_files(c, asset_id))
+        .await?)
 }
 
 /// Deterministic plan id: `{asset}-{xxh3(index version, file identity, plan)}`.
@@ -1039,7 +1049,8 @@ pub async fn play(
     let caps = quantize_caps(&req.caps);
     let user_id = st.user_id(&caller).await?;
     let loc = pick_asset(&st, req.item_id, req.asset_id, &caps).await?;
-    let (asset, plan, source) = plan_for(&st, &loc, &caps, &prefs_of(&req)).await?;
+    let prefs = prefs_of(&req, subtitle_files(&st, loc.asset_id).await?);
+    let (asset, plan, source) = plan_for(&st, &loc, &caps, &prefs).await?;
     let id = plan_id(loc.asset_id, source, &plan);
     let duration_ms = loc.duration_ms.or_else(|| {
         asset
@@ -1130,23 +1141,20 @@ pub async fn play(
     }))
 }
 
+/// The WebVTT renditions of a plan (text tracks of the file and text
+/// subtitle files beside it), named as the master playlist names them.
 fn subtitle_refs(asset: &Asset, plan: &PlaybackPlan, base: &str) -> Vec<SubtitleRef> {
     plan.subtitles
         .iter()
         .filter(|s| s.op == SubtitleOp::WebVtt)
         .filter_map(|s| {
-            let t = asset.index.track(s.track)?;
+            let (label, language, forced) = flux_hls::playlist::subtitle_label(asset, s)?;
             Some(SubtitleRef {
                 track: s.track,
-                label: t
-                    .name
-                    .clone()
-                    .filter(|n| !n.is_empty())
-                    .or_else(|| t.language.clone())
-                    .unwrap_or_else(|| format!("Subtitles {}", s.track)),
-                language: t.language.clone(),
+                label,
+                language,
                 url: format!("{base}/s/{}.vtt", s.track),
-                forced: t.forced,
+                forced,
             })
         })
         .collect()
@@ -1164,7 +1172,7 @@ pub async fn plan_preview(
     let Json(req) = body?;
     let caps = quantize_caps(&req.caps);
     let loc = pick_asset(&st, req.item_id, req.asset_id, &caps).await?;
-    let prefs = prefs_of(&req);
+    let prefs = prefs_of(&req, subtitle_files(&st, loc.asset_id).await?);
     let plan = match (st.play.cached_asset(loc.asset_id, Some(&loc.path)), &loc.probe) {
         (Some(asset), _) => st.engine.plan(&asset, &caps, &prefs),
         (None, Some(probe)) => flux_hls::plan_from_probe(probe, &caps, &prefs),
