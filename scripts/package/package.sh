@@ -51,6 +51,20 @@ if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then die "--bin: not an executable file: 
 [ -f "$readme" ] || die "no README at $readme"
 if [ -n "$sidecar" ]; then [ -f "$sidecar" ] || die "--sidecar: no such file: $sidecar"; fi
 
+# sidecar-NOTICE.txt has the licences of the Go modules in the pinned
+# sidecars. Every module this sidecar was built from (its build info, as
+# `go version -m` prints it) must be in the notice's list of modules.
+if [ -n "$sidecar" ]; then
+  modules=$(LC_ALL=C tr -c '[:print:]\t\n' '\n' < "$sidecar" |
+    grep -E $'^(dep|=>)\t[^\t]+\t[^\t]+' | cut -f2,3 | tr '\t' ' ' | LC_ALL=C sort -u) || true
+  [ -n "$modules" ] || die "--sidecar: no Go module list in $sidecar"
+  listed=$(awk '/^Go modules:$/ { f = 1; next } f && /^  / { print $1, $2; next } f { exit }' \
+    "$here/sidecar-NOTICE.txt" | LC_ALL=C sort -u)
+  missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$modules") <(printf '%s\n' "$listed"))
+  [ -z "$missing" ] || die "scripts/package/sidecar-NOTICE.txt lacks these Go modules of $sidecar (regenerate it with scripts/package/sidecar-notice.py):
+$missing"
+fi
+
 name="flux-$version-$target"
 work=$(mktemp -d "${TMPDIR:-/tmp}/flux-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
