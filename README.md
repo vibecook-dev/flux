@@ -142,7 +142,7 @@ path = "/Volumes/NAS/Movies"
 
 `--tailnet` picks one of three modes. You can also switch modes on the web client's Connect screen. The choice is remembered in the data dir, and switching replaces only the tailnet listener, so local streams carry on. A `--tailnet` flag or `FLUX_TAILNET` wins over the remembered choice.
 
-- **`off`** (the default): only 127.0.0.1, plus `--lan` if you set it.
+- **`off`** (the default): only 127.0.0.1, plus `--lan` if you set it. flux runs `tailscale status` once at startup so the Connect screen can offer this machine's Tailscale, unless `--tailnet off` or `FLUX_TAILNET=off` is given explicitly.
 - **`system`**: uses this machine's running Tailscale. flux binds the machine's Tailscale addresses on its port and identifies each caller with `tailscale whois`.
 - **`embedded`**: flux runs its own Tailscale node through Truffle. It needs Truffle's Go `sidecar-slim`, found through `TRUFFLE_SIDECAR_PATH` or next to the binary. On first start, the Connect screen (or `GET /api/v1/tailnet`) shows a login link and QR code. After you sign in, the server is on your tailnet as `http://truffle-flux-<name>.<tailnet>.ts.net:8096`.
 

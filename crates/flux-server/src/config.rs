@@ -375,7 +375,9 @@ pub struct Config {
     /// Delay before background jobs start (lets startup scans go first).
     pub jobs_delay: Duration,
     /// Probe this machine's tailscaled once (read-only `tailscale status`)
-    /// to fill `TailnetInfo::system_tailscale`.
+    /// to fill `TailnetInfo::system_tailscale`. Not when `--tailnet off` (or
+    /// `FLUX_TAILNET=off`) is explicit: then flux runs no `tailscale`
+    /// command at all, unless the UI switches remote access on.
     pub probe_system_tailscale: bool,
 }
 
@@ -478,7 +480,7 @@ impl Config {
                 .or_else(|| std::env::var("RUST_LOG").ok())
                 .unwrap_or_else(|| "info".into()),
             jobs_delay: Duration::from_secs(10),
-            probe_system_tailscale: true,
+            probe_system_tailscale: !(tailnet_explicit && tailnet == TailnetChoice::Off),
             data_dir,
         })
     }
@@ -845,5 +847,22 @@ path = "/m"
         assert!(toml::from_str::<FileConfig>("video_encoder = \"x265\"").is_err());
         assert!(Cli::try_parse_from(["flux-server", "--check"]).unwrap().check);
         assert!(Cli::try_parse_from(["flux-server", "--doctor"]).unwrap().check);
+    }
+
+    /// `--tailnet off` still ran `tailscale status` at every start.
+    #[test]
+    fn an_explicit_tailnet_off_runs_no_tailscale_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        let cfg = |args: &[&str]| {
+            let argv = [&["flux-server", "--data-dir", d][..], args].concat();
+            Config::resolve(Cli::try_parse_from(argv).unwrap()).unwrap()
+        };
+        if std::env::var_os("FLUX_TAILNET").is_none() {
+            // Off by default, but the UI can offer this machine's Tailscale.
+            assert!(cfg(&[]).probe_system_tailscale);
+        }
+        assert!(!cfg(&["--tailnet", "off"]).probe_system_tailscale);
+        assert!(cfg(&["--tailnet", "system"]).probe_system_tailscale);
     }
 }
