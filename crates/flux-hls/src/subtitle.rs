@@ -129,7 +129,8 @@ pub fn mov_text_sample(data: &[u8]) -> Option<String> {
             continue;
         }
         let n = u16::from_be_bytes([body[0], body[1]]) as usize;
-        for rec in body[2..].chunks_exact(12).take(n) {
+        let (records, _) = body[2..].as_chunks::<12>();
+        for rec in records.iter().take(n) {
             let from = u16::from_be_bytes([rec[0], rec[1]]) as usize;
             let to = (u16::from_be_bytes([rec[2], rec[3]]) as usize).min(chars.len());
             for f in style.iter_mut().take(to).skip(from) {
@@ -205,13 +206,14 @@ fn boxes(mut data: &[u8]) -> Vec<([u8; 4], &[u8])> {
 /// (legacy code pages such as GBK or Big5 aren't converted).
 pub fn decode_text(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
-        let units: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| {
+        let (pairs, _) = b.as_chunks::<2>();
+        let units: Vec<u16> = pairs
+            .iter()
+            .map(|&c| {
                 if le {
-                    u16::from_le_bytes([c[0], c[1]])
+                    u16::from_le_bytes(c)
                 } else {
-                    u16::from_be_bytes([c[0], c[1]])
+                    u16::from_be_bytes(c)
                 }
             })
             .collect();
