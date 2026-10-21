@@ -19,7 +19,7 @@ exist after a real release; they are listed under [Open items](#open-items).
 | [Fresh-machine build and tests](#2-fresh-machine-build-and-tests) | Clean on GitHub's fresh runners (Linux x86_64 and arm64, macOS, MSRV 1.89, web). A local run with the media corpus is still open |
 | [Workflows](#3-workflows) | Sound overall. Three fixes in #8: release builds used caches, a release could ship without the sidecar, and CI could skip every transcode silently |
 | [Release artifacts](#4-release-artifacts-dry-run) | Checksums, contents, architecture and glibc floor are right. On macOS, the documented symlink install served no web client; fixed in #11 |
-| [Docs](#5-docs) | Some statements predated the public repo. Fixed in this PR, except one README line that conflicts with #6 |
+| [Docs](#5-docs) | Some statements predated the public repo. Fixed in this PR |
 | [Mille and Truffle](#6-mille-and-truffle) | Mille merged and pinned; truffle-core 0.7.20 is on crates.io and #6 switches to it |
 
 ## 1. Leaks
@@ -179,8 +179,9 @@ Fixed in this PR:
   tests Linux x86_64 and arm64, and the runtime encoder choice
   (VideoToolbox, NVENC, QSV, VAAPI, libx264) is implemented. The "macOS
   only" bullet under Prototype gaps says the same, and also "Windows was
-  never compiled" (it type-checks; docs/ENCODERS.md). That bullet is still
-  to fix ([Open items](#open-items), 2).
+  never compiled" (it type-checks; docs/ENCODERS.md). That bullet sat next
+  to the line #6 changed, so it was replaced after #6 merged
+  ([Open items](#open-items), 2).
 - README: "no packages, Docker image or service files" (they exist, with
   a systemd unit in INSTALL.md). Linux source builds need a C compiler and
   `make`. The Linux data dir is `~/.local/share/flux`.
@@ -218,15 +219,16 @@ Fixed in other PRs:
 
 In order:
 
-1. **Merge #6** (truffle-core 0.7.20 from crates.io, sidecar pins). Then,
-   because the ruleset requires up-to-date branches, *Update branch* and merge
-   **#7** (bounded synthetic-clip generation), **#8** (release builds without
-   caches, a required sidecar, CI that fails without ffmpeg), **#10** (the
+1. **Done:** the fix PRs merged in this order, each brought up to date with
+   `main` first because the ruleset requires it:
+   **#6** (truffle-core 0.7.20 from crates.io, sidecar pins), **#7** (bounded
+   synthetic-clip generation), **#8** (release builds without caches, a
+   required sidecar, CI that fails without ffmpeg), **#10** (the
    missing-sidecar message), **#11** (symlinked `flux-server` on macOS) and
-   **#9** (this file and the doc fixes). None of them conflict with each
+   **#9** (this file and the doc fixes). None of them conflicted with each
    other (`git merge-tree`, pairwise).
-2. **README "Prototype gaps", first bullet**, which this PR leaves alone because it
-   sits next to the line #6 changes. After #6, replace it with:
+2. **Done in this PR:** **README "Prototype gaps", first bullet**. It sits
+   next to the line #6 changes, so it was replaced after #6 merged, with:
    ```markdown
    - **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64, where video transcodes use libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs. Windows compiles but is not supported.
    ```
@@ -244,11 +246,11 @@ In order:
      (amd64 and arm64);
    - update the README lines that say there are no releases yet (Status,
      Install, Operations).
-5. **Make the container package public** (org Packages → flux → Settings →
-   Change visibility). It is private: anonymous pulls get 401.
-6. **The ruleset named `main`** has an empty include list, so it applies to
-   nothing. `protect-main` is the one in force. Delete `main`, or keep it
-   knowingly.
+5. **Done:** **Make the container package public** (org Packages → flux →
+   Settings → Change visibility). Anonymous pulls now succeed.
+6. **The ruleset named `main`** was added by the owner to protect `main`, but
+   its include list is empty, so it applies to nothing. `protect-main` is the
+   one in force on the default branch.
 7. **Dependabot PRs #2–#5** were opened against the initial commit and fail
    CI. Rebase or close them.
 8. Optional hardening: turn on *Require actions to be pinned to a full-length
