@@ -93,6 +93,10 @@ jobs:
           release-version: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
           push: ${{ env.PUSH }}
+      # No artifact-metadata storage record: it only feeds the organization's
+      # Linked Artifacts page, which flux doesn't use, and would need the
+      # artifact-metadata: write permission. `gh attestation verify` doesn't
+      # read it. With the default (true), every push warned twice.
       - name: Attest
         if: env.PUSH == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -100,3 +104,4 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+          create-storage-record: false
