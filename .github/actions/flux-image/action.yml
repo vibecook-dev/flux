@@ -13,9 +13,10 @@
 #     builds and tests linux/amd64, then builds the multi-arch image, taking
 #     linux/arm64 from those layers.
 #
-# With `layers` set there is no QEMU, so an arm64 step missing from the
-# layers fails the build instead of being rebuilt, untested, under
-# emulation: the arm64 half of the image is the build that was tested.
+# With `layers` set there is no QEMU, and the action fails if the runner can
+# emulate arm64 anyway, so an arm64 step missing from the layers fails the
+# build instead of being rebuilt, untested, under emulation: the arm64 half
+# of the image is the build that was tested.
 #
 # Used by docker.yml (releases, main, pull requests) and release-dry-run.yml
 # (never pushes). A pushing caller logs in to ghcr.io before this action and
@@ -79,12 +80,16 @@ runs:
       shell: bash
       run: |
         case "$RUNNER_ARCH" in
-          X64) arch=amd64 ;;
-          ARM64) arch=arm64 ;;
+          X64) arch=amd64 other=arm64 qemu=qemu-aarch64 ;;
+          ARM64) arch=arm64 other=amd64 qemu=qemu-x86_64 ;;
           *) echo "::error::No flux image for a $RUNNER_ARCH runner."; exit 1 ;;
         esac
-        echo "arch=$arch" >> "$GITHUB_OUTPUT"
-        echo "platform=linux/$arch" >> "$GITHUB_OUTPUT"
+        {
+          echo "arch=$arch"
+          echo "platform=linux/$arch"
+          echo "other-platform=linux/$other"
+          echo "other-qemu=$qemu"
+        } >> "$GITHUB_OUTPUT"
         echo "Smoke-testing linux/$arch on this $RUNNER_ARCH runner, natively."
 
     - name: QEMU for linux/arm64
@@ -146,12 +151,42 @@ runs:
         compression-level: 0
         retention-days: 1
 
-    - name: Layers from ${{ inputs.layers }}
+    - name: Layers${{ inputs.layers != '' && format(' from {0}', inputs.layers) || '' }}
       if: inputs.smoke-only != 'true' && inputs.layers != ''
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: ${{ inputs.layers }}
         path: ${{ runner.temp }}/image-layers
+
+    # The layers are only the tested build if this runner can't build the
+    # other platform itself. Check it rather than rely on the runner image:
+    # with an emulator registered, a step missing from the layers would be
+    # rebuilt here, untested, instead of failing the build.
+    - name: No emulator for ${{ runner.arch == 'ARM64' && 'linux/amd64' || 'linux/arm64' }}
+      if: inputs.smoke-only != 'true' && inputs.layers != ''
+      shell: bash
+      env:
+        OTHER: ${{ steps.native.outputs.other-platform }}
+        QEMU: ${{ steps.native.outputs.other-qemu }}
+        LAYERS: ${{ inputs.layers }}
+      run: |
+        platforms=$(docker buildx inspect --bootstrap | sed -n 's/^Platforms: *//p')
+        echo "buildx platforms: $platforms"
+        if [ -z "$platforms" ]; then
+          echo "::error::Found no Platforms line in docker buildx inspect, so can't tell whether this runner can build $OTHER."
+          exit 1
+        fi
+        if [ -e "/proc/sys/fs/binfmt_misc/$QEMU" ]; then
+          echo "::error::binfmt_misc has $QEMU, so $OTHER steps missing from $LAYERS would be rebuilt here, untested."
+          exit 1
+        fi
+        case ", $platforms," in
+          *", $OTHER"[,/*]*)
+            echo "::error::The builder can build $OTHER, so $OTHER steps missing from $LAYERS would be rebuilt here, untested."
+            exit 1
+            ;;
+        esac
+        echo "No $OTHER emulation: $OTHER comes from $LAYERS, or the build fails."
 
     - id: build
       if: inputs.smoke-only != 'true'
