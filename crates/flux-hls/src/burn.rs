@@ -24,7 +24,7 @@
 //! - **Canvas.** A PGS or VobSub stream is drawn for a picture size (its
 //!   canvas) that need not be the video's: 1920×1080 subtitles over a
 //!   cropped 1920×800 encode. The canvas is read from the stream
-//!   ([`canvas`]) and passed as `-canvas_size`; the subtitle picture is
+//!   (`probe`) and passed as `-canvas_size`; the subtitle picture is
 //!   then scaled to the output (exactly like the video when it was drawn
 //!   for the video's own size, else to fit inside, bottom-aligned).
 
@@ -75,7 +75,7 @@ const FILE_PREROLL_S: f64 = 60.0;
 /// that much video, so less.
 const EMBEDDED_PREROLL_S: f64 = 10.0;
 
-/// What a burn-in reads from the subtitle up front ([`probe`]).
+/// What a burn-in reads from the subtitle up front (`probe`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BurnProbe {
     /// The picture size the subtitle is drawn for, when known.
