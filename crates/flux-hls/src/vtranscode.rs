@@ -289,31 +289,40 @@ pub fn run_frames(asset: &Asset, run: &[Piece]) -> Result<Option<RunFrames>> {
     Ok(Some(RunFrames { all, per_piece }))
 }
 
-/// Where a piece whose frame count is only predicted (`f`, from the frame
-/// grid) ends in the encoder's output `pending` (samples, sync flag): at the
-/// sync sample forced at its boundary when one lies within [`CUT_SLACK`]
-/// frames of `f`, else at `f`. The run's last piece, once the encoder is
-/// done, takes what it produced up to `f`: a frame the source lacks made
-/// `-frames:v` read one past the run's end, which the next run starts with.
-/// `None`: wait for more output.
+/// Where the piece that starts at `pending[0]` ends in the encoder's
+/// output `pending` (samples, sync flag): at the encoder's sync sample (the
+/// IDR forced at the piece's boundary) nearest to `f`, the piece's frame
+/// count (from the index, else predicted from the frame grid), when one lies
+/// within [`CUT_SLACK`] frames; else at `f`. `None`: wait for more output.
+///
+/// `pending` holds whole fragments, and ffmpeg starts a fragment at every
+/// keyframe (`frag_keyframe`), so until the encoder is done (`eof`) the
+/// sample after the last one received is a sync sample too: a piece is cut
+/// as soon as its fragment is complete. The run's last piece takes what the
+/// encoder produced, up to `f`: a frame the source lacks made `-frames:v`
+/// read one past the run's end, which the next run starts with.
 ///
 /// An AVI with one frame missing at 0.04 s put every forced IDR of the
 /// run's later pieces one sample before their start, so a seek into them
 /// began on a P frame.
-fn predicted_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Option<usize> {
-    if last {
-        return (eof && !pending.is_empty()).then_some(pending.len().min(f.max(1)));
-    }
-    if pending.len() < f + CUT_SLACK + 1 && !eof {
+fn piece_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Option<usize> {
+    let f = f.max(1);
+    if pending.is_empty() || (pending.len() < f && !eof) {
         return None;
     }
-    let lo = f.saturating_sub(CUT_SLACK).max(1);
-    let hi = (f + CUT_SLACK).min(pending.len().saturating_sub(1));
-    let cut = (lo..=hi)
+    if last {
+        return Some(pending.len().min(f));
+    }
+    let next_fragment = (!eof).then_some(pending.len());
+    let at_sync = (1..pending.len())
         .filter(|&i| pending[i].1)
-        .min_by_key(|&i| i.abs_diff(f))
-        .unwrap_or(f);
-    (cut > 0 && cut <= pending.len()).then_some(cut)
+        .chain(next_fragment)
+        .filter(|&i| i.abs_diff(f) <= CUT_SLACK)
+        .min_by_key(|&i| (i.abs_diff(f), i));
+    match at_sync {
+        Some(c) => Some(c),
+        None => (pending.len() >= f).then_some(f),
+    }
 }
 
 /// How far (in frames) a forced IDR may be from a predicted piece boundary
@@ -410,6 +419,10 @@ enum FragEvent {
 #[derive(Default)]
 struct FragReader {
     buf: Vec<u8>,
+    /// The H.264 track's ID. Only its samples are read: ffmpeg can add
+    /// other tracks, e.g. a QuickTime text track holding the source's
+    /// chapters, whose 24-byte samples once ended up in the video pieces.
+    video_track: Option<u32>,
     trex_size: u32,
     trex_flags: u32,
 }
@@ -445,11 +458,15 @@ impl FragReader {
                 b"moov" => {
                     let moov = mp4_atom::Moov::decode(&mut &self.buf[pos..pos + size])
                         .map_err(|e| HlsError::Ffmpeg(format!("encoder moov: {e}")))?;
-                    if let Some(mp4_atom::Codec::Avc1(a)) = moov
+                    let video = moov
                         .trak
-                        .first()
-                        .and_then(|t| t.mdia.minf.stbl.stsd.codecs.first())
-                    {
+                        .iter()
+                        .find_map(|t| match t.mdia.minf.stbl.stsd.codecs.first() {
+                            Some(mp4_atom::Codec::Avc1(a)) => Some((t.tkhd.track_id, a)),
+                            _ => None,
+                        });
+                    if let Some((id, a)) = video {
+                        self.video_track = Some(id);
                         let mut v = Vec::new();
                         a.avcc
                             .encode(&mut v)
@@ -458,7 +475,13 @@ impl FragReader {
                             events.push(FragEvent::Avcc(b.to_vec()));
                         }
                     }
-                    if let Some(t) = moov.mvex.as_ref().and_then(|x| x.trex.first()) {
+                    let trex = moov.mvex.as_ref().and_then(|x| {
+                        x.trex
+                            .iter()
+                            .find(|t| Some(t.track_id) == self.video_track)
+                            .or(x.trex.first())
+                    });
+                    if let Some(t) = trex {
                         self.trex_size = t.default_sample_size;
                         self.trex_flags = t.default_sample_flags;
                     }
@@ -492,7 +515,8 @@ impl FragReader {
         let moof = mp4_atom::Moof::decode(&mut &chunk[..moof_size])
             .map_err(|e| HlsError::Ffmpeg(format!("encoder moof: {e}")))?;
         let mut out = Vec::new();
-        for traf in &moof.traf {
+        let video = |id: u32| self.video_track.is_none_or(|v| v == id);
+        for traf in moof.traf.iter().filter(|t| video(t.tfhd.track_id)) {
             // ffmpeg writes default-base-is-moof (we ask for it).
             let base = 0usize;
             for trun in &traf.trun {
@@ -674,7 +698,24 @@ impl VideoTranscoder {
         }
         // passthrough: never duplicate/drop frames to fake a constant rate
         // (the default CFR vsync padded the last segment by one frame).
-        a.extend(["-map", "0:v:0", "-an", "-sn", "-dn", "-fps_mode", "passthrough"].map(String::from));
+        // Video only: no chapter text track (`-map_chapters`), no metadata
+        // (a `udta` per run, a timecode track).
+        a.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-map_chapters",
+                "-1",
+                "-map_metadata",
+                "-1",
+                "-fps_mode",
+                "passthrough",
+            ]
+            .map(String::from),
+        );
         if run.iter().all(|p| p.frames.is_some()) {
             let n: u64 = match frames {
                 Some(f) => f.per_piece.iter().map(|x| x.len() as u64).sum(),
@@ -1030,21 +1071,35 @@ impl VideoTranscoder {
                     let piece = all[*pn];
                     let real = frames.as_ref().map(|f| &f.per_piece[next]);
                     let last = next + 1 == senders.len();
-                    let want = match (piece.frames, real) {
-                        (Some(_), Some(r)) => r.len(),
-                        // Counts predicted from the frame grid (sources only
-                        // ffprobe indexes, TS): a frame the source lacks
-                        // shifts them, so cut at the IDR forced at the
-                        // boundary when it is within a few frames.
-                        (Some(f), None) => match predicted_cut(&pending, f as usize, last, n == 0) {
+                    // The frame count from the index (real timestamps), else
+                    // predicted from the frame grid (sources only ffprobe
+                    // indexes, TS). Either way the piece ends at the IDR the
+                    // encoder forced at its boundary: a frame the source
+                    // lacks, or one the decoder drops, shifts the count.
+                    let count = match (piece.frames, real) {
+                        (Some(_), Some(r)) => Some(r.len()),
+                        (Some(f), None) => Some(f as usize),
+                        (None, _) => None,
+                    };
+                    let want = match count {
+                        Some(f) => match piece_cut(&pending, f, last, n == 0) {
                             Some(w) => w,
                             None => break,
                         },
-                        (None, _) if n == 0 => pending.len(),
-                        (None, _) => break,
+                        None if n == 0 => pending.len(),
+                        None => break,
                     };
                     if pending.len() < want || want == 0 {
                         break;
+                    }
+                    // (The file's last piece has no count: it takes the rest.)
+                    if let (Some(_), Some(frames)) = (real, count.filter(|&c| c != want)) {
+                        tracing::warn!(
+                            piece = *pn,
+                            frames,
+                            cut = want,
+                            "transcoded piece cut at the encoder's IDR, not at the index's frame count"
+                        );
                     }
                     let a = avcc
                         .as_deref()
@@ -1282,28 +1337,101 @@ mod tests {
     }
 
     #[test]
-    fn predicted_pieces_end_at_the_forced_idr_nearby() {
+    fn pieces_end_at_the_forced_idr_nearby() {
+        // `out(syncs, len)` is whole fragments: the sample after the last
+        // one (index `len`) starts the next fragment, a sync sample.
         // The source lacks a frame: the IDR forced at the boundary is one
-        // sample before the predicted count.
+        // sample before the count.
         let p = out(&[0, 51, 103], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(51));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
         // On the grid: exactly the count.
         let p = out(&[0, 52], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(52));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
         // No IDR near the boundary (an encoder that ignored the request):
         // the count, as before.
         let p = out(&[0, 40], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(52));
-        // Not enough output yet to see past the boundary: wait.
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
+        // The piece's fragment is complete: its end is the next IDR, here
+        // one frame after the count; no need to wait for the next fragment.
+        let p = out(&[0], 52);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
         let p = out(&[0], 53);
-        assert_eq!(predicted_cut(&p, 52, false, false), None);
-        // The run's last piece waits for the encoder to finish, and leaves
-        // out a frame read past the run's end.
-        let p = out(&[0], 53);
-        assert_eq!(predicted_cut(&p, 52, true, false), None);
-        assert_eq!(predicted_cut(&p, 52, true, true), Some(52));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(53));
+        // Not all of the piece's frames yet: wait.
         let p = out(&[0], 50);
-        assert_eq!(predicted_cut(&p, 52, true, true), Some(50));
+        assert_eq!(piece_cut(&p, 52, false, false), None);
+        // The encoder is done: the IDRs it made are all there is.
+        let p = out(&[0, 50], 120);
+        assert_eq!(piece_cut(&p, 52, false, true), Some(50));
+        let p = out(&[0], 50);
+        assert_eq!(piece_cut(&p, 52, false, true), None);
+        // The run's last piece takes what the encoder produced up to its
+        // count, and leaves out a frame read past the run's end.
+        let p = out(&[0], 53);
+        assert_eq!(piece_cut(&p, 52, true, false), Some(52));
+        assert_eq!(piece_cut(&p, 52, true, true), Some(52));
+        let p = out(&[0], 50);
+        assert_eq!(piece_cut(&p, 52, true, false), None);
+        assert_eq!(piece_cut(&p, 52, true, true), Some(50));
+    }
+
+    /// The chapter text track ffmpeg copies from the source (a 15-chapter
+    /// film) is not video: its samples stay out of the pieces.
+    #[test]
+    fn frag_reader_reads_only_the_video_track() {
+        use mp4_atom::{Mfhd, Moof, Tfhd, Traf, Trun, TrunEntry};
+        let traf = |track_id: u32, sizes: &[u32], data_offset: i32| Traf {
+            tfhd: Tfhd {
+                track_id,
+                default_sample_flags: Some(0x0101_0000),
+                default_base_is_moof: true,
+                ..Default::default()
+            },
+            trun: vec![Trun {
+                data_offset: Some(data_offset),
+                entries: sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &size)| TrunEntry {
+                        size: Some(size),
+                        flags: (i == 0).then_some(0x0200_0000),
+                        ..Default::default()
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        };
+        let video: Vec<Vec<u8>> = vec![vec![0, 0, 0, 3, 0x65, 1, 2], vec![0, 0, 0, 2, 0x41, 3]];
+        let chapters: Vec<Vec<u8>> = (1..=2)
+            .map(|i| format!("\0\nChapter 0{i}").into_bytes())
+            .collect();
+        let sizes = |v: &[Vec<u8>]| v.iter().map(|x| x.len() as u32).collect::<Vec<_>>();
+        let moof = |off_v: i32, off_c: i32| Moof {
+            mfhd: Mfhd { sequence_number: 1 },
+            traf: vec![traf(1, &sizes(&video), off_v), traf(2, &sizes(&chapters), off_c)],
+        };
+        let mut m = Vec::new();
+        moof(0, 0).encode(&mut m).unwrap();
+        let vlen: usize = video.iter().map(|x| x.len()).sum();
+        let first = (m.len() + 8) as i32;
+        m.clear();
+        moof(first, first + vlen as i32).encode(&mut m).unwrap();
+        let body: Vec<u8> = video.iter().chain(&chapters).flatten().copied().collect();
+        m.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        m.extend_from_slice(b"mdat");
+        m.extend_from_slice(&body);
+        let mut r = FragReader {
+            video_track: Some(1),
+            ..Default::default()
+        };
+        let ev = r.push(&m).unwrap();
+        let [FragEvent::Samples(s)] = ev.as_slice() else {
+            panic!("one fragment");
+        };
+        let got: Vec<(Vec<u8>, bool)> = s.iter().map(|(b, k)| (b.to_vec(), *k)).collect();
+        assert_eq!(got, vec![(video[0].clone(), true), (video[1].clone(), false)]);
+    }
+
     }
 
     #[test]
