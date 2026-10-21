@@ -1,7 +1,9 @@
 # The flux container image, ghcr.io/vibecook-dev/flux, for linux/amd64 and
 # linux/arm64. The image is built from the Linux release packages (no
 # compiling inside Docker): docker/README.md. The build and smoke test are in
-# .github/actions/flux-image, shared with release-dry-run.yml.
+# .github/actions/flux-image, shared with release-dry-run.yml: linux/arm64 is
+# built and smoke-tested on an arm64 runner (`arm64`), linux/amd64 on an
+# amd64 one (`image`), which then builds the multi-arch image from both.
 #
 #   pull_request (Docker files changed): build and smoke-test, no push
 #   push to main:                        :edge and :sha-<short>
@@ -54,10 +56,34 @@ jobs:
     with:
       targets: linux
 
-  image:
-    name: Image
+  arm64:
+    name: Image linux/arm64 (smoke test)
     needs: build
     if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: package-*-linux-gnu
+          path: packages
+          merge-multiple: true
+      - uses: ./.github/actions/flux-image
+        with:
+          packages: packages
+          version: ${{ inputs.version || 'dev' }}
+          smoke-only: "true"
+
+  image:
+    name: Image
+    needs: [build, arm64]
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') && needs.arm64.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -93,6 +119,11 @@ jobs:
           release-version: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
           push: ${{ env.PUSH }}
+          layers: image-layers-arm64
+      # No artifact-metadata storage record: it only feeds the organization's
+      # Linked Artifacts page, which flux doesn't use, and would need the
+      # artifact-metadata: write permission. `gh attestation verify` doesn't
+      # read it. With the default (true), every push warned twice.
       - name: Attest
         if: env.PUSH == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -100,3 +131,4 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
+          create-storage-record: false

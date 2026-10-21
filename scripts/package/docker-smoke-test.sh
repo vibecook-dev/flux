@@ -70,6 +70,7 @@ echo "== GET /api/v1/server inside the container: $inside"
 case "$inside" in *'"path":"localhost"'*) ;; *) fail "expected a localhost caller inside the container" ;; esac
 
 echo "== $(docker exec "$name" flux-server --version)"
+echo "== image $(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$image"), running as $(docker exec "$name" uname -m) on a $(uname -m) host"
 echo "== $(docker exec "$name" sh -c '"$FLUX_FFMPEG" -hide_banner -version | sed -n 1p')"
 docker exec "$name" sh -c '"$FLUX_FFPROBE" -hide_banner -version > /dev/null' || fail "ffprobe does not run"
 docker exec "$name" test -s /usr/share/licenses/jellyfin-ffmpeg/copyright || fail "no ffmpeg licence"

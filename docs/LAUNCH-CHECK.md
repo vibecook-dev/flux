@@ -274,8 +274,8 @@ In order:
      `scripts/package/smoke-test.sh` passes on the aarch64-apple-darwin
      package, started through a symlink, and INSTALL's release steps work on
      macOS (Apple Silicon). The x86_64-apple-darwin package, which CI
-     doesn't smoke-test, answers `/api/v1/server` and serves the web client
-     under Rosetta.
+     didn't smoke-test until #14, answers `/api/v1/server` and serves the
+     web client under Rosetta.
    - README's Status, Install and Operations lines now describe the
      release (#12; see [After the release](#after-the-release)).
 5. **Done:** **Make the container package public** (org Packages → flux →
@@ -328,6 +328,68 @@ Fixed in #12 (docs only):
   smoke test (linux/amd64 only); and SECURITY's supported versions now
   include pre-releases.
 
+Fixed for v0.1.0-alpha.2 in #14 (release pipeline; `ci:`, `build(docker):`,
+`chore(deps):` and `docs:` only, so it makes no release on its own):
+
+- **A manual Release run could overwrite a published release.** Run by
+  hand, `release.yml` rebuilt everything and replaced the release's assets
+  with `gh release upload --clobber`, whatever state the release was in.
+  v0.1.0-alpha.1 was published before immutable releases were turned on
+  (the API reports `"immutable": false` for it), so nothing else protected
+  its assets. Its first job now fails, before anything is built, unless the
+  release is still a draft, and says to release the next version instead.
+  Re-running it for a draft, the documented recovery, still works
+  (RELEASING.md, *When something fails*).
+- **The x86_64-apple-darwin package was never smoke-tested** in CI
+  (`native: false` in `build.yml`; the check above ran it under Rosetta by
+  hand). `build.yml` now runs `smoke-test.sh` on it under Rosetta 2 on the
+  macos-15 arm64 runner, after showing that `arch -x86_64` runs translated
+  there (installing Rosetta if the runner lacks it).
+- **Only the linux/amd64 image was smoke-tested.** The arm64 image only
+  ran `--version` under QEMU. It is now built and smoke-tested on an
+  ubuntu-24.04-arm runner, and the multi-arch image takes linux/arm64 from
+  that tested build's layers, without QEMU; the job fails if its amd64
+  runner could emulate arm64, so a step missing from the layers can't be
+  rebuilt untested. `docker.yml` (and so the release) and the release dry
+  run both get this through `.github/actions/flux-image`.
+- **No check of the minimum macOS.** `smoke-test.sh` now reads the
+  `LC_BUILD_VERSION` `minos` of `bin/flux-server` and `bin/sidecar-slim`
+  (`otool -arch all -l`, every slice of a universal binary) and fails above
+  11.0 and 13.0, the versions INSTALL.md promises. The script, INSTALL's
+  requirements and RELEASING's target table point at each other.
+- **Attestation warnings.** The image's attest step warned twice on every
+  push (release run 39549172609: "Failed to create storage record … no
+  artifacts found", then "Please check that the "artifact-metadata:write"
+  permission has been included"). The packages' attest step didn't warn:
+  `actions/attest` only makes storage records for an image pushed to a
+  registry. The record only feeds the organization's Linked Artifacts page,
+  so both attest steps now set `create-storage-record: false` instead of
+  getting another write permission.
+- **The image's OCI vendor label was `vibecook`**, an unrelated GitHub
+  organization. It is `vibecook-dev` now, in the `Dockerfile` and the
+  image action's labels.
+- **Dependabot.** Every bump was titled `chore(deps)`, so no dependency
+  fix ever made a release, and the Debian base image digest wasn't
+  watched: it sat in an `ARG`, which Dependabot doesn't read. Cargo
+  (workspace), npm production and Docker bumps are now `fix(deps):`, which
+  makes a release; npm development bumps are `chore(deps-dev):`,
+  `web/scripts/golden-rs` (a dev tool, not shipped) `chore(deps):` and
+  GitHub Actions `ci(deps):`. The `Dockerfile` names the base image in its
+  `FROM` lines, and a `docker` entry watches it. Dependabot has no
+  development dependencies for cargo, so workspace dev-dependency bumps
+  make a release too.
+- **RELEASING.md listed `deps:` as making a release.** It doesn't:
+  `release-please-config.json` sets no `changelog-sections`, and Release
+  Please's default types have no `deps`, so a `deps:` commit makes no
+  release and stays out of the changelog. RELEASING.md now says so, and
+  Dependabot uses `fix(deps):` instead. (Adding a visible `deps` section
+  to `changelog-sections` would make `deps:` release, if that is ever
+  wanted.)
+
+Fixed for v0.1.0-alpha.2 in #13 (`fix:`): the licence item (it completes
+`THIRD_PARTY_LICENSES`) and the log-colour item (flux colours its log only
+when stderr is a terminal, so the journal gets plain text). See that PR.
+
 Still open:
 
 - **The macOS sidecar needs macOS 13.** Truffle 0.7.20's macOS
@@ -337,8 +399,13 @@ Still open:
   needs macOS 13 even though the server runs on 11. The docs now say so.
   How the sidecar fails on macOS 11 or 12 was not tested (no such machine).
   To support them, Truffle would have to build its macOS sidecars with
-  Go 1.24 (macOS 11) or Go 1.26 (macOS 12). A `minos` check in the package
-  smoke test would catch the next rise.
+  Go 1.24 (macOS 11) or Go 1.26 (macOS 12). Since #14 the package smoke
+  test fails on the next rise.
 - **The README inside the v0.1.0-alpha.1 packages and image** is the old one
   that says there are no releases. The published assets stay as they are;
   v0.1.0-alpha.2 will carry the new README.
+- **README's Operations line** says CI smoke-tests every package but
+  `x86_64-apple-darwin`, and only the linux/amd64 image. After #14 it
+  smoke-tests all four packages and both image platforms. README isn't
+  in #14, and it ships in the packages and the image, so it needs a
+  one-line fix before the v0.1.0-alpha.2 release PR merges.

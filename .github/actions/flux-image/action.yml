@@ -1,12 +1,30 @@
 # Builds the flux container image from Linux release packages: lays out the
-# build context, builds linux/amd64 and smoke-tests it, then builds
-# linux/amd64 + linux/arm64 and pushes them only when `push` is "true".
+# build context, builds the runner's own platform (linux/amd64 or
+# linux/arm64) and smoke-tests it, then builds linux/amd64 + linux/arm64 and
+# pushes them only when `push` is "true".
+#
+# Each platform is smoke-tested on a runner of its own architecture, so the
+# callers run this action twice per image:
+#
+#   on ubuntu-24.04-arm, smoke-only: "true"
+#     builds and tests linux/arm64, and keeps its layers as the artifact
+#     image-layers-arm64;
+#   on ubuntu-24.04, layers: image-layers-arm64
+#     builds and tests linux/amd64, then builds the multi-arch image, taking
+#     linux/arm64 from those layers.
+#
+# With `layers` set there is no QEMU, and the action fails if the runner can
+# emulate arm64 anyway, so an arm64 step missing from the layers fails the
+# build instead of being rebuilt, untested, under emulation: the arm64 half
+# of the image is the build that was tested.
+#
 # Used by docker.yml (releases, main, pull requests) and release-dry-run.yml
 # (never pushes). A pushing caller logs in to ghcr.io before this action and
 # attests the returned digest after it. No layer cache from earlier runs: the
 # image is published, so it is built only from the packages, the pinned base
-# image and the checksummed jellyfin-ffmpeg .deb (the multi-arch build reuses
-# the smoke build's amd64 layers within the job).
+# image and the checksummed jellyfin-ffmpeg .deb. Within one workflow run the
+# multi-arch build reuses the amd64 smoke build's layers (same builder) and
+# the arm64 layers from `layers`.
 name: flux image
 description: Build, smoke-test and optionally push ghcr.io/vibecook-dev/flux.
 
@@ -26,6 +44,18 @@ inputs:
   push:
     description: '"true" pushes the image (log in first).'
     default: "false"
+  smoke-only:
+    description: >-
+      "true" builds and smoke-tests only the runner's platform, keeps its
+      layers as the artifact image-layers-<amd64|arm64>, and stops there: no
+      multi-arch build, no push.
+    default: "false"
+  layers:
+    description: >-
+      An image-layers-* artifact from a smoke-only run of this action earlier
+      in the same workflow run; the multi-arch build takes that platform from
+      it. Empty: every platform is built here, arm64 under QEMU.
+    default: ""
 
 outputs:
   digest:
@@ -45,12 +75,32 @@ runs:
         VERSION: ${{ inputs.version }}
       run: scripts/package/docker-context.sh --version "$VERSION" "$PACKAGES" docker-dist
 
-    - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+    - id: native
+      name: Runner platform
+      shell: bash
+      run: |
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 other=arm64 qemu=qemu-aarch64 ;;
+          ARM64) arch=arm64 other=amd64 qemu=qemu-x86_64 ;;
+          *) echo "::error::No flux image for a $RUNNER_ARCH runner."; exit 1 ;;
+        esac
+        {
+          echo "arch=$arch"
+          echo "platform=linux/$arch"
+          echo "other-platform=linux/$other"
+          echo "other-qemu=$qemu"
+        } >> "$GITHUB_OUTPUT"
+        echo "Smoke-testing linux/$arch on this $RUNNER_ARCH runner, natively."
+
+    - name: QEMU for linux/arm64
+      if: inputs.smoke-only != 'true' && inputs.layers == ''
+      uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       with:
         platforms: arm64
     - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
     - id: meta
+      if: inputs.smoke-only != 'true'
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
       env:
         DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
@@ -67,29 +117,79 @@ runs:
           org.opencontainers.image.title=flux
           org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library
           org.opencontainers.image.licenses=MIT
-          org.opencontainers.image.vendor=vibecook
+          org.opencontainers.image.vendor=vibecook-dev
           org.opencontainers.image.documentation=https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md
         annotations: |
           org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library
           org.opencontainers.image.licenses=MIT
 
-    # Smoke-test the amd64 image before anything is pushed.
-    - name: Build amd64 for the smoke test
+    # Smoke-test the runner's platform before anything is pushed. A
+    # smoke-only run also exports the layers it built.
+    - name: Build ${{ runner.arch == 'ARM64' && 'linux/arm64' || 'linux/amd64' }} for the smoke test
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: .
         build-contexts: dist=docker-dist
-        platforms: linux/amd64
+        platforms: ${{ steps.native.outputs.platform }}
         load: true
         push: false
         tags: flux:smoke
+        cache-to: ${{ inputs.smoke-only == 'true' && format('type=local,dest={0}/image-layers,mode=max', runner.temp) || '' }}
     - name: Smoke test
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: scripts/package/docker-smoke-test.sh flux:smoke "$VERSION"
 
+    - name: Keep the layers for the multi-arch build
+      if: inputs.smoke-only == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: image-layers-${{ steps.native.outputs.arch }}
+        path: ${{ runner.temp }}/image-layers
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+
+    - name: Layers${{ inputs.layers != '' && format(' from {0}', inputs.layers) || '' }}
+      if: inputs.smoke-only != 'true' && inputs.layers != ''
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.layers }}
+        path: ${{ runner.temp }}/image-layers
+
+    # The layers are only the tested build if this runner can't build the
+    # other platform itself. Check it rather than rely on the runner image:
+    # with an emulator registered, a step missing from the layers would be
+    # rebuilt here, untested, instead of failing the build.
+    - name: No emulator for ${{ runner.arch == 'ARM64' && 'linux/amd64' || 'linux/arm64' }}
+      if: inputs.smoke-only != 'true' && inputs.layers != ''
+      shell: bash
+      env:
+        OTHER: ${{ steps.native.outputs.other-platform }}
+        QEMU: ${{ steps.native.outputs.other-qemu }}
+        LAYERS: ${{ inputs.layers }}
+      run: |
+        platforms=$(docker buildx inspect --bootstrap | sed -n 's/^Platforms: *//p')
+        echo "buildx platforms: $platforms"
+        if [ -z "$platforms" ]; then
+          echo "::error::Found no Platforms line in docker buildx inspect, so can't tell whether this runner can build $OTHER."
+          exit 1
+        fi
+        if [ -e "/proc/sys/fs/binfmt_misc/$QEMU" ]; then
+          echo "::error::binfmt_misc has $QEMU, so $OTHER steps missing from $LAYERS would be rebuilt here, untested."
+          exit 1
+        fi
+        case ", $platforms," in
+          *", $OTHER"[,/*]*)
+            echo "::error::The builder can build $OTHER, so $OTHER steps missing from $LAYERS would be rebuilt here, untested."
+            exit 1
+            ;;
+        esac
+        echo "No $OTHER emulation: $OTHER comes from $LAYERS, or the build fails."
+
     - id: build
+      if: inputs.smoke-only != 'true'
       name: Build linux/amd64 + linux/arm64${{ inputs.push == 'true' && ' and push' || '' }}
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
@@ -100,6 +200,7 @@ runs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         annotations: ${{ steps.meta.outputs.annotations }}
+        cache-from: ${{ inputs.layers != '' && format('type=local,src={0}/image-layers', runner.temp) || '' }}
         provenance: mode=max
         sbom: true
 
@@ -107,13 +208,19 @@ runs:
       shell: bash
       env:
         PUSH: ${{ inputs.push }}
+        SMOKE_ONLY: ${{ inputs.smoke-only }}
+        PLATFORM: ${{ steps.native.outputs.platform }}
         TAGS: ${{ steps.meta.outputs.tags }}
         DIGEST: ${{ steps.build.outputs.digest }}
       run: |
         {
-          if [ "$PUSH" = "true" ]; then echo "### Image pushed"; else echo "### Image built for linux/amd64 + linux/arm64 (not pushed)"; fi
-          echo '```'
-          echo "${TAGS:-(no tags)}"
-          echo "digest: ${DIGEST:-n/a}"
-          echo '```'
+          if [ "$SMOKE_ONLY" = "true" ]; then
+            echo "### Image for $PLATFORM built and smoke-tested on a $RUNNER_ARCH runner (not pushed)"
+          else
+            if [ "$PUSH" = "true" ]; then echo "### Image pushed"; else echo "### Image built for linux/amd64 + linux/arm64 (not pushed)"; fi
+            echo '```'
+            echo "${TAGS:-(no tags)}"
+            echo "digest: ${DIGEST:-n/a}"
+            echo '```'
+          fi
         } >> "$GITHUB_STEP_SUMMARY"

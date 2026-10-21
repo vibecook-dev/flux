@@ -3,12 +3,45 @@
 # updates wait until a release is a week old (`cooldown`), so a compromised
 # release is usually yanked before it reaches a PR; security updates don't
 # wait.
+#
+# The commit message decides whether a bump makes a release
+# (docs/RELEASING.md). With `include: scope`, Dependabot adds "(deps)", or
+# "(deps-dev)" for development dependencies, after the prefix:
+#
+#   cargo (workspace), npm production, Docker  "fix(deps): …"        releases
+#   npm development                            "chore(deps-dev): …"  no release
+#   cargo in web/scripts/golden-rs (dev tool)  "chore(deps): …"      no release
+#   GitHub Actions                             "ci(deps): …"         no release
+#
+# A bare "deps: …" would make no release: release-please-config.json sets no
+# changelog-sections, and Release Please's default types have no "deps".
+# Dependabot treats every cargo dependency as a production one (it doesn't
+# support prefix-development for cargo), so workspace dev-dependency bumps
+# are "fix(deps):" too.
 version: 2
 updates:
   - package-ecosystem: cargo
-    directories:
-      - /
-      - /web/scripts/golden-rs
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: fix
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # web/scripts/golden-rs is a dev tool outside the workspace (its own
+  # Cargo.lock) and isn't shipped, so its bumps make no release.
+  - package-ecosystem: cargo
+    directory: /web/scripts/golden-rs
     schedule:
       interval: weekly
     cooldown:
@@ -21,10 +54,12 @@ updates:
       - dependencies
       - rust
     groups:
-      cargo:
+      golden-rs:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  # Production and development dependencies are grouped apart, so that a PR
+  # of development bumps only stays "chore(deps-dev):".
   - package-ecosystem: npm
     directory: /web
     schedule:
@@ -33,15 +68,36 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     commit-message:
-      prefix: chore
+      prefix: fix
+      prefix-development: chore
       include: scope
     labels:
       - dependencies
       - javascript
     groups:
       npm:
+        dependency-type: production
         patterns: ["*"]
         update-types: [minor, patch]
+      npm-development:
+        dependency-type: development
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # The debian:trixie-slim digest in the Dockerfile's FROM lines.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: fix
+      include: scope
+    labels:
+      - dependencies
+      - docker
 
   - package-ecosystem: github-actions
     directory: /

@@ -2,8 +2,10 @@
 # build-provenance attestations, the Docker image, then flips the draft
 # release that Release Please created to published. Called by
 # release-please.yml; run it by hand (Actions → Release → Run workflow) to
-# rebuild an existing tag after a failure. release-dry-run.yml runs the same
-# build and packaging without publishing anything.
+# rebuild a draft release after a failure. It refuses a release that is
+# already published, before building anything: published releases are
+# immutable. release-dry-run.yml runs the same build and packaging without
+# publishing anything.
 name: Release
 
 on:
@@ -16,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build and publish, e.g. v0.1.0-alpha.1
+        description: Tag of a draft release to build and publish, e.g. v0.1.0-alpha.2
         type: string
         required: true
 
@@ -27,6 +29,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Only a draft release may be built and published. A published release is
+  # immutable: GitHub rejects new or replaced assets, so a run against one
+  # would build everything and then fail, and it could push the image.
+  draft:
+    name: Check the ${{ inputs.tag }} draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # only a token with push access sees draft releases
+    steps:
+      - name: Check the release is a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft); then
+            echo "::error title=No release for $TAG::gh found no GitHub release for $TAG (its error is above). This workflow builds and publishes the draft release that Release Please creates; it never creates one (docs/RELEASING.md)."
+            exit 1
+          fi
+          if [ "$draft" != true ]; then
+            echo "::error title=$TAG is already published::$TAG is a published release, and published releases can't change (immutable releases), so nothing was built. To ship a fix, land it on main and release the next version (docs/RELEASING.md, When something fails)."
+            exit 1
+          fi
+          echo "$TAG is a draft release." >> "$GITHUB_STEP_SUMMARY"
+
   prepare:
     name: Check ${{ inputs.tag }}
     runs-on: ubuntu-24.04
@@ -68,7 +95,7 @@ jobs:
 
   build:
     name: Build
-    needs: prepare
+    needs: [draft, prepare]
     permissions:
       contents: read
     uses: ./.github/workflows/build.yml
@@ -108,13 +135,25 @@ jobs:
         run: |
           scripts/package/release-assets.sh --version "$VERSION" dist
           { echo '```'; cat dist/SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # No storage record (see docker.yml): actions/attest only makes one for
+      # an image pushed to a registry, so this is the default made explicit.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/flux-*.tar.gz
-      - name: Upload to the release
+          create-storage-record: false
+      # --clobber replaces the assets an earlier, failed run of this draft
+      # uploaded. Check again that it is still a draft: it may have been
+      # published by hand since the `draft` job ran.
+      - name: Upload to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$draft" != true ]; then
+            echo "::error title=$TAG is already published::$TAG was published while this run was building; not uploading to it."
+            exit 1
+          fi
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
   docker:
     name: Docker
