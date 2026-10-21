@@ -175,6 +175,11 @@ pub struct ScanSummary {
     /// Names that are not valid UTF-8, skipped (with a warning) rather than
     /// stored lossily (two such names could alias one catalog path).
     pub non_utf8_skipped: u64,
+    /// Media files skipped because their name starts with `.` (each is
+    /// logged at info). Hidden files are never cataloged; Windows doesn't
+    /// hide such a name, so this tells a user where a file went. OS litter
+    /// (`.DS_Store`, AppleDouble `._*`) is not counted.
+    pub hidden_skipped: u64,
     /// Directories that didn't answer before their deadline (nothing under
     /// them was marked missing). Also: a symlink whose target does not
     /// resolve (an offline disk), and an empty directory whose files lived

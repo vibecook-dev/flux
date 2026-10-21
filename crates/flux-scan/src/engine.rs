@@ -175,6 +175,13 @@ impl Inner {
         }
         if let Ok(s) = &res {
             tracing::debug!(library = job.library_id, job = job.id, ?s, "scan finished");
+            if s.hidden_skipped > 0 {
+                tracing::info!(
+                    library = job.library_id,
+                    hidden = s.hidden_skipped,
+                    "scan skipped media files whose names start with '.' (hidden); rename them to add them"
+                );
+            }
         }
         if job.bulk.load(Ordering::Relaxed) {
             // The scan's snapshot, walk sets and page buffers are gone now.
@@ -365,7 +372,7 @@ impl Inner {
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |d| d.as_millis() as i64),
-            canonical: st.canonical.clone().unwrap_or_else(|| root.to_path_buf()),
+            canonical,
         })
     }
 

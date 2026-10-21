@@ -584,6 +584,13 @@ impl Walk<'_> {
             file_filter: Some(FileFilter::extensions(crate::paths::walk_extensions())),
             cancel: Some(self.ctx.job.cancel.clone()),
             ignore,
+            // Dot-names are delivered so that `visit` can count and log a
+            // hidden media file (Windows doesn't hide `.Name.mp4`, so a user
+            // there can't tell why it is missing). Nothing hidden is
+            // cataloged or walked, as with the media profile's own filter;
+            // OS litter (`.DS_Store`, AppleDouble `._*`) is still dropped by
+            // Mille's default ignores and never reaches `visit`.
+            include_hidden: true,
             ..ScanOptions::media()
         }
     }
@@ -812,7 +819,29 @@ impl Walk<'_> {
         self.external.iter().any(|x| is_under(rel, x))
     }
 
+    /// A name starting with `.`: never cataloged, never walked into. A
+    /// media file is counted (`ScanSummary::hidden_skipped`) and logged, so
+    /// a user can find out why it isn't in the library.
+    fn hidden(&mut self, dir: &DirCtx<'_>, e: &ScanEntry<'_>) -> Visit {
+        if e.is_dir() {
+            return Visit::SkipChildren;
+        }
+        if e.is_file() && decode_name(e.name).is_some_and(is_video_name) {
+            Progress::add(&self.ctx.job.progress.hidden_media, 1);
+            tracing::info!(
+                path = %dir.join(e.name).display(),
+                "skipping a hidden media file: its name starts with '.' (rename it to add it to the library)"
+            );
+        }
+        Visit::Continue
+    }
+
     fn visit(&mut self, dir: &DirCtx<'_>, e: &ScanEntry<'_>) -> Visit {
+        // Before anything else, so a hidden entry changes nothing the walk
+        // decides (an empty listing, the resume snapshot, links).
+        if e.name.as_encoded_bytes().first() == Some(&b'.') {
+            return self.hidden(dir, e);
+        }
         if self.cur.as_ref().is_none_or(|g| g.id != dir.id) {
             self.flush();
             let rel = rel_of(self.root_abs, dir.path);

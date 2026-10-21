@@ -89,6 +89,7 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 - **Unreachable roots:** a failed root stat or listing marks the root unavailable and is never deleted; restoring the root brings it back.
   - **Empty mount point guard:** a root that now lists empty while the catalog has live files there is treated as unavailable, not as a mass delete.
 - **Identity edge cases:** Mille's `dev = ino = 0` (Windows) becomes `None`, except for a file behind a link or junction that leaves the library: the scan asks that file for its volume serial number and file id (`flux_core::file_id`), because the server serves such a file only while it is the one the scan recorded. Non-UTF-8 names are skipped, logged and counted in `ScanSummary::non_utf8_skipped`; for a directory, its subtree is skipped.
+- **Hidden names** (a leading `.`) are never cataloged or walked into. A hidden media file is counted in `ScanSummary::hidden_skipped` and logged at info, because Windows doesn't hide such a name and the file would otherwise vanish without a word. OS litter (`.DS_Store`, AppleDouble `._*`) is dropped by Mille's default ignores and not counted.
 
 ### Devices, priorities, coalescing, cancellation
 
