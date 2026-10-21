@@ -18,6 +18,11 @@ pub struct Env {
 }
 
 pub fn env(kind: LibraryKind) -> Env {
+    env_at(kind, "/media/lib/")
+}
+
+/// [`env`] with a library on `root` (as a user typed it).
+pub fn env_at(kind: LibraryKind, root: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cat = Catalog::open(dir.path().join("catalog.db"), CatalogConfig::default()).unwrap();
     let lib = cat
@@ -25,7 +30,7 @@ pub fn env(kind: LibraryKind) -> Env {
         .create_library(CreateLibrary {
             name: "Lib".into(),
             kind,
-            roots: vec!["/media/lib/".into()],
+            roots: vec![root.into()],
         })
         .wait()
         .unwrap();

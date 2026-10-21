@@ -452,3 +452,52 @@ fn a_corrupt_stored_guess_does_not_poison_later_batches() {
     });
     assert_eq!(out.files_changed, 1);
 }
+
+/// A root typed with a trailing backslash used to be stored as typed, so
+/// asset paths read `D:\Library\Films\/Film/Film.mkv`, and every Windows
+/// asset path mixed `\` and `/`. Windows roots lose the trailing separator
+/// (a drive root keeps its own) and their asset paths use `\` throughout;
+/// other roots are unchanged.
+#[test]
+fn windows_roots_are_stored_without_a_trailing_separator_and_join_with_backslashes() {
+    let rel = "Film (2020)/Film (2020).mkv";
+    for (typed, stored, path) in [
+        (
+            "D:\\Library\\Films\\",
+            "D:\\Library\\Films",
+            "D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "D:/Library/Films/",
+            "D:\\Library\\Films",
+            "D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        ("D:\\", "D:\\", "D:\\Film (2020)\\Film (2020).mkv"),
+        ("D:", "D:\\", "D:\\Film (2020)\\Film (2020).mkv"),
+        (
+            "\\\\nas\\media\\",
+            "\\\\nas\\media",
+            "\\\\nas\\media\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "/media/lib/",
+            "/media/lib",
+            "/media/lib/Film (2020)/Film (2020).mkv",
+        ),
+        ("/", "/", "/Film (2020)/Film (2020).mkv"),
+    ] {
+        let e = env_at(LibraryKind::Movies, typed);
+        assert_eq!(e.lib.roots[0].path, stored, "{typed}");
+        e.apply(vec![upsert(rel, movie("Film", Some(2020)), None)]);
+        let d = e.detail(e.find_top("Film").id);
+        assert_eq!(d.assets[0].path, path, "{typed}");
+        let id = d.assets[0].id;
+        let loc = e
+            .cat
+            .read_blocking(move |c| read::asset_location(c, id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loc.path, path, "{typed}");
+        assert_eq!(loc.root_path, stored);
+    }
+}

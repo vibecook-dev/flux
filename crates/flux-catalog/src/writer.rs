@@ -938,13 +938,36 @@ impl Writer {
     }
 }
 
+/// A root as the catalog stores it: without a trailing separator, except
+/// where that would change what it names (`/`, a drive root such as `D:\`).
+/// A Windows path (see [`is_windows_path`]) is spelled with `\` throughout,
+/// so the asset paths built from it ([`crate::read`]) read one way.
 fn normalize_root_path(p: &str) -> String {
+    if is_windows_path(p) {
+        let s = p.replace('/', "\\");
+        let t = s.trim_end_matches('\\');
+        // `D:` alone means "the current folder of drive D:".
+        return if t.ends_with(':') || t.is_empty() {
+            format!("{t}\\")
+        } else {
+            t.to_string()
+        };
+    }
     let t = p.trim_end_matches('/');
     if t.is_empty() {
         "/".into()
     } else {
         t.to_string()
     }
+}
+
+/// A Windows path: it starts with a drive letter (`D:`) or `\\` (a share,
+/// `\\server\share`, or a verbatim `\\?\` path). Decided by spelling, not
+/// by the platform, so a catalog reads the same everywhere; absolute paths
+/// of other platforms (`/…`) never look like one.
+pub(crate) fn is_windows_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') || p.starts_with("\\\\")
 }
 
 /// The same folder, or one inside the other, compared by whole path

@@ -1101,8 +1101,14 @@ pub fn children(c: &Connection, id: Id, user: Option<Id>) -> Result<Vec<ItemSumm
 
 // ---- detail --------------------------------------------------------------------------
 
+/// A file's absolute path: its root and its `/`-separated relative path,
+/// joined with the root's own separator (`\` for a Windows root, also
+/// inside `rel`, so a path never mixes the two).
 fn path_join(root: &str, rel: &str) -> String {
-    if root.ends_with('/') {
+    if crate::writer::is_windows_path(root) {
+        let root = root.trim_end_matches(['/', '\\']).replace('/', "\\");
+        format!("{root}\\{}", rel.replace('/', "\\"))
+    } else if root.ends_with('/') {
         format!("{root}{rel}")
     } else {
         format!("{root}/{rel}")
