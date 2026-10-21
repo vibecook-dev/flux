@@ -117,7 +117,7 @@ on first run; you can also add them on the Admin screen. The catalog,
 artwork and caches live in `~/Library/Application Support/flux` (macOS) or
 `~/.local/share/flux` (Linux) unless you pass `--data-dir`. Every flag, its
 environment variable and the TOML config file are in the
-[README](../README.md#quickstart) and `flux-server --help`.
+[README](../README.md#quickstart-build-from-source) and `flux-server --help`.
 
 flux is private by default: it listens on 127.0.0.1 only, where callers are
 the Owner. `--lan 0.0.0.0:8097` adds a LAN listener whose callers are
