@@ -1,7 +1,7 @@
 //! The `/api/v1` routes of `flux_core::api` (browse, libraries, tailnet) and
 //! the router that ties every module together.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -159,45 +159,10 @@ async fn create_library(
     if let Some(bad) = req.roots.iter().find(|r| !Path::new(r).is_absolute()) {
         return Err(ApiError::bad_request(format!("{bad:?} is not an absolute path")));
     }
-    overlapping_roots(&req.roots).await?;
+    crate::roots::check_new_roots(&st.catalog, &req.roots).await?;
     let lib = st.catalog.writer().create_library(req).await?;
     let _ = start_scan(&st, lib.id, Priority::Interactive);
     Ok(Json(with_live_status(&st, lib)))
-}
-
-/// Refuses roots that are the same folder, or one inside another, where they
-/// really are. The catalog compares them as written (it does no file I/O),
-/// so the same folder spelled through a symlink, with `..` or in another
-/// letter case (case-insensitive volumes) would catalog every file below it
-/// twice (review INT-7, found by the re-verification). A root that doesn't
-/// exist yet is compared as written.
-async fn overlapping_roots(roots: &[String]) -> ApiResult<()> {
-    let given = roots.to_vec();
-    let real: Vec<PathBuf> = tokio::task::spawn_blocking(move || {
-        given
-            .iter()
-            .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
-            .collect()
-    })
-    .await
-    .map_err(|e| ApiError::internal(e.to_string()))?;
-    for (i, a) in real.iter().enumerate() {
-        for (j, b) in real.iter().enumerate().skip(i + 1) {
-            let (inner, outer) = if a.starts_with(b) {
-                (i, j)
-            } else if b.starts_with(a) {
-                (j, i)
-            } else {
-                continue;
-            };
-            return Err(flux_catalog::CatalogError::OverlappingRoots {
-                root: roots[inner].clone(),
-                other: roots[outer].clone(),
-            }
-            .into());
-        }
-    }
-    Ok(())
 }
 
 /// Quick scan + watch (unless `--no-watch`); logs (and returns) why it

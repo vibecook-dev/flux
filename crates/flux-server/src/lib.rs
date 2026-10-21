@@ -25,6 +25,7 @@ mod lru;
 pub mod media;
 pub mod net;
 pub mod play;
+pub mod roots;
 pub mod scan;
 pub mod server;
 pub mod state;

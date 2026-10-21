@@ -10,7 +10,7 @@ use std::time::Duration;
 use common::*;
 use flux_catalog::{
     read, scan_support, ArtKind, CatalogError, ClaimJobs, ExpectedRow, FileFingerprint, FileMove, FileState,
-    FileUpsert, JobResult, NewArt, ProbeUpdate, ScanBatch, JOB_ART, JOB_MATCH,
+    FileUpsert, JobResult, NewArt, ProbeUpdate, RootOverlap, ScanBatch, JOB_ART, JOB_MATCH,
 };
 use flux_core::api::{ArtSource, CreateLibrary, Id, Identity, Role};
 use flux_core::LibraryKind;
@@ -508,8 +508,79 @@ fn int7_overlapping_roots_in_one_library_are_refused() {
         Err(CatalogError::OverlappingRoots { .. })
     ));
     assert!(w.add_root(ok.id, "/m/Other".into(), None).wait().is_ok());
-    // Another library may share a root.
-    assert!(lib(&["/m/Movies"]).is_ok());
+}
+
+/// A folder another library already has, or one inside or around it, is
+/// refused too: every file below would be listed in both libraries (found
+/// on real media: the same folder added twice, once in another letter case).
+#[test]
+fn roots_of_other_libraries_are_refused() {
+    let e = env(LibraryKind::Movies); // "Lib" at /media/lib/
+    let w = e.cat.writer();
+    let lib = |name: &str, roots: &[&str]| {
+        w.create_library(CreateLibrary {
+            name: name.into(),
+            kind: LibraryKind::Shows,
+            roots: roots.iter().map(|s| s.to_string()).collect(),
+        })
+        .wait()
+    };
+    for (root, how) in [
+        ("/media/lib", RootOverlap::Same),
+        ("/media/lib/", RootOverlap::Same),
+        ("/media/lib/TV", RootOverlap::Inside),
+        ("/media", RootOverlap::Contains),
+    ] {
+        match lib("TV", &[root]) {
+            Err(CatalogError::RootInOtherLibrary {
+                other,
+                library,
+                how: got,
+                ..
+            }) => {
+                assert_eq!(
+                    (other.as_str(), library.as_str(), got),
+                    ("/media/lib", "Lib", how),
+                    "{root}"
+                );
+            }
+            other => panic!("{root}: {other:?}"),
+        }
+    }
+    let msg = lib("TV", &["/media/lib/TV"]).unwrap_err().to_string();
+    assert_eq!(
+        msg,
+        "The folder \"/media/lib/TV\" is inside \"/media/lib\", which is already in the library \"Lib\". \
+         A folder can be in only one library, or its files would be listed twice."
+    );
+    // Neighbours are fine, and adding a root checks the other libraries too.
+    let tv = lib("TV", &["/media/library-tv"]).unwrap();
+    assert!(matches!(
+        w.add_root(tv.id, "/media/lib/More".into(), None).wait(),
+        Err(CatalogError::RootInOtherLibrary { .. })
+    ));
+    assert!(matches!(
+        w.add_root(tv.id, "/media/library-tv/4K".into(), None).wait(),
+        Err(CatalogError::OverlappingRoots { .. })
+    ));
+    assert!(w.add_root(tv.id, "/media/tv2".into(), None).wait().is_ok());
+    // Letter case: the same folder on Windows and macOS, whose volumes
+    // ignore it; two folders elsewhere.
+    let upper = lib("Upper", &["/MEDIA/LIB"]);
+    if cfg!(any(windows, target_os = "macos")) {
+        assert!(
+            matches!(
+                upper,
+                Err(CatalogError::RootInOtherLibrary {
+                    how: RootOverlap::Same,
+                    ..
+                })
+            ),
+            "{upper:?}"
+        );
+    } else {
+        assert!(upper.is_ok(), "{upper:?}");
+    }
 }
 
 // ---- INT-8: merge keeps the source's pin when the target has none ----------
