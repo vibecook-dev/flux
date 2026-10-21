@@ -231,7 +231,13 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         }
     }
 
-    let video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    let mut video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    if video.is_some_and(|v| v.interlaced == Some(true)) && quirks(&caps.client).no_deinterlacer {
+        // Transcoded, so the transcoder's deinterlacer turns it progressive.
+        video_issues.push(Reason::ClientQuirk {
+            note: "this browser shows interlaced video combed, so it is deinterlaced".into(),
+        });
+    }
     let bitrate_issue = match (probe.bitrate, caps.max_bitrate) {
         (Some(b), Some(m)) if b > m => Some(Reason::BitrateTooHigh { bitrate: b, max: m }),
         _ => None,
@@ -561,6 +567,11 @@ pub struct Quirks {
     /// proportional to the position. Open-GOP HEVC is transcoded for these
     /// clients. (Open-GOP H.264, non-IDR I pictures, seeks fine there.)
     pub idr_random_access_only: bool,
+    /// Interlaced video plays combed: browsers show the two fields of a
+    /// frame woven together (no deinterlacer for MSE or progressive video;
+    /// a 576i DVD clip looked so in Chrome). It is transcoded, and the
+    /// transcode deinterlaces it.
+    pub no_deinterlacer: bool,
 }
 
 /// The quirks of a client id such as `"web/firefox-157/macos"`.
@@ -568,6 +579,7 @@ pub fn quirks(client: &str) -> Quirks {
     let c = client.to_ascii_lowercase();
     Quirks {
         idr_random_access_only: c.starts_with("web/firefox") && c.ends_with("/macos"),
+        no_deinterlacer: c.starts_with("web/"),
     }
 }
 
@@ -1062,6 +1074,71 @@ mod tests {
         );
         let plan = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
         assert!(plan.is_direct(), "{:?}", plan.reasons);
+    }
+
+    /// A 576i H.264 clip (SAR 16:15) is transcoded for browsers, which
+    /// would show it combed, at its own size (the init's `pasp` keeps 4:3);
+    /// a TV box that deinterlaces gets it as it is.
+    #[test]
+    fn interlaced_video_is_transcoded_for_browsers() {
+        let sd = Track {
+            width: Some(720),
+            height: Some(576),
+            interlaced: Some(true),
+            sample_aspect_ratio: Some(flux_core::Rational { num: 16, den: 15 }),
+            ..h264()
+        };
+        let p = probe(
+            Container::Mp4,
+            vec![
+                sd.clone(),
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        for caps in [
+            presets::chrome_desktop(),
+            presets::safari_macos(),
+            presets::firefox(),
+        ] {
+            let plan = plan(&p, &caps, &PlanPrefs::default());
+            let VideoOp::Transcode { width, height, .. } = plan.video else {
+                panic!("{}: {:?}", caps.client, plan.video);
+            };
+            assert_eq!((width, height), (720, 576), "{}", caps.client);
+            assert!(
+                plan.reasons
+                    .iter()
+                    .any(|r| matches!(r, Reason::ClientQuirk { note } if note.contains("deinterlaced"))),
+                "{}: {:?}",
+                caps.client,
+                plan.reasons
+            );
+        }
+        let tv = presets::apple_tv_4k();
+        assert!(matches!(
+            plan(&p, &tv, &PlanPrefs::default()).video,
+            VideoOp::Copy { .. }
+        ));
+        // Progressive (or unknown) video still direct-plays.
+        for interlaced in [Some(false), None] {
+            let q = probe(
+                Container::Mp4,
+                vec![
+                    Track {
+                        interlaced,
+                        ..sd.clone()
+                    },
+                    Track {
+                        channels: Some(2),
+                        ..track(1, TrackKind::Audio, Codec::Aac)
+                    },
+                ],
+            );
+            assert!(plan(&q, &presets::chrome_desktop(), &PlanPrefs::default()).is_direct());
+        }
     }
 
     #[test]

@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use flux_core::{ColorInfo, VideoOp};
+use flux_core::{Codec, ColorInfo, VideoOp};
 use mp4_atom::{Decode, Encode};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{watch, Semaphore};
@@ -129,6 +129,18 @@ pub fn source_fps(asset: &Asset) -> f64 {
 /// Clockwise display rotation of the asset's video (0/90/180/270).
 fn rotation(asset: &Asset) -> u16 {
     asset.index.video_track().map_or(0, |v| v.extra.rotation)
+}
+
+/// Whether a transcode of `v` deinterlaces it (frames the decoder marks
+/// interlaced; the encoder writes progressive frames): H.264 whose SPS
+/// allows field coding, and the codecs of DVD and broadcast sources.
+/// HEVC and newer codecs code fields as separate pictures, if at all.
+pub fn deinterlace(v: &crate::index::IndexTrack) -> bool {
+    match v.codec {
+        Codec::H264 => v.coded_interlaced() == Some(true),
+        Codec::Mpeg2Video | Codec::Vc1 => true,
+        _ => false,
+    }
 }
 
 /// Size of the encoded pictures: the target, turned upright for a source
@@ -660,6 +672,7 @@ impl VideoTranscoder {
                 tonemap: target.tonemap,
                 bitrate: target.bitrate,
                 level: h264_level(ow, oh, source_fps(asset)),
+                deinterlace: deinterlace(v),
             },
             vaapi_device,
         );
@@ -1432,6 +1445,57 @@ mod tests {
         assert_eq!(got, vec![(video[0].clone(), true), (video[1].clone(), false)]);
     }
 
+    /// The encoder run maps the video alone (no chapter track, no
+    /// metadata) and deinterlaces an interlaced H.264 source before scaling.
+    #[test]
+    fn runs_map_video_only_and_deinterlace_interlaced_sources() {
+        use crate::test_mkv::{TestMkv, PPS, SPS_INTERLACED, SPS_PROGRESSIVE};
+        let target = VideoTarget {
+            width: 64,
+            height: 64,
+            bitrate: 1_000_000,
+            tonemap: false,
+        };
+        let caps = FfmpegCaps {
+            filters: ["bwdif", "yadif"].iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        for (sps, interlaced) in [(SPS_INTERLACED, true), (SPS_PROGRESSIVE, false)] {
+            let (path, _) = TestMkv {
+                sps,
+                pps: PPS,
+                inband: vec![vec![]; 3],
+            }
+            .write(&format!("run-args-{interlaced}.mkv"));
+            let asset = Asset::open(&path, 1_000_000_000).unwrap();
+            let v = asset.index.video_track().unwrap();
+            assert_eq!(v.coded_interlaced(), Some(interlaced));
+            assert_eq!(deinterlace(v), interlaced);
+            let probe = asset.index.to_probe_result();
+            assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced));
+            let all = pieces(&asset, 2_000_000_000);
+            let run = &all[..2];
+            let frames = run_frames(&asset, run).unwrap();
+            let a = VideoTranscoder::args(
+                &asset,
+                &target,
+                run,
+                frames.as_ref(),
+                &caps,
+                VideoEncoder::Libx264,
+                std::path::Path::new("/dev/dri/renderD128"),
+            )
+            .unwrap();
+            assert!(a.windows(2).any(|w| w == ["-map_chapters", "-1"]), "{a:?}");
+            assert!(a.windows(2).any(|w| w == ["-map_metadata", "-1"]), "{a:?}");
+            let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
+            assert_eq!(
+                vf.contains("bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=64:64"),
+                interlaced,
+                "{vf}"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]

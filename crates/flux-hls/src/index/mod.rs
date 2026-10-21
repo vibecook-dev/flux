@@ -215,6 +215,20 @@ impl IndexTrack {
         let off = (ticks_to_ns(g, self.timescale) - pts_ns).abs();
         (off <= GRID_TOLERANCE_NS).then_some(g)
     }
+
+    /// Whether the video is coded interlaced, from its parameter sets: an
+    /// H.264 SPS without `frame_mbs_only_flag` (field pictures or MBAFF
+    /// frames, e.g. a 576i DVD or 1080i broadcast encode). `None` when the
+    /// record doesn't tell (other codecs).
+    pub fn coded_interlaced(&self) -> Option<bool> {
+        use crate::codec::h264;
+        match self.codec {
+            Codec::H264 => h264::AvcConfig::parse(&self.codec_private)
+                .and_then(|c| c.sps.first().and_then(|s| h264::parse_sps(s)))
+                .map(|s| !s.frame_mbs_only),
+            _ => None,
+        }
+    }
 }
 
 /// How the keyframe list was obtained.
@@ -441,7 +455,7 @@ impl PlaybackIndex {
                 width: t.width,
                 height: t.height,
                 frame_rate: t.frame_rate,
-                interlaced: None,
+                interlaced: t.coded_interlaced(),
                 color: t.color,
                 hdr: t
                     .hdr
