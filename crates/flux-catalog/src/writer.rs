@@ -155,6 +155,12 @@ impl<T> Reply<T> {
     pub async fn wait_async(self) -> Result<T> {
         self.rx.recv_async().await.map_err(|_| CatalogError::WriterGone)?
     }
+    /// The result if the writer has sent it, without waiting;
+    /// [`CatalogError::WriterGone`] if not. Final only once the writer
+    /// thread has exited.
+    pub(crate) fn take_sent(self) -> Result<T> {
+        self.rx.try_recv().map_err(|_| CatalogError::WriterGone)?
+    }
 }
 
 impl<T: Send + 'static> Request<T> {
@@ -257,6 +263,12 @@ impl Writer {
     /// Writer counters.
     pub fn stats(&self) -> &WriterStats {
         &self.stats
+    }
+
+    /// Messages waiting in the queue.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.tx.len()
     }
 
     /// Run an arbitrary write closure on the writer thread, in its own
