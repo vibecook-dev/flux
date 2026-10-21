@@ -15,7 +15,7 @@ Truffle release with flux's changes: `Cargo.toml` takes
 `crates/truffle-sidecar/sidecar-checksums.json`). Before merging the release
 PR (`chore(main): release 0.1.0-alpha.1`), run the
 [release dry run](#release-dry-run) on `main` and check that its summary
-shows the sidecar bundled in all four packages.
+shows the sidecar bundled in all the packages.
 
 The release PR's own `pull_request` CI run waits for approval (*Actions →
 the run → Approve and run*, or
@@ -70,7 +70,7 @@ would remove this step.
    - checks the release is still a draft, and the tag matches `Cargo.toml`
      and `web/package.json`;
    - builds the web client once and `THIRD_PARTY_LICENSES` once, then
-     `flux-server` for four targets (`build.yml`):
+     `flux-server` for five targets (`build.yml`):
 
      | Target | Runner | Notes |
      |---|---|---|
@@ -78,6 +78,7 @@ would remove this step.
      | `x86_64-apple-darwin` | macos-15 | cross-compiled; smoke-tested under Rosetta 2; macOS 11+ (`sidecar-slim`: 13+) |
      | `x86_64-unknown-linux-gnu` | ubuntu-22.04 | glibc 2.35+ |
      | `aarch64-unknown-linux-gnu` | ubuntu-22.04-arm | glibc 2.35+, 4/16/64 KiB pages |
+     | `x86_64-pc-windows-msvc` | windows-2025 | Windows 10+; packaged as a `.zip`; smoke-tested with Ctrl-C and Ctrl-Break stops |
 
      The macOS minimums are the ones [INSTALL.md](INSTALL.md#requirements)
      promises, and `scripts/package/smoke-test.sh` enforces them: it fails a
@@ -86,12 +87,17 @@ would remove this step.
      `MACOS_FLUX_SERVER` (11.0) or `MACOS_SIDECAR` (13.0). Raise one only
      in the script, this table and INSTALL.md together.
 
-   - packages each as `flux-<version>-<target>.tar.gz`
-     (`scripts/package/package.sh`) and smoke-tests every package
+   - packages each as `flux-<version>-<target>.tar.gz`, or `.zip` for
+     Windows (`scripts/package/package.sh`), and smoke-tests every package
      (`scripts/package/smoke-test.sh`): on its own architecture, and the
      x86_64 macOS one under Rosetta 2 (`arch -x86_64`) on the arm64
      runner. The job installs Rosetta if the runner lacks it, and fails
-     if `arch -x86_64` doesn't run translated;
+     if `arch -x86_64` doesn't run translated. The package job runs in
+     bash on every runner (Git Bash on Windows). The Windows test starts
+     `flux-server.exe` in a console of its own
+     (`scripts/package/windows-console.ps1`) and stops it as NSSM or WinSW
+     would, with Ctrl-C and then, after a restart, Ctrl-Break; each stop
+     must log "flux stopped" and exit 0;
    - uploads the packages, `SHA256SUMS` and the jellyfin-ffmpeg source
      tarball to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
@@ -113,7 +119,8 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 | Asset | |
 |---|---|
 | `flux-<version>-<target>.tar.gz` | `bin/flux-server`, `share/flux/web/`, `LICENSE`, `README.md`, `THIRD_PARTY_LICENSES`, and `bin/sidecar-slim` when a Truffle sidecar is pinned (below). |
-| `SHA256SUMS` | SHA-256 of every tarball. |
+| `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
+| `SHA256SUMS` | SHA-256 of every package. |
 | `jellyfin-ffmpeg-<version>-source.tar.gz` | Source of the GPL ffmpeg in the Docker image. |
 
 Attestations are on the repository's Attestations page and verify with
@@ -145,9 +152,10 @@ gh workflow run release-dry-run.yml --repo vibecook-dev/flux --ref main
 It runs the same steps as a release, on the chosen ref, with read-only
 repository access:
 
-- `build.yml` for all four targets, with every package's smoke test
-  (x86_64 macOS under Rosetta 2) and the macOS `minos` check; the packages
-  carry the version in `Cargo.toml`;
+- `build.yml` for all five targets, with every package's smoke test
+  (x86_64 macOS under Rosetta 2, Windows with its Ctrl-C and Ctrl-Break
+  stops) and the macOS `minos` check; the packages carry the version in
+  `Cargo.toml`;
 - `scripts/package/release-assets.sh` (as `release.yml` does): the
   jellyfin-ffmpeg source tarball and `SHA256SUMS`;
 - the linux/amd64 + linux/arm64 image through `.github/actions/flux-image`
@@ -237,8 +245,8 @@ least-privilege `permissions:` per job. These settings are needed once:
   - the status check **`CI OK`** (GitHub Actions) must pass, on a branch
     that is up to date with `main`. It fails when any CI job fails:
     `Rustfmt`, `Rust (ubuntu-24.04)`, `Rust (ubuntu-24.04-arm)`,
-    `Rust (macos-15)`, `MSRV`, `Web`, `cargo-deny` and
-    `Lint workflows, scripts and Dockerfile`;
+    `Rust (macos-15)`, `Rust (windows-2025)`, `MSRV`, `Web`, `cargo-deny`
+    and `Lint workflows, scripts and Dockerfile`;
   - no force pushes and no deletion of `main`;
   - repository admins may bypass it **only through a pull request** (merge
     a PR with a red check in an emergency, `gh pr merge --admin`); nobody
@@ -291,7 +299,10 @@ least-privilege `permissions:` per job. These settings are needed once:
 
 ## Packaging locally
 
-The same scripts CI uses, for one target (here macOS on Apple Silicon):
+The same scripts CI uses, for one target (here macOS on Apple Silicon; on
+Windows, run them in Git Bash with `--target x86_64-pc-windows-msvc`,
+`flux-server.exe` and `sidecar/sidecar-slim.exe`, which gives a `.zip` and
+needs Python 3):
 
 ```sh
 export CARGO_TARGET_DIR="$PWD/target"
@@ -332,8 +343,8 @@ When flux moves to a new Truffle version, pin its sidecars in the same PR:
 scripts/package/fetch-sidecar.sh --pin 0.7.20
 ```
 
-This downloads the four `tsnet-sidecar-*` assets of `truffle-v0.7.20` and
-records their SHA-256. Then regenerate the sidecar's licence notice and
+This downloads the five `tsnet-sidecar-*` assets of `truffle-v0.7.20`
+(`tsnet-sidecar-windows-amd64.exe` among them) and records their SHA-256. Then regenerate the sidecar's licence notice and
 commit it with the checksums:
 
 ```sh
@@ -365,5 +376,5 @@ release dry run and the release.
 | Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. The image's arm64 layers pass from one job to the next within a run (artifact `image-layers-arm64`, kept 1 day); that is not a cache. |
 | cargo-deny, cargo-about, actionlint, hadolint | Versions (and checksums) in `ci.yml` and `build.yml`. |
 | Licence policy | `deny.toml` (CI gate) and `scripts/package/about.toml` (THIRD_PARTY_LICENSES); keep the allowed lists in step. npm licences: `scripts/package/web-licenses.mjs`. |
-| jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)). |
+| jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)), and the same version with its portable win64 zip's checksum in `ci.yml`'s Windows job (`JELLYFIN_FFMPEG_VERSION`, `JELLYFIN_FFMPEG_WIN64_SHA256`). |
 | Base image | The `debian:trixie-slim` digest in both `FROM` lines of the `Dockerfile`. Dependabot updates them (`docker` in `.github/dependabot.yml`); it doesn't read image references kept in an `ARG`. |

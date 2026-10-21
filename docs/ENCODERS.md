@@ -155,15 +155,15 @@ passes, and exits 1 when ffmpeg or ffprobe cannot run (2 for a bad flag).
 
 ## Platforms
 
-flux builds on macOS and Linux (glibc, x86_64 and aarch64). How that was
-checked: native build, clippy and tests on macOS (Apple Silicon); for
+flux builds on macOS, Linux (glibc, x86_64 and aarch64) and Windows
+(x86_64, MSVC). How macOS and Linux were first checked: native build, clippy and tests on macOS (Apple Silicon); for
 Linux, `cargo zigbuild --workspace --all-targets --target
 x86_64-unknown-linux-gnu` (links every binary, test and example) and
 `cargo zigbuild clippy` for x86_64 and aarch64, with zig 0.17 as the C
 cross-compiler. jemalloc's build then needs zig's archiver
 (`AR="zig ar"`, `RANLIB="zig ranlib"`); without it macOS's `ar` writes
-an empty `libjemalloc.a` and the link fails. GitHub CI on Linux runners is
-the final check.
+an empty `libjemalloc.a` and the link fails. GitHub CI on Linux, macOS and
+Windows runners is the final check.
 
 - **macOS-only APIs are gated.** `malloc_zone_pressure_relief` (macOS) and
   `malloc_trim` (Linux glibc) behind `flux_catalog`'s release hook,
@@ -173,20 +173,22 @@ the final check.
   numbers on Linux), jemalloc's background purge thread on Linux and a
   stand-in thread elsewhere. Mille gates `getattrlistbulk` and FSEvents
   itself (statx and inotify on Linux).
-- **Windows compiles but is not supported.** `cargo check --workspace
-  --all-targets --target x86_64-pc-windows-gnu` passes: positioned reads
-  use `seek_read`, ffprobe index scans are killed with `taskkill /T`
-  instead of a process-group `SIGKILL`, the host name comes from
-  `COMPUTERNAME`, jemalloc is off, and Unix-only tests (symlinks,
-  permission bits) are compiled out. What is missing is file identity:
-  std has no stable device/file index on Windows, so the "same file, not
-  replaced or re-pointed" checks in flux-hls (`source.rs`) and the scan
-  fall back to size and mtime. That needs a Windows identity source
-  (volume serial + file index) before flux can be trusted there.
-  Embedded remote access has a gap too: flux-net looks for the Truffle
-  sidecar next to the binary as `sidecar-slim`, without `.exe`, so a
-  Windows build would need `TRUFFLE_SIDECAR_PATH` set (or a resolver fix in
-  `crates/flux-net/src/embedded.rs`). Windows is not a release target.
+- **Windows (x86_64) is a release target.** CI's `Rust (windows-2025)`
+  job runs clippy, the workspace tests (with jellyfin-ffmpeg; libx264,
+  since the runner has no GPU) and a release build, and every release
+  ships a `.zip` ([INSTALL.md](INSTALL.md#windows)). Positioned reads use
+  `seek_read`, ffprobe index scans are killed with `taskkill /T` instead of
+  a process-group `SIGKILL`, the host name comes from `COMPUTERNAME`,
+  jemalloc is off, and Unix-only tests (symlinks, permission bits) are
+  compiled out. File identity (std has no stable device/file index on
+  Windows) comes from the handle's volume serial number and file id
+  (`flux_core::file_id`), so the "same file, not replaced or re-pointed"
+  checks in flux-hls (`source.rs`), the server and the scan hold there too.
+  Embedded remote access runs `sidecar-slim.exe` from next to
+  `flux-server.exe`, as the package ships it. Encoders: NVENC was checked
+  on Windows 11 with an NVIDIA GPU; Quick Sync is detected but not yet
+  tested on Windows; AMD's AMF (`h264_amf`) isn't used, so AMD GPUs
+  transcode with libx264.
 
 ## Tests anywhere
 

@@ -53,7 +53,7 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 
 ### Prototype gaps
 
-- **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64, where video transcodes use libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs. Windows compiles but is not supported.
+- **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64 and on Windows x86_64, where video transcodes use libx264. Windows x86_64 is supported, with a release zip ([docs/INSTALL.md](docs/INSTALL.md#windows)): it was checked against a real library on Windows 11 with NVENC on an NVIDIA GPU. Quick Sync on Windows is detected but untested, and AMD's AMF encoder isn't used, so AMD GPUs transcode with libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs.
 - **Unreleased dependencies.** flux uses Mille (file walking and watching) and Truffle (embedded Tailscale), two libraries by the same maintainer, and needs changes to both that were made for flux. Mille comes as a git dependency from [vibecook-dev/mille](https://github.com/vibecook-dev/mille), pinned to the commit that merged flux's changes. Truffle's `truffle-core` comes from crates.io (0.7.20, the release with flux's changes). To build against local checkouts of either, see [CONTRIBUTING.md](CONTRIBUTING.md#local-mille-and-truffle-checkouts).
 - **Remote access has not run end to end.** Embedded mode has never joined a real tailnet; its serving path is tested with fabricated identities. System mode was tested read-only on one machine (WhoIs identity and network path), never from a second device.
 - **Roles and sharing.** Adding libraries, scanning and switching remote access need Owner or Admin. Beyond that, roles are not enforced: Kid and Guest see everything. LAN callers are anonymous, with no pairing. The web client's invite flow has no server API yet.
@@ -64,7 +64,7 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
   - The first play of an MPEG-TS reads the whole file to index it. From a cold HDD or NAS that would take seconds (not measured).
 - **Metadata.** The TMDB API client has never run against the live API, because testing had no key. TMDB data is not yet refreshed within the API terms' 6-month cache limit.
 - **Clients.** Chrome is the only browser driven end to end. Safari, iOS and Firefox are covered by unit tests only. There are no native or TV apps yet. Jellyfin-API compatibility is not planned: flux builds its own web client and apps ([DECISIONS.md](docs/DECISIONS.md)).
-- **Operations.** HTTP/1.1 only. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new with the first pre-release, v0.1.0-alpha.1. CI smoke-tests every package (`x86_64-apple-darwin` under Rosetta 2) and the image on both platforms, but none of them has run as a long-lived service.
+- **Operations.** HTTP/1.1 only. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new with the first pre-release, v0.1.0-alpha.1. CI smoke-tests every package (`x86_64-apple-darwin` under Rosetta 2, and the Windows zip stopped with Ctrl-C and Ctrl-Break) and the image on both platforms, but none of them has run as a long-lived service.
 
 The full lists are in [fixes.md §7](docs/prototype/fixes.md#7-open-items), [e2e.md §5](docs/prototype/e2e.md#5-remaining-gaps-by-priority), [benchmarks.md §8](docs/prototype/benchmarks.md#8-gaps) and each component report in `docs/prototype/`.
 
@@ -72,7 +72,7 @@ The full lists are in [fixes.md §7](docs/prototype/fixes.md#7-open-items), [e2e
 
 Releases are pre-releases (`0.1.0-alpha.N`) until the first stable one; the first is [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1). [docs/INSTALL.md](docs/INSTALL.md) has the steps for each way to install flux:
 
-- **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
+- **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64, a `.zip`), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
 - **Docker**: `ghcr.io/vibecook-dev/flux:<version>` (e.g. `0.1.0-alpha.1`) for linux/amd64 and linux/arm64, and `edge` for the tip of `main`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source, and each release attaches the matching source tarball. See [INSTALL.md § Docker](docs/INSTALL.md#docker).
 - **Build from source**, below.
 
@@ -82,7 +82,7 @@ flux only ever runs `ffmpeg` and `ffprobe` as separate processes and never links
 
 **Prerequisites**
 
-- macOS or Linux (x86_64 or arm64). flux was developed on macOS (Apple Silicon); CI builds and tests it on both. On Linux you also need a C compiler and `make` (Debian/Ubuntu: `build-essential`) for the bundled SQLite and jemalloc.
+- macOS, Linux (x86_64 or arm64) or Windows (x86_64). flux was developed on macOS (Apple Silicon); CI builds and tests it on all three. On Linux you also need a C compiler and `make` (Debian/Ubuntu: `build-essential`) for the bundled SQLite and jemalloc; on Windows, the MSVC toolchain (Visual Studio Build Tools with "Desktop development with C++"), which rustup asks for.
 - Rust stable. The workspace's `rust-version` is 1.89; CI lints and tests with 1.99.1.
 - `ffmpeg` and `ffprobe`, on `PATH` or from Homebrew (developed with 9.0.2). flux uses them for transcodes, frame posters and probe fallbacks.
 - Node.js and pnpm (`pnpm@11.13.1`), to build the web UI.
@@ -193,7 +193,7 @@ These are still open. They come from [research/00-synthesis.md](research/00-synt
 
 ## Documentation
 
-- [docs/INSTALL.md](docs/INSTALL.md): release packages, Docker, a systemd unit, upgrading and building from source.
+- [docs/INSTALL.md](docs/INSTALL.md): release packages, Windows, Docker, a systemd unit, upgrading and building from source.
 - [docs/RELEASING.md](docs/RELEASING.md): how releases are made and verified.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the contract the crates are built against.
 - [docs/prototype/](docs/prototype/): one report per component, plus [benchmarks.md](docs/prototype/benchmarks.md), [e2e.md](docs/prototype/e2e.md), [review.md](docs/prototype/review.md), [fixes.md](docs/prototype/fixes.md), [reverify.md](docs/prototype/reverify.md) and [audit.md](docs/prototype/audit.md) (every published number traced to its result file).
