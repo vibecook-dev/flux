@@ -3,7 +3,10 @@
 # linux/amd64 + linux/arm64 and pushes them only when `push` is "true".
 # Used by docker.yml (releases, main, pull requests) and release-dry-run.yml
 # (never pushes). A pushing caller logs in to ghcr.io before this action and
-# attests the returned digest after it.
+# attests the returned digest after it. No layer cache from earlier runs: the
+# image is published, so it is built only from the packages, the pinned base
+# image and the checksummed jellyfin-ffmpeg .deb (the multi-arch build reuses
+# the smoke build's amd64 layers within the job).
 name: flux image
 description: Build, smoke-test and optionally push ghcr.io/vibecook-dev/flux.
 
@@ -80,7 +83,6 @@ runs:
         load: true
         push: false
         tags: flux:smoke
-        cache-from: type=gha,scope=flux-image
     - name: Smoke test
       shell: bash
       env:
@@ -100,8 +102,6 @@ runs:
         annotations: ${{ steps.meta.outputs.annotations }}
         provenance: mode=max
         sbom: true
-        cache-from: type=gha,scope=flux-image
-        cache-to: type=gha,scope=flux-image,mode=max
 
     - name: Summary
       shell: bash

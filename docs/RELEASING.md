@@ -7,26 +7,23 @@ publishes the release.
 
 ## Before the first release
 
-The first release, **v0.1.0-alpha.1**, waits for **Truffle 0.7.20**, the
-Truffle release with flux's changes. Until it is on crates.io, `Cargo.toml`
-takes `truffle-core` from the commit that merged them
-(vibecook-dev/truffle#218, marked `TODO(truffle-0.7.20)`), and packages carry
-no Truffle sidecar: `fetch-sidecar.sh` only bundles the sidecar of a
-crates.io release whose checksums are pinned. The release PR stays open
-meanwhile. Once `truffle-core` 0.7.20 is published, in one PR:
+The first release, **v0.1.0-alpha.1**, needed **Truffle 0.7.20**, the
+Truffle release with flux's changes: `Cargo.toml` takes
+`truffle-core = "0.7.20"` from crates.io, and
+`scripts/package/truffle-sidecar.sha256` pins that release's sidecars
+(checked against the release's own asset digests and Truffle's
+`crates/truffle-sidecar/sidecar-checksums.json`). Before merging the release
+PR (`chore(main): release 0.1.0-alpha.1`), run the
+[release dry run](#release-dry-run) on `main` and check that its summary
+shows the sidecar bundled in all four packages.
 
-1. In `Cargo.toml`, replace the git `truffle-core` line and its TODO with
-   `truffle-core = "0.7.20"`, then run `cargo update -p truffle-core`.
-2. Pin the sidecars: `scripts/package/fetch-sidecar.sh --pin 0.7.20`, and
-   check the recorded SHA-256 against the release's own digests:
-   `gh api repos/vibecook-dev/truffle/releases/tags/truffle-v0.7.20 --jq '.assets[] | .name + " " + .digest'`.
-3. Point the `[patch]` examples in `CONTRIBUTING.md` and
-   `.cargo/config.toml.example` at `crates-io`, and drop the "pinned commit"
-   wording in `README.md` and `docs/ARCHITECTURE.md`.
-
-After it merges, run the [release dry run](#release-dry-run) and check that
-its summary shows the sidecar bundled in all four packages. Then merge the
-release PR (`chore(main): release 0.1.0-alpha.1`) to cut v0.1.0-alpha.1.
+The release PR's own `pull_request` CI run waits for approval (*Actions →
+the run → Approve and run*, or
+`gh api -X POST repos/vibecook-dev/flux/actions/runs/<id>/approve`):
+`github-actions[bot]` counts as a first-time contributor until one of its
+PRs is merged. Until it is approved, the PR shows no checks and stays
+blocked, even after the CI run that `release-please.yml` dispatches has
+passed.
 
 ## How a release happens
 
@@ -42,10 +39,11 @@ release PR (`chore(main): release 0.1.0-alpha.1`) to cut v0.1.0-alpha.1.
    `docker/compose.yaml`, and writes `CHANGELOG.md`. The workflow then runs
    `cargo metadata` on the release branch, which rewrites the workspace
    crates' entries in `Cargo.lock` and `web/scripts/golden-rs/Cargo.lock`
-   (nothing else), and commits that to the PR. The bot's PR starts no
-   `pull_request` workflows (GitHub doesn't run them for `GITHUB_TOKEN`
-   changes), so the workflow dispatches CI on the release branch; its checks
-   land on the PR.
+   (nothing else), and commits that to the PR. The PR's own `pull_request`
+   CI runs wait for a maintainer's approval (*Actions → the run → Approve
+   and run*): `github-actions[bot]` counts as a first-time contributor. The
+   workflow also dispatches CI on the release branch; its checks land on
+   the PR's head commit.
 3. **Merging the release PR** makes Release Please create the tag
    `v<version>` and a **draft** GitHub release with the changelog, then call
    `.github/workflows/release.yml` in the same run, which:
@@ -175,7 +173,7 @@ least-privilege `permissions:` per job. These settings are needed once:
   GitHub Actions to create and approve pull requests* (Release Please opens
   its PR with `GITHUB_TOKEN`). If the organization restricts it, enable it
   under the `vibecook-dev` organization's Actions settings first.
-- **Ruleset `main`** (Settings → Rules → Rulesets), on the default branch:
+- **Ruleset `protect-main`** (Settings → Rules → Rulesets), on the default branch:
   - changes land through a pull request (0 approvals needed; squash merge
     only, titled by the PR title, so each PR is one Conventional Commit);
   - the status check **`CI OK`** (GitHub Actions) must pass, on a branch
@@ -245,6 +243,10 @@ in `Cargo.lock` and checks it against
 `scripts/package/truffle-sidecar.sha256`. It bundles nothing (with a
 warning) when `truffle-core` isn't a crates.io release, when that version
 has no pinned checksums, or when the release has no asset for the target.
+A release doesn't accept that: `release.yml` calls `build.yml` with
+`require-sidecar: true`, so a package without the sidecar fails the build
+before anything is uploaded, pushed or published. The release dry run only
+warns, unless it is run with `-f require-sidecar=true`.
 
 When flux moves to a new Truffle version, pin its sidecars in the same PR:
 
@@ -263,6 +265,7 @@ records their SHA-256.
 | MSRV | `rust-version` in `Cargo.toml`; the `MSRV` job reads it. Raise it when a dependency needs a newer Rust. |
 | Node and pnpm | Node in `ci.yml`/`build.yml` (`node-version`); pnpm from `web/package.json` `packageManager`. |
 | Action versions | Every action is pinned to a commit SHA with its version in a comment. Update the SHA and the comment together. |
+| Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. |
 | cargo-deny, cargo-about, actionlint, hadolint | Versions (and checksums) in `ci.yml` and `build.yml`. |
 | Licence policy | `deny.toml` (CI gate) and `scripts/package/about.toml` (THIRD_PARTY_LICENSES); keep the allowed lists in step. npm licences: `scripts/package/web-licenses.mjs`. |
 | jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)). |
