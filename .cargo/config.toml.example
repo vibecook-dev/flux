@@ -15,13 +15,8 @@
 # [patch."https://github.com/vibecook-dev/mille"]
 # mille-core = { path = "../mille/crates/mille-core" }
 #
-# Truffle: while Cargo.toml pins truffle-core to a git rev (see the
-# TODO(truffle-0.7.20) there), patch the git source:
-# [patch."https://github.com/vibecook-dev/truffle"]
-# truffle-core = { path = "../truffle/crates/truffle-core" }
-#
-# Once truffle-core comes from crates.io, patch crates-io instead. A local
-# checkout must then carry a version that satisfies Cargo.toml's requirement,
-# or Cargo ignores the patch with a warning.
+# Truffle's truffle-core comes from crates.io. A local checkout must carry a
+# version that satisfies Cargo.toml's requirement, or Cargo ignores the patch
+# with a warning.
 # [patch.crates-io]
 # truffle-core = { path = "../truffle/crates/truffle-core" }

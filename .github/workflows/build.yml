@@ -3,6 +3,10 @@
 # flux-<version>-<target>.tar.gz. Called by release.yml (all targets) and
 # docker.yml (Linux only). Uploads one artifact per target, named
 # package-<target>, holding that tarball.
+#
+# No caches: these packages are published (releases, the :edge image), so
+# they are built from the lockfiles alone, never from a cache another
+# workflow run could have written (cache poisoning). ci.yml keeps its caches.
 name: Build
 
 on:
@@ -20,6 +24,10 @@ on:
         description: '"all" or "linux".'
         type: string
         default: all
+      require-sidecar:
+        description: Fail when a package can't bundle Truffle's sidecar (releases); otherwise it is only a warning.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,8 +55,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24 # LTS
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          package-manager-cache: false
       - name: Install
         working-directory: web
         run: pnpm install --frozen-lockfile
@@ -161,10 +168,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: release-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Truffle sidecar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRE_SIDECAR: ${{ inputs.require-sidecar }}
+        run: |
+          scripts/package/fetch-sidecar.sh --target "$TARGET" --out sidecar
+          if [ "$REQUIRE_SIDECAR" = true ] && [ ! -f sidecar/sidecar-slim ]; then
+            echo "::error title=No Truffle sidecar::A release must bundle Truffle's sidecar; see the warning above and docs/RELEASING.md."
+            exit 1
+          fi
       - name: Build flux-server
         run: cargo build --locked --release -p flux-server --target "$TARGET"
 
@@ -175,10 +188,6 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: third-party-licenses
-      - name: Truffle sidecar (optional)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/package/fetch-sidecar.sh --target "$TARGET" --out sidecar
       - name: Package
         run: |
           args=(--target "$TARGET" --version "$VERSION"

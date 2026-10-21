@@ -482,10 +482,14 @@ pub fn default_data_dir() -> PathBuf {
 }
 
 /// `./web/dist`, then `<exe dir>/web`, then `<exe dir>/../share/flux/web`.
+/// The exe dir is the real binary's: on macOS `current_exe` is the path the
+/// binary was started by, e.g. a `/usr/local/bin/flux-server` symlink to
+/// `/opt/flux/bin/flux-server` (docs/INSTALL.md).
 fn default_web_dir() -> Option<PathBuf> {
     let mut candidates = vec![PathBuf::from("web/dist")];
     if let Some(dir) = std::env::current_exe()
         .ok()
+        .map(|e| e.canonicalize().unwrap_or(e))
         .and_then(|e| e.parent().map(Path::to_path_buf))
     {
         candidates.push(dir.join("web"));

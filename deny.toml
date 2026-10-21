@@ -74,10 +74,5 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Mille (walking and watching) comes from its public repository until it is
-# published on crates.io; Cargo.lock pins the commit. truffle-core comes from
-# a pinned commit of Truffle until 0.7.20 is on crates.io
-# (TODO(truffle-0.7.20): drop the Truffle entry then).
-allow-git = [
-    "https://github.com/vibecook-dev/mille",
-    "https://github.com/vibecook-dev/truffle",
-]
+# published on crates.io; Cargo.lock pins the commit.
+allow-git = ["https://github.com/vibecook-dev/mille"]

@@ -60,7 +60,9 @@ if [ -n "$version" ] && [ "$version" != dev ]; then
   case "$info" in *"\"version\":\"$version\""*) ;; *) fail "image does not report version $version" ;; esac
 fi
 page=$(curl -fsS "$base/") || fail "GET / failed"
-case "$page" in *'<div id="root">'* | *'<!doctype html>'* | *'<!DOCTYPE html>'*) ;; *) fail "GET / is not the web client" ;; esac
+# Only the built client has the root element; the page flux serves when it
+# can't find the client is HTML too.
+case "$page" in *'<div id="root">'*) ;; *) fail "GET / is not the web client" ;; esac
 echo "== GET /: $(printf '%s' "$page" | wc -c | tr -d ' ') bytes of HTML"
 
 inside=$(docker exec "$name" curl -fsS http://127.0.0.1:8096/api/v1/server) || fail "GET from inside failed"
