@@ -51,6 +51,22 @@ pub fn is_sidecar_extension(ext: &str) -> bool {
     SIDECAR_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
+/// The subtitle format of a sidecar file by its extension (without the dot,
+/// any case): `srt`, `ass`, `ssa`, `vtt`, PGS `sup` and VobSub `idx` (whose
+/// pictures are in the `.sub` next to it). `None` for anything else, a bare
+/// `.sub` included (VobSub data without its index, or MicroDVD text).
+pub fn subtitle_file_codec(ext: &str) -> Option<Codec> {
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "srt" => Codec::Subrip,
+        "ass" => Codec::Ass,
+        "ssa" => Codec::Ssa,
+        "vtt" => Codec::WebVtt,
+        "sup" => Codec::Pgs,
+        "idx" => Codec::VobSub,
+        _ => return None,
+    })
+}
+
 /// Container formats flux can identify. Always sniffed from magic bytes, never
 /// trusted from the file extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -162,6 +178,12 @@ impl Codec {
             self,
             Codec::Subrip | Codec::Ass | Codec::Ssa | Codec::WebVtt | Codec::MovText
         )
+    }
+
+    /// Picture subtitle formats: shown by drawing them into the video
+    /// (burn-in) unless the client renders them itself.
+    pub fn is_image_subtitle(self) -> bool {
+        matches!(self, Codec::Pgs | Codec::VobSub | Codec::DvbSub)
     }
 
     /// Short name for people, as players and spec sheets write it: "H.264",
@@ -422,6 +444,15 @@ mod tests {
             assert!(!is_video_extension(e), "{e}");
         }
         assert!(is_sidecar_extension("SRT") && is_sidecar_extension("idx"));
+        assert_eq!(subtitle_file_codec("SUP"), Some(Codec::Pgs));
+        assert_eq!(subtitle_file_codec("ass"), Some(Codec::Ass));
+        assert_eq!(subtitle_file_codec("idx"), Some(Codec::VobSub));
+        assert_eq!(subtitle_file_codec("sub"), None);
+        assert_eq!(subtitle_file_codec("nfo"), None);
+        // Every subtitle file the scan catalogs is a sidecar the walk delivers.
+        for e in ["srt", "ass", "ssa", "vtt", "sup", "idx"] {
+            assert!(is_sidecar_extension(e) && subtitle_file_codec(e).is_some(), "{e}");
+        }
         assert!(VIDEO_EXTENSIONS.iter().all(|v| !SIDECAR_EXTENSIONS.contains(v)));
         assert!(VIDEO_EXTENSIONS.iter().all(|v| *v == v.to_ascii_lowercase()));
     }
