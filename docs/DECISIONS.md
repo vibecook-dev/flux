@@ -33,7 +33,7 @@ Settled project decisions, newest first, each with the reasoning behind it. The 
 - Bundling jellyfin-ffmpeg in the container image is what Jellyfin and Immich do. It carries patches for hardware acceleration and tone mapping that are already proven in media servers, and a container gives one known-good build on every Linux host.
 - Using the system FFmpeg for release binaries avoids redistributing a GPL build alongside every download, and lets users bring a build that matches their hardware. The capability check turns a missing encoder into a clear message instead of a failed transcode.
 - A future macOS app may bundle an LGPL FFmpeg build with VideoToolbox: hardware encoding covers what the app needs, so it would not need the GPL-only `libx264`/`libx265`.
-- Today's prototype encodes video with `h264_videotoolbox` only, so the runtime encoder choice is what makes video transcoding work on Linux.
+- The prototype first encoded video with `h264_videotoolbox` only. The runtime encoder choice ([ENCODERS.md](ENCODERS.md)) is what makes video transcoding work on Linux.
 
 ## 2026-10-20: one clean initial commit for the public repository
 

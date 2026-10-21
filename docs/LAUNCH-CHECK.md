@@ -1,0 +1,270 @@
+# Launch check
+
+An adversarial check of the public repository and its release pipeline before
+the first release (v0.1.0-alpha.1), made on 2026-10-20 against `main` at
+`4b4626c`. The goal was to find what is wrong, not to confirm what works. Every
+check worked from a fresh `git clone` of github.com/vibecook-dev/flux, with no
+local `.cargo/config.toml` and no `[patch]` overrides.
+
+No release had been cut yet. Release Please's PR (#1) stays open until
+truffle-core 0.7.20 is in `Cargo.toml` (#6). The release checks below were
+therefore run on the **release dry run** artifacts
+(`.github/workflows/release-dry-run.yml`) of the #6 branch, which bundle
+Truffle 0.7.20's sidecar. Attestations and the versioned Docker image only
+exist after a real release; they are listed under [Open items](#open-items).
+
+| Area | Result |
+|---|---|
+| [Leaks](#1-leaks) | No secrets, personal paths, private notes or private tailnet data. One error message referred to the dev setup; fixed in #10 |
+| [Fresh-machine build and tests](#2-fresh-machine-build-and-tests) | Clean on GitHub's fresh runners (Linux x86_64 and arm64, macOS, MSRV 1.89, web). A local run with the media corpus is still open |
+| [Workflows](#3-workflows) | Sound overall. Three fixes in #8: release builds used caches, a release could ship without the sidecar, and CI could skip every transcode silently |
+| [Release artifacts](#4-release-artifacts-dry-run) | Checksums, contents, architecture and glibc floor are right. On macOS, the documented symlink install served no web client; fixed in #11 |
+| [Docs](#5-docs) | Some statements predated the public repo. Fixed in this PR |
+| [Mille and Truffle](#6-mille-and-truffle) | Mille merged and pinned; truffle-core 0.7.20 is on crates.io and #6 switches to it |
+
+## 1. Leaks
+
+- **Secrets.** gitleaks 8.30.1 (`gitleaks git --log-opts=--all`) over all 15
+  commits on every branch: no leaks. `gitleaks dir` over the unpacked dry-run
+  packages: no leaks.
+- **Personal and internal data.** A search over every blob on every branch
+  for home and volume paths, e-mail addresses, host and device names, tailnet
+  names and addresses, session and workflow identifiers, and the private
+  design notes the research cites (`initial-discussion.md`, not published).
+  - Paths: only illustrative ones (`/Volumes/NAS/Movies`, `/path/to/…`) and,
+    inside the binaries, the CI runner's `/Users/runner/.cargo/…`.
+  - E-mail addresses: only `@example.com` test fixtures. Commit metadata
+    carries the maintainer's public address, the same one Mille and Truffle use.
+  - Tailnet: fixtures use `100.64.0.x`, `fd7a:115c:a1e0::x` and `tail1234` /
+    `tail4e2b1` placeholders. The prototype's real tailnet name, device name
+    and addresses appear nowhere.
+  - The private design notes: no prose from them is published. The only shared
+    strings are public URLs and one public fact.
+  - What remains is technical context: benchmark caveats ("a shared
+    machine"), the benchmark harness's pause file (`$FLUX_WORK/QUIET`) and
+    benchmark result-file labels.
+- **User-facing strings (fixed in #10).** One runtime message pointed at the
+  prototype's development setup: a missing sidecar told users to "build it
+  from the Truffle worktree's packages/sidecar-slim". A search of the server
+  and web client strings found nothing else.
+
+## 2. Fresh-machine build and tests
+
+GitHub's runners are fresh machines. They have no `.cargo/config.toml`, no
+`[patch]`, no `FLUX_TEST_MEDIA` and no Mille or Truffle checkout, and they
+fetch `mille-core` and `truffle-core` from their pinned sources. On `main`
+(CI run 39505740476):
+
+- `cargo clippy --locked --workspace --all-targets -D warnings`,
+  `cargo test --locked --workspace` and `cargo doc` (`-D warnings`) pass on
+  Linux x86_64, Linux arm64 and macOS on Rust 1.99.1: 628 tests on Linux,
+  0 failed. Every test that needs the media corpus skipped itself without
+  failing. With #8, CI also proves the synthetic-clip tests ran (629 with
+  the guard).
+- MSRV: `cargo check --locked --workspace` on Rust 1.89.0.
+- Web: `pnpm install --frozen-lockfile`, `typecheck`, `lint`
+  (`--max-warnings 0`), `test` (130 tests in 11 files) and
+  `VITE_FLUX_API=/ pnpm build`. The golden API samples match flux-core's
+  serde output.
+
+**Not done in this check:** a local build and test run from a fresh clone
+on macOS, with and without the real-media corpus (`FLUX_TEST_MEDIA`). The
+corpus isn't in the repository, so CI never runs those tests. The machine
+wasn't available for heavy builds while this check ran. See
+[Open items](#open-items), 9.
+
+## 3. Workflows
+
+Checked by reading every workflow and with zizmor 1.30.1 (auditor persona;
+its online audits for impostor commits and known-vulnerable actions ran too).
+
+- **Pinning.** Every third-party action is pinned to a full commit SHA with
+  a version comment. actionlint and hadolint binaries are checksum-verified.
+  Dependabot covers `github-actions`, cargo (both lockfiles) and npm.
+- **Permissions.** Every workflow starts from `permissions: {}` or
+  `contents: read`. Write scopes are per job: release assets, attestations,
+  the ghcr.io push, and Release Please's PR and dispatch.
+- **Injection.** No `github.event.*` field reaches a `run:` block. Inputs and
+  step outputs go through `env:`. zizmor's two template-injection hints are
+  `matrix.os`, a static list.
+- **Triggers.** There is no `pull_request_target` and no `workflow_run`. The
+  release only runs from `release-please.yml` when a release was created
+  (`release_created`, which release-please-action also sets for drafts), or
+  by hand through `workflow_dispatch`, which needs write access. Only
+  `docker.yml` pushes an image, and only from `main` or a release.
+- **Cache poisoning (fixed in #8).** The release and `:edge` builds restored
+  Rust, pnpm and BuildKit caches written by earlier main-branch runs. Fork
+  PRs can't write to main's cache scope, so the remaining risk was a
+  compromised build dependency in any main-branch job. #8 removes caches
+  from `build.yml` and the image action. `ci.yml` keeps its caches. The cost
+  is time: a full dry run took 11 min instead of 6 (runs 39516075848 and
+  39509607663).
+- **A release without the sidecar (fixed in #8).** `fetch-sidecar.sh` only
+  warns when it can't bundle the sidecar: truffle-core from git, no pinned
+  checksum, or no release asset. Nothing in `release.yml` checked for it, so
+  a release could have shipped four packages that can't run
+  `--tailnet embedded`. `release.yml` now builds with `require-sidecar: true`,
+  which fails the build before anything is uploaded, pushed or published.
+  The dry run takes the same input to rehearse the check.
+- **Real transcodes in CI.** The Linux x86_64 job log of CI run 39505740476
+  shows libx264 clips being cut and checked
+  (`libx264_transcode_pieces_start_on_idrs_and_keep_every_frame`,
+  `vfr_transcode_keeps_every_frame`, `transcoded_play_of_a_generated_clip`),
+  and `flux-server --check` picks libx264 after NVENC, QSV and VAAPI fail
+  their probes. However, every one of those tests returns early, without
+  failing, when ffmpeg or an encoder is missing, so a broken runner would have
+  passed. **Fixed in #8:** CI sets `FLUX_TEST_REQUIRE_FFMPEG=1`, and
+  `crates/flux-test-media/tests/required_tools.rs` then requires ffmpeg,
+  ffprobe, every encoder the clips need, and all 17 clips.
+- **Licence gate.** `deny.toml` has a closed allow-list (permissive licences
+  plus MPL-2.0), no `allow-osi-fsf-free`, `confidence-threshold = 0.8`, and
+  one exception (IJG for `jpeg-encoder`). A GPL, LGPL or AGPL crate matches
+  nothing on the list and fails `cargo deny check licenses`. A dual licence
+  such as `MIT OR GPL-2.0` passes, correctly, through its MIT branch.
+  Tested with cargo-deny 0.20.2 and this `deny.toml` on a scratch
+  workspace of path crates, which adds nothing to flux:
+  `GPL-3.0-only`, `LGPL-2.1-or-later`, `AGPL-3.0-only` and
+  `MIT AND GPL-2.0-only` are rejected, and `MIT OR GPL-2.0-only` passes.
+  `scripts/package/web-licenses.mjs` applies the same rule to
+  the npm packages in the web bundle and exits non-zero on anything else.
+- **Dependabot cooldown (fixed in #8).** zizmor's only medium findings:
+  version updates now wait 7 days after a release.
+- **Ruleset `protect-main`.** Changes go through a PR. The aggregate
+  `CI OK` check from GitHub Actions is required on an up-to-date branch.
+  Force pushes and deletion are blocked, and admins can bypass only through a
+  PR. With 0 required approvals, review is the maintainer's choice; require
+  code-owner review once others have write access.
+
+## 4. Release artifacts (dry run)
+
+From dry run [39509607663](https://github.com/vibecook-dev/flux/actions/runs/39509607663)
+on the #6 branch (`2298916`), artifact `release-dry-run`, downloaded with
+`gh run download`:
+
+| Check | Result |
+|---|---|
+| `shasum -a 256 -c SHA256SUMS` | 5/5 OK: the four packages and `jellyfin-ffmpeg-8.1.3-1-source.tar.gz` |
+| Contents | Each package has `bin/flux-server`, `bin/sidecar-slim`, `share/flux/web/` (index.html and assets), `LICENSE`, `README.md` and `THIRD_PARTY_LICENSES` (which includes the sidecar's Go licences) |
+| `file` | aarch64-apple-darwin: Mach-O arm64; x86_64-apple-darwin: Mach-O x86_64; x86_64-unknown-linux-gnu: ELF x86-64; aarch64-unknown-linux-gnu: ELF aarch64. The sidecars match, and are static on Linux |
+| glibc (`objdump -T`) | Highest symbol version GLIBC_2.34 on both Linux targets, within the documented 2.35 |
+| Sidecar | SHA-256 of each `bin/sidecar-slim` = the pin in `scripts/package/truffle-sidecar.sha256` (#6) = the truffle-v0.7.20 release's asset digest = Truffle's `sidecar-checksums.json` |
+| `flux-server --version` / `--check` (macOS arm64, from the tarball) | `0.1.0`; exit 0, ffmpeg and ffprobe found, `h264_videotoolbox` and `libx264` test encodes pass |
+| Attestations | Not applicable: a dry run makes none. `release.yml` attests every tarball (`actions/attest-build-provenance`) |
+| Image labels | Checked in the log of the Docker run that pushed `:edge` / `sha-4b4626c` (run 39505740375), because the package is private: OCI title, description, licenses=MIT, source, revision, version and documentation. The Dockerfile adds `dev.vibecook.flux.ffmpeg` (jellyfin-ffmpeg, GPL-3.0-or-later). The smoke test checks that the image has `/usr/share/licenses/jellyfin-ffmpeg/copyright` and `SOURCE-OFFER.md` |
+| README / INSTALL install steps | The layout (`bin/`, `share/flux/web`, sidecar next to the binary) and the asset names match. **One step was broken on macOS (fixed in #11):** INSTALL links `/usr/local/bin/flux-server` to `/opt/flux/bin/flux-server`. Started through that link, the macOS package served the API only, because `current_exe()` there is the symlink's path, so the web client and sidecar were looked up next to the link. Linux resolves `/proc/self/exe` and was fine |
+
+The smoke tests missed that because they accepted any HTML for `GET /`, and
+that includes the "flux is running" page served when the client isn't
+found. #11 makes both smoke tests require the built client's
+`<div id="root">` and starts the package smoke test through a symlink.
+Against the unfixed macOS package, the new test fails as it should. With
+the fix, it passes in release dry run 39517870199 (macOS arm64 started
+through the symlink, `GET /` serving the client).
+
+The packages also ship `share/flux/web/mockServiceWorker.js`, the web client's
+mock-backend worker. A production build (`VITE_FLUX_API=/`) never registers
+it, so it is dead weight, not a risk.
+
+## 5. Docs
+
+Badges and every link in the top-level docs resolve: a relative link and
+anchor checker over every Markdown file, and HTTP checks of the external links.
+The licence is MIT in `LICENSE`, the workspace (every crate inherits it),
+`web/scripts/golden-rs` and `web/package.json`.
+
+Fixed in this PR:
+
+- README's status line said flux "has only been run on macOS", and its
+  feature list that video transcodes go through VideoToolbox. CI builds and
+  tests Linux x86_64 and arm64, and the runtime encoder choice
+  (VideoToolbox, NVENC, QSV, VAAPI, libx264) is implemented. The "macOS
+  only" bullet under Prototype gaps says the same, and also "Windows was
+  never compiled" (it type-checks; docs/ENCODERS.md). That bullet sat next
+  to the line #6 changed, so it was replaced after #6 merged
+  ([Open items](#open-items), 2).
+- README: "no packages, Docker image or service files" (they exist, with
+  a systemd unit in INSTALL.md). Linux source builds need a C compiler and
+  `make`. The Linux data dir is `~/.local/share/flux`.
+- INSTALL linked `README.md#quickstart`, an anchor that doesn't exist.
+- DECISIONS said "today's prototype encodes with `h264_videotoolbox` only".
+
+Fixed in other PRs:
+
+- #8: RELEASING, `ci.yml` and `release-please.yml` said Release Please's PR
+  gets no `pull_request` runs. It gets them, waiting for approval
+  (`github-actions[bot]` is a first-time contributor).
+- #6: RELEASING calls the active ruleset `main`. It is
+  `protect-main`, and an unrelated, inert ruleset really is named `main`
+  ([Open items](#open-items)).
+
+## 6. Mille and Truffle
+
+- **Mille.** vibecook-dev/mille#43 is merged with a merge commit,
+  `c9708f4`, which is Mille's `main`. `Cargo.toml` and `Cargo.lock` pin
+  `mille-core` to that commit.
+- **Truffle.** vibecook-dev/truffle#218 is squash-merged as `dff6033`.
+  truffle-core 0.7.20 is on crates.io: published at 22:12 UTC, built from
+  `7bc3bd1`, whose `crates/truffle-core` differs from `dff6033` only in its
+  version line. `main` still takes truffle-core from git `dff6033` (with
+  `TODO(truffle-0.7.20)`, listed in RELEASING.md). **#6** switches it to
+  `truffle-core = "0.7.20"`: its Cargo.lock checksum matches crates.io's, and
+  it pins the four sidecars. flux builds only truffle-core; neither the
+  `truffle` crate nor `truffle-sidecar` is in `Cargo.lock`.
+- **History.** No force push to `main` in either repository (GitHub's
+  activity API). Force pushes went only to the PR branches flux used
+  (`flux/dogfood`) and to Release Please and Dependabot branches. The only
+  branches deleted were temporary CI probe branches made for #43.
+
+## Open items
+
+In order:
+
+1. **Done:** the fix PRs merged in this order, each brought up to date with
+   `main` first because the ruleset requires it:
+   **#6** (truffle-core 0.7.20 from crates.io, sidecar pins), **#7** (bounded
+   synthetic-clip generation), **#8** (release builds without caches, a
+   required sidecar, CI that fails without ffmpeg), **#10** (the
+   missing-sidecar message), **#11** (symlinked `flux-server` on macOS) and
+   **#9** (this file and the doc fixes). None of them conflicted with each
+   other (`git merge-tree`, pairwise).
+2. **Done in this PR:** **README "Prototype gaps", first bullet**. It sits
+   next to the line #6 changes, so it was replaced after #6 merged, with:
+   ```markdown
+   - **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64, where video transcodes use libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs. Windows compiles but is not supported.
+   ```
+3. **Cut v0.1.0-alpha.1.** Run the release dry run on `main` and check that its
+   summary shows the sidecar in all four packages. Approve the release PR's
+   `pull_request` CI run if it shows *action required*, then merge #1. This is
+   the first time `release.yml` runs for real (publish, attestations, the
+   versioned image); if a step fails, re-run *Release* with the tag
+   (RELEASING.md).
+4. **After the release:**
+   - `gh release view v0.1.0-alpha.1`;
+   - `gh attestation verify <tarball> --repo vibecook-dev/flux` for each
+     package;
+   - `docker buildx imagetools inspect ghcr.io/vibecook-dev/flux:0.1.0-alpha.1`
+     (amd64 and arm64);
+   - update the README lines that say there are no releases yet (Status,
+     Install, Operations).
+5. **Done:** **Make the container package public** (org Packages → flux →
+   Settings → Change visibility). Anonymous pulls now succeed.
+6. **The ruleset named `main`** was added by the owner to protect `main`, but
+   its include list is empty, so it applies to nothing. `protect-main` is the
+   one in force on the default branch.
+7. **Dependabot PRs #2–#5** were opened against the initial commit and fail
+   CI. Rebase or close them.
+8. Optional hardening: turn on *Require actions to be pinned to a full-length
+   commit SHA* (Settings → Actions); everything already complies.
+9. **Run the corpus tests** from a fresh clone. Use no `.cargo/config.toml`
+   and a new `CARGO_HOME` and target dir:
+   - `cargo build --locked --workspace` and `cargo test --locked --workspace`
+     without `FLUX_TEST_MEDIA` (the corpus tests must skip cleanly);
+   - then `cargo test` again with `FLUX_TEST_MEDIA` pointing at the corpus;
+   - the web gate.
+
+   Check that the run modifies nothing under the corpus.
+10. Known product gaps, already documented elsewhere:
+    - VideoToolbox is verified only on Apple hardware: macOS CI uses libx264
+      (ENCODERS.md).
+    - flux-net's sidecar lookup has no `.exe` on Windows.
+    - The packages ship the unused `mockServiceWorker.js`.
