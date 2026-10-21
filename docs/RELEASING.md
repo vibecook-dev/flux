@@ -288,7 +288,7 @@ The same scripts CI uses, for one target (here macOS on Apple Silicon):
 export CARGO_TARGET_DIR="$PWD/target"
 cargo build --release --locked -p flux-server
 (cd web && pnpm install --frozen-lockfile && VITE_FLUX_API=/ pnpm build)
-cargo install cargo-about --locked --version 0.9.2   # once
+cargo install cargo-about --locked --version 0.9.2   # once; the script also needs jq
 scripts/package/third-party-licenses.sh --out THIRD_PARTY_LICENSES
 scripts/package/fetch-sidecar.sh --target aarch64-apple-darwin --out sidecar
 scripts/package/package.sh --target aarch64-apple-darwin --version 0.0.0-local \
@@ -324,7 +324,18 @@ scripts/package/fetch-sidecar.sh --pin 0.7.20
 ```
 
 This downloads the four `tsnet-sidecar-*` assets of `truffle-v0.7.20` and
-records their SHA-256.
+records their SHA-256. Then regenerate the sidecar's licence notice and
+commit it with the checksums:
+
+```sh
+scripts/package/sidecar-notice.py
+```
+
+It reads the Go modules each pinned sidecar was built from (with their
+`go.sum` hashes), downloads them from the Go module proxy, checks the hashes
+and writes `scripts/package/sidecar-NOTICE.txt`, which `package.sh` appends
+to `THIRD_PARTY_LICENSES`. `package.sh` refuses a sidecar with a module that
+file doesn't list, so a bump without it fails the PR's package build.
 
 The sidecar sets its own minimum OS. Truffle 0.7.20's macOS sidecars are
 built with Go 1.27.2 and declare macOS 13.0 (`otool -l bin/sidecar-slim`,
