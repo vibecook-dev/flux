@@ -1,6 +1,8 @@
 //! flux media server binary: HTTP API, media delivery, background jobs.
 //! `flux-server --help` for the flags.
 
+use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -42,6 +44,10 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(log_colours(
+            std::io::stderr().is_terminal(),
+            std::env::var_os("NO_COLOR"),
+        ))
         .init();
 
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
@@ -91,5 +97,28 @@ async fn wait_for_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// Whether the log on stderr gets colour codes: only on a terminal, and not
+/// when `NO_COLOR` is set to anything but "" (<https://no-color.org>). Under
+/// systemd, `docker logs` or a redirect, stderr is a pipe or a file, and the
+/// codes would end up in the log as text.
+fn log_colours(stderr_is_terminal: bool, no_color: Option<OsString>) -> bool {
+    stderr_is_terminal && no_color.is_none_or(|v| v.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_colours;
+
+    #[test]
+    fn log_colours_only_on_a_terminal_without_no_color() {
+        assert!(log_colours(true, None));
+        assert!(log_colours(true, Some("".into())));
+        assert!(!log_colours(true, Some("1".into())));
+        assert!(!log_colours(false, None));
+        assert!(!log_colours(false, Some("".into())));
+        assert!(!log_colours(false, Some("1".into())));
     }
 }

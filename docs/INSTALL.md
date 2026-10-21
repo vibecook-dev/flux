@@ -207,7 +207,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now flux
 journalctl -u flux -f        # "flux is ready" with its URLs
 ```
 
-`NO_COLOR=1` keeps terminal colour codes out of the journal.
+flux colours its log only when stderr is a terminal, so the journal gets
+plain text. `NO_COLOR=1` turns colour off everywhere; v0.1.0-alpha.1 needs it
+to keep colour codes out of the journal.
 
 With the default `localhost_role`, the Owner is whoever connects on the
 server's own 127.0.0.1. To use the Admin screen from another machine,
