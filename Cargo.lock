@@ -3364,8 +3364,9 @@ dependencies = [
 
 [[package]]
 name = "truffle-core"
-version = "0.7.19"
-source = "git+https://github.com/vibecook-dev/truffle?rev=dff60338cadf0cad267f2e46fa1aa22cbf5a5d85#dff60338cadf0cad267f2e46fa1aa22cbf5a5d85"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7857c15e16babf35cefee54994ae7c03897ac5d2360ad9f04c1544cf9b96e45c"
 dependencies = [
  "base64 0.22.1",
  "blake3",

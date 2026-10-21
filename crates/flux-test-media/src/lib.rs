@@ -3,7 +3,7 @@
 //! Nothing here points at a machine-specific path. Three sources:
 //!
 //! - **The real-media corpus**, from `FLUX_TEST_MEDIA`: a directory laid out
-//!   like the founder's corpus (`features/`, `probe-fixtures/`,
+//!   like the maintainer's corpus (`features/`, `probe-fixtures/`,
 //!   `library-tiny/`, `library/`, `playback-research/`, `seeds/`, see
 //!   `tools/`). Unset or missing, every test that needs it skips and says
 //!   why ([`media`], [`media_dir`]).
@@ -18,9 +18,11 @@
 //! ffmpeg and ffprobe come from `FLUX_FFMPEG` / `FLUX_FFPROBE`, else `PATH`,
 //! else the usual Homebrew and system locations ([`ffmpeg`], [`ffprobe`]).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Once, OnceLock};
+use std::time::{Duration, Instant};
 
 /// The variable naming the real-media corpus directory.
 pub const MEDIA_VAR: &str = "FLUX_TEST_MEDIA";
@@ -660,22 +662,7 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
     }
     let tmp = dir.join(format!(".{}.{}.tmp", c.file_name(), std::process::id()));
     let made = match c.recipe()? {
-        Recipe::Ffmpeg(args) => {
-            let mut cmd = Command::new(&ff);
-            cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
-                .args(&args)
-                .arg(&tmp)
-                .stdin(Stdio::null());
-            match cmd.output() {
-                Ok(o) if o.status.success() => Ok(()),
-                Ok(o) => Err(format!(
-                    "ffmpeg could not make it ({}): {}",
-                    o.status,
-                    String::from_utf8_lossy(&o.stderr).trim()
-                )),
-                Err(e) => Err(format!("cannot run {}: {e}", ff.display())),
-            }
-        }
+        Recipe::Ffmpeg(args) => run_ffmpeg(&ff, &args, &tmp, c.file_name()),
         Recipe::VoidDefaultDuration(from) => {
             let src = clip(from)?;
             std::fs::read(&src).map_err(|e| e.to_string()).and_then(|mut b| {
@@ -698,6 +685,69 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
     }
     let _ = std::fs::remove_file(&tmp);
     Some(out)
+}
+
+/// How long ffmpeg may take to make one clip (they take seconds) before it
+/// is killed and tried again.
+const CLIP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Runs ffmpeg to write `out`. An ffmpeg still running after
+/// [`CLIP_TIMEOUT`] is killed and run once more; a second overrun panics,
+/// naming the clip. Every test waiting on that clip would otherwise hang
+/// until CI's job timeout, as all three flux-hls synthetic tests did once
+/// on a Linux arm64 runner.
+fn run_ffmpeg(ff: &Path, args: &[String], out: &Path, name: &str) -> Result<(), String> {
+    for attempt in 1..=2 {
+        let mut child = Command::new(ff)
+            .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
+            .args(args)
+            .arg(out)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("cannot run {}: {e}", ff.display()))?;
+        let stderr = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut b = Vec::new();
+                let _ = pipe.read_to_end(&mut b);
+                b
+            })
+        });
+        let start = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if start.elapsed() < CLIP_TIMEOUT => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                Err(e) => return Err(format!("waiting for ffmpeg: {e}")),
+            }
+        };
+        let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+        match status {
+            Some(s) if s.success() => return Ok(()),
+            Some(s) => {
+                return Err(format!(
+                    "ffmpeg could not make it ({s}): {}",
+                    String::from_utf8_lossy(&err).trim()
+                ))
+            }
+            None => eprintln!(
+                "{name}: ffmpeg still running after {} s (attempt {attempt} of 2), killed",
+                CLIP_TIMEOUT.as_secs()
+            ),
+        }
+    }
+    panic!(
+        "{name}: ffmpeg hung twice making this clip ({} s each); args: {args:?}",
+        CLIP_TIMEOUT.as_secs()
+    );
 }
 
 /// Overwrites the first Matroska DefaultDuration element (ID 23 E3 83, in
