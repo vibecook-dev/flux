@@ -22,7 +22,13 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 | Linux | x86_64 or aarch64 with glibc 2.35 or later: Debian 12+, Ubuntu 22.04+, Fedora 36+, Raspberry Pi OS (64-bit, bookworm or later), and others. Kernels with 4, 16 or 64 KiB pages all work. |
 | ffmpeg | `ffmpeg` and `ffprobe`, any recent version. See [ffmpeg](#ffmpeg). |
 
-Windows is not supported yet.
+Windows is not supported yet. If you try it anyway: the data dir defaults
+to `%LOCALAPPDATA%\flux`; in a TOML config write paths in 'single quotes'
+(`path = 'D:\Media\Movies'`) or with forward slashes, because a backslash
+starts an escape in "double quotes"; and flux stops gracefully on Ctrl-C,
+Ctrl-Break or its console closing. Service wrappers such as NSSM and WinSW
+stop it with Ctrl-C; give them a stop timeout of 10 s or more (NSSM's
+`AppStopMethodConsole` waits 1.5 s by default).
 
 ## ffmpeg
 
@@ -136,7 +142,8 @@ flux-server --library Movies:movies:/path/to/Movies --library TV:shows:/path/to/
 Open <http://127.0.0.1:8096>. Libraries named on the command line are created
 on first run; you can also add them on the Admin screen. The catalog,
 artwork and caches live in `~/Library/Application Support/flux` (macOS) or
-`~/.local/share/flux` (Linux) unless you pass `--data-dir`. Every flag, its
+`~/.local/share/flux` (Linux) unless you pass `--data-dir`; the first log
+line and `flux-server --check` name the folder. Every flag, its
 environment variable and the TOML config file are in the
 [README](../README.md#quickstart-build-from-source) and `flux-server --help`.
 
