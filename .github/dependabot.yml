@@ -5,25 +5,31 @@
 # wait.
 #
 # The commit message decides whether a bump makes a release
-# (docs/RELEASING.md). What ships in the packages or the image is
-# "deps: …", which does. npm development dependencies are "chore: …" and
-# GitHub Actions "ci(deps): …", which don't. Dependabot treats every cargo
-# dependency as a production one (it doesn't support prefix-development for
-# cargo), so every cargo bump is "deps:", dev-dependencies and
-# web/scripts/golden-rs included.
+# (docs/RELEASING.md). With `include: scope`, Dependabot adds "(deps)", or
+# "(deps-dev)" for development dependencies, after the prefix:
+#
+#   cargo (workspace), npm production, Docker  "fix(deps): …"        releases
+#   npm development                            "chore(deps-dev): …"  no release
+#   cargo in web/scripts/golden-rs (dev tool)  "chore(deps): …"      no release
+#   GitHub Actions                             "ci(deps): …"         no release
+#
+# A bare "deps: …" would make no release: release-please-config.json sets no
+# changelog-sections, and Release Please's default types have no "deps".
+# Dependabot treats every cargo dependency as a production one (it doesn't
+# support prefix-development for cargo), so workspace dev-dependency bumps
+# are "fix(deps):" too.
 version: 2
 updates:
   - package-ecosystem: cargo
-    directories:
-      - /
-      - /web/scripts/golden-rs
+    directory: /
     schedule:
       interval: weekly
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
     commit-message:
-      prefix: deps
+      prefix: fix
+      include: scope
     labels:
       - dependencies
       - rust
@@ -32,8 +38,28 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  # web/scripts/golden-rs is a dev tool outside the workspace (its own
+  # Cargo.lock) and isn't shipped, so its bumps make no release.
+  - package-ecosystem: cargo
+    directory: /web/scripts/golden-rs
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    groups:
+      golden-rs:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   # Production and development dependencies are grouped apart, so that a PR
-  # of development bumps only stays "chore:".
+  # of development bumps only stays "chore(deps-dev):".
   - package-ecosystem: npm
     directory: /web
     schedule:
@@ -42,8 +68,9 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     commit-message:
-      prefix: deps
+      prefix: fix
       prefix-development: chore
+      include: scope
     labels:
       - dependencies
       - javascript
@@ -66,7 +93,8 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     commit-message:
-      prefix: deps
+      prefix: fix
+      include: scope
     labels:
       - dependencies
       - docker
