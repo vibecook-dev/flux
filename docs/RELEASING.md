@@ -25,6 +25,15 @@ PRs is merged. Until it is approved, the PR shows no checks and stays
 blocked, even after the CI run that `release-please.yml` dispatches has
 passed.
 
+Just before merging, check the end of the release PR's description. The
+Blacksmith app (codesmith) on the organization appends a footer that starts
+with a `---` line. Release Please takes the release notes from the PR
+description up to its *last* `---` line, so with that footer the notes would
+end with Release Please's own "This PR was generated with Release Please"
+line. Delete everything from `<!-- codesmith:footer -->` on (*Edit* on the
+description) and merge. Turning the footer off in Blacksmith's settings
+would remove this step.
+
 ## How a release happens
 
 1. **Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/):**
