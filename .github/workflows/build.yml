@@ -124,10 +124,11 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           # Linux builds run on Ubuntu 22.04 runners, so the binaries need
-          # glibc 2.35 or newer. macOS x86_64 is cross-compiled on arm64.
+          # glibc 2.35 or newer. macOS x86_64 is cross-compiled on arm64 and
+          # smoke-tested there under Rosetta 2.
           all='[
             {"target":"aarch64-apple-darwin","os":"macos-15","native":true},
-            {"target":"x86_64-apple-darwin","os":"macos-15","native":false},
+            {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"rosetta":true},
             {"target":"x86_64-unknown-linux-gnu","os":"ubuntu-22.04","native":true},
             {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-22.04-arm","native":true}
           ]'
@@ -195,8 +196,24 @@ jobs:
                 --web web-dist --third-party THIRD_PARTY_LICENSES --out dist)
           if [ -f sidecar/sidecar-slim ]; then args+=(--sidecar sidecar/sidecar-slim); fi
           scripts/package/package.sh "${args[@]}"
-      - name: Smoke test
-        if: matrix.native
+      # The x86_64 macOS package runs under Rosetta 2 on the arm64 runner.
+      # Show that Rosetta translates here, installing it if the runner image
+      # lacks it, rather than skip the test.
+      - name: Rosetta 2
+        if: matrix.rosetta
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            echo "Rosetta 2 is not installed; installing it."
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          translated=$(arch -x86_64 /usr/sbin/sysctl -n sysctl.proc_translated)
+          echo "arch -x86_64: uname -m $(arch -x86_64 /usr/bin/uname -m), sysctl.proc_translated $translated"
+          if [ "$translated" != 1 ]; then
+            echo "::error::arch -x86_64 does not run under Rosetta 2 on this runner."
+            exit 1
+          fi
+      - name: Smoke test${{ matrix.rosetta && ' (Rosetta 2)' || '' }}
+        if: matrix.native || matrix.rosetta
         run: scripts/package/smoke-test.sh "dist/flux-$VERSION-$TARGET.tar.gz" --port 18097
       - name: Summary
         run: |
