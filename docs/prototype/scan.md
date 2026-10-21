@@ -131,6 +131,9 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 - **Settle:** a debounce thread maps canonical event paths back to catalog roots and drops hidden paths and NAS/OS litter. It collects parent directories until 150 ms of quiet (1 s cap), then calls `scan_dirs` at `Priority::Watcher`.
 - **Directory scans** list each directory one level deep and walk whole any subdirectory the catalog doesn't know (a new or renamed folder). They apply the `.plexignore`/`.ignore` rules of the directories above.
 - **Returning roots:** a root that couldn't be watched when `watch()` ran (a NAS asleep, a drive unplugged) is watched after the next scan that reaches it. The test fails without this.
+- **Unavailable roots are tried again** every `ScannerOptions::recheck_unavailable` (30 s): a bounded stat of those roots only, and a Quick scan of the library once one answers. A root that answers but whose scan still finds it unusable (an empty mount point) waits twice as long each time, up to an hour.
+  - Renaming a watched root goes unnoticed until the next event: the watch follows the folder, so the next change finds the root's path gone and marks it unavailable, and renaming it back raises no event. The recheck brings it back.
+  - On Windows the *parent* of a watched root can't be renamed or moved while flux runs ("Access is denied"): the open watch handle forbids it. Stop flux, or remove the library, first.
 - **Startup catch-up** runs on the first `watch()` (`ScannerOptions::startup`):
   - `QuickScan` (default).
   - `MilleResume`: the snapshot is written next to the DB as `<db>.scan-resume-root-<id>.bin` after each complete full scan. It is built from entries the walk already delivered, then `events_since` runs and the parents of changed paths are rescanned; a Quick scan runs if there is no snapshot.
@@ -154,7 +157,7 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 | Item | What |
 |---|---|
 | `ScanSummary::{reattached, non_utf8_skipped, stages}` | Re-attach count, skipped names, and worker time per stage (`StageTimes`: fingerprint, probe, parse and cross-root ms; read calls and bytes). Fields are documented. |
-| `ScannerOptions { watch_debounce, watch_settle, startup, read_hook }`, `StartupCatchUp`, `Scanner::with_options` | Kept apart from `ScanConfig`, so `ScanConfig` struct literals in the server stay valid. `read_hook` is a `#[doc(hidden)]` test seam (Mille `ReadHook`). |
+| `ScannerOptions { watch_debounce, watch_settle, startup, recheck_unavailable, read_hook }`, `StartupCatchUp`, `Scanner::with_options` | Kept apart from `ScanConfig`, so `ScanConfig` struct literals in the server stay valid. `read_hook` is a `#[doc(hidden)]` test seam (Mille `ReadHook`). |
 | `ScanHandle::is_finished`, `Scanner::devices() -> Vec<DeviceInfo>`, `DeviceClass`, `classify_fstype`, `fs_type`, `pub mod fingerprint` | Introspection and reuse. |
 | `#[doc(hidden)] Scanner::resume_dirs` | Bench hook for the catch-up comparison. |
 

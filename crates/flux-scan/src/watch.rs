@@ -13,8 +13,14 @@
 //!   flags per path, so that can be a cataloged file being deleted.
 //! - On `watch()`, a catch-up runs once: Mille resume snapshot +
 //!   `events_since` where configured and present, else a Quick scan.
+//! - Unavailable roots are tried again on a timer
+//!   (`ScannerOptions::recheck_unavailable`). A watch doesn't notice its
+//!   root being renamed: the handle follows the folder, so the next event
+//!   finds the root's path gone and marks it unavailable, and renaming it
+//!   back produces no event. On Windows the root's *parent* can't be renamed
+//!   at all while it is watched (the open watch handle forbids it).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -22,7 +28,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, RecvTimeoutError, Sender};
-use flux_catalog::scan_support;
+use flux_catalog::{scan_support, RootState};
 use flux_core::api::Id;
 use mille_core::{coalesce_events_with, CoalesceOptions, FsChangeEvent, RawEvent, Watcher, WatcherOptions};
 
@@ -129,12 +135,25 @@ pub(crate) fn watch(inner: &Arc<Inner>, library_id: Id) -> Result<(), ScanError>
     let settle = inner.opts.watch_settle;
     let map = Arc::new(Mutex::new(map));
     let thread = {
-        let (stop, map) = (stop.clone(), map.clone());
+        let (stop, map, weak) = (stop.clone(), map.clone(), weak.clone());
         std::thread::Builder::new()
             .name(format!("flux-scan-watch-{library_id}"))
             .spawn(move || debounce_loop(weak, library_id, map, rx, overflow, stop, settle))
             .map_err(|e| ScanError::Other(format!("spawn watcher thread: {e}")))?
     };
+    // Not joined on unwatch: a stat of a dead NAS may take its whole
+    // first-response deadline, and shutdown must not wait for it. The thread
+    // sees `stop` within a tick and holds the engine only while it checks.
+    let every = inner.opts.recheck_unavailable;
+    if !every.is_zero() {
+        let stop = stop.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("flux-scan-recheck-{library_id}"))
+            .spawn(move || recheck_loop(weak, library_id, stop, every));
+        if let Err(e) = spawned {
+            tracing::warn!(library = library_id, error = %e, "unavailable roots won't be retried by themselves");
+        }
+    }
     lock(&inner.watches).insert(
         library_id,
         LibraryWatch {
@@ -201,6 +220,63 @@ pub(crate) fn ensure_watched(inner: &Inner, library_id: Id, root: &Path, canonic
             map.push((canonical.to_path_buf(), root.to_path_buf()));
         }
         Err(e) => tracing::debug!(root = %root.display(), error = %e, "root still not watchable"),
+    }
+}
+
+/// Longest wait between two tries of a root that answers but whose scan
+/// still finds it unavailable.
+const RECHECK_MAX: Duration = Duration::from_secs(3600);
+
+/// Every `every`, stat the library's unavailable roots; when one answers,
+/// a Quick scan brings it back (the scan marks it available and watches it
+/// again). A root whose scan still can't use it waits twice as long before
+/// the next try, so an empty mount point isn't rescanned every interval.
+fn recheck_loop(inner: Weak<Inner>, library_id: Id, stop: Arc<AtomicBool>, every: Duration) {
+    // Root id → (next try, current wait).
+    let mut backoff: HashMap<Id, (Instant, Duration)> = HashMap::new();
+    let mut next = Instant::now() + every;
+    loop {
+        while Instant::now() < next {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(
+                next.saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(100)),
+            );
+        }
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        next = Instant::now() + every;
+        let Some(inner) = inner.upgrade() else { return };
+        if inner.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(roots) = inner.catalog.read_blocking(scan_support::list_roots) else {
+            continue;
+        };
+        let down: Vec<_> = roots
+            .into_iter()
+            .filter(|r| r.library_id == library_id && r.state == RootState::Unavailable)
+            .collect();
+        backoff.retain(|id, _| down.iter().any(|r| r.id == *id));
+        let now = Instant::now();
+        for r in &down {
+            let (due, wait) = backoff.get(&r.id).copied().unwrap_or((now, every));
+            if now < due || stop.load(Ordering::Relaxed) {
+                continue;
+            }
+            if inner.stat_root(Path::new(&r.path)).is_err() {
+                continue;
+            }
+            tracing::info!(root = %r.path, "an unavailable root answers again; rescanning the library");
+            inner.request(library_id, JobKind::Library(ScanMode::Quick), Priority::Watcher);
+            let wait = (wait * 2).min(RECHECK_MAX);
+            backoff.insert(r.id, (now + wait, wait));
+            // One library scan covers every root.
+            break;
+        }
     }
 }
 
