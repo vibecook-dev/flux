@@ -323,6 +323,9 @@ mod tests {
     #[test]
     fn events_map_to_parent_dirs_of_catalog_roots() {
         let map: RootMap = vec![(PathBuf::from("/private/var/m"), PathBuf::from("/var/m"))];
+        // Dirs are the catalog root joined with the event's relative parent
+        // (`Path::join`: `\` on Windows).
+        let dir = |rel: &[&str]| rel.iter().fold(PathBuf::from("/var/m"), |p, c| p.join(c));
         let mut dirs = BTreeSet::new();
         let mut full = false;
         for ev in [
@@ -348,8 +351,8 @@ mod tests {
         ] {
             map_event(&map, ev, &mut dirs, &mut full);
         }
-        let got: Vec<_> = dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        assert_eq!(got, ["/var/m", "/var/m/A", "/var/m/B", "/var/m/Show/S01"]);
+        let got: Vec<_> = dirs.iter().cloned().collect();
+        assert_eq!(got, [dir(&[]), dir(&["A"]), dir(&["B"]), dir(&["Show", "S01"])]);
         assert!(!full);
         map_event(
             &map,
