@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use flux_core::{Codec, TrackKind};
 
-use crate::codec::{self, audio, NalFlavor};
+use crate::codec::{self, audio};
 use crate::error::{HlsError, Result};
 use crate::fmp4::{self, AudioConfig, EntrySpec, Fragment, InitSpec, Sample, SampleData};
 use crate::index::mkv::{self, MkvFrame, MkvLayout, SegmentQuery};
@@ -42,7 +42,12 @@ pub struct Asset {
     mp4: Vec<Mp4Samples>,
     /// See [`DEFAULT_INLINE_LIMIT`].
     pub inline_limit: usize,
-    /// Strip in-band VPS/SPS/PPS from keyframes so `hvc1`/`avc1` stay valid.
+    /// Where a stream repeats VPS/SPS/PPS in-band, signal the parameter
+    /// sets in the sample entry (`avc1`/`hvc1`/`dvh1`, what Apple players
+    /// require), not `avc3`/`hev1`/`dvhe`; an MPEG-TS remux also removes the
+    /// in-band copies (its record is built from them, and its scan refuses
+    /// streams whose sets change). Matroska and MP4 samples always keep
+    /// theirs: see [`Asset::video_entry`].
     pub strip_parameter_sets: bool,
 }
 
@@ -188,16 +193,24 @@ impl Asset {
         t.index + 1
     }
 
-    fn strips(&self, v: &IndexTrack) -> bool {
-        self.strip_parameter_sets && v.inband_parameter_sets && matches!(v.codec, Codec::H264 | Codec::Hevc)
-    }
-
     // ------------------------------------------------------------- init segments
 
     /// The video sample entry, as written to the init segment.
+    ///
+    /// In-band parameter sets of Matroska/MP4 video are copied as they are,
+    /// even under `avc1`/`hvc1`: a stream may change them from keyframe to
+    /// keyframe (a WEB episode encoded in chunks alternates two PPS, with
+    /// different `pic_init_qp`, over 422 keyframes), while the record holds
+    /// only the first ones. Removing the copies left decoders on the record's
+    /// PPS (hundreds of CABAC errors per segment), and removing only copies
+    /// equal to the record is no better: a decoder that keeps parameter sets
+    /// across keyframes (ffmpeg, VideoToolbox) stays on the last differing
+    /// PPS. Players apply in-band sets under any sample entry (Chrome and
+    /// Firefox re-insert the record before them on each keyframe), as in the
+    /// files ffmpeg writes from such sources.
     pub fn video_entry(&self) -> Result<EntrySpec> {
         let (_, v) = self.video()?;
-        let keep_inband = v.inband_parameter_sets && !self.strips(v);
+        let keep_inband = v.inband_parameter_sets && !self.strip_parameter_sets;
         let dv_profile = v.hdr.as_ref().and_then(|h| h.dovi).map(|d| d.profile);
         let (fourcc, config_box): ([u8; 4], [u8; 4]) = match v.codec {
             Codec::H264 => (if keep_inband { *b"avc3" } else { *b"avc1" }, *b"avcC"),
@@ -478,24 +491,6 @@ impl Asset {
         Ok(v)
     }
 
-    fn strip_keyframe(&self, v: &IndexTrack, bytes: &[u8]) -> Bytes {
-        let (flavor, ls) = match v.codec {
-            Codec::H264 => (
-                NalFlavor::H264,
-                codec::h264::AvcConfig::parse(&v.codec_private).map(|c| c.length_size),
-            ),
-            _ => (
-                NalFlavor::Hevc,
-                codec::hevc::HevcConfig::parse(&v.codec_private).map(|c| c.length_size),
-            ),
-        };
-        Bytes::from(codec::strip_parameter_sets(
-            bytes,
-            ls.unwrap_or(4) as usize,
-            flavor,
-        ))
-    }
-
     /// MKV video: DTS synthesized from sorted PTS, CTS = PTS + D − DTS ≥ 0
     /// (research/03 §4.4 "Timestamps").
     fn mkv_video_fragment(
@@ -528,7 +523,6 @@ impl Asset {
                 1
             }
         });
-        let strip = self.strips(v);
         let mut samples = Vec::with_capacity(frames.len());
         let last_ns = frames.iter().map(|f| l.ts_ns(f.ts)).max().unwrap_or(span.end_ns);
         for (i, f) in frames.iter().enumerate() {
@@ -544,12 +538,7 @@ impl Asset {
                 },
             };
             let cts = pts[i] + d - dts;
-            let data = if strip && f.key {
-                let raw = self.sample_bytes(v, win, f.offset, f.len)?;
-                SampleData::Bytes(self.strip_keyframe(v, &raw))
-            } else {
-                self.sample_data(v, win, inline, f.offset, f.len)
-            };
+            let data = self.sample_data(v, win, inline, f.offset, f.len);
             samples.push(Sample {
                 duration: dur.clamp(0, u32::MAX as i64) as u32,
                 cts: cts.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
@@ -578,7 +567,6 @@ impl Asset {
             return Err(HlsError::mp4(format!("bad sample range {from}..{to}")));
         }
         let d = v.ns_to_ticks(self.index.presentation_offset_ns);
-        let strip = self.strips(v);
         let mut samples = Vec::with_capacity(to - from);
         for i in from..to {
             let dur = if i + 1 < s.len() {
@@ -587,14 +575,9 @@ impl Asset {
                 v.frame_duration.unwrap_or(1) as i64
             };
             let cts = s.cts[i] - tab.edit_shift + d;
-            let data = if strip && s.sync[i] {
-                let raw = self.source.read_at(s.offset[i], s.size[i] as usize)?;
-                SampleData::Bytes(self.strip_keyframe(v, &raw))
-            } else {
-                SampleData::File {
-                    offset: s.offset[i],
-                    len: s.size[i],
-                }
+            let data = SampleData::File {
+                offset: s.offset[i],
+                len: s.size[i],
             };
             samples.push(Sample {
                 duration: dur.max(0) as u32,
@@ -889,12 +872,7 @@ impl Asset {
             Layout::External(_) => return self.ffmpeg_only().map(|_| SegmentBody::new()),
         };
         let mut win = Windows::streaming(&self.source, 4096);
-        let raw = self.sample_bytes(v, &mut win, off, len)?;
-        let mut data = if self.strips(v) {
-            self.strip_keyframe(v, &raw).to_vec()
-        } else {
-            raw
-        };
+        let mut data = self.sample_bytes(v, &mut win, off, len)?;
         if v.codec == Codec::Hevc {
             // CRA → BLA_W_LP (same slice header syntax, one header byte): each
             // I-frame then starts its own coded video sequence. Played back to
@@ -1103,5 +1081,54 @@ mod grid_tests {
         assert!((phase - 360).abs() <= 24, "phase {phase}");
         // Any sub-range of the second region yields the same positions.
         assert_eq!(grid_positions(&pts[13..], 48_000, 0, 1024), pos[13..].to_vec());
+    }
+}
+
+#[cfg(test)]
+mod inband_parameter_set_tests {
+    //! In-band parameter sets of a Matroska stream reach the remux as they
+    //! are (a WEB episode whose PPS alternates between keyframes decoded
+    //! with hundreds of errors once they were removed).
+    use super::*;
+    use crate::test_mkv::{TestMkv, PPS, SPS_PROGRESSIVE as SPS};
+
+    /// The first sample of a media segment (its mdat starts with it).
+    fn first_sample(seg: &[u8], len: usize) -> Vec<u8> {
+        let at = seg.windows(4).position(|w| w == b"mdat").expect("mdat") + 4;
+        seg[at..at + len].to_vec()
+    }
+
+    #[test]
+    fn keyframes_keep_their_parameter_sets_under_avc1() {
+        // The record's PPS, then one a later chunk of the stream uses
+        // (another `pic_init_qp_minus26`), then the record's again.
+        const PPS_B: &[u8] = &[0x68, 0xEB, 0xE3, 0xCB, 0x23, 0x40];
+        let (path, keyframes) = TestMkv {
+            sps: SPS,
+            pps: PPS,
+            inband: vec![vec![SPS, PPS], vec![SPS, PPS_B], vec![SPS, PPS]],
+        }
+        .write("inband-pps.mkv");
+        let a = Asset::open(&path, 1_000_000_000).unwrap();
+        let v = a.index.video_track().unwrap();
+        assert!(v.inband_parameter_sets);
+        assert_eq!(a.segments.len(), 3, "one segment per GOP");
+        let init = a.video_init().unwrap();
+        assert!(
+            init.windows(4).any(|w| w == b"avc1"),
+            "parameter sets stay in the sample entry too"
+        );
+        assert!(!init.windows(4).any(|w| w == b"avc3"));
+        for (n, kf) in keyframes.iter().enumerate() {
+            let seg = a.video_segment(n).unwrap().read_all().unwrap();
+            assert_eq!(
+                &first_sample(&seg, kf.len()),
+                kf,
+                "segment {n}: keyframe copied as is"
+            );
+            let iframe = a.keyframe_segment(n).unwrap().read_all().unwrap();
+            assert_eq!(&first_sample(&iframe, kf.len()), kf, "I-frame {n}");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -72,7 +72,9 @@ pub struct EngineConfig {
     pub max_concurrent_reads: usize,
     /// Segments whose source range fits are served from the parse buffer.
     pub inline_limit: usize,
-    /// Strip in-band parameter sets so `hvc1`/`avc1` entries stay valid.
+    /// Signal parameter sets in the sample entry (`avc1`/`hvc1`) and drop
+    /// the in-band copies of MPEG-TS video ([`Asset::strip_parameter_sets`];
+    /// Matroska/MP4 samples keep theirs). `false`: `avc3`/`hev1`.
     pub strip_parameter_sets: bool,
     /// Byte budget of prepared assets kept in memory (index, expanded MP4
     /// sample tables, segment plan; LRU). An asset in use by a request stays
