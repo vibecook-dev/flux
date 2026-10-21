@@ -14,7 +14,8 @@ Truffle 0.7.20's sidecar. Attestations and the versioned Docker image only
 exist after a real release; they are listed under [Open items](#open-items).
 
 v0.1.0-alpha.1 was published on 2026-10-21. What was checked then, and what
-is still open, is in [After the release](#after-the-release).
+is still open, is in [After the release](#after-the-release). v0.1.0-alpha.2
+followed the same day: see [After v0.1.0-alpha.2](#after-v010-alpha2).
 
 | Area | Result |
 |---|---|
@@ -419,10 +420,49 @@ Still open:
   test fails on the next rise.
 - **The README inside the v0.1.0-alpha.1 packages and image** is the old one
   that says there are no releases. The published assets stay as they are;
-  v0.1.0-alpha.2 will carry the new README.
-- **flux-server sometimes doesn't exit after SIGTERM.** In 1 of about 18
-  image smoke tests on 2026-10-21 (Docker run 39562643871, first attempt,
-  linux/arm64), it logged `flux stopped` and was killed 15 s later by
-  `docker stop` (exit 137). The catalog is closed by then, so no data is
-  at risk, but a stop can take the full timeout, and a release run that
-  hits it needs *Re-run failed jobs*. The cause is under investigation.
+  v0.1.0-alpha.2 carries the new README.
+
+## After v0.1.0-alpha.2
+
+Fixed in #17 (`fix:`), found while #14 was in review: **flux-server
+sometimes didn't exit after SIGTERM.** It logged `flux stopped` and then
+waited until `docker stop` killed it (exit 137). A stress test of 2,000
+stops on Linux (start, wait 0 to 7 s, SIGTERM) hung in 140, about 7%, and
+the stack of every hung process was the same. `Catalog`'s drop sent a second
+shutdown to the writer and waited for the reply. When the server's own
+shutdown had already ended the writer loop, that message stayed queued
+(flume keeps it while a sender lives, and the catalog holds one), so the
+reply never came. The drop now joins the writer thread and only then takes
+the reply if there is one. A unit test reproduces the race. With the fix,
+0 of 2,100 stops hung. A 5 s watchdog after `flux stopped` now ends the
+process (status 1, with an error in the log) if anything else ever hangs
+there. The catalog was already committed in every case, so no data was at
+risk.
+
+v0.1.0-alpha.2 was published on 2026-10-21 (tag at `04d5da7`, release run
+39575061976). Checked against the published release:
+
+- The release run passed on its first attempt, including the new draft
+  check, the Rosetta and minimum-macOS checks, and both image smoke tests.
+  Its only annotations are GitHub's macOS queue notices; the attestation
+  warnings are gone.
+- The release is an immutable pre-release and isn't marked latest.
+  `gh release verify` and `gh release verify-asset` pass. GitHub adds a
+  release attestation to an immutable release, so each package now has two
+  attestations: that one and the build provenance.
+- `SHA256SUMS` matches the digests GitHub reports for all five assets.
+  `gh attestation verify --signer-workflow
+  vibecook-dev/flux/.github/workflows/release.yml --source-digest 04d5da7…`
+  passes for the x86_64 Linux package.
+- In that package, `THIRD_PARTY_LICENSES` has 11,415 lines and includes
+  jemalloc's notice, and the README has the new Operations line.
+- `ghcr.io/vibecook-dev/flux:0.1.0-alpha.2` has linux/amd64 and
+  linux/arm64. Both have the vendor label `vibecook-dev`, version
+  `0.1.0-alpha.2` and revision `04d5da7`. No `:latest` tag exists, and the
+  image's build provenance verifies with `--signer-workflow
+  vibecook-dev/flux/.github/workflows/docker.yml`.
+- The Blacksmith app (codesmith), installed on the organization, appends a
+  footer that starts with `---` to pull request bodies. Release Please takes
+  the release notes up to the last `---` line, so on the release PR that
+  footer would have put Release Please's own footer into the notes. It was
+  removed from #15 before the merge; RELEASING.md says to do the same.
