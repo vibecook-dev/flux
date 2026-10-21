@@ -788,7 +788,22 @@ impl HlsEngine {
         }
     }
 
+    /// The cache cell of WebVTT document `key`.
+    fn subtitle_slot(&self, key: &(String, u32)) -> Result<Shared<Arc<str>>> {
+        let mut m = self.inner.subs.lock().map_err(|_| HlsError::Cancelled)?;
+        Ok(match m.get(key) {
+            Some(c) => c,
+            None => {
+                let c: Shared<Arc<str>> = Arc::new(OnceCell::new());
+                m.put(key.clone(), c.clone(), 0);
+                c
+            }
+        })
+    }
+
     /// The codec of text subtitle track `track`, its cache key and cell.
+    /// Fails for a track whose cues the engine can't read
+    /// ([`Asset::text_subtitle_readable`]), before anything is sent.
     fn subtitle_cell(&self, asset: &Asset, track: u32) -> Result<SubtitleSlot> {
         let t = asset
             .index
@@ -797,18 +812,13 @@ impl HlsEngine {
         let codec = t
             .map(|t| t.codec)
             .ok_or_else(|| HlsError::NotFound(format!("text subtitle track {track}")))?;
+        if !asset.text_subtitle_readable(track) {
+            return Err(HlsError::Unsupported(format!(
+                "{codec} subtitles of this file can't be converted to WebVTT"
+            )));
+        }
         let key = (asset_key(asset), track);
-        let cell = {
-            let mut m = self.inner.subs.lock().map_err(|_| HlsError::Cancelled)?;
-            match m.get(&key) {
-                Some(c) => c,
-                None => {
-                    let c: Shared<Arc<str>> = Arc::new(OnceCell::new());
-                    m.put(key.clone(), c.clone(), 0);
-                    c
-                }
-            }
-        };
+        let cell = self.subtitle_slot(&key)?;
         Ok((codec, key, cell))
     }
 
@@ -872,27 +882,33 @@ impl HlsEngine {
             .acquire_owned()
             .await
             .map_err(|_| HlsError::Cancelled)?;
-        let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(16);
         let asset = asset.clone();
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let header = subtitle::WebVttWriter::header(asset.index.presentation_offset_ns);
             let mut doc = header.clone();
-            if tx.blocking_send(Ok(Bytes::from(header))).is_err() {
-                return;
-            }
+            // Sent with the first cue (or alone at the end).
+            let mut pending = Some(header);
             let mut w = subtitle::WebVttWriter::new(codec);
             let mut open = true;
             let res = asset.for_each_subtitle_block(track, &mut |(start, end, payload)| {
                 if let Some(cue) = w.cue(start, end, &payload) {
                     doc.push_str(&cue);
-                    open = tx.blocking_send(Ok(Bytes::from(cue))).is_ok();
+                    let chunk = match pending.take() {
+                        Some(h) => h + &cue,
+                        None => cue,
+                    };
+                    open = tx.blocking_send(Ok(Bytes::from(chunk))).is_ok();
                 }
                 open
             });
             match res {
                 Ok(_) if open => {
+                    if let Some(h) = pending.take() {
+                        let _ = tx.blocking_send(Ok(Bytes::from(h)));
+                    }
                     let doc: Arc<str> = Arc::from(doc);
                     let len = doc.len();
                     if cell.set(doc).is_ok() {
@@ -907,9 +923,16 @@ impl HlsEngine {
                 }
             }
         });
-        Ok(WebVttBody::Streaming(Box::pin(futures::stream::unfold(
-            rx,
-            |mut rx| async move { rx.recv().await.map(|item| (item, rx)) },
+        let first = match rx.recv().await {
+            Some(Ok(b)) => b,
+            Some(Err(e)) => return Err(HlsError::Io(e)),
+            None => return Err(HlsError::Cancelled),
+        };
+        let rest =
+            futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|item| (item, rx)) });
+        Ok(WebVttBody::Streaming(Box::pin(futures::StreamExt::chain(
+            futures::stream::once(async move { Ok(first) }),
+            rest,
         ))))
     }
 
