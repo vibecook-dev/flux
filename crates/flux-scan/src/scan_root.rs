@@ -40,6 +40,7 @@ use flux_catalog::{
     ScanBatch,
 };
 use flux_core::api::{Event, Id};
+use flux_core::file_id::FileId;
 use flux_core::{PARSER_VERSION, PROBE_VERSION};
 use mille_core::{
     walk_scan, DirCtx, EntryKind, ErrorCode, FileFilter, FxError, IgnoreMatcher, ScanEntry, ScanOptions,
@@ -457,7 +458,13 @@ fn classify<'a>(
                 return Class::Reparse;
             }
         }
-        if row.state == FileState::Missing || (same_ino == Some(true) && row.dev != f.dev) {
+        // Stat-only refresh: a tombstone is back, a remount renumbered the
+        // device, or the catalog has no identity for a file the walk now
+        // has one for (a file behind a link out of the library, cataloged
+        // on Windows before the scan recorded identities there).
+        let gained_identity = row.ino.is_none() && f.ino.is_some();
+        if row.state == FileState::Missing || (same_ino == Some(true) && row.dev != f.dev) || gained_identity
+        {
             return Class::Keep;
         }
         // A failed probe (unreadable at the time, ffprobe missing or timed
@@ -879,14 +886,30 @@ impl Walk<'_> {
             group.names.push(name.to_string());
             if is_video_name(name) && !flux_names::is_ignored(Path::new(&rel)) {
                 // Mille reports dev = ino = 0 where the platform has no inode
-                // (Windows); the catalog's "unknown" is None.
-                let known = e.dev != 0 || e.ino != 0;
+                // (Windows); the catalog's "unknown" is None. A file behind a
+                // link that leaves the library is served only if it is the
+                // file the scan recorded (SEC-2), so there the file itself
+                // is asked (volume serial and file id; one open per such
+                // file per scan).
+                let (dev, ino) = if e.dev != 0 || e.ino != 0 {
+                    (Some(e.dev), Some(e.ino))
+                } else if external {
+                    match FileId::of_path(&dir.join(e.name)) {
+                        Ok(id) => (Some(id.dev), Some(id.ino)),
+                        Err(err) => {
+                            tracing::debug!(path = %dir.join(e.name).display(), error = %err, "no file identity");
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
                 group.media.push((
                     name.to_string(),
                     FileFacts {
                         rel_path: rel,
-                        dev: known.then_some(e.dev),
-                        ino: known.then_some(e.ino),
+                        dev,
+                        ino,
                         btime_ns: e.btime_ns,
                         size: e.size,
                         mtime_ns: e.mtime_ns,
@@ -1373,6 +1396,38 @@ mod tests {
         let renum: HashMap<u64, u64> = [(7, 9)].into_iter().collect();
         assert!(!unmounted_rule(9, 7, &renum));
         assert!(unmounted_rule(1, 7, &renum));
+    }
+
+    #[test]
+    fn a_row_without_an_identity_takes_the_walks_without_a_reprobe() {
+        let row = FileRow {
+            id: 1,
+            dev: None,
+            ino: None,
+            size: 10,
+            mtime_ns: 5,
+            btime_ns: None,
+            fp128: Some(1),
+            state: FileState::Present,
+            probe_version: Some(PROBE_VERSION),
+            parse_version: Some(PARSER_VERSION),
+            asset_id: Some(1),
+            probe_retry_at: None,
+        };
+        let snap: HashMap<String, FileRow> = [("Ext/a.mkv".to_string(), row)].into_iter().collect();
+        let facts = |dev, ino| FileFacts {
+            rel_path: "Ext/a.mkv".into(),
+            dev,
+            ino,
+            btime_ns: None,
+            size: 10,
+            mtime_ns: 5,
+            fp128: None,
+            oshash: None,
+        };
+        let c = |f: &FileFacts| classify(&snap, &HashMap::new(), f, ScanMode::Quick, 0, false);
+        assert!(matches!(c(&facts(Some(7), Some(9))), Class::Keep));
+        assert!(matches!(c(&facts(None, None)), Class::Unchanged(false)));
     }
 
     #[test]
