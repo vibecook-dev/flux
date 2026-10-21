@@ -29,14 +29,15 @@ fn main() -> ExitCode {
         }
     };
     if check {
-        // `--check`: what ffmpeg/ffprobe can do here, then exit.
+        // `--check`: the paths flux would use, what ffmpeg/ffprobe can do
+        // here, then exit.
         let report = flux_server::doctor::ToolReport::detect(
             &cfg.ffmpeg,
             &cfg.ffprobe,
             cfg.video_encoder,
             &cfg.vaapi_device,
         );
-        print!("{}", report.text());
+        print!("{}", report.text_with(&flux_server::doctor::config_text(&cfg)));
         return if report.ok {
             ExitCode::SUCCESS
         } else {

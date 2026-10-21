@@ -16,6 +16,11 @@
 //! path = "/srv/media/Movies"
 //! video_encoder = "auto"     # auto | videotoolbox | nvenc | qsv | vaapi | libx264
 //! ```
+//!
+//! Windows paths go in 'single quotes' (TOML literal strings) or use forward
+//! slashes: in "double quotes" a backslash starts an escape, so
+//! `"D:\new\tv"` would hold a line feed and a tab. Paths from the file with
+//! control characters are refused for that reason.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -144,7 +149,7 @@ impl LocalRole {
     name = "flux-server",
     version,
     about = "flux media server: browse, play and stream your movie and TV library",
-    after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}."
+    after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}.\nOn Windows, write paths in 'single quotes' or with forward slashes."
 )]
 pub struct Cli {
     /// TOML config file.
@@ -268,6 +273,57 @@ struct FileConfig {
     log: Option<String>,
 }
 
+impl FileConfig {
+    /// Refuses paths with control characters. In a TOML string in "double
+    /// quotes" a backslash starts an escape, so a Windows path such as
+    /// `"D:\\media\new\tv"` parses into a line feed and a tab, silently.
+    fn check_paths(&self) -> anyhow::Result<()> {
+        let named = [
+            ("data_dir", &self.data_dir),
+            ("web_dir", &self.web_dir),
+            ("ffmpeg", &self.ffmpeg),
+            ("ffprobe", &self.ffprobe),
+            ("vaapi_device", &self.vaapi_device),
+            ("tmdb_exports", &self.tmdb_exports),
+        ];
+        let mut paths: Vec<(String, std::borrow::Cow<'_, str>)> = named
+            .into_iter()
+            .filter_map(|(key, p)| Some((key.to_string(), p.as_deref()?.to_string_lossy())))
+            .collect();
+        for l in &self.libraries {
+            paths.push((format!("library {:?}: path", l.name), l.path.as_str().into()));
+        }
+        for (key, value) in paths {
+            if value.chars().any(char::is_control) {
+                bail!(
+                    "{key} \"{}\" contains control characters. In \"double quotes\" a backslash \
+                     starts an escape (\\n, \\t, \\f, \\b, \\r); write Windows paths in 'single \
+                     quotes' or with forward slashes: path = 'D:\\Media\\TV' or \"D:/Media/TV\"",
+                    show_controls(&value)
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `s` with each control character shown as `<TAB>`, `<LF>`, … or `<U+XXXX>`.
+fn show_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' => out.push_str("<TAB>"),
+            '\n' => out.push_str("<LF>"),
+            '\r' => out.push_str("<CR>"),
+            '\u{8}' => out.push_str("<BS>"),
+            '\u{c}' => out.push_str("<FF>"),
+            c if c.is_control() => out.push_str(&format!("<U+{:04X}>", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `--video-encoder`: `auto` or one encoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderChoice(pub Option<VideoEncoder>);
@@ -330,7 +386,11 @@ impl Config {
             Some(path) => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("reading config {}", path.display()))?;
-                toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?
+                let file: FileConfig =
+                    toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
+                file.check_paths()
+                    .with_context(|| format!("config {}", path.display()))?;
+                file
             }
             None => FileConfig::default(),
         };
@@ -696,6 +756,45 @@ path = "/m"
         assert!(cfg.data_dir.is_absolute(), "{}", cfg.data_dir.display());
         assert!(cfg.data_dir.ends_with("rel-data"));
         assert_eq!(cfg.tmdb_exports, cfg.data_dir.join("tmdb-exports"));
+    }
+
+    /// TOML "double quotes" turned Windows paths into control characters
+    /// without a word (`\n`, `\t`, `\f`, …).
+    #[test]
+    fn toml_escapes_in_paths_are_refused_with_a_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        let (f, d) = (file.to_str().unwrap(), dir.path().to_str().unwrap());
+        let resolve = |toml: &str| {
+            std::fs::write(&file, toml).unwrap();
+            Config::resolve(Cli::try_parse_from(["flux-server", "--config", f, "--data-dir", d]).unwrap())
+        };
+        let err = resolve("[[library]]\nname = \"TV\"\nkind = \"shows\"\npath = \"D:\\\\media\\new\\tv\"\n")
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(r#"library "TV": path "D:\media<LF>ew<TAB>v" contains control characters"#),
+            "{err}"
+        );
+        assert!(err.contains("'single quotes'") && err.contains(f), "{err}");
+        // Refused even when the flag overrides it.
+        let err = format!(
+            "{:#}",
+            resolve("data_dir = \"D:\\\\flux\\\\data\\new\"\n").unwrap_err()
+        );
+        assert!(err.contains(r#"data_dir "D:\flux\data<LF>ew" contains"#), "{err}");
+        assert_eq!(
+            show_controls("a\u{8}b\u{c}c\rd\u{1b}"),
+            "a<BS>b<FF>c<CR>d<U+001B>"
+        );
+        // A literal string ('…') keeps backslashes as they are.
+        let movies = dir.path().join("Movies");
+        let cfg = resolve(&format!(
+            "[[library]]\nname = \"Movies\"\nkind = \"movies\"\npath = '{}'\n",
+            movies.display()
+        ))
+        .unwrap();
+        assert_eq!(Path::new(&cfg.libraries[0].path), movies);
     }
 
     #[test]
