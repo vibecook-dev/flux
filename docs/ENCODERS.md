@@ -66,12 +66,22 @@ binary once and caches the result (`flux_hls::encoders::FfmpegCaps`):
 |---|---|---|---|
 | Encoder | `--video-encoder auto\|videotoolbox\|nvenc\|qsv\|vaapi\|libx264` | `FLUX_VIDEO_ENCODER` | `video_encoder = "…"` |
 | VAAPI render node | `--vaapi-device PATH` | `FLUX_VAAPI_DEVICE` | `vaapi_device = "…"` |
+| Concurrent video transcodes | `--max-video-transcodes N` | `FLUX_MAX_VIDEO_TRANSCODES` | `max_video_transcodes = N` |
 
 A forced encoder is used even if its test encode fails (`--check` still
 shows the failure). `auto` (the default) detects. `software`, `x264` and
 `h264_*` names are accepted too. In code, `EngineConfig::video_encoder`
 and `EngineConfig::vaapi_device` do the same, and `EngineConfig::default()`
 reads both variables.
+
+Video transcodes run in a pool of encoder slots (ffmpeg runs). Requests
+and pieces encoded ahead share it, but encoding ahead only takes a spare
+slot and gives it up when a request finds every slot busy, so a first
+piece or a seek never waits behind it. The default (`0`) is 6 slots on a
+hardware encoder and 3 for libx264. A GeForce driver allows 8 NVENC
+sessions per machine, shared with other apps (another media server, a
+game recorder): raise the pool on a dedicated machine, lower it when the
+GPU is shared.
 
 ### The pipeline per encoder
 

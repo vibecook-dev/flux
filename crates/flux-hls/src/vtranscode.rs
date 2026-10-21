@@ -31,8 +31,12 @@
 //!   SPS/PPS in-band in its IDR sample, so a run whose encoder session
 //!   picks different parameter sets stays decodable.
 //! - Results are cached by (asset, recipe, piece) in a byte-budgeted LRU; the
-//!   pieces after a request are prefetched by another run (bounded,
-//!   cancellable); every ffmpeg child is `kill_on_drop`.
+//!   pieces after a request are prefetched by another run (cancellable);
+//!   every ffmpeg child is `kill_on_drop`.
+//! - **Concurrency.** Request and prefetch runs share one pool of encoder
+//!   slots ([`default_max_runs`] per encoder kind, or configured). A
+//!   prefetch run only takes a spare slot, and gives it up to a request
+//!   that finds every slot busy, so first pieces never wait behind prefetch.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -45,7 +49,7 @@ use bytes::Bytes;
 use flux_core::{Codec, ColorInfo, VideoOp};
 use mp4_atom::{Decode, Encode};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::asset::Asset;
@@ -341,6 +345,18 @@ fn piece_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Opti
 /// and still mark it.
 const CUT_SLACK: usize = 3;
 
+/// Concurrent encoder runs (sessions), requests and prefetch together, when
+/// none is configured: a hardware encoder takes several sessions at once
+/// (8 parallel 1080p sessions kept an RTX 4090's NVENC under 91% busy; a
+/// GeForce driver allows 8 per machine, shared with other apps), while
+/// libx264 runs share the CPU.
+pub fn default_max_runs(encoder: Option<VideoEncoder>) -> usize {
+    match encoder {
+        Some(e) if e.is_hardware() => 6,
+        _ => 3,
+    }
+}
+
 type VKey = (String, VideoTarget, u32);
 /// A piece being produced: `None` until done.
 type Slot = Option<std::result::Result<Bytes, Arc<str>>>;
@@ -388,8 +404,15 @@ pub struct VideoTranscoder {
     pub detect: DetectOptions,
     /// What `ffmpeg` can do, detected on first use.
     caps: tokio::sync::OnceCell<Arc<FfmpegCaps>>,
+    /// Encoder slots, shared by request and prefetch runs; filled once the
+    /// encoder is known ([`Self::caps`]).
     permits: Arc<Semaphore>,
-    prefetch_permits: Arc<Semaphore>,
+    /// Configured slot count (0: [`default_max_runs`]).
+    max_jobs: usize,
+    /// Slots in the pool once the encoder is known.
+    max_runs: AtomicUsize,
+    /// Prefetch runs in flight, the ones a request may take a slot from.
+    prefetching: Mutex<Vec<Arc<RunCtl>>>,
     cache: Mutex<ByteCache<VKey>>,
     inflight: Mutex<HashMap<VKey, InFlight>>,
     avcc: Mutex<HashMap<(String, VideoTarget), Vec<u8>>>,
@@ -552,15 +575,17 @@ impl FragReader {
 }
 
 impl VideoTranscoder {
-    /// `max_jobs` bounds concurrent encoder runs for requests; prefetch
-    /// uses at most one more.
+    /// `max_jobs` bounds concurrent encoder runs, requests and prefetch
+    /// together (0: [`default_max_runs`] for the detected encoder).
     pub fn new(ffmpeg: PathBuf, max_jobs: usize, cache_bytes: usize, cancel: CancellationToken) -> Self {
         VideoTranscoder {
             ffmpeg,
             detect: DetectOptions::default(),
             caps: tokio::sync::OnceCell::new(),
-            permits: Arc::new(Semaphore::new(max_jobs.max(1))),
-            prefetch_permits: Arc::new(Semaphore::new(1)),
+            permits: Arc::new(Semaphore::new(0)),
+            max_jobs,
+            max_runs: AtomicUsize::new(0),
+            prefetching: Mutex::new(Vec::new()),
             cache: Mutex::new(ByteCache::new(cache_bytes)),
             inflight: Mutex::new(HashMap::new()),
             avcc: Mutex::new(HashMap::new()),
@@ -588,12 +613,19 @@ impl VideoTranscoder {
                         error: Some(format!("detection failed: {e}")),
                         ..Default::default()
                     });
+                let runs = match self.max_jobs {
+                    0 => default_max_runs(caps.chosen()),
+                    n => n,
+                };
+                self.max_runs.store(runs, Ordering::SeqCst);
+                self.permits.add_permits(runs);
                 match caps.chosen() {
                     Some(e) => tracing::info!(
                         encoder = %e,
                         hardware = e.is_hardware(),
                         forced = caps.forced.is_some(),
                         tonemap = caps.tonemap_for(e).as_deref().unwrap_or("none"),
+                        max_runs = runs,
                         "video transcode encoder"
                     ),
                     None => tracing::warn!(
@@ -611,6 +643,36 @@ impl VideoTranscoder {
     /// [`Self::caps`] if detection has run.
     pub fn caps_if_known(&self) -> Option<Arc<FfmpegCaps>> {
         self.caps.get().cloned()
+    }
+
+    /// Concurrent encoder runs, once the encoder is known.
+    pub fn max_runs(&self) -> Option<usize> {
+        Some(self.max_runs.load(Ordering::SeqCst)).filter(|&n| n > 0)
+    }
+
+    /// An encoder slot for a run a request waits on. With every slot busy,
+    /// a prefetch run nobody waits on gives up its slot (it is cancelled;
+    /// the pieces it finished stay cached), so a first piece or a seek
+    /// never queues behind pieces encoded ahead.
+    async fn request_permit(&self) -> Result<OwnedSemaphorePermit> {
+        if let Ok(p) = self.permits.clone().try_acquire_owned() {
+            return Ok(p);
+        }
+        let idle = self.prefetching.lock().ok().and_then(|runs| {
+            runs.iter()
+                .rev()
+                .find(|r| r.waiting.load(Ordering::SeqCst) == 0 && !r.cancel.is_cancelled())
+                .cloned()
+        });
+        if let Some(r) = idle {
+            tracing::debug!("every encoder slot busy: a prefetch run gives its slot to a request");
+            r.cancel.cancel();
+        }
+        self.permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HlsError::Cancelled)
     }
 
     /// Statistics so far.
@@ -910,6 +972,8 @@ impl VideoTranscoder {
     /// stopping at the first piece already cached or in flight) and starts
     /// it. Returns the receiver for piece `from` and the run's control, or
     /// `None` if `from` itself is cached or in flight (the caller re-checks).
+    /// A prefetch run comes with its encoder slot (`prefetch`); others wait
+    /// for one ([`Self::request_permit`]).
     fn start_run(
         self: &Arc<Self>,
         key: &str,
@@ -917,7 +981,7 @@ impl VideoTranscoder {
         target: VideoTarget,
         all: &Arc<Vec<Piece>>,
         from: usize,
-        prefetch: bool,
+        prefetch: Option<OwnedSemaphorePermit>,
     ) -> Option<InFlight> {
         let mut senders = Vec::new();
         let first_rx;
@@ -946,6 +1010,12 @@ impl VideoTranscoder {
         if senders.is_empty() {
             return None;
         }
+        let is_prefetch = prefetch.is_some();
+        if is_prefetch {
+            if let Ok(mut p) = self.prefetching.lock() {
+                p.push(ctl.clone());
+            }
+        }
         let this = self.clone();
         let key = key.to_string();
         let asset = asset.clone();
@@ -957,6 +1027,11 @@ impl VideoTranscoder {
                 r = this.run(&key, &asset, target, &all, &senders, prefetch) => r,
                 _ = cancel.cancelled() => Err(HlsError::Cancelled),
             };
+            if is_prefetch {
+                if let Ok(mut p) = this.prefetching.lock() {
+                    p.retain(|c| !Arc::ptr_eq(c, &run_ctl));
+                }
+            }
             // Anything not produced fails its waiters (they may retry).
             let msg: Arc<str> = match &res {
                 Ok(()) => Arc::from("encoder run ended early"),
@@ -990,7 +1065,7 @@ impl VideoTranscoder {
         target: VideoTarget,
         all: &[Piece],
         senders: &[(usize, watch::Sender<Slot>)],
-        prefetch: bool,
+        prefetch: Option<OwnedSemaphorePermit>,
     ) -> Result<()> {
         let run: Vec<Piece> = senders.iter().map(|(n, _)| all[*n]).collect();
         // The run's real frames, from the index (block headers / sample
@@ -1002,11 +1077,6 @@ impl VideoTranscoder {
                 .await
                 .map_err(|e| HlsError::Io(std::io::Error::other(e)))??
         };
-        let permits = if prefetch {
-            self.prefetch_permits.clone()
-        } else {
-            self.permits.clone()
-        };
         let caps = self.caps().await;
         let enc = caps.chosen().ok_or_else(|| {
             HlsError::Unsupported(format!(
@@ -1015,7 +1085,11 @@ impl VideoTranscoder {
                 caps.error.as_deref().unwrap_or("none passed its test encode")
             ))
         })?;
-        let _permit = permits.acquire_owned().await.map_err(|_| HlsError::Cancelled)?;
+        let is_prefetch = prefetch.is_some();
+        let _permit = match prefetch {
+            Some(p) => p,
+            None => self.request_permit().await?,
+        };
         let args = Self::args(
             asset,
             &target,
@@ -1135,11 +1209,11 @@ impl VideoTranscoder {
                         if next == 0 {
                             s.first_piece_ms += ms;
                         }
-                        if prefetch {
+                        if is_prefetch {
                             s.prefetched += 1;
                         }
                     }
-                    tracing::debug!(piece = *pn, ms, prefetch, "video piece transcoded");
+                    tracing::debug!(piece = *pn, ms, prefetch = is_prefetch, "video piece transcoded");
                     let _ = tx.send(Some(Ok(bytes)));
                     next += 1;
                 }
@@ -1193,7 +1267,7 @@ impl VideoTranscoder {
             let existing = self.inflight.lock().ok().and_then(|m| m.get(&k).cloned());
             let rx = match existing {
                 Some(rx) => Some(rx),
-                None => self.start_run(key, asset, target, all, n, false),
+                None => self.start_run(key, asset, target, all, n, None),
             };
             let Some((mut rx, ctl)) = rx else { continue };
             // While this request waits it keeps the run alive; dropped
@@ -1218,7 +1292,8 @@ impl VideoTranscoder {
     }
 
     /// Starts a prefetch run for the first piece after `n` (within the
-    /// lookahead) that is neither cached nor in flight.
+    /// lookahead) that is neither cached nor in flight, in a spare encoder
+    /// slot: one slot stays free for the next request.
     fn prefetch_after(
         self: &Arc<Self>,
         key: &str,
@@ -1227,7 +1302,7 @@ impl VideoTranscoder {
         all: &Arc<Vec<Piece>>,
         n: usize,
     ) {
-        if self.prefetch_permits.available_permits() == 0 {
+        if self.permits.available_permits() < 2 {
             return;
         }
         for m in n + 1..=(n + self.lookahead as usize).min(all.len().saturating_sub(1)) {
@@ -1235,7 +1310,9 @@ impl VideoTranscoder {
             let known = self.cache.lock().map(|c| c.contains(&k)).unwrap_or(true)
                 || self.inflight.lock().map(|i| i.contains_key(&k)).unwrap_or(true);
             if !known {
-                let _ = self.start_run(key, asset, target, all, m, true);
+                if let Ok(slot) = self.permits.clone().try_acquire_owned() {
+                    let _ = self.start_run(key, asset, target, all, m, Some(slot));
+                }
                 return;
             }
         }
@@ -1249,7 +1326,7 @@ impl VideoTranscoder {
             let known = self.cache.lock().map(|c| c.contains(&k)).unwrap_or(true)
                 || self.inflight.lock().map(|i| i.contains_key(&k)).unwrap_or(true);
             if !known {
-                let _ = self.start_run(key, &asset, target, &all, n, false);
+                let _ = self.start_run(key, &asset, target, &all, n, None);
             }
         }
     }
