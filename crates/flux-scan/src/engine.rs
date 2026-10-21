@@ -357,8 +357,9 @@ impl Inner {
         if !meta.is_dir() {
             return Err(format!("{}: not a directory", root.display()));
         }
+        let canonical = st.canonical.clone().unwrap_or_else(|| root.to_path_buf());
         Ok(RootStatOk {
-            dev: dev_of(meta),
+            dev: dev_of(meta, &canonical),
             mtime_ms: meta
                 .modified()
                 .ok()
@@ -468,15 +469,19 @@ pub(crate) struct RootStatOk {
     pub canonical: PathBuf,
 }
 
+/// The device a root is on: what scans share an admission queue and an
+/// I/O budget by.
 #[cfg(unix)]
-fn dev_of(m: &std::fs::Metadata) -> u64 {
+fn dev_of(m: &std::fs::Metadata, _root: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     m.dev()
 }
 
+/// Not Unix: std's metadata has no device, so ask the root for its volume
+/// serial number (Windows); 0 where nothing answers.
 #[cfg(not(unix))]
-fn dev_of(_m: &std::fs::Metadata) -> u64 {
-    0
+fn dev_of(_m: &std::fs::Metadata, root: &Path) -> u64 {
+    flux_core::file_id::FileId::of_path(root).map_or(0, |id| id.dev)
 }
 
 /// The requested directories inside `root` (absolute, deduplicated).

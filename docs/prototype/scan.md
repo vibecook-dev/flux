@@ -98,8 +98,10 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
   - Everything else is **Fast**: `ssd_concurrency`, 16 KiB pages.
   - The call runs on a helper thread with a 2 s cap.
   - `statfs` cannot tell an HDD from an SSD, so local HDDs count as Fast. This is documented in `device.rs`.
+  - Windows: the volume's file system name (`NTFS`, `exFAT`, …). A network drive is Slow, and so is a disk that reports a seek penalty, or that doesn't say and is on USB, FireWire or SD/MMC (USB HDD enclosures often don't answer the query; USB SSDs usually do).
+  - Each device is logged once at info (`storage device`, with its file system, bus, class and concurrency).
   - The corpus volume classifies as `apfs`, Fast, 16.
-- **One `ReadBoundary` per device** (`st_dev`): its deadlines are `first_response` and `stall` from `ScanConfig`, and its concurrency is the device's. File reads take a permit from a per-device priority semaphore with the same width.
+- **One `ReadBoundary` per device** (`st_dev`; the volume serial number on Windows): its deadlines are `first_response` and `stall` from `ScanConfig`, and its concurrency is the device's. File reads take a permit from a per-device priority semaphore with the same width.
 - **Admission:** a root scan waits on its device.
   - It starts when the device is idle, or when its priority is higher than every running scan's. A watcher batch therefore overtakes a long scheduled scan, while two scheduled scans of one disk serialize.
   - Waiters are served by priority, then FIFO.
@@ -276,7 +278,7 @@ FLUX_SCAN_BENCH_NO_FP=1 …/flux-scan-bench --phase cold <corpus> <db> <manifest
 
 ## Known gaps
 
-- **HDDs** are not detected (`statfs` can't tell), so they get the Fast class (16 in flight). Lower `ssd_concurrency` on HDD-only machines. Detecting them needs IOKit, or `/sys/block/*/queue/rotational` on Linux.
+- **HDDs** are not detected on macOS and Linux (`statfs` can't tell), so they get the Fast class (16 in flight). Lower `ssd_concurrency` on HDD-only machines. Detecting them needs IOKit, or `/sys/block/*/queue/rotational` on Linux. Windows asks the disk (seek penalty, bus type).
 - **Slow-device tasks hold workers.** Workers are shared across devices. A worker waiting for a Slow device's I/O permit holds its thread, so a NAS backlog can occupy up to `workers` threads while a Fast device's tasks wait. Priorities still order the queue.
 - **No "growing file" state.** A file still being copied may be probed partially or fail. The next event (its last write) rescans it.
 - **Network shares get no polling fallback.** FSEvents and inotify don't see changes made by other hosts on SMB/NFS, and the catalog's `dir` mtime table (the O(dirs) poll fallback) is not maintained yet. A root that was unreachable when `watch()` ran starts being watched after the next successful scan of it, not by itself.

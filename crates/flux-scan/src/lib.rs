@@ -46,7 +46,7 @@ mod resume;
 mod scan_root;
 mod watch;
 
-pub use device::{classify as classify_fstype, fs_type, DeviceClass};
+pub use device::{classify as classify_fstype, fs_type, DeviceClass, FsInfo};
 
 use job::{JobKind, JobShared};
 
