@@ -14,6 +14,8 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 
 ## Requirements
 
+<!-- The macOS versions here are checked: scripts/package/smoke-test.sh fails a package whose flux-server needs more than MACOS_FLUX_SERVER (11.0) or whose sidecar-slim needs more than MACOS_SIDECAR (13.0), and RELEASING.md's target table repeats them. Change all three together. -->
+
 | | |
 |---|---|
 | macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). Embedded remote access (`--tailnet embedded`) runs the bundled `bin/sidecar-slim`, which needs macOS 13 or later. |

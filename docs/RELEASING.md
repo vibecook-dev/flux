@@ -31,7 +31,12 @@ passed.
    `feat:` (feature), `fix:` (bug fix), `perf:`, `deps:`, `revert:`, and `!` or
    a `BREAKING CHANGE:` footer for breaking changes. These make a release.
    `docs:`, `ci:`, `chore:`, `refactor:`, `test:` and `build:` don't make
-   one on their own, and stay out of the changelog.
+   one on their own, and stay out of the changelog. Dependabot follows the
+   same rule (`.github/dependabot.yml`): bumps of what ships (cargo crates,
+   npm production dependencies, the Docker base image) are `deps:`, npm
+   development dependencies `chore:` and GitHub Actions `ci(deps):`.
+   Dependabot counts every cargo dependency as a production one, so cargo
+   dev-dependency bumps are `deps:` too.
 2. **Release Please keeps a release PR open** (`chore(main): release …`),
    updated on every push to `main` (`.github/workflows/release-please.yml`).
    It bumps the version in `Cargo.toml` (`[workspace.package]`),
@@ -47,27 +52,41 @@ passed.
 3. **Merging the release PR** makes Release Please create the tag
    `v<version>` and a **draft** GitHub release with the changelog, then call
    `.github/workflows/release.yml` in the same run, which:
-   - checks the tag matches `Cargo.toml` and `web/package.json`;
+   - checks the release is still a draft, and the tag matches `Cargo.toml`
+     and `web/package.json`;
    - builds the web client once and `THIRD_PARTY_LICENSES` once, then
      `flux-server` for four targets (`build.yml`):
 
      | Target | Runner | Notes |
      |---|---|---|
      | `aarch64-apple-darwin` | macos-15 | macOS 11+ (`sidecar-slim`: 13+) |
-     | `x86_64-apple-darwin` | macos-15 | cross-compiled, not smoke-tested; macOS 11+ (`sidecar-slim`: 13+) |
+     | `x86_64-apple-darwin` | macos-15 | cross-compiled; smoke-tested under Rosetta 2; macOS 11+ (`sidecar-slim`: 13+) |
      | `x86_64-unknown-linux-gnu` | ubuntu-22.04 | glibc 2.35+ |
      | `aarch64-unknown-linux-gnu` | ubuntu-22.04-arm | glibc 2.35+, 4/16/64 KiB pages |
 
+     The macOS minimums are the ones [INSTALL.md](INSTALL.md#requirements)
+     promises, and `scripts/package/smoke-test.sh` enforces them: it fails a
+     package whose `bin/flux-server` or `bin/sidecar-slim` declares a
+     higher `minos` (`otool -l`, `LC_BUILD_VERSION`) than
+     `MACOS_FLUX_SERVER` (11.0) or `MACOS_SIDECAR` (13.0). Raise one only
+     in the script, this table and INSTALL.md together.
+
    - packages each as `flux-<version>-<target>.tar.gz`
-     (`scripts/package/package.sh`) and smoke-tests the native ones
-     (`scripts/package/smoke-test.sh`);
+     (`scripts/package/package.sh`) and smoke-tests every package
+     (`scripts/package/smoke-test.sh`): on its own architecture, and the
+     x86_64 macOS one under Rosetta 2 (`arch -x86_64`) on the arm64
+     runner. The job installs Rosetta if the runner lacks it, and fails
+     if `arch -x86_64` doesn't run translated;
    - uploads the packages, `SHA256SUMS` and the jellyfin-ffmpeg source
      tarball to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
-     linux/arm64 from the Linux packages, smoke-tests the linux/amd64 image
-     (the arm64 build only runs `ffmpeg -version` and
-     `flux-server --version`, under QEMU), pushes it and attests it
-     (`docker.yml`); `:latest` too for a stable release;
+     linux/arm64 from the Linux packages (`docker.yml`, through
+     `.github/actions/flux-image`). Each platform is built and
+     smoke-tested (`scripts/package/docker-smoke-test.sh`) on a runner of
+     its own architecture. The multi-arch image takes linux/arm64 from the
+     tested build's layers, with no QEMU, so a mismatch fails the build
+     instead of shipping an untested rebuild. It is pushed and attested;
+     `:latest` too for a stable release;
    - publishes the draft: a pre-release for `-alpha`/`-beta`/`-rc` versions,
      otherwise the repository's Latest release.
 
@@ -91,7 +110,11 @@ the workflow and the commit too ([INSTALL.md](INSTALL.md#release-packages)).
 release from the push to `main`, so attestations record `refs/heads/main`.
 Only the image's multi-arch index is attested, so verify the tag or the
 index digest, not a per-platform digest. `SHA256SUMS` and the
-jellyfin-ffmpeg source tarball have no attestation.
+jellyfin-ffmpeg source tarball have no attestation. The attest steps set
+`create-storage-record: false`: an artifact-metadata storage record only
+feeds the organization's Linked Artifacts page, needs the
+`artifact-metadata: write` permission, and plays no part in
+`gh attestation verify`.
 
 ## Release dry run
 
@@ -106,12 +129,14 @@ gh workflow run release-dry-run.yml --repo vibecook-dev/flux --ref main
 It runs the same steps as a release, on the chosen ref, with read-only
 repository access:
 
-- `build.yml` for all four targets, with the native smoke tests; the
-  packages carry the version in `Cargo.toml`;
+- `build.yml` for all four targets, with every package's smoke test
+  (x86_64 macOS under Rosetta 2) and the macOS `minos` check; the packages
+  carry the version in `Cargo.toml`;
 - `scripts/package/release-assets.sh` (as `release.yml` does): the
   jellyfin-ffmpeg source tarball and `SHA256SUMS`;
 - the linux/amd64 + linux/arm64 image through `.github/actions/flux-image`
-  (as `docker.yml` does), with its smoke test, **not pushed**.
+  (as `docker.yml` does), each platform smoke-tested on its own runner,
+  **not pushed**.
 
 It creates no tag, release, attestation or ghcr.io image. The packages,
 the source tarball and `SHA256SUMS` are the run's `release-dry-run`
@@ -185,7 +210,10 @@ least-privilege `permissions:` per job. These settings are needed once:
   under the `vibecook-dev` organization's Actions settings first.
 - **Ruleset `protect-main`** (Settings → Rules → Rulesets), on the default branch:
   - changes land through a pull request (0 approvals needed; squash merge
-    only, titled by the PR title, so each PR is one Conventional Commit);
+    only, titled by the PR title, so each PR is one Conventional Commit).
+    The squash commit's body is the branch's commit messages, and Release
+    Please reads it too, so a body line starting with `BREAKING CHANGE`,
+    `Release-As:` or `BEGIN_COMMIT_OVERRIDE` changes the release;
   - the status check **`CI OK`** (GitHub Actions) must pass, on a branch
     that is up to date with `main`. It fails when any CI job fails:
     `Rustfmt`, `Rust (ubuntu-24.04)`, `Rust (ubuntu-24.04-arm)`,
@@ -201,6 +229,10 @@ least-privilege `permissions:` per job. These settings are needed once:
   ruleset: `gh api repos/vibecook-dev/flux/rulesets` lists it, and
   `gh api -X POST repos/vibecook-dev/flux/rulesets --input <file>` takes the
   same JSON.
+- **Ruleset `protect-release-tags`** on `refs/tags/v*`: release tags can't
+  be deleted or moved.
+- **Immutable releases:** on. Once a release is published, its assets and
+  tag can't change; `release.yml` only builds and publishes drafts.
 - **Other repository settings:** squash merging only, branches deleted on
   merge, Dependabot alerts and security updates, secret scanning with push
   protection, and private vulnerability reporting (`SECURITY.md`).
@@ -216,10 +248,19 @@ least-privilege `permissions:` per job. These settings are needed once:
 - **A release build failed:** the tag and the draft release exist, nothing is
   published. Fix the cause on `main` if it is in the workflow, then run
   **Actions → Release → Run workflow** with the tag (e.g.
-  `v0.1.0-alpha.1`). It rebuilds everything from the tagged commit, replaces
-  the assets (`--clobber`) and publishes the draft. A broken *commit* needs
-  a new release instead: land the fix, and let the next release PR go out.
-- **Never move or delete a published tag**; release a new version.
+  `v0.1.0-alpha.2`), or `gh workflow run release.yml --repo vibecook-dev/flux -f tag=<tag>`.
+  It rebuilds everything from the tagged commit, replaces the draft's
+  assets (`--clobber`) and publishes it. A broken *commit* needs a new
+  release instead: land the fix, and let the next release PR go out.
+- **The release is already published:** `release.yml` refuses it. Its first
+  job, *Check the `<tag>` draft*, fails with "`<tag>` is already
+  published" before anything is built, and the upload step checks again.
+  Immutable releases are on for the repository, so GitHub would reject new
+  or replaced assets anyway, and the tag can't move. Release a new version
+  instead. (v0.1.0-alpha.1 was published before immutable
+  releases were turned on, so only this check protects its assets.)
+- **Never move or delete a published tag**; release a new version. The tag
+  ruleset `protect-release-tags` blocks it for `v*`.
 
 ## Packaging locally
 
@@ -271,7 +312,9 @@ The sidecar sets its own minimum OS. Truffle 0.7.20's macOS sidecars are
 built with Go 1.27.2 and declare macOS 13.0 (`otool -l bin/sidecar-slim`,
 `LC_BUILD_VERSION` `minos`), while `flux-server` declares 11.0
 (`MACOSX_DEPLOYMENT_TARGET` in `build.yml`). INSTALL.md's requirements say
-so; check both again when the Truffle version changes.
+so, and the package smoke test fails if either rises above them (the
+target table above), so a Truffle bump that needs a newer macOS fails the
+release dry run and the release.
 
 ## Maintenance
 
@@ -281,8 +324,8 @@ so; check both again when the Truffle version changes.
 | MSRV | `rust-version` in `Cargo.toml`; the `MSRV` job reads it. Raise it when a dependency needs a newer Rust. |
 | Node and pnpm | Node in `ci.yml`/`build.yml` (`node-version`); pnpm from `web/package.json` `packageManager`. |
 | Action versions | Every action is pinned to a commit SHA with its version in a comment. Update the SHA and the comment together. |
-| Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. |
+| Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. The image's arm64 layers pass from one job to the next within a run (artifact `image-layers-arm64`, kept 1 day); that is not a cache. |
 | cargo-deny, cargo-about, actionlint, hadolint | Versions (and checksums) in `ci.yml` and `build.yml`. |
 | Licence policy | `deny.toml` (CI gate) and `scripts/package/about.toml` (THIRD_PARTY_LICENSES); keep the allowed lists in step. npm licences: `scripts/package/web-licenses.mjs`. |
 | jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)). |
-| Base image | `DEBIAN_IMAGE` digest in the `Dockerfile`. |
+| Base image | The `debian:trixie-slim` digest in both `FROM` lines of the `Dockerfile`. Dependabot updates them (`docker` in `.github/dependabot.yml`); it doesn't read image references kept in an `ARG`. |
