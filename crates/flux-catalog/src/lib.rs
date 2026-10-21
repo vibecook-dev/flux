@@ -205,8 +205,19 @@ impl Catalog {
     fn shutdown_inner(&self) -> Result<()> {
         let handle = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some(handle) = handle else { return Ok(()) };
-        let res = self.writer.shutdown().wait();
-        if handle.join().is_err() {
+        // Join the thread first and only then look for the reply; never
+        // block on the reply itself. If another handle's shutdown (the
+        // server's) already ended the writer loop, ours can still be queued
+        // in the moment before the thread drops its receiver, and flume
+        // keeps a queued message (with our reply sender in it) for as long
+        // as a sender lives: ours, `self.writer`. That reply never comes, so
+        // waiting for it blocked this drop forever, after "flux stopped".
+        // Once the thread has exited, the reply is either there or never
+        // coming.
+        let reply = self.writer.shutdown().submit();
+        let joined = handle.join();
+        let res = reply.and_then(Reply::take_sent);
+        if joined.is_err() {
             return Err(CatalogError::WriterGone);
         }
         match res {
@@ -227,11 +238,59 @@ impl Drop for Catalog {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::{Catalog, CatalogConfig};
+
     #[test]
     fn catalog_handles_are_shareable_across_tasks() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<super::Catalog>();
         assert_send_sync::<super::Writer>();
         assert_send_sync::<super::ReadPool>();
+    }
+
+    /// flux-server shuts the writer down through a handle, then drops the
+    /// catalog, whose drop sends a shutdown of its own. When that second
+    /// one is queued but the exiting writer never reads it, the drop must
+    /// still return (it used to wait for its reply forever).
+    #[test]
+    fn drop_returns_when_another_shutdown_ended_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = Catalog::open(dir.path().join("c.db"), CatalogConfig::default()).unwrap();
+        let w = cat.writer().clone();
+        // Hold the writer in a job, so both shutdowns queue up behind it.
+        let (started_tx, started) = mpsc::channel();
+        let (release, held) = mpsc::channel::<()>();
+        let job = w
+            .exec(move |_| {
+                started_tx.send(()).unwrap();
+                Ok(held.recv().is_ok())
+            })
+            .submit()
+            .unwrap();
+        started.recv().unwrap();
+        let first = w.shutdown().submit().unwrap();
+        let (dropped_tx, dropped) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(cat);
+            let _ = dropped_tx.send(());
+        });
+        let t0 = Instant::now();
+        while w.queued() < 2 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "the drop's shutdown was not queued"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The writer exits on the first shutdown; the drop's stays queued.
+        release.send(()).unwrap();
+        assert!(job.wait().unwrap());
+        first.wait().unwrap();
+        dropped
+            .recv_timeout(Duration::from_secs(10))
+            .expect("Catalog::drop still waiting 10 s after the writer exited");
     }
 }
