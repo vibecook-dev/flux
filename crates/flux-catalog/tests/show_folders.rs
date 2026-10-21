@@ -467,3 +467,93 @@ fn shows_from_two_folders_merge_once_provider_ids_agree() {
         "a season is not a top-level work"
     );
 }
+
+/// A show folder with a subfolder of alternate versions (not a season
+/// folder): `Show/Show.S01E01.mp4` beside `Show/Raw MKV/Show.S01E01.mkv`.
+/// One show, one season, each episode with both files as versions, in
+/// either scan order and within one batch.
+#[test]
+fn a_subfolder_of_alternate_versions_joins_the_show() {
+    let top = |n: u16| {
+        upsert(
+            &format!("Some.Show/Some.Show.S01E{n:02}.1080p.中英字幕.mp4"),
+            episode("Some Show", None, 1, &[n]),
+            None,
+        )
+    };
+    let sub = |n: u16| {
+        upsert(
+            &format!("Some.Show/原版MKV外挂字幕/Some.Show.S01E{n:02}.1080p.WEB.h264-GRP.mkv"),
+            episode("Some Show", None, 1, &[n]),
+            None,
+        )
+    };
+    for order in ["top first", "subfolder first", "one batch"] {
+        let e = env(LibraryKind::Shows);
+        match order {
+            "top first" => {
+                e.apply((1..=3).map(top).collect());
+                e.apply((1..=3).map(sub).collect());
+            }
+            "subfolder first" => {
+                e.apply((1..=3).map(sub).collect());
+                e.apply((1..=3).map(top).collect());
+            }
+            _ => {
+                e.apply((1..=3).flat_map(|n| [sub(n), top(n)]).collect());
+            }
+        }
+        let s = shows(&e);
+        assert_eq!(s.len(), 1, "{order}: {s:#?}");
+        let seasons = e.children(s[0].id);
+        assert_eq!(seasons.len(), 1, "{order}");
+        let eps = e.children(seasons[0].id);
+        assert_eq!(eps.len(), 3, "{order}");
+        for ep in &eps {
+            assert_eq!(
+                e.detail(ep.id).assets.len(),
+                2,
+                "{order}: {} has both files",
+                ep.title
+            );
+        }
+        // Later files in either folder keep landing on the same show.
+        e.apply(vec![top(4), sub(4)]);
+        assert_eq!(shows(&e).len(), 1, "{order}");
+        assert_eq!(episode_count(&e, s[0].id), 4, "{order}");
+    }
+}
+
+/// Nesting joins only same-titled shows whose years agree: a dated show in
+/// a subfolder of a differently dated one stays apart, and so does a
+/// differently titled show below a show folder.
+#[test]
+fn nested_folders_still_respect_titles_and_years() {
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Doctor Who/Doctor.Who.2005.S01E01.mkv",
+            episode("Doctor Who", Some(2005), 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Doctor Who/Classic/Doctor.Who.1963.S01E01.mkv",
+            episode("Doctor Who", Some(1963), 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Doctor Who/Torchwood/Torchwood.S01E01.mkv",
+            episode("Torchwood", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    let s = shows(&e);
+    assert_eq!(s.len(), 3, "{s:#?}");
+    // Sibling folders (neither inside the other) are still two shows.
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert("A/Lost/Lost.S01E01.mkv", episode("Lost", None, 1, &[1]), None),
+        upsert("B/Lost/Lost.S01E01.mkv", episode("Lost", None, 1, &[1]), None),
+    ]);
+    assert_eq!(shows(&e).len(), 2);
+}

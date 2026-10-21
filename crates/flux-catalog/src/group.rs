@@ -10,6 +10,9 @@
 //!   (S01E01-E02) is one asset linked to several episode items.
 //! - **Extras** attach to the movie/show that owns their folder
 //!   (`Movie (2010)/Featurettes/x.mkv`), or to the item named by the guess.
+//! - **Show folders**: a show owns the folders its episodes are in; a
+//!   subfolder that isn't a season (`Show/alt versions/`) is the same show,
+//!   so its files become more versions of the same episodes.
 //! - **Samples** are ignored: the file row is kept (so it is never
 //!   re-probed) but it maps to no item.
 //! - **Unknown** files become an "unmatched" movie titled after the cleaned
@@ -278,7 +281,8 @@ pub struct WorkTarget {
     pub unmatched: bool,
     /// Shows only: the file's [`show_folder`]. A show owns the folders its
     /// episodes live in; another folder means another show unless provider
-    /// ids agree.
+    /// ids agree, or one folder is inside the other (`Show/` and
+    /// `Show/alt versions/` are one show).
     pub folder: Option<String>,
 }
 
@@ -722,6 +726,38 @@ fn owns_any_folder(conn: &Connection, show: Id) -> Result<bool> {
         .is_some())
 }
 
+/// Does `show` own a folder that encloses `folder` or sits inside it
+/// (`show/alt versions` and `show`)? Lengths are in characters, as SQLite's
+/// `substr` counts them.
+fn owns_nested_folder(conn: &Connection, show: Id, folder: &str) -> Result<bool> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT 1 FROM item_folder WHERE item_id = ?1 AND (
+                 substr(?2, 1, length(folder) + 1) = folder || '/'
+              OR substr(folder, 1, ?3 + 1) = ?2 || '/')
+             LIMIT 1",
+        )?
+        .query_row(params![show, folder, folder.chars().count() as i64], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// The candidates that own a folder around `folder` or inside it; `None`
+/// when there are none.
+fn nested_owners<'a>(
+    conn: &Connection,
+    cands: &[&'a Candidate],
+    folder: &str,
+) -> Result<Option<Vec<&'a Candidate>>> {
+    let mut nested = Vec::new();
+    for c in cands {
+        if owns_nested_folder(conn, c.0, folder)? {
+            nested.push(*c);
+        }
+    }
+    Ok((!nested.is_empty()).then_some(nested))
+}
+
 fn find_work(
     conn: &Connection,
     r: &Resolver,
@@ -782,7 +818,8 @@ fn find_work(
         .collect();
     let picked: Option<Candidate> = match (kind, &w.folder) {
         // Shows: a different show folder is a different show (ids agreeing
-        // was handled above). Within one folder, the year rules apply.
+        // was handled above), unless one folder holds the other. Within one
+        // folder, the year rules apply.
         ("show", Some(folder)) => {
             let owners = folder_owners(conn, folder)?;
             let owned: Vec<&Candidate> = compatible
@@ -797,6 +834,11 @@ fn find_work(
                 // (folder renamed) unless the years contradict; a yearless
                 // show adopts the new folder's year.
                 pick_by_year(conn, r, w, &[*p])?
+            } else if let Some(nested) = nested_owners(conn, &compatible, folder)? {
+                // A subfolder of a show's folder (`Show/alt versions/`), or
+                // the folder around one: the same show, so its files become
+                // more versions of the same episodes, in either scan order.
+                pick_by_year(conn, r, w, &nested)?
             } else {
                 // Shows that don't know their folders yet (files at the
                 // root, or catalogs from before v3) still join by year rules.
