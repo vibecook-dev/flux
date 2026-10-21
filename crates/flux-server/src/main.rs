@@ -67,7 +67,13 @@ fn main() -> ExitCode {
         };
         wait_for_signal().await;
         tracing::info!("shutting down");
+        // Ours is then the last reference, so the state's drop (the
+        // catalog's and the scanner's, which join threads) runs after "flux
+        // stopped", with the exit watchdog armed.
+        let state = server.state.clone();
         server.shutdown(Duration::from_secs(5)).await;
+        exit_watchdog(EXIT_DEADLINE);
+        drop(state);
         ExitCode::SUCCESS
     });
     // Dropping the runtime would wait for every blocking task, and one stuck
@@ -75,6 +81,46 @@ fn main() -> ExitCode {
     // the process alive after "flux stopped" (review ROB-1).
     rt.shutdown_timeout(Duration::from_secs(2));
     code
+}
+
+/// How long the process may take to end after "flux stopped": the state's
+/// drop plus the runtime's 2 s.
+const EXIT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// A backstop, not a fix: if the process still runs `after` from now, it
+/// logs that and exits with status 1. By then the listeners are closed and
+/// the catalog committed, so a stuck drop or exit handler only costs the
+/// wait for a supervisor's SIGKILL (Docker's 10 s, systemd's 90 s); the
+/// error and the status keep such a bug visible.
+fn exit_watchdog(after: Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("flux-exit-watchdog".into())
+        .stack_size(64 << 10)
+        .spawn(move || {
+            std::thread::sleep(after);
+            tracing::error!(
+                "still running {} s after \"flux stopped\" (a shutdown bug); exiting",
+                after.as_secs()
+            );
+            hard_exit(1);
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "exit watchdog did not start");
+    }
+}
+
+/// Ends the process at once: no atexit handlers or thread-local
+/// destructors, which could be what hangs, and no waiting for another
+/// thread already in `exit` (`std::process::exit` waits for it).
+#[allow(unsafe_code)]
+fn hard_exit(code: i32) -> ! {
+    #[cfg(unix)]
+    // SAFETY: `_exit` takes no pointers and does not return.
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(not(unix))]
+    std::process::exit(code)
 }
 
 /// SIGINT (Ctrl-C) or SIGTERM.
