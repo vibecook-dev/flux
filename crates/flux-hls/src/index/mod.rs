@@ -30,7 +30,9 @@ use crate::source::{Source, SourceId};
 /// 5: also MPEG-TS/M2TS with H.264/HEVC indexed in-process (`Layout::Ts`)
 ///    instead of by an ffprobe scan (phase-d/hls-perf). Both branches bumped
 ///    to 4 independently; 5 makes every cached index rebuild once.
-pub const INDEX_VERSION: u16 = 5;
+/// 6: laced E-AC-3 in Matroska: dec3 and the bitrate describe one access
+///    unit, not the whole first block (8× too high with 8-frame lacing).
+pub const INDEX_VERSION: u16 = 6;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its

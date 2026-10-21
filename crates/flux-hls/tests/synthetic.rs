@@ -449,3 +449,34 @@ async fn laced_ac3_in_matroska_transcodes_without_gaps() {
         );
     }
 }
+
+/// The index describes one access unit of laced (E-)AC-3, not the first
+/// block's eight: the dec3 data rate and the bitrate (which feeds the HLS
+/// BANDWIDTH and the planner's bitrate checks) are what the track was
+/// encoded at.
+#[test]
+fn laced_eac3_reports_the_bitrate_it_was_encoded_at() {
+    let Some(p) = clip(Clip::LacedAc3Eac3Mkv) else {
+        return;
+    };
+    let idx = flux_hls::PlaybackIndex::build(&p).unwrap();
+    let mut seen = 0;
+    for t in idx
+        .tracks
+        .iter()
+        .filter(|t| matches!(t.codec, Codec::Ac3 | Codec::Eac3))
+    {
+        assert_eq!(t.bitrate, Some(192_000), "{:?}", t.codec);
+        assert_eq!(t.frame_duration, Some(1536), "{:?}", t.codec);
+        if t.codec == Codec::Eac3 {
+            let dec3 = t.synth_config.as_deref().expect("dec3");
+            assert_eq!(
+                u16::from_be_bytes([dec3[0], dec3[1]]) >> 3,
+                192,
+                "dec3 data_rate (kb/s)"
+            );
+        }
+        seen += 1;
+    }
+    assert_eq!(seen, 2);
+}
