@@ -197,6 +197,54 @@ fn items_page_filters_kinds_and_libraries() {
     assert_eq!(roots, ["/media/lib"]);
 }
 
+/// The CJK half of a bilingual name is stored as the original title and
+/// found by search; a later bilingual file fills it in on an existing item.
+#[test]
+fn original_titles_are_stored_and_searchable() {
+    let e = env(LibraryKind::Mixed);
+    let mut ep = episode("Some Show", None, 1, &[1]);
+    ep.original_title = Some("示例剧".into());
+    let mut film = movie("Some Film", Some(2019));
+    film.original_title = Some("示例片".into());
+    e.apply(vec![
+        upsert("Some Show/S01/示例剧.Some.Show.S01E01.mkv", ep, None),
+        upsert("示例片.Some.Film.2019.mkv", film, None),
+        upsert(
+            "Other Show/Other.Show.S01E01.mkv",
+            episode("Other Show", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    let s = |q: &str| -> Vec<String> {
+        let q = q.to_string();
+        e.cat
+            .read_blocking(move |c| read::search(c, &q, 20, None))
+            .unwrap()
+            .into_iter()
+            .map(|i| i.title)
+            .collect()
+    };
+    assert_eq!(s("示例剧"), vec!["Some Show"]);
+    assert_eq!(s("示例片"), vec!["Some Film"]);
+    assert_eq!(s("some film"), vec!["Some Film"]);
+    assert!(s("另一剧").is_empty());
+    // A bilingual file of a show that has no original title yet fills it in.
+    let mut ep2 = episode("Other Show", None, 1, &[2]);
+    ep2.original_title = Some("另一剧".into());
+    e.apply(vec![upsert("Other Show/另一剧.Other.Show.S01E02.mkv", ep2, None)]);
+    assert_eq!(s("另一剧"), vec!["Other Show"]);
+    assert_eq!(
+        e.top().iter().filter(|i| i.title == "Other Show").count(),
+        1,
+        "still one show"
+    );
+    e.cat
+        .writer()
+        .exec(|c| Ok(c.execute_batch("INSERT INTO item_fts(item_fts) VALUES('integrity-check')")?))
+        .wait()
+        .unwrap();
+}
+
 #[test]
 fn search_is_prefix_diacritic_insensitive_and_ranked() {
     let e = env(LibraryKind::Mixed);
