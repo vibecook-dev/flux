@@ -864,7 +864,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blurhash",
  "bytes",
  "flate2",
@@ -963,7 +963,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "flate2",
