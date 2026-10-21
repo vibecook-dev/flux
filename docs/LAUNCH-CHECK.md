@@ -19,7 +19,7 @@ is still open, is in [After the release](#after-the-release).
 | Area | Result |
 |---|---|
 | [Leaks](#1-leaks) | No secrets, personal paths, private notes or private tailnet data. One error message referred to the dev setup; fixed in #10 |
-| [Fresh-machine build and tests](#2-fresh-machine-build-and-tests) | Clean on GitHub's fresh runners (Linux x86_64 and arm64, macOS, MSRV 1.89, web). A local run with the media corpus is still open |
+| [Fresh-machine build and tests](#2-fresh-machine-build-and-tests) | Clean on GitHub's fresh runners (Linux x86_64 and arm64, macOS, MSRV 1.89, web). After the release, a local run from a fresh clone also passed, with and without the media corpus ([Open items](#open-items), 9) |
 | [Workflows](#3-workflows) | Sound overall. Three fixes in #8: release builds used caches, a release could ship without the sidecar, and CI could skip every transcode silently |
 | [Release artifacts](#4-release-artifacts-dry-run) | Checksums, contents, architecture and glibc floor are right. On macOS, the documented symlink install served no web client; fixed in #11 |
 | [Docs](#5-docs) | Some statements predated the public repo. Fixed in this PR |
@@ -73,8 +73,8 @@ fetch `mille-core` and `truffle-core` from their pinned sources. On `main`
 **Not done in this check:** a local build and test run from a fresh clone
 on macOS, with and without the real-media corpus (`FLUX_TEST_MEDIA`). The
 corpus isn't in the repository, so CI never runs those tests. The machine
-wasn't available for heavy builds while this check ran. See
-[Open items](#open-items), 9.
+wasn't available for heavy builds while this check ran. It was done after
+the release: see [Open items](#open-items), 9.
 
 ## 3. Workflows
 
@@ -288,14 +288,19 @@ In order:
    #3 and #4. #5 (msw 2.15.0 → 3.0.3) fails its `Web` job: fix or close it.
 8. Optional hardening: turn on *Require actions to be pinned to a full-length
    commit SHA* (Settings → Actions); everything already complies.
-9. **Run the corpus tests** from a fresh clone. Use no `.cargo/config.toml`
-   and a new `CARGO_HOME` and target dir:
-   - `cargo build --locked --workspace` and `cargo test --locked --workspace`
-     without `FLUX_TEST_MEDIA` (the corpus tests must skip cleanly);
-   - then `cargo test` again with `FLUX_TEST_MEDIA` pointing at the corpus;
-   - the web gate.
-
-   Check that the run modifies nothing under the corpus.
+9. **Done: the corpus tests from a fresh clone.** On 2026-10-21, on macOS
+   (Apple Silicon, Rust 1.97.1), from a fresh clone of `main` at `f958867`,
+   with no `.cargo/config.toml` and a new `CARGO_HOME` and target dir:
+   - `cargo build --locked --workspace` passed.
+   - `cargo test --locked --workspace` without `FLUX_TEST_MEDIA`: 628
+     passed, 0 failed, 4 ignored. The corpus tests skipped themselves
+     (52 skip notices with `--nocapture`).
+   - The same with `FLUX_TEST_MEDIA` pointing at the corpus: 628 passed,
+     0 failed. Only 2 skip notices were left, both for inputs other than the
+     corpus (`RUN_MOUNT` and `FLUX_TMDB_EXPORTS`), so the corpus tests ran.
+   - The web gate (`pnpm install --frozen-lockfile`, `typecheck`, `lint`,
+     `test`, `build`) passed.
+   - No file under the corpus was modified.
 10. Known product gaps, already documented elsewhere:
     - VideoToolbox is verified only on Apple hardware: macOS CI uses libx264
       (ENCODERS.md).
@@ -390,6 +395,17 @@ Fixed for v0.1.0-alpha.2 in #13 (`fix:`): the licence item (it completes
 `THIRD_PARTY_LICENSES`) and the log-colour item (flux colours its log only
 when stderr is a terminal, so the journal gets plain text). See that PR.
 
+Fixed after #14 (docs only):
+
+- README's Operations line said CI smoke-tests every package but
+  `x86_64-apple-darwin`, and only the linux/amd64 image. Since #14 it
+  smoke-tests all four packages and both image platforms.
+- RELEASING.md didn't say that a Truffle bump must regenerate
+  `scripts/package/sidecar-NOTICE.txt` (#13's `sidecar-notice.py`), or that
+  `third-party-licenses.sh` now needs `jq`.
+- CONTRIBUTING.md listed `perf:` among the types that make no release; it
+  makes one.
+
 Still open:
 
 - **The macOS sidecar needs macOS 13.** Truffle 0.7.20's macOS
@@ -404,8 +420,9 @@ Still open:
 - **The README inside the v0.1.0-alpha.1 packages and image** is the old one
   that says there are no releases. The published assets stay as they are;
   v0.1.0-alpha.2 will carry the new README.
-- **README's Operations line** says CI smoke-tests every package but
-  `x86_64-apple-darwin`, and only the linux/amd64 image. After #14 it
-  smoke-tests all four packages and both image platforms. README isn't
-  in #14, and it ships in the packages and the image, so it needs a
-  one-line fix before the v0.1.0-alpha.2 release PR merges.
+- **flux-server sometimes doesn't exit after SIGTERM.** In 1 of about 18
+  image smoke tests on 2026-10-21 (Docker run 39562643871, first attempt,
+  linux/arm64), it logged `flux stopped` and was killed 15 s later by
+  `docker stop` (exit 137). The catalog is closed by then, so no data is
+  at risk, but a stop can take the full timeout, and a release run that
+  hits it needs *Re-run failed jobs*. The cause is under investigation.

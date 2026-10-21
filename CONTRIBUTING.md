@@ -89,7 +89,7 @@ fix(hls): keep audio in sync after a seek past the last keyframe
 docs: explain FLUX_TEST_MEDIA
 ```
 
-Use `feat:` for user-visible features, `fix:` for bug fixes, and `docs:`, `test:`, `refactor:`, `perf:`, `ci:` or `chore:` for the rest. Mark breaking changes with `!` (`feat(api)!: …`) or a `BREAKING CHANGE:` footer. The optional scope is usually the crate without its `flux-` prefix (`scan`, `hls`, `server`) or `web`.
+Use `feat:` for user-visible features, `fix:` for bug fixes and `perf:` for performance improvements (these make a release), and `docs:`, `test:`, `refactor:`, `ci:` or `chore:` for the rest. Mark breaking changes with `!` (`feat(api)!: …`) or a `BREAKING CHANGE:` footer. The optional scope is usually the crate without its `flux-` prefix (`scan`, `hls`, `server`) or `web`.
 
 Releases are automated with [release-please](https://github.com/googleapis/release-please). It reads the commit messages on `main`, keeps a release pull request open with the next version and the changelog, and tags a release when that pull request is merged. So the commit messages that land on `main` are the changelog. When a pull request is squash-merged, its title becomes the commit message, so make the title a Conventional Commit too.
 
