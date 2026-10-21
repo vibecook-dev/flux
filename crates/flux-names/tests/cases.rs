@@ -764,9 +764,7 @@ fn bilingual_names_keep_both_halves() {
     let g = p("示例剧.Some.Show.S01E01.1080p.mp4", LibraryKind::Mixed);
     assert_episode(&g, "Some Show", Some(1), &[1]);
     assert_eq!(g.original_title.as_deref(), Some("示例剧"));
-    let g = movies(
-        "示例片.Some.Film.2022.BD1080P.X264.AAC/Some.Film.2022.BD1080P.X264.AAC.mp4",
-    );
+    let g = movies("示例片.Some.Film.2022.BD1080P.X264.AAC/Some.Film.2022.BD1080P.X264.AAC.mp4");
     assert_movie(&g, "Some Film", Some(2022));
     assert_eq!(g.original_title.as_deref(), Some("示例片"));
     let g = movies("示例片.Some.Film.2019.1080p.mkv");
