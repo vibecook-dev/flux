@@ -28,15 +28,21 @@ passed.
 ## How a release happens
 
 1. **Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org/):**
-   `feat:` (feature), `fix:` (bug fix), `perf:`, `deps:`, `revert:`, and `!` or
+   `feat:` (feature), `fix:` (bug fix), `perf:`, `revert:`, and `!` or
    a `BREAKING CHANGE:` footer for breaking changes. These make a release.
-   `docs:`, `ci:`, `chore:`, `refactor:`, `test:` and `build:` don't make
-   one on their own, and stay out of the changelog. Dependabot follows the
-   same rule (`.github/dependabot.yml`): bumps of what ships (cargo crates,
-   npm production dependencies, the Docker base image) are `deps:`, npm
-   development dependencies `chore:` and GitHub Actions `ci(deps):`.
-   Dependabot counts every cargo dependency as a production one, so cargo
-   dev-dependency bumps are `deps:` too.
+   Every other type (`docs:`, `ci:`, `chore:`, `refactor:`, `test:`,
+   `build:`, and also `deps:`) doesn't make one on its own, and stays out
+   of the changelog. Release Please only releases for a type with a visible
+   changelog section (or a breaking change); `release-please-config.json`
+   sets no `changelog-sections`, so its defaults apply, and they have no
+   `deps` section. Dependabot follows the same rule
+   (`.github/dependabot.yml`): bumps of what ships (cargo crates in the
+   workspace, npm production dependencies, the Docker base image) are
+   `fix(deps):`; npm development dependencies are `chore(deps-dev):`,
+   `web/scripts/golden-rs` (a dev tool, not shipped) `chore(deps):` and
+   GitHub Actions `ci(deps):`. Dependabot counts every cargo dependency as
+   a production one, so workspace dev-dependency bumps are `fix(deps):`
+   too.
 2. **Release Please keeps a release PR open** (`chore(main): release …`),
    updated on every push to `main` (`.github/workflows/release-please.yml`).
    It bumps the version in `Cargo.toml` (`[workspace.package]`),
@@ -67,7 +73,7 @@ passed.
      The macOS minimums are the ones [INSTALL.md](INSTALL.md#requirements)
      promises, and `scripts/package/smoke-test.sh` enforces them: it fails a
      package whose `bin/flux-server` or `bin/sidecar-slim` declares a
-     higher `minos` (`otool -l`, `LC_BUILD_VERSION`) than
+     higher `minos` (`otool -arch all -l`, `LC_BUILD_VERSION`) than
      `MACOS_FLUX_SERVER` (11.0) or `MACOS_SIDECAR` (13.0). Raise one only
      in the script, this table and INSTALL.md together.
 
@@ -84,9 +90,10 @@ passed.
      `.github/actions/flux-image`). Each platform is built and
      smoke-tested (`scripts/package/docker-smoke-test.sh`) on a runner of
      its own architecture. The multi-arch image takes linux/arm64 from the
-     tested build's layers, with no QEMU, so a mismatch fails the build
-     instead of shipping an untested rebuild. It is pushed and attested;
-     `:latest` too for a stable release;
+     tested build's layers, with no QEMU (the job fails if the runner can
+     emulate arm64), so a mismatch fails the build instead of shipping an
+     untested rebuild. It is pushed and attested; `:latest` too for a
+     stable release;
    - publishes the draft: a pre-release for `-alpha`/`-beta`/`-rc` versions,
      otherwise the repository's Latest release.
 
@@ -212,8 +219,12 @@ least-privilege `permissions:` per job. These settings are needed once:
   - changes land through a pull request (0 approvals needed; squash merge
     only, titled by the PR title, so each PR is one Conventional Commit).
     The squash commit's body is the branch's commit messages, and Release
-    Please reads it too, so a body line starting with `BREAKING CHANGE`,
-    `Release-As:` or `BEGIN_COMMIT_OVERRIDE` changes the release;
+    Please parses it too: a line starting with `BREAKING CHANGE` or
+    `Release-As:` changes the release, and a paragraph that starts like a
+    commit subject (`fix: …`, `feat(web): …`) counts as a commit of its
+    own. Release Please also reads the merged PR's *description*: a
+    `BEGIN_COMMIT_OVERRIDE` … `END_COMMIT_OVERRIDE` block there replaces
+    the commit's whole message;
   - the status check **`CI OK`** (GitHub Actions) must pass, on a branch
     that is up to date with `main`. It fails when any CI job fails:
     `Rustfmt`, `Rust (ubuntu-24.04)`, `Rust (ubuntu-24.04-arm)`,
@@ -257,8 +268,15 @@ least-privilege `permissions:` per job. These settings are needed once:
   published" before anything is built, and the upload step checks again.
   Immutable releases are on for the repository, so GitHub would reject new
   or replaced assets anyway, and the tag can't move. Release a new version
-  instead. (v0.1.0-alpha.1 was published before immutable
-  releases were turned on, so only this check protects its assets.)
+  instead. (v0.1.0-alpha.1 was published before immutable releases were
+  turned on, so GitHub doesn't lock its assets: this check stops
+  `release.yml`, but a maintainer could still replace or delete them by
+  hand, with `gh release upload --clobber` or the web UI. Don't.)
+- **Only the image job failed:** re-running just that job works for a
+  day. It takes linux/arm64 from the run's `image-layers-arm64` artifact,
+  which is kept 1 day; after that its download fails. Run Release for the
+  tag instead (above), which builds everything again, the arm64 layers
+  included.
 - **Never move or delete a published tag**; release a new version. The tag
   ruleset `protect-release-tags` blocks it for `v*`.
 

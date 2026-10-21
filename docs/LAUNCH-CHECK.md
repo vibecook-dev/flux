@@ -274,8 +274,8 @@ In order:
      `scripts/package/smoke-test.sh` passes on the aarch64-apple-darwin
      package, started through a symlink, and INSTALL's release steps work on
      macOS (Apple Silicon). The x86_64-apple-darwin package, which CI
-     doesn't smoke-test, answers `/api/v1/server` and serves the web client
-     under Rosetta.
+     didn't smoke-test until #14, answers `/api/v1/server` and serves the
+     web client under Rosetta.
    - README's Status, Install and Operations lines now describe the
      release (#12; see [After the release](#after-the-release)).
 5. **Done:** **Make the container package public** (org Packages → flux →
@@ -348,13 +348,15 @@ Fixed for v0.1.0-alpha.2 in #14 (release pipeline; `ci:`, `build(docker):`,
 - **Only the linux/amd64 image was smoke-tested.** The arm64 image only
   ran `--version` under QEMU. It is now built and smoke-tested on an
   ubuntu-24.04-arm runner, and the multi-arch image takes linux/arm64 from
-  that tested build's layers, without QEMU. `docker.yml` (and so the release)
-  and the release dry run both get this through `.github/actions/flux-image`.
+  that tested build's layers, without QEMU; the job fails if its amd64
+  runner could emulate arm64, so a step missing from the layers can't be
+  rebuilt untested. `docker.yml` (and so the release) and the release dry
+  run both get this through `.github/actions/flux-image`.
 - **No check of the minimum macOS.** `smoke-test.sh` now reads the
   `LC_BUILD_VERSION` `minos` of `bin/flux-server` and `bin/sidecar-slim`
-  (`otool -l`) and fails above 11.0 and 13.0, the versions INSTALL.md
-  promises. The script, INSTALL's requirements and RELEASING's target table
-  point at each other.
+  (`otool -arch all -l`, every slice of a universal binary) and fails above
+  11.0 and 13.0, the versions INSTALL.md promises. The script, INSTALL's
+  requirements and RELEASING's target table point at each other.
 - **Attestation warnings.** The image's attest step warned twice on every
   push (release run 39549172609: "Failed to create storage record … no
   artifacts found", then "Please check that the "artifact-metadata:write"
@@ -368,12 +370,21 @@ Fixed for v0.1.0-alpha.2 in #14 (release pipeline; `ci:`, `build(docker):`,
   image action's labels.
 - **Dependabot.** Every bump was titled `chore(deps)`, so no dependency
   fix ever made a release, and the Debian base image digest wasn't
-  watched: it sat in an `ARG`, which Dependabot doesn't read. Cargo, npm
-  production and Docker bumps are now `deps:`, which makes a release; npm
-  development bumps stay `chore:` and GitHub Actions `ci(deps):`. The
-  `Dockerfile` names the base image in its `FROM` lines, and a `docker`
-  entry watches it. Dependabot has no development dependencies for cargo,
-  so cargo dev-dependency bumps make a release too.
+  watched: it sat in an `ARG`, which Dependabot doesn't read. Cargo
+  (workspace), npm production and Docker bumps are now `fix(deps):`, which
+  makes a release; npm development bumps are `chore(deps-dev):`,
+  `web/scripts/golden-rs` (a dev tool, not shipped) `chore(deps):` and
+  GitHub Actions `ci(deps):`. The `Dockerfile` names the base image in its
+  `FROM` lines, and a `docker` entry watches it. Dependabot has no
+  development dependencies for cargo, so workspace dev-dependency bumps
+  make a release too.
+- **RELEASING.md listed `deps:` as making a release.** It doesn't:
+  `release-please-config.json` sets no `changelog-sections`, and Release
+  Please's default types have no `deps`, so a `deps:` commit makes no
+  release and stays out of the changelog. RELEASING.md now says so, and
+  Dependabot uses `fix(deps):` instead. (Adding a visible `deps` section
+  to `changelog-sections` would make `deps:` release, if that is ever
+  wanted.)
 
 Fixed for v0.1.0-alpha.2 in #13 (`fix:`): the licence item (it completes
 `THIRD_PARTY_LICENSES`) and the log-colour item (flux colours its log only
@@ -393,3 +404,8 @@ Still open:
 - **The README inside the v0.1.0-alpha.1 packages and image** is the old one
   that says there are no releases. The published assets stay as they are;
   v0.1.0-alpha.2 will carry the new README.
+- **README's Operations line** says CI smoke-tests every package but
+  `x86_64-apple-darwin`, and only the linux/amd64 image. After #14 it
+  smoke-tests all four packages and both image platforms. README isn't
+  in #14, and it ships in the packages and the image, so it needs a
+  one-line fix before the v0.1.0-alpha.2 release PR merges.
