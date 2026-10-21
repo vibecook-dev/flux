@@ -1,7 +1,8 @@
 # Installing flux
 
-flux is one program, `flux-server`, that serves its own web client. It needs
-`ffmpeg` and `ffprobe` next to it. There are three ways to install it:
+flux is one program, `flux-server`, that serves its own web client. It runs
+`ffmpeg` and `ffprobe`, which you install separately (the Docker image
+brings its own; see [ffmpeg](#ffmpeg)). There are three ways to install it:
 
 - [a release package](#release-packages) for macOS or Linux;
 - [the Docker image](#docker), which brings its own ffmpeg;
@@ -15,7 +16,7 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 
 | | |
 |---|---|
-| macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). |
+| macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). Embedded remote access (`--tailnet embedded`) runs the bundled `bin/sidecar-slim`, which needs macOS 13 or later. |
 | Linux | x86_64 or aarch64 with glibc 2.35 or later: Debian 12+, Ubuntu 22.04+, Fedora 36+, Raspberry Pi OS (64-bit, bookworm or later), and others. Kernels with 4, 16 or 64 KiB pages all work. |
 | ffmpeg | `ffmpeg` and `ffprobe`, any recent version. See [ffmpeg](#ffmpeg). |
 
@@ -28,9 +29,11 @@ posters and probe fallbacks. It never links FFmpeg's libraries, so any
 ffmpeg build works, including GPL builds, and flux stays MIT-licensed.
 Direct play and remuxing (most playback) don't use ffmpeg at all.
 
-flux finds them on `PATH` or in Homebrew's prefix; `--ffmpeg PATH` (or
-`FLUX_FFMPEG`) picks another, and `ffprobe` defaults to the one next to
-`ffmpeg` (`--ffprobe`, `FLUX_FFPROBE`).
+flux looks for them on `PATH`, then in `/usr/lib/jellyfin-ffmpeg`,
+`/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`; it doesn't look next
+to `flux-server`. `--ffmpeg PATH` (or `FLUX_FFMPEG`) picks another, and
+`ffprobe` defaults to the one next to `ffmpeg` (`--ffprobe`,
+`FLUX_FFPROBE`).
 
 At startup flux asks ffmpeg which H.264 encoders it has and picks the best
 one for video transcodes:
@@ -80,6 +83,16 @@ location and the sidecar next to itself, so keep the layout: unpack it
 anywhere and run `bin/flux-server`, or put the directory in `/opt` and link
 the binary onto your `PATH`.
 
+On macOS the binaries are not notarized yet. Downloads made with `curl`, as
+below, are not quarantined. If you download the tarball with a browser
+instead, clear its quarantine flag before you unpack it
+(`xattr -d com.apple.quarantine flux-<version>-<target>.tar.gz`), or clear
+it from the installed copy afterwards
+(`sudo xattr -dr com.apple.quarantine /opt/flux`).
+
+To install a release under `/opt/flux` (to upgrade an existing install, see
+[Upgrading](#upgrading)):
+
 <!-- x-release-please-start-version -->
 ```sh
 version=0.1.0-alpha.1
@@ -95,16 +108,22 @@ flux-server --check
 ```
 <!-- x-release-please-end -->
 
-Every package also has a build-provenance attestation, which proves it was
-built by this repository's release workflow from the tagged commit:
+Every package also has a build-provenance attestation. This checks that the
+package was built by this repository's release workflow from the tagged
+commit:
 
 ```sh
-gh attestation verify "flux-$version-$target.tar.gz" --repo vibecook-dev/flux
+gh attestation verify "flux-$version-$target.tar.gz" --repo vibecook-dev/flux \
+  --signer-workflow vibecook-dev/flux/.github/workflows/release.yml \
+  --source-digest "$(gh api "repos/vibecook-dev/flux/commits/v$version" --jq .sha)"
 ```
 
-On macOS the binaries are not notarized yet. `curl` downloads are fine; if
-you downloaded with a browser, clear the quarantine flag first:
-`xattr -dr com.apple.quarantine /opt/flux`.
+With `--repo` alone, `gh` checks only that the attestation comes from this
+repository. Check the commit with `--source-digest`, not `--source-ref`:
+Release Please runs the release workflow from the push to `main` that
+merges the release PR, so the attestation records `refs/heads/main`, not the
+tag. `SHA256SUMS` and the jellyfin-ffmpeg source tarball have no
+attestation.
 
 ### Running it
 
@@ -127,6 +146,39 @@ remote access). Remote access with identities goes through Tailscale
 
 ### As a service (Linux, systemd)
 
+The unit below takes its settings from `/etc/flux.toml`, so create that
+file first: without it `flux-server` exits with status 2 and the service
+doesn't start. On a headless server, list the libraries in the file,
+because LAN callers can't add them; each one is created at startup when no
+library has its name yet. `lan` makes flux reachable from other machines:
+
+```sh
+sudo tee /etc/flux.toml >/dev/null <<'EOF'
+lan = "0.0.0.0:8097"                    # leave out to listen on 127.0.0.1 only
+# allow_host = ["media.example.com"]    # names other than this machine's own
+# localhost_role = "none"               # if other people can log in here
+
+[[library]]
+name = "Movies"
+kind = "movies"                         # movies | shows | mixed
+path = "/srv/media/movies"
+
+[[library]]
+name = "TV"
+kind = "shows"
+path = "/srv/media/tv"
+EOF
+flux-server --config /etc/flux.toml --check
+```
+
+The keys are the long flag names with `_` (see the
+[README](../README.md#quickstart-build-from-source)), and top-level keys go
+before the first `[[library]]` table. An unknown key or a missing file stops
+`flux-server` with exit status 2; `--check` reads the file and shows the
+error. flux already answers to this machine's host name, `<hostname>.local`
+and its addresses; `allow_host` adds other names, such as a reverse proxy's.
+The `flux` user needs read access to the library folders.
+
 ```ini
 # /etc/systemd/system/flux.service
 [Unit]
@@ -139,6 +191,7 @@ User=flux
 Group=flux
 ExecStart=/opt/flux/bin/flux-server --config /etc/flux.toml
 Environment=FLUX_DATA_DIR=/var/lib/flux
+Environment=NO_COLOR=1
 StateDirectory=flux
 Restart=on-failure
 
@@ -149,10 +202,37 @@ WantedBy=multi-user.target
 ```sh
 sudo useradd --system --home /var/lib/flux flux
 sudo systemctl daemon-reload && sudo systemctl enable --now flux
+journalctl -u flux -f        # "flux is ready" with its URLs
 ```
+
+`NO_COLOR=1` keeps terminal colour codes out of the journal.
+
+With the default `localhost_role`, the Owner is whoever connects on the
+server's own 127.0.0.1. To use the Admin screen from another machine,
+forward the port over SSH (`ssh -L 8096:127.0.0.1:8096 <server>`) and open
+<http://127.0.0.1:8096>.
 
 For hardware transcoding through VAAPI or Quick Sync, add the `flux` user to
 the `render` (and `video`) group.
+
+### Upgrading
+
+Download, check and unpack the new version with the steps above (with the
+new `version=`), but move the old install aside before you move the new
+one in. A plain `mv` onto an existing `/opt/flux` puts the new directory
+*inside* it, and the old binary keeps running:
+
+```sh
+sudo rm -rf /opt/flux.old
+sudo mv /opt/flux /opt/flux.old
+sudo mv "flux-$version-$target" /opt/flux
+flux-server --version
+```
+
+The link in `/usr/local/bin` points into `/opt/flux`, so it needs no
+change, and the data dir is not touched. Restart the service if you run one
+(`sudo systemctl restart flux`). `/opt/flux.old` keeps the previous version
+until the next upgrade.
 
 ## Docker
 

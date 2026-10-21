@@ -5,7 +5,7 @@
 
 flux is an open-source media server for personal movie and TV libraries, written in Rust. It scans your folders, serves a web client, and streams to browsers by direct play or HLS. For remote access you sign in with Tailscale instead of opening ports.
 
-> **Status: research prototype.** flux has no releases yet. It was developed and benchmarked on macOS (Apple Silicon), and CI also builds and tests it on Linux (x86_64 and arm64). It depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
+> **Status: research prototype.** The first pre-release is [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1), with packages for macOS and Linux and a Docker image ([Install](#install)). It is an alpha: expect changes between releases. flux was developed and benchmarked on macOS (Apple Silicon), and CI also builds and tests it on Linux (x86_64 and arm64). It depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
 
 ## Why flux
 
@@ -64,15 +64,17 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
   - The first play of an MPEG-TS reads the whole file to index it. From a cold HDD or NAS that would take seconds (not measured).
 - **Metadata.** The TMDB API client has never run against the live API, because testing had no key. TMDB data is not yet refreshed within the API terms' 6-month cache limit.
 - **Clients.** Chrome is the only browser driven end to end. Safari, iOS and Firefox are covered by unit tests only. There are no native or TV apps yet. Jellyfin-API compatibility is not planned: flux builds its own web client and apps ([DECISIONS.md](docs/DECISIONS.md)).
-- **Operations.** HTTP/1.1 only. No release yet. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new: CI builds and smoke-tests the packages and the image, but none of them has run as a long-lived service.
+- **Operations.** HTTP/1.1 only. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new with the first pre-release, v0.1.0-alpha.1. CI smoke-tests the packages it can run (all but `x86_64-apple-darwin`, which is cross-compiled) and the linux/amd64 image, but none of them has run as a long-lived service.
 
 The full lists are in [fixes.md §7](docs/prototype/fixes.md#7-open-items), [e2e.md §5](docs/prototype/e2e.md#5-remaining-gaps-by-priority), [benchmarks.md §8](docs/prototype/benchmarks.md#8-gaps) and each component report in `docs/prototype/`.
 
 ## Install
 
-- **GitHub Releases** (coming with the first release). Prebuilt `flux-server` binaries will be on [GitHub Releases](https://github.com/vibecook-dev/flux/releases). They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`).
-- **Docker** (coming with the first release). The image will be `ghcr.io/vibecook-dev/flux`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source.
-- **Build from source**, below. This is the only option today.
+Releases are pre-releases (`0.1.0-alpha.N`) until the first stable one; the first is [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1). [docs/INSTALL.md](docs/INSTALL.md) has the steps for each way to install flux:
+
+- **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
+- **Docker**: `ghcr.io/vibecook-dev/flux:<version>` (e.g. `0.1.0-alpha.1`) for linux/amd64 and linux/arm64, and `edge` for the tip of `main`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source, and each release attaches the matching source tarball. See [INSTALL.md § Docker](docs/INSTALL.md#docker).
+- **Build from source**, below.
 
 flux only ever runs `ffmpeg` and `ffprobe` as separate processes and never links the FFmpeg libraries ([DECISIONS.md](docs/DECISIONS.md)).
 
@@ -191,6 +193,8 @@ These are still open. They come from [research/00-synthesis.md](research/00-synt
 
 ## Documentation
 
+- [docs/INSTALL.md](docs/INSTALL.md): release packages, Docker, a systemd unit, upgrading and building from source.
+- [docs/RELEASING.md](docs/RELEASING.md): how releases are made and verified.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the contract the crates are built against.
 - [docs/prototype/](docs/prototype/): one report per component, plus [benchmarks.md](docs/prototype/benchmarks.md), [e2e.md](docs/prototype/e2e.md), [review.md](docs/prototype/review.md), [fixes.md](docs/prototype/fixes.md), [reverify.md](docs/prototype/reverify.md) and [audit.md](docs/prototype/audit.md) (every published number traced to its result file).
 - [docs/DECISIONS.md](docs/DECISIONS.md): settled project decisions and why.
@@ -202,4 +206,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing, commit conventions
 
 ## Licence
 
-flux is released under the [MIT licence](LICENSE), Copyright (c) 2026 James Yong. The Docker image will also contain jellyfin-ffmpeg, which is GPL-licensed and runs only as a separate process.
+flux is released under the [MIT licence](LICENSE), Copyright (c) 2026 James Yong. The Docker image also contains jellyfin-ffmpeg, which is GPL-licensed and runs only as a separate process.

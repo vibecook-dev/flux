@@ -53,8 +53,8 @@ passed.
 
      | Target | Runner | Notes |
      |---|---|---|
-     | `aarch64-apple-darwin` | macos-15 | macOS 11+ |
-     | `x86_64-apple-darwin` | macos-15 | cross-compiled |
+     | `aarch64-apple-darwin` | macos-15 | macOS 11+ (`sidecar-slim`: 13+) |
+     | `x86_64-apple-darwin` | macos-15 | cross-compiled, not smoke-tested; macOS 11+ (`sidecar-slim`: 13+) |
      | `x86_64-unknown-linux-gnu` | ubuntu-22.04 | glibc 2.35+ |
      | `aarch64-unknown-linux-gnu` | ubuntu-22.04-arm | glibc 2.35+, 4/16/64 KiB pages |
 
@@ -64,8 +64,10 @@ passed.
    - uploads the packages, `SHA256SUMS` and the jellyfin-ffmpeg source
      tarball to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
-     linux/arm64 from the Linux packages, smoke-tests it, pushes it and
-     attests it (`docker.yml`); `:latest` too for a stable release;
+     linux/arm64 from the Linux packages, smoke-tests the linux/amd64 image
+     (the arm64 build only runs `ffmpeg -version` and
+     `flux-server --version`, under QEMU), pushes it and attests it
+     (`docker.yml`); `:latest` too for a stable release;
    - publishes the draft: a pre-release for `-alpha`/`-beta`/`-rc` versions,
      otherwise the repository's Latest release.
 
@@ -82,7 +84,14 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 Attestations are on the repository's Attestations page and verify with
 `gh attestation verify <file> --repo vibecook-dev/flux`
 (`gh attestation verify oci://ghcr.io/vibecook-dev/flux:<version> --repo vibecook-dev/flux`
-for the image).
+for the image). Add `--signer-workflow vibecook-dev/flux/.github/workflows/release.yml`
+(`docker.yml` for the image) and `--source-digest <tagged commit>` to check
+the workflow and the commit too ([INSTALL.md](INSTALL.md#release-packages)).
+`--source-ref refs/tags/v<version>` fails: release-please.yml calls the
+release from the push to `main`, so attestations record `refs/heads/main`.
+Only the image's multi-arch index is attested, so verify the tag or the
+index digest, not a per-platform digest. `SHA256SUMS` and the
+jellyfin-ffmpeg source tarball have no attestation.
 
 ## Release dry run
 
@@ -134,11 +143,12 @@ release takes.
 "initial-version": "0.1.0-alpha.1"
 ```
 
-with `.release-please-manifest.json` at `"0.0.0"` (nothing released yet).
-The first release is **v0.1.0-alpha.1**; it needs at least one releasable
-commit (`feat:` or `fix:`) on `main`. After that every release PR bumps the
-pre-release number: `0.1.0-alpha.2`, `0.1.0-alpha.3`, … whatever the commit
-types. These are GitHub pre-releases, the Docker image gets no `:latest`,
+`.release-please-manifest.json` holds the last released version. It
+started at `"0.0.0"`, and the first release was **v0.1.0-alpha.1**
+(2026-10-21). Every later release PR bumps the pre-release number:
+`0.1.0-alpha.2`, `0.1.0-alpha.3`, … whatever the commit types. A release PR
+needs at least one commit on `main` of a type that makes a release (see
+above). These are GitHub pre-releases, the Docker image gets no `:latest`,
 and GitHub doesn't mark them Latest.
 
 To move to a **beta**, change `"prerelease-type"` to `"beta"` and land a commit
@@ -256,6 +266,12 @@ scripts/package/fetch-sidecar.sh --pin 0.7.20
 
 This downloads the four `tsnet-sidecar-*` assets of `truffle-v0.7.20` and
 records their SHA-256.
+
+The sidecar sets its own minimum OS. Truffle 0.7.20's macOS sidecars are
+built with Go 1.27.2 and declare macOS 13.0 (`otool -l bin/sidecar-slim`,
+`LC_BUILD_VERSION` `minos`), while `flux-server` declares 11.0
+(`MACOSX_DEPLOYMENT_TARGET` in `build.yml`). INSTALL.md's requirements say
+so; check both again when the Truffle version changes.
 
 ## Maintenance
 

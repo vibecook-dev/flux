@@ -2,15 +2,15 @@
 
 ## Supported versions
 
-flux is pre-1.0. Security fixes go into the latest release only, and into `main`.
+flux is pre-1.0. Security fixes go into the newest release only, and into `main`.
 
 | Version | Supported |
 |---|---|
-| Latest release | Yes |
+| Newest release, pre-releases included | Yes |
 | Older releases | No |
 | `main` | Fixed on `main` first, then released |
 
-Until the first release, only `main` is supported.
+Until the first stable release, the newest release is a pre-release (`0.1.0-alpha.N`, starting with [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1)). GitHub doesn't mark pre-releases as *Latest*, so check the [releases page](https://github.com/vibecook-dev/flux/releases) for the newest one.
 
 ## Reporting a vulnerability
 
