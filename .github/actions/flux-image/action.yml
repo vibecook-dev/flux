@@ -112,7 +112,7 @@ runs:
           org.opencontainers.image.title=flux
           org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library
           org.opencontainers.image.licenses=MIT
-          org.opencontainers.image.vendor=vibecook
+          org.opencontainers.image.vendor=vibecook-dev
           org.opencontainers.image.documentation=https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md
         annotations: |
           org.opencontainers.image.description=flux media server: browse, play and stream your movie and TV library

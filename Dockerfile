@@ -124,5 +124,5 @@ LABEL org.opencontainers.image.title="flux" \
       org.opencontainers.image.source="https://github.com/vibecook-dev/flux" \
       org.opencontainers.image.documentation="https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.vendor="vibecook" \
+      org.opencontainers.image.vendor="vibecook-dev" \
       dev.vibecook.flux.ffmpeg="jellyfin-ffmpeg ${JELLYFIN_FFMPEG_VERSION}, GPL-3.0-or-later; licence and source in /usr/share/licenses/jellyfin-ffmpeg"
