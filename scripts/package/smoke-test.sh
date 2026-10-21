@@ -7,9 +7,9 @@
 # off.
 #
 # On macOS it also checks the minimum macOS that bin/flux-server and
-# bin/sidecar-slim declare (`otool -l`, LC_BUILD_VERSION minos) against the
-# MACOS_* versions below, and runs an x86_64-apple-darwin package on Apple
-# Silicon under Rosetta 2 (`arch -x86_64`).
+# bin/sidecar-slim declare (`otool -arch all -l`, LC_BUILD_VERSION minos)
+# against the MACOS_* versions below, and runs an x86_64-apple-darwin package
+# on Apple Silicon under Rosetta 2 (`arch -x86_64`).
 #
 # Usage: scripts/package/smoke-test.sh dist/flux-<version>-<target>.tar.gz
 #          [--port 18097] [--dir DIR] [--keep]
@@ -37,10 +37,11 @@ version_gt() {
 }
 
 # check_minos FILE MAX: no LC_BUILD_VERSION minos in FILE (one per
-# architecture in a universal binary) may be above MAX.
+# architecture in a universal binary: plain `otool -l` shows only the host's)
+# may be above MAX.
 check_minos() {
   local file=$1 max=$2 load minos seen=""
-  load=$(otool -l "$file") || die "otool -l $file failed (it comes with Xcode's command line tools)"
+  load=$(otool -arch all -l "$file") || die "otool -arch all -l $file failed (it comes with Xcode's command line tools)"
   while IFS= read -r minos; do
     if version_gt "$minos" "$max"; then
       die "$(basename "$file") needs macOS $minos, but docs/INSTALL.md promises macOS $max"
