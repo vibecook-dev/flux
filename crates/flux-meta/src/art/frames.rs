@@ -390,7 +390,7 @@ fn decode_raw(
 }
 
 async fn run(tool: &Path, args: &[OsString], timeout: Duration, path: &Path) -> Result<Vec<u8>, ArtError> {
-    let child = tokio::process::Command::new(tool)
+    let child = tokio::process::Command::from(flux_core::tool::background_command(tool))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
