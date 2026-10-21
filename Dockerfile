@@ -9,12 +9,14 @@
 #   scripts/package/docker-context.sh dist docker-dist
 #   docker buildx build --build-context dist=docker-dist -t flux .
 
-ARG DEBIAN_IMAGE=debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# The base image, debian:trixie-slim pinned by digest, is named in both FROM
+# lines below, not in an ARG: Dependabot only reads image references written
+# out in FROM lines, and it updates both together.
 
 # ---------------------------------------------------------------------------
 # download: a published release package per architecture, checked against
 # the release's SHA256SUMS. Runs on the build machine's platform.
-FROM --platform=$BUILDPLATFORM ${DEBIAN_IMAGE} AS download
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS download
 ARG TARGETARCH
 ARG FLUX_VERSION
 ARG FLUX_REPOSITORY=vibecook-dev/flux
@@ -48,7 +50,7 @@ FROM scratch AS dist
 COPY --from=download /out/ /
 
 # ---------------------------------------------------------------------------
-FROM ${DEBIAN_IMAGE}
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ARG TARGETARCH
 # jellyfin-ffmpeg: https://github.com/jellyfin/jellyfin-ffmpeg/releases
 # Bump the version and both .deb checksums together (docs/RELEASING.md).
