@@ -1101,7 +1101,7 @@ pub fn children(c: &Connection, id: Id, user: Option<Id>) -> Result<Vec<ItemSumm
 
 // ---- detail --------------------------------------------------------------------------
 
-fn path_join(root: &str, rel: &str) -> String {
+pub(crate) fn path_join(root: &str, rel: &str) -> String {
     if root.ends_with('/') {
         format!("{root}{rel}")
     } else {
@@ -1142,7 +1142,12 @@ pub fn item_assets(c: &Connection, item_id: Id) -> Result<Vec<AssetInfo>> {
             hdr: hdr.as_deref().and_then(enum_from_text::<HdrFormat>),
             available: fstate != "unavailable" && rstate == "available",
             probe: probe.and_then(|p| serde_json::from_str::<ProbeResult>(&p).ok()),
+            subtitle_files: Vec::new(),
         });
+    }
+    drop(rows);
+    for a in &mut out {
+        a.subtitle_files = crate::sidecar::asset_subtitle_files(c, a.id)?;
     }
     Ok(out)
 }
