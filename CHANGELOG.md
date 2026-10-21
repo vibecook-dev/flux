@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0-alpha.2](https://github.com/vibecook-dev/flux/compare/v0.1.0-alpha.1...v0.1.0-alpha.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* complete THIRD_PARTY_LICENSES, and colour the log only on a terminal ([#13](https://github.com/vibecook-dev/flux/issues/13)) ([d2d766e](https://github.com/vibecook-dev/flux/commit/d2d766e2d93dae325eeebf964555ec07df881470))
+* **server:** exit after "flux stopped" instead of hanging in the catalog's drop ([#17](https://github.com/vibecook-dev/flux/issues/17)) ([b5ff2b6](https://github.com/vibecook-dev/flux/commit/b5ff2b63b6f734408d6239479396634f6b780c92))
+
 ## 0.1.0-alpha.1 (2026-10-21)
 
 
