@@ -40,7 +40,8 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    let filter = EnvFilter::try_new(&cfg.log).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_new(log_filter(&cfg.log)).unwrap_or_else(|_| EnvFilter::new(log_filter("info")));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -154,9 +155,29 @@ fn log_colours(stderr_is_terminal: bool, no_color: Option<OsString>) -> bool {
     stderr_is_terminal && no_color.is_none_or(|v| v.is_empty())
 }
 
+/// The log filter for `--log` / `RUST_LOG`. The mp4-atom crate logs every
+/// box it does not model (`udta/name`, `gmhd`, `iods`, `btrt`, `ilst/©nam`
+/// … which ffmpeg and most muxers write) at WARN: once per video transcode
+/// run and per MP4 indexed. Those boxes are skipped harmlessly, and a file
+/// mp4-atom cannot read still fails with an error flux logs itself, so its
+/// notices are treated as debug output: shown when the filter enables
+/// debug (or trace) globally or names `mp4_atom`, hidden otherwise.
+fn log_filter(spec: &str) -> String {
+    let directives: Vec<&str> = spec.split(',').map(str::trim).filter(|d| !d.is_empty()).collect();
+    let verbose = directives.iter().any(|d| {
+        d.starts_with("mp4_atom")
+            || (!d.contains('=') && matches!(d.to_ascii_lowercase().as_str(), "debug" | "trace" | "off"))
+    });
+    if verbose || directives.is_empty() {
+        spec.to_string()
+    } else {
+        format!("{},mp4_atom=error", directives.join(","))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::log_colours;
+    use super::{log_colours, log_filter};
 
     #[test]
     fn log_colours_only_on_a_terminal_without_no_color() {
@@ -166,5 +187,38 @@ mod tests {
         assert!(!log_colours(false, None));
         assert!(!log_colours(false, Some("".into())));
         assert!(!log_colours(false, Some("1".into())));
+    }
+
+    #[test]
+    fn mp4_atom_box_notices_are_debug_output() {
+        assert_eq!(log_filter("info"), "info,mp4_atom=error");
+        assert_eq!(
+            log_filter("info, flux_hls=debug"),
+            "info,flux_hls=debug,mp4_atom=error"
+        );
+        // Asked for: debug everywhere, or mp4_atom by name.
+        assert_eq!(log_filter("debug"), "debug");
+        assert_eq!(log_filter("info,mp4_atom=warn"), "info,mp4_atom=warn");
+        assert_eq!(log_filter("off"), "off");
+        // What the filter does with it.
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::{Layer, SubscriberExt};
+        let seen = |spec: &str| {
+            let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let h = hits.clone();
+            let count = tracing_subscriber::fmt::layer()
+                .with_writer(move || {
+                    h.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    std::io::sink()
+                })
+                .with_filter(tracing_subscriber::EnvFilter::new(log_filter(spec)));
+            with_default(tracing_subscriber::registry().with(count), || {
+                tracing::warn!(target: "mp4_atom::error", kind = "gmhd", "unexpected box");
+                tracing::warn!(target: "flux_hls::engine", "a real warning");
+            });
+            hits.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(seen("info"), 1, "only flux's own warning");
+        assert_eq!(seen("debug"), 2);
     }
 }
