@@ -328,9 +328,23 @@ pub enum Clip {
     /// a block (256 ms, EBML lacing), as some muxers store (E-)AC-3; no
     /// Cues.
     LacedAc3Eac3Mkv,
+    /// 24 s, 640×360 H.264 at 23.976 fps on a 90 kHz clock (samples of
+    /// 3754, 3754, 3753 ticks: no constant duration), 5 s GOPs, no
+    /// B-frames, 16 reference frames, no audio, MP4, cut like a stream
+    /// edited without re-encoding: frames 130–189 and 300–339 are taken out
+    /// after encoding, so the frames before the cuts are held 2.5 s and
+    /// 1.7 s, and a decoder drops frames after the cuts (their references
+    /// are gone) until it recovers.
+    HeldFramesMp4,
+    /// 30 s, 640×360 H.264 at 25 fps on a 90 kHz clock (3600 ticks a
+    /// sample), 5 s GOPs, no B-frames, 16 reference frames, no audio, MP4,
+    /// with frames 650–700 taken out after encoding: one sample duration
+    /// for over nine tenths of the samples, then a frame held 2.08 s, from
+    /// before the 2 s piece at 26 s to after it.
+    HeldLateMp4,
 }
 
-const CLIP_COUNT: usize = 22;
+const CLIP_COUNT: usize = 24;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -377,6 +391,8 @@ impl Clip {
         Clip::WovenFieldsMkv,
         Clip::Ac3Eac3BurstsMkv,
         Clip::LacedAc3Eac3Mkv,
+        Clip::HeldFramesMp4,
+        Clip::HeldLateMp4,
     ];
 
     /// File name of the cached clip.
@@ -404,6 +420,8 @@ impl Clip {
             Clip::WovenFieldsMkv => "interlaced_as_frames.mkv",
             Clip::Ac3Eac3BurstsMkv => "bursts_ac3_eac3.mkv",
             Clip::LacedAc3Eac3Mkv => "bursts_ac3_eac3_laced.mkv",
+            Clip::HeldFramesMp4 => "held_frames.mp4",
+            Clip::HeldLateMp4 => "held_late.mp4",
         }
     }
 
@@ -422,7 +440,9 @@ impl Clip {
             | Clip::AnamorphicMp4
             | Clip::FakeInterlacedMkv
             | Clip::InterlacedMkv
-            | Clip::WovenFieldsMkv => &["libx264"],
+            | Clip::WovenFieldsMkv
+            | Clip::HeldFramesMp4
+            | Clip::HeldLateMp4 => &["libx264"],
             Clip::HevcAc3Mkv => &["libx265", "ac3"],
             Clip::Mpeg4Mp2Avi => &["mpeg4", "mp2"],
             Clip::Hdr10HevcMkv | Clip::Hevc1080p60Mkv => &["libx265"],
@@ -690,6 +710,41 @@ impl Clip {
                 ]));
             }
             Clip::LacedAc3Eac3Mkv => return Some(Recipe::LaceAudio(Clip::Ac3Eac3BurstsMkv, 8)),
+            Clip::HeldFramesMp4 | Clip::HeldLateMp4 => {
+                let (rate, secs, gop, cuts) = if self == Clip::HeldFramesMp4 {
+                    ("24000/1001", 24, "120", "between(n,130,189)+between(n,300,339)")
+                } else {
+                    ("25", 30, "125", "between(n,650,700)")
+                };
+                a.extend(video("640x360", rate, secs));
+                a.extend(s(&[
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-g",
+                    gop,
+                    "-keyint_min",
+                    gop,
+                    "-sc_threshold",
+                    "0",
+                    "-bf",
+                    "0",
+                    "-refs",
+                    "16",
+                    // The cuts: encoded packets dropped (mid-GOP, so every
+                    // keyframe stays).
+                    "-bsf:v",
+                    &format!("noise=drop='{cuts}'"),
+                    "-video_track_timescale",
+                    "90000",
+                    "-an",
+                    "-f",
+                    "mp4",
+                ]));
+            }
         }
         Some(Recipe::Ffmpeg(a))
     }

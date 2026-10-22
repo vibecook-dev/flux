@@ -26,6 +26,11 @@
 //!   B-frames, CTS = presentation offset D): pieces are independent, any one
 //!   can be produced cold, and they line up with every audio rendition
 //!   (tfdt = piece start on the asset's timeline).
+//! - An MP4 video without a constant frame duration, or with frames held
+//!   longer, is converted to its nominal rate ([`converted_rate`]), unless
+//!   some stretch of it is faster: its pieces lie on that rate's grid and
+//!   `fps` makes their frame counts exact, whatever frames the source holds
+//!   for seconds or the decoder drops.
 //! - The init segment needs the encoder's `avcC`: it waits for the run that
 //!   covers the first piece requested (or `warm`ed). Each piece also carries
 //!   SPS/PPS in-band in its IDR sample, so a run whose encoder session
@@ -46,7 +51,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use flux_core::{Codec, ColorInfo, VideoOp};
+use flux_core::{Codec, ColorInfo, Rational, VideoOp};
 use mp4_atom::{Decode, Encode};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
@@ -59,6 +64,7 @@ use crate::encoders::{Deinterlace, DetectOptions, FfmpegCaps, PipelineInput, Vid
 use crate::error::{HlsError, Result};
 use crate::fmp4::{self, EntrySpec, Fragment, InitSpec, Sample, SampleData};
 use crate::index::{pack_language, Layout};
+use crate::segment::SegmentPlan;
 use crate::SegmentBody;
 
 /// What a video transcode produces (H.264 High).
@@ -135,6 +141,81 @@ pub fn source_fps(asset: &Asset) -> f64 {
         .unwrap_or(30.0)
 }
 
+/// The constant frame rate a transcode converts `asset`'s video to, if
+/// any: an MP4 track without a constant sample duration (variable rate,
+/// or a coarse clock's alternating deltas), or with samples held for more
+/// than one and a half frames, is converted to its nominal rate, the one
+/// most of its frames have
+/// ([`IndexTrack::frame_rate`](crate::index::IndexTrack::frame_rate)),
+/// unless a stretch of its frames comes faster (`converts`).
+///
+/// The frames of such a file can't be counted from its index. A stream cut
+/// without re-encoding holds the frame before each cut for seconds, and
+/// the decoder drops the frames after the cut that lost their references,
+/// without an error (66, 137 and 19 frames in one episode). Pieces cut at
+/// the index's counts then missed the IDRs forced at their starts, and a
+/// piece played alone showed nothing. On the rate's grid, `fps` repeats
+/// the frame on screen, so each piece's count holds by construction, and
+/// pieces stay ~2 s long across the held frames instead of a whole
+/// keyframe span of up to 52 s.
+pub fn converted_rate(asset: &Asset) -> Option<Rational> {
+    let Layout::Mp4(l) = &asset.index.layout else {
+        return None;
+    };
+    let v = asset.index.video_track()?;
+    let rate = v
+        .frame_rate
+        .filter(|r| r.num > 0 && r.den > 0 && (1.0..=240.0).contains(&r.as_f64()))?;
+    let t = asset.index.video.and_then(|i| l.tracks.get(i))?;
+    converts(&t.stts, t.timescale, v.frame_duration, rate).then_some(rate)
+}
+
+/// Samples in a row that, all shorter than a frame of the converted rate,
+/// are frames shot at a higher rate rather than a glitch: half a second at
+/// 24 fps. A muxer that cuts a stream may give a sample or two around a
+/// cut a tick's duration to keep its decode times rising.
+const FASTER_RUN: u64 = 12;
+
+/// Whether a video with these samples (`stts` on `timescale`, the
+/// index's constant duration `frame_duration`) is converted to `rate`
+/// ([`converted_rate`]): it has no constant duration, or some sample lasts
+/// more than one and a half of it, and no stretch of [`FASTER_RUN`]
+/// samples is shorter than a frame of `rate` (beyond the clock's slack,
+/// [`frame_slack`](crate::index::mp4::frame_slack)).
+///
+/// Converting only ever repeats frames then. A phone video that drops from
+/// 30 to 15 fps in low light, mostly at 15, was converted at 15 fps and
+/// lost every other frame of its 30 fps part; it keeps the real timestamps
+/// instead (PB-2). So does a mix of rates without a majority, rated by its
+/// average, when its faster frames come in stretches.
+fn converts(stts: &[(u32, u32)], timescale: u32, frame_duration: Option<u32>, rate: Rational) -> bool {
+    if timescale == 0 || rate.num == 0 || rate.den == 0 {
+        return false;
+    }
+    // One duration for nine tenths of the samples, and nothing held
+    // longer: the index's frame grid. A cut in the rest (or a last frame
+    // held) is the same stream as one without a constant duration.
+    if let Some(fd) = frame_duration {
+        if !stts.iter().any(|&(_, d)| u64::from(d) * 2 > u64::from(fd) * 3) {
+            return false;
+        }
+    }
+    let frame = f64::from(timescale) * f64::from(rate.den) / f64::from(rate.num);
+    let faster = frame - crate::index::mp4::frame_slack(frame, timescale);
+    let mut run = 0u64;
+    for &(count, d) in stts {
+        if f64::from(d) < faster {
+            run += u64::from(count);
+            if run >= FASTER_RUN {
+                return false;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    true
+}
+
 /// Clockwise display rotation of the asset's video (0/90/180/270).
 fn rotation(asset: &Asset) -> u16 {
     asset.index.video_track().map_or(0, |v| v.extra.rotation)
@@ -192,7 +273,9 @@ pub struct VideoTranscodeStats {
 /// One output segment of a transcoded video rendition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
-    /// The remux segment (source keyframe span) the piece lies in.
+    /// The remux segment (source keyframe span) the piece starts in: its
+    /// run seeks to that keyframe. Only a converted video's pieces
+    /// ([`converted_rate`]) cross into the next segment.
     pub seg: usize,
     /// Presentation start/end on the video timescale (frame grid).
     pub start_ticks: i64,
@@ -202,11 +285,17 @@ pub struct Piece {
 }
 
 /// Splits every remux segment of `asset` into pieces of about `piece_ns`
-/// on the frame grid. Sources without a frame grid keep one piece per
-/// segment. `Piece::frames` is a prediction from the frame rate: the
-/// encoder run counts and times its frames from the index's real
-/// timestamps ([`run_frames`]), so VFR stretches stay exact.
+/// on the frame grid. An MP4 video without one, or with frames held
+/// longer, is converted to its nominal rate, on whose grid its pieces lie
+/// (`grid_pieces`); other sources without a frame grid keep one piece per
+/// segment.
+/// `Piece::frames` is a prediction from the frame rate: the encoder run
+/// counts and times its frames from the index's real timestamps
+/// ([`run_frames`]), so VFR stretches stay exact.
 pub fn pieces(asset: &Asset, piece_ns: i64) -> Vec<Piece> {
+    if let Some(rate) = converted_rate(asset) {
+        return grid_pieces(&asset.segments, rate, piece_ns);
+    }
     let v = asset.index.video_track();
     let fd = v
         .and_then(|v| v.frame_duration)
@@ -258,7 +347,44 @@ pub fn pieces(asset: &Asset, piece_ns: i64) -> Vec<Piece> {
     out
 }
 
-/// The first piece of remux segment `seg`.
+/// The pieces of a video converted to `rate` ([`converted_rate`]): one
+/// grid of that rate from the first keyframe to the end of the video, cut
+/// every `piece_ns` worth of frames (rounded), the last piece taking the
+/// rest (half a piece to one and a half). The grid ignores the keyframes:
+/// a piece's run seeks to the keyframe of the segment it starts in, and
+/// `fps` puts every frame of the grid on the same source frame from any
+/// run (the frame on screen at that time).
+fn grid_pieces(plan: &SegmentPlan, rate: Rational, piece_ns: i64) -> Vec<Piece> {
+    let segs = &plan.segments;
+    let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
+        return Vec::new();
+    };
+    let ts = i128::from(plan.timescale.max(1));
+    let (num, den) = (i128::from(rate.num.max(1)), i128::from(rate.den.max(1)));
+    const NS: i128 = 1_000_000_000;
+    // Grid frame k starts k·den/num s after the origin (rounded to a tick).
+    let at = |k: i64| first.start_ticks + ((2 * i128::from(k) * den * ts + num) / (2 * num)) as i64;
+    let span = i128::from((last.end_ticks - first.start_ticks).max(1));
+    let total = ((2 * span * num + den * ts) / (2 * den * ts)).max(1) as i64;
+    let per = ((2 * i128::from(piece_ns.max(1)) * num + den * NS) / (2 * den * NS)).max(1) as i64;
+    let m = ((total + per / 2) / per).max(1);
+    (0..m)
+        .map(|j| {
+            let a = j * per;
+            let b = if j + 1 == m { total } else { a + per };
+            let start = at(a);
+            let end = if j + 1 == m { last.end_ticks } else { at(b) };
+            Piece {
+                seg: segs.partition_point(|s| s.start_ticks <= start).saturating_sub(1),
+                start_ticks: start,
+                end_ticks: end.max(start + 1),
+                frames: Some((b - a) as u32),
+            }
+        })
+        .collect()
+}
+
+/// The first piece that starts in remux segment `seg` (or later).
 pub fn first_piece_of(pieces: &[Piece], seg: usize) -> usize {
     pieces.partition_point(|p| p.seg < seg)
 }
@@ -291,12 +417,16 @@ impl RunFrames {
 }
 
 /// The real frames of `run` (consecutive pieces), or `None` when the index
-/// can't list them (containers only ffmpeg reads) or a piece would have
-/// none (the predicted counts are used then).
+/// can't list them (containers only ffmpeg reads), a piece would have
+/// none, or the video is converted to a constant rate ([`converted_rate`]):
+/// the predicted counts are used then.
 pub fn run_frames(asset: &Asset, run: &[Piece]) -> Result<Option<RunFrames>> {
     let (Some(first), Some(last)) = (run.first(), run.last()) else {
         return Ok(None);
     };
+    if converted_rate(asset).is_some() {
+        return Ok(None);
+    }
     let mut all = Vec::new();
     for seg in first.seg..=(last.seg + 1).min(asset.segments.len().saturating_sub(1)) {
         match asset.video_frame_ticks(seg)? {
@@ -908,7 +1038,41 @@ impl VideoTranscoder {
             _ => 0.0,
         };
         // Then scale, tone-map and rotate for the encoder (crate::encoders).
-        let pre = format!("trim=start={:.6},setpts=PTS-STARTPTS", trim.max(0.0));
+        // A converted video ([`converted_rate`]) instead starts its clock at
+        // the piece (in µs, exact) and takes `fps`'s frames: the frame on
+        // screen at each grid point (of those before 0, only the last one).
+        // In the run that ends the file, `tpad` repeats the last frame where
+        // the video ends early, so `-frames:v` ends the run; without it the
+        // last piece takes the frames there are (`piece_cut`).
+        let (pre, chain) = match converted_rate(asset) {
+            Some(r) => {
+                let us = |s: f64| (s * 1e6).round() as i64;
+                let shift = us(first.start_ticks as f64 / ts) - us(span.start_ns as f64 / 1e9);
+                let end = asset.segments.segments.last().map_or(i64::MAX, |s| s.end_ticks);
+                let tail = run.last().is_some_and(|p| p.end_ticks >= end);
+                // `tpad` takes frames in memory only before FFmpeg 6.1 (in
+                // clone mode since), so it goes before an upload to the
+                // encoder, and not after frames decoded to the device.
+                let (filters, upload) = match pipe.filters.strip_suffix(",hwupload") {
+                    Some(f) => (f, ",hwupload"),
+                    None => (pipe.filters.as_str(), ""),
+                };
+                let pad = tail && (!pipe.hw_decode || !upload.is_empty());
+                (
+                    format!("settb=AVTB,setpts=PTS-{}", shift.max(0)),
+                    format!(
+                        "{filters},fps={}/{}:start_time=0{}{upload}",
+                        r.num,
+                        r.den,
+                        if pad { ",tpad=stop=-1:stop_mode=clone" } else { "" }
+                    ),
+                )
+            }
+            None => (
+                format!("trim=start={:.6},setpts=PTS-STARTPTS", trim.max(0.0)),
+                pipe.filters.clone(),
+            ),
+        };
         match burn {
             Some((b, probe)) => {
                 let src = (v.width.unwrap_or(ow), v.height.unwrap_or(oh));
@@ -920,7 +1084,7 @@ impl VideoTranscoder {
                 let graph = burn::filter_graph(
                     &burn::stream_spec(asset, b),
                     &pre,
-                    &pipe.filters,
+                    &chain,
                     pix,
                     upload,
                     probe.canvas.unwrap_or(src),
@@ -929,11 +1093,12 @@ impl VideoTranscoder {
                 );
                 a.extend(["-filter_complex".to_string(), graph]);
             }
-            None => a.extend(["-vf".to_string(), format!("{pre},{}", pipe.filters)]),
+            None => a.extend(["-vf".to_string(), format!("{pre},{chain}")]),
         }
         // An IDR at every piece boundary after the first: halfway between
         // the piece's first frame and the frame before it, on the output
-        // clock (which `setpts` starts at the run's first kept frame).
+        // clock (which `setpts` starts at the run's first kept frame, or a
+        // converted video's at its first piece).
         let mut kf = Vec::new();
         for (j, p) in run.iter().enumerate().skip(1) {
             let t = match frames {
@@ -1746,6 +1911,342 @@ mod tests {
             }
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    /// A segment plan on a 90 kHz clock with keyframes at these ticks,
+    /// ending at `end`.
+    fn plan_90k(keyframes: &[i64], end: i64) -> SegmentPlan {
+        let ns = |t: i64| t * 1_000_000_000 / 90_000;
+        SegmentPlan {
+            target_ns: 6_000_000_000,
+            timescale: 90_000,
+            segments: keyframes
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| {
+                    let e = keyframes.get(i + 1).copied().unwrap_or(end);
+                    crate::segment::Span {
+                        kf: i,
+                        next_kf: (i + 1 < keyframes.len()).then_some(i + 1),
+                        start_ns: ns(k),
+                        end_ns: ns(e),
+                        start_ticks: k,
+                        end_ticks: e,
+                        approx_bytes: 0,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// The keyframe spans of a 23.976 fps MP4 cut without re-encoding:
+    /// 250 frames (10.4 s), and 20.9 s, 52.1 s and 31.3 s around frames held
+    /// for seconds. Converted to 24000/1001, its pieces are 48 frames
+    /// (2.002 s, 180 180 ticks) of one grid across all of them, contiguous,
+    /// each in the segment whose keyframe its run seeks to; the last takes
+    /// the rest. One piece per span made pieces of up to 52 s.
+    #[test]
+    fn converted_pieces_lie_on_one_grid_across_long_spans() {
+        let kfs = [0, 938_438, 2_815_313, 3_753_750, 8_445_938, 11_261_250];
+        let end = 12_199_688;
+        let plan = plan_90k(&kfs, end);
+        let rate = Rational {
+            num: 24000,
+            den: 1001,
+        };
+        let all = grid_pieces(&plan, rate, 2_000_000_000);
+        // round(12 199 688 / 3753.75) = 3250 frames: 67 pieces of 48 and 34.
+        assert_eq!(all.len(), 68);
+        assert_eq!(all[0].start_ticks, 0);
+        assert_eq!(all.last().unwrap().end_ticks, end);
+        for (k, p) in all.iter().enumerate() {
+            if k + 1 < all.len() {
+                assert_eq!(p.frames, Some(48), "piece {k}");
+                assert_eq!(p.start_ticks, k as i64 * 180_180, "piece {k}");
+                assert_eq!(p.end_ticks, all[k + 1].start_ticks, "piece {k}");
+            }
+            let s = &plan.segments[p.seg];
+            assert!(
+                s.start_ticks <= p.start_ticks && p.start_ticks < s.end_ticks,
+                "piece {k}: {p:?}"
+            );
+        }
+        assert_eq!(all.last().unwrap().frames, Some(3250 - 67 * 48));
+        let longest = all.iter().map(|p| p.end_ticks - p.start_ticks).max().unwrap();
+        assert!(longest <= 180_180, "{longest}");
+        // Every segment's keyframe opens a run of the pieces starting in it.
+        for seg in 0..kfs.len() {
+            let p = first_piece_of(&all, seg);
+            assert!(all[p].seg >= seg && (p == 0 || all[p - 1].seg < seg));
+        }
+        // Half a piece left at the end goes into the last piece.
+        let short = grid_pieces(&plan_90k(&[0], 48 * 3754 + 20 * 3754), rate, 2_000_000_000);
+        assert_eq!(short.iter().map(|p| p.frames).collect::<Vec<_>>(), [Some(68)]);
+    }
+
+    /// A run over a converted MP4 ([`Clip::HeldFramesMp4`]: 23.976 fps on a
+    /// 90 kHz clock with frames held for seconds) seeks to the keyframe of
+    /// its first piece's segment, starts the clock at that piece, converts
+    /// to 24000/1001 there, and forces an IDR half a frame before each
+    /// piece. The index's frames are not used: the decoder drops some.
+    #[test]
+    fn converted_runs_put_the_rate_grid_on_their_first_piece() {
+        use flux_test_media::Clip;
+        let Some(path) = flux_test_media::clip(Clip::HeldFramesMp4) else {
+            return;
+        };
+        let asset = Asset::open(&path, 6_000_000_000).unwrap();
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.frame_duration, None);
+        let rate = Rational {
+            num: 24000,
+            den: 1001,
+        };
+        assert_eq!(v.frame_rate, Some(rate));
+        assert_eq!(converted_rate(&asset), Some(rate));
+        let all = pieces(&asset, 2_000_000_000);
+        assert!(all.len() >= 10, "{all:?}");
+        let run = &all[3..7];
+        assert!(run_frames(&asset, run).unwrap().is_none());
+        let target = VideoTarget {
+            width: 320,
+            height: 180,
+            bitrate: 500_000,
+            tonemap: false,
+            burn: None,
+        };
+        let a = VideoTranscoder::args(
+            &asset,
+            &target,
+            run,
+            None,
+            &FfmpegCaps::default(),
+            VideoEncoder::Libx264,
+            std::path::Path::new("/dev/dri/renderD128"),
+            None,
+        )
+        .unwrap();
+        let arg = |k: &str| a[a.iter().position(|x| x == k).unwrap() + 1].clone();
+        let span = asset.segments.segments[run[0].seg];
+        assert_eq!(arg("-ss"), format!("{:.6}", span.start_ns as f64 / 1e9));
+        assert_eq!(arg("-frames:v"), "192");
+        // Piece 3 starts 3 × 2.002 s in.
+        let shift = 6_006_000 - (span.start_ns as f64 / 1e3).round() as i64;
+        let vf = arg("-vf");
+        assert!(vf.starts_with(&format!("settb=AVTB,setpts=PTS-{shift},")), "{vf}");
+        assert!(vf.ends_with(",fps=24000/1001:start_time=0"), "{vf}");
+        assert!(!vf.contains("trim"), "{vf}");
+        assert_eq!(arg("-force_key_frames"), "1.981146,3.983146,5.985146");
+        // The run that ends the file pads with its last frame, should the
+        // decoder drop frames at the end.
+        let tail = &all[all.len() - 2..];
+        let a = VideoTranscoder::args(
+            &asset,
+            &target,
+            tail,
+            None,
+            &FfmpegCaps::default(),
+            VideoEncoder::Libx264,
+            std::path::Path::new("/dev/dri/renderD128"),
+            None,
+        )
+        .unwrap();
+        let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
+        assert!(
+            vf.ends_with(",fps=24000/1001:start_time=0,tpad=stop=-1:stop_mode=clone"),
+            "{vf}"
+        );
+        let n: u32 = tail.iter().map(|p| p.frames.unwrap()).sum();
+        assert_eq!(
+            a[a.iter().position(|x| x == "-frames:v").unwrap() + 1],
+            n.to_string()
+        );
+    }
+
+    /// The run that ends a converted video pads with `tpad` only frames in
+    /// memory: before FFmpeg 6.1 `tpad` takes no hardware frames, and the
+    /// run of the file's last pieces failed to start with every chain that
+    /// decodes to the device (CUDA, QSV, VAAPI, VideoToolbox). Before an
+    /// upload to the encoder (VAAPI after a software chain) the frames are
+    /// still in memory, so `fps` and `tpad` go there. Without `tpad` the
+    /// last piece takes the frames there are (`piece_cut`).
+    #[test]
+    fn converted_runs_pad_the_end_only_in_memory() {
+        use flux_test_media::Clip;
+        let Some(path) = flux_test_media::clip(Clip::HeldFramesMp4) else {
+            return;
+        };
+        let asset = Asset::open(&path, 6_000_000_000).unwrap();
+        let all = pieces(&asset, 2_000_000_000);
+        let tail = &all[all.len() - 2..];
+        let target = VideoTarget {
+            width: 320,
+            height: 180,
+            bitrate: 500_000,
+            tonemap: false,
+            burn: None,
+        };
+        let set =
+            |v: &[&str]| -> std::collections::BTreeSet<String> { v.iter().map(|s| s.to_string()).collect() };
+        let caps = |hwaccels: &[&str], filters: &[&str], decoders: &[&str]| FfmpegCaps {
+            hwaccels: set(hwaccels),
+            filters: set(filters),
+            decoders: set(decoders),
+            ..Default::default()
+        };
+        let fps = ",fps=24000/1001:start_time=0";
+        let pad = ",tpad=stop=-1:stop_mode=clone";
+        let cases = [
+            (VideoEncoder::Libx264, caps(&[], &[], &[]), format!("{fps}{pad}")),
+            (VideoEncoder::Nvenc, caps(&[], &[], &[]), format!("{fps}{pad}")),
+            (
+                VideoEncoder::Nvenc,
+                caps(&["cuda"], &["scale_cuda"], &[]),
+                fps.to_string(),
+            ),
+            (
+                VideoEncoder::Qsv,
+                caps(&["qsv"], &["scale_qsv"], &["h264_qsv"]),
+                fps.to_string(),
+            ),
+            (
+                VideoEncoder::VideoToolbox,
+                caps(&["videotoolbox"], &["scale_vt"], &[]),
+                fps.to_string(),
+            ),
+            (
+                VideoEncoder::Vaapi,
+                caps(&["vaapi"], &["scale_vaapi"], &[]),
+                fps.to_string(),
+            ),
+            (
+                VideoEncoder::Vaapi,
+                caps(&[], &[], &[]),
+                format!("{fps}{pad},hwupload"),
+            ),
+        ];
+        for (enc, caps, end) in cases {
+            for run in [tail, &all[..2]] {
+                let a = VideoTranscoder::args(
+                    &asset,
+                    &target,
+                    run,
+                    None,
+                    &caps,
+                    enc,
+                    std::path::Path::new("/dev/dri/renderD128"),
+                    None,
+                )
+                .unwrap();
+                let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
+                let end = if run == tail {
+                    end.clone()
+                } else {
+                    end.replace(pad, "")
+                };
+                assert!(vf.ends_with(&end), "{enc:?}: {vf}");
+                assert_eq!(vf.matches("fps=").count(), 1, "{enc:?}: {vf}");
+                let n: u32 = run.iter().map(|p| p.frames.unwrap()).sum();
+                assert_eq!(
+                    a[a.iter().position(|x| x == "-frames:v").unwrap() + 1],
+                    n.to_string()
+                );
+            }
+        }
+    }
+
+    /// Which MP4 videos a transcode converts to their rate ([`converts`]):
+    /// those without a constant duration or with frames held, as long as
+    /// no stretch of frames comes faster than the rate, where `fps` would
+    /// drop frames. A coarse clock's alternating deltas, and a sample or
+    /// two of one tick at a cut, are not faster frames.
+    #[test]
+    fn videos_with_faster_frames_keep_their_timestamps() {
+        let r = |num, den| Rational { num, den };
+        let ntsc24 = r(24000, 1001);
+        let ntsc60 = r(60000, 1001);
+        // 23.976 fps at 90 kHz, with a frame held 2 s: converted, as are
+        // its alternating deltas alone.
+        let mut held: Vec<(u32, u32)> = Vec::new();
+        for k in 0..200 {
+            held.extend([(2, 3754), (1, 3753)]);
+            if k == 100 {
+                held.push((1, 180_000));
+            }
+        }
+        assert!(converts(&held, 90_000, None, ntsc24));
+        assert!(converts(&held[..20], 90_000, None, ntsc24));
+        // A cut whose muxer gave two samples a tick to keep decode times
+        // rising.
+        let mut glitch = held.clone();
+        glitch.insert(150, (2, 1));
+        assert!(converts(&glitch, 90_000, None, ntsc24));
+        // A constant duration: converted only with a frame held.
+        assert!(!converts(&[(750, 3600)], 90_000, Some(3600), r(25, 1)));
+        assert!(converts(
+            &[(700, 3600), (1, 187_200), (49, 3600)],
+            90_000,
+            Some(3600),
+            r(25, 1)
+        ));
+        // 10 s at 30 fps, then 30 s at 15 fps, rated 15 fps (most frames):
+        // converting dropped every other frame of the 30 fps part.
+        assert!(!converts(&[(300, 3000), (450, 6000)], 90_000, None, r(15, 1)));
+        // Half a second at 60 fps among 30 fps frames, likewise.
+        assert!(!converts(
+            &[(300, 3000), (FASTER_RUN as u32, 1500), (300, 3000)],
+            90_000,
+            None,
+            r(30, 1)
+        ));
+        // Mostly 30 fps with stretches at 15: converting at 30 only repeats
+        // frames.
+        assert!(converts(
+            &[(450, 3000), (150, 6000), (300, 3000)],
+            90_000,
+            None,
+            r(30, 1)
+        ));
+        // 59.94 fps on coarse clocks: 17/16 ticks at 1 kHz, 272/256 at
+        // 16 kHz (Matroska's milliseconds), 10/11 at 600 Hz.
+        let alt = |a: u32, b: u32| -> Vec<(u32, u32)> { (0..200).flat_map(|_| [(2, a), (1, b)]).collect() };
+        assert!(converts(&alt(17, 16), 1000, None, ntsc60));
+        assert!(converts(&alt(272, 256), 16_000, None, ntsc60));
+        assert!(converts(
+            &[(99, 10), (1, 11), (99, 10), (1, 11)],
+            600,
+            None,
+            ntsc60
+        ));
+        // No usable rate or clock.
+        assert!(!converts(&held, 0, None, ntsc24));
+        assert!(!converts(&held, 90_000, None, r(0, 1)));
+    }
+
+    /// Indexes cached before version 9 rated an MP4 with held frames by its
+    /// average sample duration (22.746 fps for a 23.976 fps episode), and a
+    /// transcode converts at the index's rate: one frame in twenty dropped.
+    /// Such an index no longer decodes, so the server builds it again.
+    #[test]
+    fn indexes_cached_with_the_average_rate_are_rebuilt() {
+        use flux_test_media::Clip;
+        let Some(path) = flux_test_media::clip(Clip::HeldFramesMp4) else {
+            return;
+        };
+        let asset = Asset::open(&path, 6_000_000_000).unwrap();
+        let mut bytes = asset.index.to_bytes().unwrap();
+        let back = crate::index::PlaybackIndex::from_bytes(&bytes).unwrap();
+        let rate = back.video_track().and_then(|v| v.frame_rate);
+        assert_eq!(
+            rate,
+            Some(Rational {
+                num: 24000,
+                den: 1001
+            })
+        );
+        // The header's version, as an index cached by version 8 has it.
+        bytes[5..7].copy_from_slice(&8u16.to_le_bytes());
+        assert!(crate::index::PlaybackIndex::from_bytes(&bytes).is_err());
     }
 
     #[test]
