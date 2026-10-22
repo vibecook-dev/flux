@@ -4,7 +4,8 @@ flux is one program, `flux-server`, that serves its own web client. It runs
 `ffmpeg` and `ffprobe`, which you install separately (the Docker image
 brings its own; see [ffmpeg](#ffmpeg)). There are three ways to install it:
 
-- [a release package](#release-packages) for macOS or Linux;
+- [a release package](#release-packages) for macOS or Linux, or a zip for
+  [Windows](#windows);
 - [the Docker image](#docker), which brings its own ffmpeg;
 - [building from source](#building-from-source).
 
@@ -20,22 +21,8 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 |---|---|
 | macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). Embedded remote access (`--tailnet embedded`) runs the bundled `bin/sidecar-slim`, which needs macOS 13 or later. |
 | Linux | x86_64 or aarch64 with glibc 2.35 or later: Debian 12+, Ubuntu 22.04+, Fedora 36+, Raspberry Pi OS (64-bit, bookworm or later), and others. Kernels with 4, 16 or 64 KiB pages all work. |
+| Windows | 64-bit Windows 10 or 11, or Windows Server 2016 or later (`x86_64-pc-windows-msvc`); tested on Windows 11 and, in CI, Windows Server 2025. Windows on Arm has no package. See [Windows](#windows). |
 | ffmpeg | `ffmpeg` and `ffprobe`, any recent version. See [ffmpeg](#ffmpeg). |
-
-Windows is not supported yet. If you try it anyway:
-
-- The data dir defaults to `%LOCALAPPDATA%\flux`. Up to 0.1.0-alpha.2 it
-  was `%HOME%\.local\share\flux`, or `flux-data` in the working directory.
-  If flux finds a catalog in one of those, it says so at startup and in
-  `--check`; pass `--data-dir` to keep using it.
-- In a TOML config, write paths in 'single quotes' (`path = 'D:\Media\Movies'`)
-  or with forward slashes, because a backslash starts an escape in
-  "double quotes".
-- flux stops gracefully on Ctrl-C, Ctrl-Break or its console closing.
-  Windows doesn't send it the logoff and shutdown events, so at logoff or
-  shutdown only a service wrapper stops it gracefully. Wrappers such as NSSM
-  and WinSW stop it with Ctrl-C; give them a stop timeout of 10 s or more
-  (NSSM's `AppStopMethodConsole` waits 1.5 s by default).
 
 ## ffmpeg
 
@@ -46,9 +33,12 @@ Direct play and remuxing (most playback) don't use ffmpeg at all.
 
 flux looks for them on `PATH`, then in `/usr/lib/jellyfin-ffmpeg`,
 `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`; it doesn't look next
-to `flux-server`. `--ffmpeg PATH` (or `FLUX_FFMPEG`) picks another, and
-`ffprobe` defaults to the one next to `ffmpeg` (`--ffprobe`,
-`FLUX_FFPROBE`).
+to `flux-server`. On Windows it looks only on `PATH`. (When `PATH` has none,
+Windows' own program search also finds an `ffmpeg.exe` and `ffprobe.exe`
+placed next to `flux-server.exe`, but `--check` then shows them without a
+folder; prefer `PATH` or `--ffmpeg`.) `--ffmpeg PATH` (or `FLUX_FFMPEG`)
+picks another, and `ffprobe` defaults to the one next to `ffmpeg`
+(`--ffprobe`, `FLUX_FFPROBE`).
 
 At startup flux asks ffmpeg which H.264 encoders it has and picks the best
 one for video transcodes:
@@ -59,6 +49,9 @@ one for video transcodes:
 | Linux, NVIDIA | NVENC (`h264_nvenc`) | `libx264` |
 | Linux, Intel | Quick Sync (`h264_qsv`) or VAAPI (`h264_vaapi`) | `libx264` |
 | Linux, AMD | VAAPI (`h264_vaapi`) | `libx264` |
+| Windows, NVIDIA | NVENC (`h264_nvenc`) | `libx264` |
+| Windows, Intel | Quick Sync (`h264_qsv`), detected but not yet tested on Windows | `libx264` |
+| Windows, AMD | none: AMD's AMF (`h264_amf`) isn't used | `libx264` |
 
 Where to get ffmpeg:
 
@@ -69,6 +62,10 @@ Where to get ffmpeg:
   and pass `--ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg`.
 - **Fedora:** the `ffmpeg` package from RPM Fusion (Fedora's own
   `ffmpeg-free` has no libx264).
+- **Windows:** Jellyfin's portable build,
+  `jellyfin-ffmpeg_<version>_portable_win64-clang-gpl.zip` from
+  [jellyfin-ffmpeg's releases](https://github.com/jellyfin/jellyfin-ffmpeg/releases)
+  (has NVENC, Quick Sync, libx264 and `tonemapx`); see [Windows](#windows).
 - **Docker:** the image includes jellyfin-ffmpeg.
 
 To check what flux found and what it will use:
@@ -83,7 +80,8 @@ encoders it detected, and exits non-zero if something required is missing.
 ## Release packages
 
 Each release has a package per platform, named
-`flux-<version>-<target>.tar.gz`:
+`flux-<version>-<target>.tar.gz` (for Windows, a `.zip` laid out
+differently: see [Windows](#windows)):
 
 ```
 flux-<version>-<target>/
@@ -259,6 +257,210 @@ change, and the data dir is not touched. Restart the service if you run one
 (`sudo systemctl restart flux`). `/opt/flux.old` keeps the previous version
 until the next upgrade.
 
+## Windows
+
+flux runs on 64-bit Windows 10 or 11 and Windows Server 2016 or later. The
+first release with a Windows package is the one after v0.1.0-alpha.2. Each
+release has `flux-<version>-x86_64-pc-windows-msvc.zip`, one folder:
+
+```
+flux-<version>-x86_64-pc-windows-msvc\
+  flux-server.exe
+  sidecar-slim.exe          Truffle's Tailscale sidecar, for --tailnet embedded
+  web\                      the web client
+  LICENSE.txt  README.txt  THIRD_PARTY_LICENSES.txt
+```
+
+`flux-server.exe` finds `web\` and `sidecar-slim.exe` next to itself, so
+keep the folder together. It has the C runtime built in, so it needs no
+Visual C++ Redistributable. The commands below are for PowerShell.
+
+### Download and check
+
+<!-- x-release-please-start-version -->
+```powershell
+$version = '0.1.0-alpha.2'
+$zip = "flux-$version-x86_64-pc-windows-msvc.zip"
+$base = "https://github.com/vibecook-dev/flux/releases/download/v$version"
+curl.exe -fLO "$base/$zip"
+curl.exe -fLO "$base/SHA256SUMS"
+$want = (Select-String -Path SHA256SUMS -SimpleMatch $zip).Line.Split(' ')[0]
+if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $want) { throw "$zip does not match SHA256SUMS" }
+gh attestation verify $zip --repo vibecook-dev/flux `
+  --signer-workflow vibecook-dev/flux/.github/workflows/release.yml `
+  --source-digest (gh api "repos/vibecook-dev/flux/commits/v$version" --jq .sha)
+```
+<!-- x-release-please-end -->
+
+The attestation check needs the [GitHub CLI](https://cli.github.com/); see
+[Release packages](#release-packages) for what it proves.
+
+**SmartScreen.** The binaries aren't code-signed yet. Files downloaded
+with `curl.exe` aren't marked as coming from the internet, but a zip
+downloaded with a browser is, and so is everything unpacked from it:
+SmartScreen may then stop `flux-server.exe` with "Windows protected your
+PC". Check the zip as above, then clear the mark before unpacking it with
+`Unblock-File $zip` (or choose *More info → Run anyway*). On Windows 11 with
+Smart App Control turned on, unsigned programs can be blocked outright.
+
+### Install
+
+Any folder works; this one needs no administrator rights:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs" | Out-Null
+Expand-Archive $zip -DestinationPath .
+Move-Item "flux-$version-x86_64-pc-windows-msvc" "$env:LOCALAPPDATA\Programs\flux"
+```
+
+flux doesn't include ffmpeg. Jellyfin's portable build is two programs,
+`ffmpeg.exe` and `ffprobe.exe`, with NVENC, Quick Sync, libx264 and
+`tonemapx`. Its release page lists each file's SHA-256; flux's CI tests
+with 8.1.3-1:
+
+```powershell
+$ff = 'jellyfin-ffmpeg_8.1.3-1_portable_win64-clang-gpl.zip'
+curl.exe -fLO "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v8.1.3-1/$ff"
+(Get-FileHash $ff).Hash   # 3691F8B2D4C39C511B5FAFF1C8C4687BD782DAC823E63BA69F0755F7CE1AF9CE
+Expand-Archive $ff -DestinationPath "$env:LOCALAPPDATA\Programs\jellyfin-ffmpeg"
+# Put it on your PATH (open a new terminal afterwards), or pass --ffmpeg instead.
+$dir = "$env:LOCALAPPDATA\Programs\jellyfin-ffmpeg"
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$dir", 'User')
+```
+
+Without the `PATH` change, start flux with
+`--ffmpeg "$env:LOCALAPPDATA\Programs\jellyfin-ffmpeg\ffmpeg.exe"`; it takes
+`ffprobe.exe` from the same folder. Video encoders on Windows: NVENC on
+NVIDIA GPUs (checked on Windows 11); Quick Sync on Intel GPUs is detected
+but not yet tested on Windows; AMD's AMF isn't used, so AMD GPUs transcode
+with libx264.
+
+### First run
+
+```powershell
+cd "$env:LOCALAPPDATA\Programs\flux"
+.\flux-server.exe --check
+.\flux-server.exe --library "Movies:movies:D:\Media\Movies" --library "TV:shows:D:\Media\TV"
+```
+
+`--check` shows the ffmpeg, the encoder, the data dir and the web client
+flux found. Then open <http://127.0.0.1:8096>; you can also add libraries
+on the Admin screen. The catalog, artwork and caches live in
+`%LOCALAPPDATA%\flux` unless you pass `--data-dir` (or set
+`FLUX_DATA_DIR`); the first log line names the folder. Builds up to
+0.1.0-alpha.2 used `%HOME%\.local\share\flux`, or `flux-data` in the
+working directory: if flux finds a catalog in one of those, it says so at
+startup and in `--check`; pass `--data-dir` to keep using it.
+
+Stop flux with Ctrl-C; Ctrl-Break and closing its console window also stop
+it gracefully. `taskkill /PID` without `/F` can't stop a console program
+(Windows refuses), and `taskkill /F` ends it at once, without the graceful
+stop. Windows doesn't send a console program the logoff and shutdown
+events, so at logoff or shutdown only a service wrapper (below) stops flux
+gracefully.
+
+### A config file
+
+Settings can live in a TOML file instead of flags (`--config`; the keys
+are the long flag names with `_`, as in the
+[README](../README.md#quickstart-build-from-source)). Write Windows paths in
+'single quotes', TOML's literal strings, or with forward slashes. In
+"double quotes" a backslash starts an escape: `"D:\Media"` doesn't parse,
+and `"D:\tv"` would hold a tab; flux refuses paths with control characters,
+and `--check` shows every path it read.
+
+```powershell
+New-Item -ItemType Directory -Force "$env:ProgramData\flux" | Out-Null
+@'
+ffmpeg = 'C:\Program Files\jellyfin-ffmpeg\ffmpeg.exe'   # where you unpacked it
+data_dir = 'D:\flux\data'
+# lan = "0.0.0.0:8097"            # see "LAN access and the firewall"
+
+[[library]]
+name = "Movies"
+kind = "movies"
+path = 'D:\Media\Movies'
+
+[[library]]
+name = "TV"
+kind = "shows"
+path = '\\nas\media\TV'
+'@ | Set-Content -Encoding utf8 "$env:ProgramData\flux\flux.toml"
+.\flux-server.exe --config "$env:ProgramData\flux\flux.toml" --check
+```
+
+### As a Windows service
+
+flux has no Windows service mode of its own: run it under a service
+wrapper such as [NSSM](https://nssm.cc/),
+[WinSW](https://github.com/winsw/winsw) or
+[Servy](https://github.com/aelassas/servy). They start `flux-server.exe`
+with a hidden console and stop it with Ctrl-C, then end it after a timeout.
+On Ctrl-C flux lets requests in flight finish for up to 5 s, then exits
+within 5 s more (at once when idle); give the wrapper 15 s (NSSM's
+`AppStopMethodConsole` defaults to 1.5 s, WinSW's `<stoptimeout>` to 15 s;
+Servy calls it `StopTimeout`). These wrappers haven't been tested with flux
+yet; the release smoke test stops flux the way they do.
+
+Under a service, some things differ:
+
+- **The account.** A service runs as LocalSystem unless you pick a user,
+  and LocalSystem's `%LOCALAPPDATA%` is under
+  `C:\Windows\System32\config\systemprofile`. Set `data_dir` (or
+  `--data-dir`), and run the service as an account that can write there
+  and read your media.
+- **Network drives.** Drive letters mapped in your session (`Z:`) don't
+  exist for a service; use UNC paths (`\\nas\media\TV`) and an account with
+  access to the share.
+- **The firewall** asks no one: see below.
+
+For example, with NSSM, flux installed in `C:\Program Files\flux` and the
+config file above (as administrator):
+
+```powershell
+nssm install flux 'C:\Program Files\flux\flux-server.exe' --config C:\ProgramData\flux\flux.toml
+nssm set flux AppStopMethodConsole 15000
+nssm set flux AppStderr C:\ProgramData\flux\flux.log
+nssm set flux ObjectName .\<user> <password>
+nssm start flux
+```
+
+flux logs to stderr, without colour when it isn't a terminal.
+
+### LAN access and the firewall
+
+`--lan 0.0.0.0:8097` (or `lan = "0.0.0.0:8097"`) adds a listener for other
+devices; its callers are anonymous, as on other platforms. The first time
+`flux-server.exe` listens there, Windows Defender Firewall asks whether to
+allow it: allow private networks. A service gets no prompt and stays
+blocked until you add a rule (as administrator):
+
+```powershell
+New-NetFirewallRule -DisplayName 'flux (LAN)' -Direction Inbound -Action Allow -Protocol TCP `
+  -LocalPort 8097 -Profile Private -Program 'C:\Program Files\flux\flux-server.exe'
+```
+
+The 127.0.0.1 listener never needs a rule. flux answers to this machine's
+own names and addresses; add others, such as a reverse proxy's, with
+`allow_host`.
+
+### Remote access on Windows
+
+`--tailnet system` uses the installed Tailscale for Windows
+(`tailscale.exe`), and `--tailnet embedded` runs the bundled
+`sidecar-slim.exe`. Neither has been tried on Windows yet.
+
+### Upgrading on Windows
+
+Stop flux (or the service), swap the folder, and start it again. The data
+dir is separate and is not touched:
+
+```powershell
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\flux.old" -ErrorAction SilentlyContinue
+Rename-Item "$env:LOCALAPPDATA\Programs\flux" flux.old
+Move-Item "flux-$version-x86_64-pc-windows-msvc" "$env:LOCALAPPDATA\Programs\flux"
+```
+
 ## Docker
 
 The image is `ghcr.io/vibecook-dev/flux`, for linux/amd64 and linux/arm64.
@@ -364,6 +566,24 @@ cargo build --release --locked -p flux-server
 `VITE_FLUX_API=/` builds the client for the server it is served from;
 without it the web client runs against its built-in mock backend. Run from
 the repository root, flux also finds `web/dist` on its own.
+
+On Windows, Rust needs the MSVC toolchain (Visual Studio Build Tools with
+"Desktop development with C++"; rustup offers to install it), and the
+environment variable is set the PowerShell way:
+
+```powershell
+cargo build --release --locked -p flux-server
+cd web; pnpm install --frozen-lockfile; $env:VITE_FLUX_API = '/'; pnpm build; cd ..
+.\target\release\flux-server.exe --web-dir web\dist --library 'Movies:movies:D:\Media\Movies'
+```
+
+That exe loads `vcruntime140.dll`, which comes with the Visual C++
+Redistributable, not with Windows. To build one that runs on a Windows
+without it, as the release zip does, set
+`$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'`
+before `cargo build`.
+
+`scripts/package/` (packaging and the smoke test) runs in Git Bash.
 
 To make a package like the release ones, see
 [RELEASING.md § Packaging locally](RELEASING.md#packaging-locally).

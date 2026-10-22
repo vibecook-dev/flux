@@ -1,0 +1,6 @@
+# Every text file is checked out with LF, also on Windows with
+# core.autocrlf=true (the default of Git for Windows and of GitHub's Windows
+# runners). bash can't run a script with CRLF line endings, package.sh
+# parses sidecar-NOTICE.txt line by line, and the Windows CI job should
+# test the same bytes as Linux and macOS. Git decides which files are text.
+* text=auto eol=lf

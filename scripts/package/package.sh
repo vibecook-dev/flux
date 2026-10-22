@@ -8,20 +8,30 @@
 #                                  <exe dir>/../share/flux/web)
 #     LICENSE  README.md  THIRD_PARTY_LICENSES
 #
+# or, for a Windows target, as flux-<version>-<target>.zip, with everything
+# in one folder and a short README of its own (README-windows.txt):
+#
+#   flux-<version>-<target>/
+#     flux-server.exe
+#     sidecar-slim.exe            (with --sidecar)
+#     web/                        (flux-server finds it at <exe dir>/web)
+#     LICENSE.txt  README.txt  THIRD_PARTY_LICENSES.txt
+#
 # Usage:
 #   scripts/package/package.sh --target aarch64-apple-darwin --version 0.1.0 \
 #     --bin target/aarch64-apple-darwin/release/flux-server \
 #     --web web/dist --third-party THIRD_PARTY_LICENSES [--sidecar FILE] \
 #     [--license FILE] [--readme FILE] [--out DIR]
 #
-# SOURCE_DATE_EPOCH, when set, fixes the file times in the archive.
+# SOURCE_DATE_EPOCH, when set, fixes the file times in the archive. A zip
+# needs Python 3 (zip.py).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../.." && pwd)
 
 target="" version="" bin="" web="" third_party="" sidecar=""
-license="$root/LICENSE" readme="$root/README.md" out="$root/dist"
+license="$root/LICENSE" readme="" out="$root/dist"
 
 die() { echo "package.sh: $*" >&2; exit 1; }
 
@@ -36,13 +46,24 @@ while [ $# -gt 0 ]; do
     --license) license=${2:?}; shift 2 ;;
     --readme) readme=${2:?}; shift 2 ;;
     --out) out=${2:?}; shift 2 ;;
-    -h | --help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,29p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 [ -n "$target" ] || die "--target is required"
 [ -n "$version" ] || die "--version is required"
+# Where each file goes: a Unix tree, or one Windows folder.
+case "$target" in
+  *-windows-*)
+    windows=true exe=.exe txt=.txt bindir="" webdir=web readme_as=README.txt
+    [ -n "$readme" ] || readme="$here/README-windows.txt"
+    ;;
+  *)
+    windows=false exe="" txt="" bindir=bin/ webdir=share/flux/web readme_as=README.md
+    [ -n "$readme" ] || readme="$root/README.md"
+    ;;
+esac
 case "$version" in v*) die "--version takes the bare version (0.1.0), not the tag" ;; esac
 if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then die "--bin: not an executable file: ${bin:-<unset>}"; fi
 [ -f "$web/index.html" ] || die "--web: no index.html in ${web:-<unset>} (build it with VITE_FLUX_API=/ pnpm build)"
@@ -65,27 +86,40 @@ if [ -n "$sidecar" ]; then
 $missing"
 fi
 
+# A Python 3 for zip.py. On Windows, `python3` can be the Microsoft Store's
+# stand-in, which only prints how to install Python.
+python=""
+if [ "$windows" = true ]; then
+  for p in python3 python py; do
+    if "$p" -c 'import sys; sys.exit(sys.version_info < (3, 8))' > /dev/null 2>&1; then
+      python=$p
+      break
+    fi
+  done
+  [ -n "$python" ] || die "a zip package needs Python 3.8 or later (python3, python or py)"
+fi
+
 name="flux-$version-$target"
 work=$(mktemp -d "${TMPDIR:-/tmp}/flux-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 stage="$work/$name"
 
-mkdir -p "$stage/bin" "$stage/share/flux"
-cp "$bin" "$stage/bin/flux-server"
-chmod 0755 "$stage/bin/flux-server"
+mkdir -p "$stage/${bindir}" "$(dirname "$stage/$webdir")"
+cp "$bin" "$stage/${bindir}flux-server$exe"
+chmod 0755 "$stage/${bindir}flux-server$exe"
 if [ -n "$sidecar" ]; then
-  cp "$sidecar" "$stage/bin/sidecar-slim"
-  chmod 0755 "$stage/bin/sidecar-slim"
+  cp "$sidecar" "$stage/${bindir}sidecar-slim$exe"
+  chmod 0755 "$stage/${bindir}sidecar-slim$exe"
 fi
-cp -R "$web" "$stage/share/flux/web"
-cp "$license" "$stage/LICENSE"
-cp "$readme" "$stage/README.md"
-cp "$third_party" "$stage/THIRD_PARTY_LICENSES"
+cp -R "$web" "$stage/$webdir"
+cp "$license" "$stage/LICENSE$txt"
+cp "$readme" "$stage/$readme_as"
+cp "$third_party" "$stage/THIRD_PARTY_LICENSES$txt"
 if [ -n "$sidecar" ]; then
   {
     printf '\n\n'
     cat "$here/sidecar-NOTICE.txt"
-  } >> "$stage/THIRD_PARTY_LICENSES"
+  } >> "$stage/THIRD_PARTY_LICENSES$txt"
 fi
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage" -type f ! -perm -u+x -exec chmod 0644 {} +
@@ -99,6 +133,13 @@ fi
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
+if [ "$windows" = true ]; then
+  archive="$out/$name.zip"
+  rm -f "$archive"
+  "$python" "$here/zip.py" create "$stage" "$archive" --epoch "${SOURCE_DATE_EPOCH:-$(date +%s)}"
+  echo "$archive"
+  exit 0
+fi
 archive="$out/$name.tar.gz"
 # Sorted entries, root-owned, no gzip timestamp: the same inputs give the
 # same archive with GNU tar (CI) and close to it with bsdtar (macOS).
