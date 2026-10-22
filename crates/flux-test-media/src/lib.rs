@@ -373,9 +373,13 @@ pub enum Clip {
     /// The first 40 % of [`Clip::BareFlv`]'s bytes: no duration anywhere but
     /// its tags (ffmpeg's look at the last tag finds a cut one).
     CutBareFlv,
+    /// 30 s of `testsrc` as MPEG-1 + MP2 PS with I-frames only at 0 and
+    /// 15 s: a seek past 15 s lands where no frame decodes (any packet,
+    /// then nothing to start from).
+    SparseKeysPs,
 }
 
-const CLIP_COUNT: usize = 35;
+const CLIP_COUNT: usize = 36;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -439,6 +443,7 @@ impl Clip {
         Clip::JoinedPs,
         Clip::BareFlv,
         Clip::CutBareFlv,
+        Clip::SparseKeysPs,
     ];
 
     /// File name of the cached clip.
@@ -479,6 +484,7 @@ impl Clip {
             Clip::JoinedPs => "joined_mpeg1_mp2.mpg",
             Clip::BareFlv => "bare_flv1_aac.flv",
             Clip::CutBareFlv => "cut_bare_flv1_aac.flv",
+            Clip::SparseKeysPs => "sparse_keys_mpeg1_mp2.mpg",
         }
     }
 
@@ -509,7 +515,9 @@ impl Clip {
                 &["flv", "aac"]
             }
             Clip::MsClockWmv1Asf => &["wmv1", "wmav2"],
-            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::JoinedPs => &["mpeg1video", "mp2"],
+            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::JoinedPs | Clip::SparseKeysPs => {
+                &["mpeg1video", "mp2"]
+            }
             Clip::Rv20Ac3Rm => &["rv20", "ac3"],
             Clip::HevcAacTs
             | Clip::VfrHevcShortMkv
@@ -539,6 +547,7 @@ impl Clip {
             Clip::GapAudioFlv => Some(500),
             Clip::MsClockWmv1Asf => Some(300),
             Clip::Mpeg1Mp2PsB => Some(200),
+            Clip::SparseKeysPs => Some(750),
             Clip::Hdr10HevcMkv => Some(144),
             Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
@@ -927,6 +936,33 @@ impl Clip {
             }
             Clip::CutFlv => return Some(Recipe::Truncate(Clip::Flv1AacFlv, 40)),
             Clip::CutBareFlv => return Some(Recipe::Truncate(Clip::BareFlv, 40)),
+            Clip::SparseKeysPs => {
+                a.extend(s(&[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=size=320x240:rate=25:duration=30",
+                ]));
+                a.extend(tone(30));
+                a.extend(s(&[
+                    "-c:v",
+                    "mpeg1video",
+                    "-b:v",
+                    "1M",
+                    "-g",
+                    "375",
+                    "-bf",
+                    "0",
+                    "-c:a",
+                    "mp2",
+                    "-b:a",
+                    "128k",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "mpeg",
+                ]));
+            }
             Clip::JoinedPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::Mpeg1Mp2PsB)),
         }
         Some(Recipe::Ffmpeg(a))

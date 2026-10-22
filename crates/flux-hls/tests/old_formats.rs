@@ -342,6 +342,48 @@ async fn a_piece_requested_cold_is_the_source_at_its_time() {
     }
 }
 
+/// A seek past a file's last keyframe can decode nothing at all (MPEG-PS
+/// seeks land on any packet; a RealMedia file whose index names a stream it
+/// lacks did so for every target after its last keyframe): the run then
+/// seeks further back, instead of answering 500 ("encoder stopped after 0
+/// of 1 pieces"). Here the last piece (28 s) lies past the clip's last
+/// I-frame (15 s) by more than any seek margin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seek_that_decodes_nothing_seeks_further_back() {
+    let Some(engine) = x264_engine() else { return };
+    let Some(p) = clip(Clip::SparseKeysPs) else { return };
+    let asset = engine.prepare(&p).await.unwrap();
+    let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+    let playlist =
+        String::from_utf8(bytes(&engine, &asset, &plan, HlsResource::Playlist(Rendition::Video)).await)
+            .unwrap();
+    let durs = extinfs(&playlist);
+    let last = durs.len() - 1;
+    let start: f64 = durs[..last].iter().sum();
+    assert!(start >= 25.0, "the last piece starts at {start} s");
+    // Asked for first (a seek to the end), so it is its run's first piece.
+    let seg = bytes(
+        &engine,
+        &asset,
+        &plan,
+        HlsResource::Segment(Rendition::Video, last as u32),
+    )
+    .await;
+    assert_eq!(first_vcl(&seg), Some(5));
+    let (_, samples) = trun(&seg);
+    assert_eq!(samples.len() as f64, (durs[last] * 25.0).round());
+    let mut all = bytes(&engine, &asset, &plan, HlsResource::Init(Rendition::Video)).await;
+    all.extend_from_slice(&seg);
+    let dir = flux_test_media::scratch("hls-old-formats-seek-back");
+    let file = dir.join("sparse_keys.last.mp4");
+    std::fs::write(&file, all).unwrap();
+    let psnr = min_psnr(&file, &p, start, 25, (320, 240));
+    assert!(
+        psnr > 28.0,
+        "the last piece is not the source at {start} s (min PSNR {psnr:.1} dB)"
+    );
+}
+
 /// Two recordings joined byte for byte, the clock starting over at 10 s:
 /// ffprobe calls the file 8 s long (the last clock) and its seeks can't
 /// tell the parts apart. The playlist covers both parts, and a piece of
