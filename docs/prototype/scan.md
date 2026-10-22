@@ -375,7 +375,7 @@ The policy is decided by flux, not by which listing answers first (Mille's `Smar
 
 - A failed probe stores `probe_failed` with `probe_attempts` and `probe_retry_at` (1 min, doubling, capped at 1 day; catalog schema v4). A Quick scan retries such a file once `probe_retry_at` has passed; an **Interactive** request ("Scan now") and a Deep scan retry every failed file at once. `ScanSummary::probe_retries` counts them.
 - A failed re-probe of an existing asset keeps its playback facts and stored probe (catalog), so a permission hiccup doesn't blank a movie's badges.
-- **Deep** now selects: files probed by an older flux-probe (`probe_version < PROBE_VERSION`) or whose probe failed are re-probed; files parsed by an older flux-names are re-parsed without opening them; up-to-date files are left alone. (Deep used to re-probe everything; the server never issues it.)
+- **Deep** now selects: files probed by an older flux-probe (`probe_version < PROBE_VERSION`) or whose probe failed are re-probed; files parsed by an older flux-names are re-parsed without opening them; up-to-date files are left alone. (Deep used to re-probe everything.) At startup the server makes a library's scan a Deep one when it has present files of an older `parse_version`/`probe_version` (`read::outdated_files`), so an upgrade re-parses the catalog once; missing, unreachable and failed files don't count, so it stops asking once the scan ran.
 
 ### Follow-up passes (INT-3)
 
@@ -460,7 +460,7 @@ The idle footprint after a cold scan **did not go down**, although the writer's 
 4. When the UI requests art an item lacks: `catalog.writer().bump_art(item_id)`.
 5. SEC-2, serve time: `read::asset_location` now has the recorded `dev`, `ino`, `mtime_ns` and `root_path`. In `media.rs`, `fstat` the opened file and return 404/409 when `(dev, ino, size, mtime)` differ: this defeats a link retargeted after the scan. Don't reject by canonical containment: links leaving the roots are a supported policy (`follow_external_links`).
 6. Show why a probe failed: `AssetLocation::probe_error` (flux-core would need `AssetInfo.probe_error`).
-7. Optional: a "Refresh" action that issues `ScanMode::Deep` at `Priority::Interactive` after an upgrade.
+7. Done for upgrades: the startup scan is Deep when a library has outdated files (above). Optional: a "Refresh" action that issues `ScanMode::Deep` at `Priority::Interactive` on demand.
 8. Footprint: macOS keeps a cold scan's freed memory (above). A global allocator that returns memory (mimalloc with purging, or jemalloc with background threads) in flux-server's `main.rs` is where the idle footprint can actually be won; measure before adopting.
 
 **Mille:** under `Smart`, links to targets inside the walk root could be skipped by Mille itself (flux now decides). And unresolved folder links could be delivered despite the file filter, or reported in `ScanReport`; flux currently `lstat`s an unseen subfolder before tombstoning below it.

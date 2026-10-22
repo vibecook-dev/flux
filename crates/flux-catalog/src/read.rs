@@ -174,6 +174,27 @@ pub fn idle_status() -> ScanStatus {
     }
 }
 
+/// How many present files of a library an older flux cataloged: parsed by
+/// an older flux-names (`parse_version < PARSER_VERSION`) or probed by an
+/// older flux-probe. After an upgrade the server brings them up to date
+/// with a Deep scan; a Quick scan leaves unchanged files alone. Missing,
+/// unreachable and failed files don't count (a Deep scan can't reach the
+/// first two, and failed probes have their own retries), so this drops to
+/// 0 once that scan ran.
+pub fn outdated_files(c: &Connection, library_id: Id) -> Result<u64> {
+    let n: i64 = c
+        .prepare_cached(
+            "SELECT COUNT(*) FROM file f JOIN root r ON r.id = f.root_id
+              WHERE r.library_id = ?1 AND f.state = 'present'
+                AND (f.parse_version < ?2 OR f.probe_version < ?3)",
+        )?
+        .query_row(
+            params![library_id, flux_core::PARSER_VERSION, flux_core::PROBE_VERSION],
+            |r| r.get(0),
+        )?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
 /// All libraries with their roots (and whether each is reachable), item
 /// counts and stored scan status. Live scan progress is the server's (in
 /// memory, from flux-scan); it overlays it on this, including

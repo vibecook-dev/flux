@@ -748,3 +748,67 @@ fn a_file_behind_a_junction_records_its_identity() {
     s.shutdown(Duration::from_secs(5));
     std::fs::remove_dir(&link).unwrap();
 }
+
+/// A two-part movie copied in one part at a time (synthetic files, no
+/// corpus): the first part is parsed alone and does not stack; when the
+/// second arrives, the first is re-parsed (no I/O) and both become parts of
+/// one movie. A later rescan with nothing new re-parses nothing.
+#[test]
+fn a_part_arriving_later_restacks_the_earlier_one() {
+    let scratch = Scratch::new("restack");
+    let root = scratch.path("Movies");
+    let dir = root.join("示例片-MP4");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("示例片A.mp4"), b"not really a movie, part one").unwrap();
+    let cat = open_catalog(&scratch.dir);
+    let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
+    let s = scanner(&cat);
+    // Scheduled, not Interactive: a failed probe is not retried at once, so
+    // only the re-parse can change the first part.
+    let quick = || {
+        s.scan_library(lib, ScanMode::Quick, Priority::Scheduled)
+            .wait()
+            .expect("scan")
+    };
+    let guess_of = |name: &str| -> flux_core::NameGuess {
+        let rel = format!("示例片-MP4/{name}");
+        let json: String = cat
+            .read_blocking(move |c| {
+                Ok(c.query_row(
+                    "SELECT m.guess FROM file f JOIN file_meta m ON m.file_id = f.id
+                     WHERE f.root_id = ?1 AND f.rel_path = ?2",
+                    (root_id, rel),
+                    |r| r.get(0),
+                )?)
+            })
+            .expect("guess");
+        serde_json::from_str(&json).expect("guess json")
+    };
+    quick();
+    let a = guess_of("示例片A.mp4");
+    assert_eq!((a.title.as_deref(), a.part), (Some("示例片A"), None), "{a:#?}");
+
+    std::fs::write(dir.join("示例片B.mp4"), b"not really a movie, part two").unwrap();
+    let r = quick();
+    assert_eq!(r.added, 1, "{r:?}");
+    let (a, b) = (guess_of("示例片A.mp4"), guess_of("示例片B.mp4"));
+    assert_eq!((a.title.as_deref(), a.part), (Some("示例片"), Some(1)), "{a:#?}");
+    assert_eq!((b.title.as_deref(), b.part), (Some("示例片"), Some(2)), "{b:#?}");
+    let titles: Vec<String> = cat
+        .read_blocking(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT DISTINCT i.title FROM file f
+                 JOIN asset_item ai ON ai.asset_id = f.asset_id
+                 JOIN item i ON i.id = ai.item_id
+                 WHERE f.root_id = ?1 ORDER BY i.title",
+            )?;
+            let rows = stmt.query_map([root_id], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
+        })
+        .expect("items");
+    assert_eq!(titles, ["示例片"], "both parts belong to one movie");
+
+    assert!(s.wait_fingerprints(Duration::from_secs(60)));
+    let r = quick();
+    assert_eq!((r.added, r.changed), (0, 0), "{r:?}");
+}

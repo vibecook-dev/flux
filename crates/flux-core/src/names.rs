@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump when the parser's output changes in a way that should trigger re-parsing.
-pub const PARSER_VERSION: u16 = 1;
+pub const PARSER_VERSION: u16 = 2;
 
 /// What kind of library a root belongs to. It is a strong prior for parsing:
 /// `Show 1x03.mkv` in a movie library is still probably an episode, but
@@ -79,6 +79,11 @@ pub struct NameGuess {
     pub kind: GuessKind,
     /// Movie title or show name, cleaned for display/search.
     pub title: Option<String>,
+    /// The other-script half of a bilingual name (`示例剧.Some.Show.S01E01…` →
+    /// title "Some Show", original title "示例剧"). The catalog stores it as
+    /// the item's `original_title`, so search finds both names.
+    #[serde(default)]
+    pub original_title: Option<String>,
     pub year: Option<u16>,
     pub season: Option<u16>,
     /// One entry normally; several for multi-episode files (S01E01-E02).
@@ -109,6 +114,7 @@ impl NameGuess {
         NameGuess {
             kind: GuessKind::Unknown,
             title: None,
+            original_title: None,
             year: None,
             season: None,
             episodes: Vec::new(),
