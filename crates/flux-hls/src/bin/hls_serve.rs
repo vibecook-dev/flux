@@ -35,6 +35,7 @@ use flux_core::PlaybackPlan;
 use flux_hls::{presets, Asset, EngineConfig, HlsEngine, HlsError, HlsResource, PlanPrefs};
 use serde_json::json;
 
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Default)]
 struct RUsage {
@@ -48,11 +49,13 @@ struct RUsage {
     rest: [i64; 13],
 }
 
+#[cfg(unix)]
 extern "C" {
     fn getrusage(who: i32, usage: *mut RUsage) -> i32;
 }
 
 /// (user µs, system µs, max RSS bytes) for RUSAGE_SELF (0) or RUSAGE_CHILDREN (-1).
+#[cfg(unix)]
 fn rusage(who: i32) -> (i64, i64, i64) {
     let mut r = RUsage::default();
     // SAFETY: `r` is a properly sized, writable rusage buffer (macOS/arm64 layout).
@@ -65,6 +68,13 @@ fn rusage(who: i32) -> (i64, i64, i64) {
         r.stime_sec * 1_000_000 + r.stime_usec as i64,
         r.maxrss,
     )
+}
+
+/// Not Unix (Windows): there is no getrusage, so `/_stats` reports zero
+/// CPU time and RSS. (Declaring it anyway breaks the MSVC link.)
+#[cfg(not(unix))]
+fn rusage(_who: i32) -> (i64, i64, i64) {
+    (0, 0, 0)
 }
 
 type PlanKey = (String, String);
@@ -353,5 +363,18 @@ mod tests {
             panic!("run")
         };
         assert_eq!((o.port, o.preset.as_str()), (18999, "legacy"));
+    }
+
+    /// `/_stats`' CPU and RSS figures: real ones on Unix, zeros on Windows,
+    /// where a getrusage declaration broke the link of this binary (and so
+    /// `cargo test --workspace`).
+    #[test]
+    fn rusage_reports_this_process() {
+        let (user, system, rss) = rusage(0);
+        if cfg!(unix) {
+            assert!(rss > 0 && user >= 0 && system >= 0, "{user} {system} {rss}");
+        } else {
+            assert_eq!((user, system, rss), (0, 0, 0));
+        }
     }
 }
