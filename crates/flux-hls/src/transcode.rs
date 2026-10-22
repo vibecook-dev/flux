@@ -22,7 +22,8 @@
 //!    encode. Three frames of pre-roll warm the encoder and the source
 //!    decoder (TrueHD starts at a major sync); two frames of post-roll give
 //!    the last kept frame real look-ahead. A source that starts too late or
-//!    ends too early is padded with silence instead, never re-gridded.
+//!    ends too early is padded with silence instead, never re-gridded; a
+//!    late start whose silence reaches the kept frames is logged.
 //! 4. Frames outside [g_k, g_{k+1}) are discarded; the kept frames, exactly
 //!    g_{k+1} − g_k of them, are packaged as an fMP4 fragment with
 //!    tfdt = a0 + g_k·F + D, so segment k ends where k + 1 begins.
@@ -258,6 +259,16 @@ fn filter_chain(lead_src: i64, ratio: i64, rate: u32, min_len: Option<i64>) -> V
         filters.push(format!("apad=whole_len={n}"));
     }
     filters
+}
+
+/// Output samples at the start of a part's kept frames that a late source
+/// leaves silent. The encoder input starts at `e + d` (E on the grid, d the
+/// encoder delay); silence is prepended up to `s_in`, where the source
+/// starts; the kept frames begin at `keep_start`. Pre-roll absorbs a late
+/// start that ends before `keep_start`; the encoder's own delay at the start
+/// of the stream (`keep_start` = E) is not counted.
+fn kept_silence(e: i64, d: i64, s_in: i64, keep_start: i64) -> i64 {
+    (s_in - keep_start.max(e + d)).max(0)
 }
 
 /// One ffmpeg encode covering grid frames [keep_from, keep_to).
@@ -646,6 +657,18 @@ impl AudioTranscoder {
         let d = target.delay();
         let e = g.a0 + enc_start * fsz;
         let lead_src = (e + d - s_in) * ratio;
+        // Padding keeps the frame count right, so source audio missing at the
+        // start of a part no longer shows as a seam hole: say so when the
+        // silence reaches past the pre-roll into the frames the part keeps.
+        let silent = kept_silence(e, d, s_in, g.a0 + from * fsz);
+        if silent > 0 {
+            tracing::warn!(
+                track,
+                from,
+                silence_ms = silent as f64 * 1000.0 / rate as f64,
+                "source audio starts late for a segment part; the gap is encoded as silence"
+            );
+        }
 
         let mut stdin = Vec::with_capacity(frames.iter().map(|f| f.data.len() + 7).sum::<usize>() + 64);
         let input: Vec<String> = match &kind {
@@ -1153,5 +1176,29 @@ mod tests {
                 "apad=whole_len=10240"
             ]
         );
+    }
+
+    /// The padding hides a late source from the frame count, so the silence
+    /// it leaves in the kept frames is measured (and logged by `plan`).
+    #[test]
+    fn late_source_silence_in_kept_frames_is_measured() {
+        // AAC (F = d = 1024), a part keeping grid frames from 10: the encode
+        // starts 3 frames earlier at E = 7F; its input starts at E + d.
+        let (f, d) = (1024, 1024);
+        let (e, keep) = (7 * f, 10 * f);
+        // The source starts before E + d (trimmed), or late but within the
+        // pre-roll: nothing kept is silent.
+        assert_eq!(kept_silence(e, d, e + d - 500, keep), 0);
+        assert_eq!(kept_silence(e, d, keep - 1, keep), 0);
+        assert_eq!(kept_silence(e, d, keep, keep), 0);
+        // A laced block dropped before the window: 10 ms of the kept frames.
+        assert_eq!(kept_silence(e, d, keep + 480, keep), 480);
+        // The start of the stream (from 0, E = 0): the encoder's own delay
+        // is not silence the source left; anything after it is.
+        assert_eq!(kept_silence(0, d, d, 0), 0);
+        assert_eq!(kept_silence(0, d, d + 96, 0), 96);
+        // E-AC-3 (F = 1536, d = 256), from 1: one frame of pre-roll.
+        assert_eq!(kept_silence(0, 256, 1536, 1536), 0);
+        assert_eq!(kept_silence(0, 256, 1600, 1536), 64);
     }
 }
