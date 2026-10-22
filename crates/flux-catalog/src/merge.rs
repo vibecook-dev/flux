@@ -40,8 +40,9 @@ struct Merge<'c> {
     removed: BTreeSet<Id>,
     states: u64,
     /// Items that received flux's own images (frame or generated art) of
-    /// the item merged into them: a poster typeset with the other work's
-    /// title, which the work's art job makes again.
+    /// the item merged into them (a poster typeset with the other work's
+    /// title), or another title or year: the work's art job makes their
+    /// images again.
     art_to: BTreeSet<Id>,
 }
 
@@ -200,6 +201,7 @@ pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64, jobs: u3
     let top_f = top_of(c, from)?;
     let top_t = top_of(c, to)?;
     let parent_f = head(c, from)?.and_then(|h| h.2);
+    let caption_before = caption(c, top_t)?;
     let mut m = Merge {
         c,
         now,
@@ -225,14 +227,34 @@ pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64, jobs: u3
             }
         }
     }
+    m.recaptioned(top_t, caption_before)?;
     m.rearm_art(jobs)?;
     out.touched = m.t;
     out.deleted = m.removed;
     Ok(out)
 }
 
+/// The title and year of an item: what flux typesets into its frame
+/// poster ([`crate::read::art_caption`]).
+fn caption(c: &Connection, id: Id) -> Result<Option<(String, Option<i64>)>> {
+    Ok(c.prepare_cached("SELECT title, year FROM item WHERE id = ?1")?
+        .query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?)
+}
+
 impl Merge<'_> {
-    /// Queue the art job of every work that received another's images.
+    /// Work `id` took another's title or year (a carried locked match, a
+    /// year it lacked): its poster's caption is out of date, so its art
+    /// job is queued too.
+    fn recaptioned(&mut self, id: Id, before: Option<(String, Option<i64>)>) -> Result<()> {
+        if !self.removed.contains(&id) && caption(self.c, id)? != before {
+            self.art_to.insert(id);
+        }
+        Ok(())
+    }
+
+    /// Queue the art job of every work that received another's images or
+    /// another caption.
     fn rearm_art(&self, jobs: u32) -> Result<()> {
         if jobs == 0 {
             return Ok(());
@@ -409,6 +431,7 @@ pub(crate) fn merge_items(c: &Connection, from: Id, into: Id, now: i64, jobs: u3
             "can only merge two top-level works of one kind in one library ({from} {kind_a} → {into} {kind_b})"
         )));
     }
+    let caption_before = caption(c, into)?;
     let mut m = Merge {
         c,
         now,
@@ -418,6 +441,7 @@ pub(crate) fn merge_items(c: &Connection, from: Id, into: Id, now: i64, jobs: u3
         art_to: BTreeSet::new(),
     };
     m.item(from, into)?;
+    m.recaptioned(into, caption_before)?;
     m.rearm_art(jobs)?;
     // `into` as a container (show) is recomputed from its seasons; as a
     // leaf (movie) from its assets.

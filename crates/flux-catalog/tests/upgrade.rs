@@ -435,6 +435,145 @@ fn a_catalog_a_version_2_build_parsed_is_re_parsed() {
     assert_eq!(outdated(), 1);
 }
 
+/// A work that takes a year from a file queues its art job, as flux's own
+/// poster carries the year: a yearless film joined by a dated version,
+/// and an undated show whose subfolder lies in a dated folder of the same
+/// title.
+#[test]
+fn a_work_that_adopts_a_year_queues_its_art_job() {
+    let e = env(LibraryKind::Movies);
+    e.apply(vec![upsert(
+        "Copper Sky/Copper Sky.mkv",
+        movie("Copper Sky", None),
+        None,
+    )]);
+    let m = e.find_top("Copper Sky").id;
+    e.cat
+        .writer()
+        .add_art(
+            m,
+            frame(
+                ArtKind::Poster,
+                "art/1-poster-0000000a.jpg",
+                Some(1),
+                Some(&read::art_caption("Copper Sky", None)),
+            ),
+        )
+        .wait()
+        .unwrap();
+    finish_all_jobs(&e);
+    let stale = |e: &Env, id: Id| {
+        e.cat
+            .read_blocking(move |c| read::stale_art(c, 1, Some(id)))
+            .unwrap()
+    };
+    assert!(stale(&e, m).is_empty());
+    e.apply(vec![upsert(
+        "Copper Sky (2019)/Copper Sky (2019).mkv",
+        movie("Copper Sky", Some(2019)),
+        None,
+    )]);
+    let d = e.detail(m);
+    assert_eq!((d.summary.year, d.assets.len()), (Some(2019), 2));
+    assert_eq!(stale(&e, m).len(), 1, "the poster says Copper Sky");
+    assert_eq!(queued_art_jobs(&e, m), 1);
+
+    let e = env(LibraryKind::Shows);
+    let file = |dir: &str, year: Option<u16>, n: u16| {
+        upsert(
+            &format!("{dir}/Starhold.S01E0{n}.mkv"),
+            episode("Starhold", year, 1, &[n]),
+            None,
+        )
+    };
+    e.apply((1..=2).map(|n| file("Starhold (2004)/WEB", None, n)).collect());
+    let show = e.find_top("Starhold").id;
+    e.cat
+        .writer()
+        .add_art(
+            show,
+            frame(
+                ArtKind::Poster,
+                "art/2-poster-0000000b.jpg",
+                Some(1),
+                Some(&read::art_caption("Starhold", None)),
+            ),
+        )
+        .wait()
+        .unwrap();
+    finish_all_jobs(&e);
+    e.apply((1..=2).map(|n| file("Starhold (2004)", Some(2004), n)).collect());
+    assert_eq!(shows(&e).len(), 1);
+    assert_eq!(e.detail(show).summary.year, Some(2004));
+    assert_eq!(stale(&e, show).len(), 1);
+    assert_eq!(queued_art_jobs(&e, show), 1);
+}
+
+/// A work that another's file moved to takes that work's locked match
+/// (title and year), or a merge gives it the year it lacked: its poster's
+/// caption is out of date, so its art job is queued, although the other
+/// work had no image of flux's own to bring.
+#[test]
+fn a_carried_match_or_merge_that_recaptions_a_work_queues_its_art_job() {
+    let e = env(LibraryKind::Movies);
+    let poster = |e: &Env, id: Id, caption: String| {
+        e.cat
+            .writer()
+            .add_art(
+                id,
+                frame(
+                    ArtKind::Poster,
+                    "art/3-poster-0000000c.jpg",
+                    Some(1),
+                    Some(&caption),
+                ),
+            )
+            .wait()
+            .unwrap();
+    };
+    let tagged = "Copper Sky (2019)/Copper.Sky.2019.Tagword.mkv";
+    e.apply(vec![
+        upsert(
+            "Copper Sky (2019)/Copper Sky (2019).mkv",
+            movie("Copper Sky", Some(2019)),
+            None,
+        ),
+        upsert(tagged, movie("Copper Sky Tagword", Some(2019)), None),
+    ]);
+    let target = e.find_top("Copper Sky").id;
+    let locked = e.find_top("Copper Sky Tagword").id;
+    poster(&e, target, read::art_caption("Copper Sky", Some(2019)));
+    sql(
+        &e,
+        "UPDATE item SET title = 'Copper Sky Redux', sort_title = 'copper sky redux', match_state = 'locked'
+          WHERE id = ?1",
+        locked,
+    );
+    e.cat.writer().rebuild_search_index().wait().unwrap();
+    finish_all_jobs(&e);
+    let out = e.apply(vec![upsert(tagged, movie("Copper Sky", Some(2019)), None)]);
+    assert!(out.items_removed.contains(&locked), "{out:?}");
+    assert_eq!(e.detail(target).summary.title, "Copper Sky Redux");
+    assert_eq!(queued_art_jobs(&e, target), 1);
+
+    let e = env(LibraryKind::Movies);
+    e.apply(vec![
+        upsert("Copper Sky/Copper Sky.mkv", movie("Copper Sky", None), None),
+        upsert(
+            "Sky of Copper (2019)/Sky of Copper (2019).mkv",
+            movie("Sky of Copper", Some(2019)),
+            None,
+        ),
+    ]);
+    let into = e.find_top("Copper Sky").id;
+    let from = e.find_top("Sky of Copper").id;
+    poster(&e, into, read::art_caption("Copper Sky", None));
+    finish_all_jobs(&e);
+    e.cat.writer().merge_items(from, into).wait().unwrap();
+    assert_eq!(e.detail(into).summary.year, Some(2019));
+    assert_eq!(queued_art_jobs(&e, into), 1);
+}
+
 /// A film the old parser cataloged as a film of its own is an extra of
 /// another film now. The emptied film goes, with its images; its users'
 /// state moves to the extra. Nothing is left hidden.

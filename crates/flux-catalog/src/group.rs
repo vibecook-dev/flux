@@ -678,6 +678,19 @@ fn requeue_match(conn: &Connection, r: &Resolver, id: Id) -> Result<()> {
     Ok(())
 }
 
+/// A yearless top-level work takes the year a file gives it: its match is
+/// queued again, and so is its art job, as flux's own poster carries the
+/// year. A work this job created has its art job queued already.
+fn adopt_year(conn: &Connection, r: &Resolver, id: Id, year: Option<u16>) -> Result<()> {
+    conn.prepare_cached("UPDATE item SET year = ?2, updated_at = ?3 WHERE id = ?1")?
+        .execute(params![id, year, r.now])?;
+    requeue_match(conn, r, id)?;
+    if r.job_max_attempts > 0 && !r.created_meta.contains_key(&id) {
+        crate::jobs::rearm_art(conn, id, r.now, r.job_max_attempts)?;
+    }
+    Ok(())
+}
+
 /// Record that `show` has episodes in `folder` (no-op if already known).
 fn claim_folder(conn: &Connection, r: &mut Resolver, show: Id, folder: &str) -> Result<()> {
     if r.claimed.insert((show, folder.to_string())) {
@@ -943,9 +956,7 @@ fn pick_by_year(
     let yearless: Vec<&&Candidate> = cands.iter().filter(|(_, y, _)| y.is_none()).collect();
     if let [only] = yearless.as_slice() {
         // Adopt the year we just learned.
-        conn.prepare_cached("UPDATE item SET year = ?2, updated_at = ?3 WHERE id = ?1")?
-            .execute(params![only.0, w.year, r.now])?;
-        requeue_match(conn, r, only.0)?;
+        adopt_year(conn, r, only.0, w.year)?;
         return Ok(Some((**only).clone()));
     }
     Ok(None)
@@ -1026,9 +1037,7 @@ fn pick_nested(
     // takes the folder's year.
     let inside: Vec<&Nested<'_>> = nested.iter().filter(|n| n.inside && n.cand.1.is_none()).collect();
     if let [only] = inside.as_slice() {
-        conn.prepare_cached("UPDATE item SET year = ?2, updated_at = ?3 WHERE id = ?1")?
-            .execute(params![only.cand.0, w.year, r.now])?;
-        requeue_match(conn, r, only.cand.0)?;
+        adopt_year(conn, r, only.cand.0, w.year)?;
         return Ok(Some(only.cand.clone()));
     }
     Ok(None)
