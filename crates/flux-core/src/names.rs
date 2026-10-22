@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// Bump when the parser's output changes in a way that should trigger re-parsing.
 ///
-/// 3: in a mixed library without a TV or season folder, an episode without
+/// 4: in a mixed library without a TV or season folder, an episode without
 /// an explicit marker needs a numbered series of files beside it, a dated
 /// recording is never one, and `other`/`others` folders hold no extras;
 /// [`LibraryKind::Videos`].
-pub const PARSER_VERSION: u16 = 3;
+pub const PARSER_VERSION: u16 = 4;
 
 /// What kind of library a root belongs to. It is a strong prior for parsing:
 /// `Show 1x03.mkv` in a movie library is still probably an episode, but

@@ -96,7 +96,7 @@ How to call it:
   - "Part Two/Part II/Part 1" stays in the title.
   - "Title - Subtitle" is not split into an alternative title.
   - "The Office (US)", "The Office US" and "Shark Tank (AU)" keep the country.
-- **Mixed libraries need show evidence** (parser v3). Without a TV folder (`TV/`, `Anime/`…) or a season/specials folder around the file:
+- **Mixed libraries need show evidence** (parser v4). Without a TV folder (`TV/`, `Anime/`…) or a season/specials folder around the file:
   - an explicit marker (`S01E02`, `1x02`, `Season 1 Episode 2`, `第2集`) is enough;
   - anything only the fallback (hunch) reads as an episode, and a weaker fast-path marker (a date after a title, `E12`, `Title - 07`) in a name with nothing of a release about it (no technical tags, no release group), needs another video in the folder of one numbered series with it: named alike up to the number read as its episode, which differs (`Clip 01` beside `Clip 02`, `Beach_Day_2019-05-01` beside `Beach_Day_2019-05-04`; not `Site_ep1_4711` beside `Site_ep1_4712`, where only a running id differs). Alone, the file is a movie titled after its whole name. A single clip is not a show of one episode, while a release (`Show.2024.03.15.720p.WEB-GRP`, `[Group] Show - 12`) is still an episode on its own;
   - a date with a time of day after it (`VID_20190501_123456`, `2019-05-01 12-34-56`, `Screen Recording 2019-05-01 at 12.34.56`), or with nothing before it (`2019-05-01.mp4`), is a recording: a movie titled after the whole name, never a daily show filed under the year as its season;
