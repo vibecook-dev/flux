@@ -303,6 +303,8 @@ struct SegmentGrid {
     /// Grid frames [g_k, g_end) of the segment (`None` = to the end).
     g_k: i64,
     g_end: Option<i64>,
+    /// Where the segment starts on the asset's timeline, ns.
+    start_ns: i64,
 }
 
 fn segment_grid(asset: &Asset, track: u32, target: AudioTarget, n: usize) -> Result<SegmentGrid> {
@@ -334,6 +336,7 @@ fn segment_grid(asset: &Asset, track: u32, target: AudioTarget, n: usize) -> Res
         frame,
         g_k,
         g_end: next.map(|s| grid(s.start_ns)),
+        start_ns: span.start_ns,
     })
 }
 
@@ -485,6 +488,14 @@ impl AudioTranscoder {
     /// exact sample (TS timestamps are 90 kHz), so the encoder input again
     /// starts at grid position E + d. The TS index's timeline origin is
     /// ffmpeg's `start_time`, which `-ss` is relative to.
+    ///
+    /// Where the source has no audio (a track that starts late or ends
+    /// early, a gap), the part is silence, not missing: `aresample` fills
+    /// from the timestamps (`first_pts=0`: from the seek point on) and
+    /// `apad` past the end, so every part has its frames (an AVI whose MP3
+    /// started at 29 s answered segment 0 with 500, "encoder produced no
+    /// frames"). The file's last part ends with the last segment, so the
+    /// padding is bounded there too.
     fn plan_direct(
         asset: &Asset,
         track: u32,
@@ -495,7 +506,22 @@ impl AudioTranscoder {
     ) -> Job {
         const PREROLL_FRAMES: i64 = 3;
         let fsz = g.frame;
-        let enc_start = (from - PREROLL_FRAMES).max(0);
+        // An MPEG-PS file of joined recordings: the part the segment lies in
+        // (segments start anew at each), read alone, on its own clock
+        // (`base`: where it starts on the asset's timeline).
+        let (input, base) = match &asset.index.layout {
+            Layout::External(l) => {
+                let (input, base_ns, _) = l.input_at(&asset.index.source.path, g.start_ns);
+                (input, ns_to_ticks(base_ns, g.rate))
+            }
+            _ => (asset.index.source.path.display().to_string(), 0),
+        };
+        // The pre-roll stays in that part: the first grid frame whose
+        // encoder input starts at or after the part's start. (Taken from the
+        // part before, it read that part, which ends at the join: the first
+        // segment after a join was ~3 s of silence.)
+        let in_part = (base - g.a0 - target.delay() + fsz - 1).max(0) / fsz;
+        let enc_start = (from - PREROLL_FRAMES).max(in_part).min(from).max(0);
         let start = g.a0 + enc_start * fsz + target.delay();
         let secs = |ticks: i64| format!("{:.6}", ticks.max(0) as f64 / g.rate as f64);
         // Seek the demuxer a few seconds early and cut exactly on the output
@@ -504,7 +530,7 @@ impl AudioTranscoder {
         // from a segment of an H.264+AC-3 AVI), which accurate seek can't
         // repair; TS seeks are fine either way.
         const SEEK_MARGIN_S: i64 = 3;
-        let pre = (start - SEEK_MARGIN_S * g.rate as i64).max(0);
+        let pre = (start - base - SEEK_MARGIN_S * g.rate as i64).max(0);
         let mut args: Vec<String> = [
             "-hide_banner",
             "-nostdin",
@@ -520,22 +546,48 @@ impl AudioTranscoder {
         if pre > 0 {
             args.extend(["-ss".to_string(), secs(pre)]);
         }
-        args.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
-        match (&asset.index.layout, asset.index.track(track)) {
+        args.extend(["-i".to_string(), input]);
+        const FILL: &str = "aresample=async=1:first_pts=0,apad";
+        // A part of a joined MPEG-PS, read alone, numbers its streams in its
+        // own order (a part that starts with audio lists it first): by the
+        // stream's id, which every part keeps.
+        let part_stream = match (&asset.index.layout, asset.index.track(track)) {
+            (Layout::External(l), Some(t)) if l.parts.len() > 1 => t.extra.stream_id,
+            _ => None,
+        };
+        match (&asset.index.layout, asset.index.track(track), part_stream) {
             // By PID: ffmpeg's stream numbers count streams the index skips.
             // A filtergraph input takes the *first* stream of the PID: for
             // Blu-ray TrueHD ffmpeg adds a second one (the AC-3 core) on the
             // same PID, which `-map 0:i:<pid>` would map too.
-            (Layout::Ts(_), Some(t)) => args.extend([
+            (Layout::Ts(_), Some(t), _) => args.extend([
                 "-filter_complex".to_string(),
-                format!("[0:i:{}]anull[a]", t.id),
+                format!("[0:i:{}]{FILL}[a]", t.id),
                 "-map".to_string(),
                 "[a]".to_string(),
             ]),
-            _ => args.extend(["-map".to_string(), format!("0:{track}")]),
+            (_, _, Some(id)) => args.extend([
+                "-map".to_string(),
+                format!("0:i:{id}"),
+                "-af".to_string(),
+                FILL.to_string(),
+            ]),
+            _ => args.extend([
+                "-map".to_string(),
+                format!("0:{track}"),
+                "-af".to_string(),
+                FILL.to_string(),
+            ]),
         }
-        args.extend(["-ss".to_string(), secs(start - pre)]);
-        if let Some(e) = to {
+        args.extend(["-ss".to_string(), secs(start - base - pre)]);
+        // The last part ends where the last segment does (`apad` would
+        // never end otherwise).
+        let end = to.or_else(|| {
+            let last = asset.segments.segments.last()?;
+            let t = ns_to_ticks(last.end_ns, g.rate) - g.a0;
+            Some(((t + fsz - 1) / fsz).max(from + 1))
+        });
+        if let Some(e) = end {
             args.extend(["-t".to_string(), secs(g.a0 + (e + 2) * fsz - start)]);
         }
         let (codec_name, muxer) = if target.codec == Codec::Eac3 {
@@ -561,7 +613,7 @@ impl AudioTranscoder {
             args,
             first_index: enc_start,
             keep_from: from,
-            keep_to: to,
+            keep_to: to.or(end),
         }
     }
 

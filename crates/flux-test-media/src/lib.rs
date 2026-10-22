@@ -284,7 +284,7 @@ pub enum Clip {
     /// 10 s, 640×360 25 fps HEVC (2 s open GOP) + stereo AAC, MPEG-TS.
     HevcAacTs,
     /// 10 s, 320×240 25 fps MPEG-4 Part 2 + MP2, AVI (no index flux reads:
-    /// the ffprobe-scan path).
+    /// the ffprobe path).
     Mpeg4Mp2Avi,
     /// 6 s, 640×360 24 fps HEVC Main 10 tagged HDR10 (PQ, BT.2020, mastering
     /// display and content light level), Matroska: the tone-mapping path.
@@ -360,9 +360,56 @@ pub enum Clip {
     /// `vpcC` (a level VP9 doesn't define, as some muxers write) and BT.709
     /// limited range as the `vpcC`'s colour, and no `colr` box.
     Vp9Level0FragMp4,
+    // Containers only ffmpeg reads (flux-hls `index::external`), 10 s of
+    // 25 fps video with stereo audio:
+    /// 320×240 WMV 8 + WMA, ASF.
+    Wmv2WmaAsf,
+    /// 320×240 Sorenson Spark + AAC, FLV.
+    Flv1AacFlv,
+    /// 320×240 MPEG-1 (15-frame GOPs with B-frames) + MP2, MPEG-PS.
+    Mpeg1Mp2Ps,
+    /// 352×288 RealVideo 2 + AC-3, RealMedia.
+    Rv20Ac3Rm,
+    /// The first 40 % of [`Clip::Flv1AacFlv`]'s bytes: a download that
+    /// stopped, whose `onMetaData` still says 10 s.
+    CutFlv,
+    /// 20 s of [`Clip::Flv1AacFlv`]'s kind whose audio has no packets from
+    /// 5 s to 13 s.
+    GapAudioFlv,
+    /// 320×240 WMV 7 at 29.97 fps with uneven millisecond timestamps, so
+    /// ffprobe reports `r_frame_rate` 1000/1 (and no average), + WMA, ASF.
+    MsClockWmv1Asf,
+    /// 8 s of `testsrc` (a frame counter, unlike `testsrc2`) as
+    /// [`Clip::Mpeg1Mp2Ps`]: the second recording of [`Clip::JoinedPs`].
+    Mpeg1Mp2PsB,
+    /// [`Clip::Mpeg1Mp2Ps`] then [`Clip::Mpeg1Mp2PsB`], joined byte for
+    /// byte (concatenated VOBs, `copy /b`): the clock starts over at 10 s.
+    JoinedPs,
+    /// [`Clip::Flv1AacFlv`] written without `onMetaData` (`-flvflags
+    /// no_metadata`): no duration in the header.
+    BareFlv,
+    /// The first 40 % of [`Clip::BareFlv`]'s bytes: no duration anywhere but
+    /// its tags (ffmpeg's look at the last tag finds a cut one).
+    CutBareFlv,
+    /// 30 s of `testsrc` as MPEG-1 + MP2 PS with I-frames only at 0 and
+    /// 15 s: a seek past 15 s lands where no frame decodes (any packet,
+    /// then nothing to start from).
+    SparseKeysPs,
+    /// [`Clip::Mpeg1Mp2PsB`] from the pack before its first sequence header
+    /// past 40 % of its bytes (a recording that starts mid-stream): its
+    /// first packet is video, but its audio starts 0.63 s earlier, and
+    /// ffmpeg starts its clock there.
+    CutMpeg1Mp2PsB,
+    /// [`Clip::Mpeg1Mp2Ps`] with its audio muxed as the first stream: ffmpeg
+    /// lists it first (stream 0, the video 1).
+    Mpeg1Mp2PsAudioFirst,
+    /// [`Clip::Mpeg1Mp2PsAudioFirst`] then [`Clip::CutMpeg1Mp2PsB`], joined
+    /// byte for byte: the second part, read alone, lists its video first,
+    /// so its streams are numbered unlike the whole file's.
+    JoinedCutPs,
 }
 
-const CLIP_COUNT: usize = 28;
+const CLIP_COUNT: usize = 43;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -384,6 +431,13 @@ enum Recipe {
     LaceAudio(Clip, usize),
     /// ffmpeg with these arguments, then this change to the file's bytes.
     FfmpegPatched(Vec<String>, fn(&mut [u8]) -> Result<(), String>),
+    /// The first percent of another clip's bytes.
+    Truncate(Clip, u64),
+    /// Two clips' bytes, one after the other.
+    Join(Clip, Clip),
+    /// An MPEG-PS clip from the pack header before its first sequence
+    /// header past this percent of its bytes.
+    CutAtSequence(Clip, u64),
 }
 
 impl Clip {
@@ -417,6 +471,21 @@ impl Clip {
         Clip::Vp9VorbisWebm,
         Clip::Vp9AacMp4,
         Clip::Vp9Level0FragMp4,
+        Clip::Wmv2WmaAsf,
+        Clip::Flv1AacFlv,
+        Clip::Mpeg1Mp2Ps,
+        Clip::Rv20Ac3Rm,
+        Clip::CutFlv,
+        Clip::GapAudioFlv,
+        Clip::MsClockWmv1Asf,
+        Clip::Mpeg1Mp2PsB,
+        Clip::JoinedPs,
+        Clip::BareFlv,
+        Clip::CutBareFlv,
+        Clip::SparseKeysPs,
+        Clip::CutMpeg1Mp2PsB,
+        Clip::Mpeg1Mp2PsAudioFirst,
+        Clip::JoinedCutPs,
     ];
 
     /// File name of the cached clip.
@@ -450,6 +519,21 @@ impl Clip {
             Clip::Vp9VorbisWebm => "vp9_vorbis.webm",
             Clip::Vp9AacMp4 => "vp9_aac.mp4",
             Clip::Vp9Level0FragMp4 => "vp9_aac_level0_frag.mp4",
+            Clip::Wmv2WmaAsf => "synth_wmv2_wma.wmv",
+            Clip::Flv1AacFlv => "synth_flv1_aac.flv",
+            Clip::Mpeg1Mp2Ps => "synth_mpeg1_mp2.mpg",
+            Clip::Rv20Ac3Rm => "synth_rv20_ac3.rm",
+            Clip::CutFlv => "cut_flv1_aac.flv",
+            Clip::GapAudioFlv => "gap_audio_flv1_aac.flv",
+            Clip::MsClockWmv1Asf => "ms_clock_wmv1_wma.wmv",
+            Clip::Mpeg1Mp2PsB => "synth_mpeg1_mp2_b.mpg",
+            Clip::JoinedPs => "joined_mpeg1_mp2.mpg",
+            Clip::BareFlv => "bare_flv1_aac.flv",
+            Clip::CutBareFlv => "cut_bare_flv1_aac.flv",
+            Clip::SparseKeysPs => "sparse_keys_mpeg1_mp2.mpg",
+            Clip::CutMpeg1Mp2PsB => "cut_mpeg1_mp2_b.mpg",
+            Clip::Mpeg1Mp2PsAudioFirst => "synth_mpeg1_mp2_audio_first.mpg",
+            Clip::JoinedCutPs => "joined_audio_first_cut_mpeg1_mp2.mpg",
         }
     }
 
@@ -480,6 +564,19 @@ impl Clip {
             Clip::Mpeg4Mp2Avi => &["mpeg4", "mp2"],
             Clip::Hdr10HevcMkv | Clip::Hevc1080p60Mkv => &["libx265"],
             Clip::Ac3Eac3BurstsMkv | Clip::LacedAc3Eac3Mkv => &["libx264", "ac3", "eac3"],
+            Clip::Wmv2WmaAsf => &["wmv2", "wmav2"],
+            Clip::Flv1AacFlv | Clip::CutFlv | Clip::GapAudioFlv | Clip::BareFlv | Clip::CutBareFlv => {
+                &["flv", "aac"]
+            }
+            Clip::MsClockWmv1Asf => &["wmv1", "wmav2"],
+            Clip::Mpeg1Mp2Ps
+            | Clip::Mpeg1Mp2PsB
+            | Clip::JoinedPs
+            | Clip::SparseKeysPs
+            | Clip::CutMpeg1Mp2PsB
+            | Clip::Mpeg1Mp2PsAudioFirst
+            | Clip::JoinedCutPs => &["mpeg1video", "mp2"],
+            Clip::Rv20Ac3Rm => &["rv20", "ac3"],
             Clip::HevcAacTs
             | Clip::VfrHevcShortMkv
             | Clip::Hevc30Mkv
@@ -503,7 +600,17 @@ impl Clip {
             | Clip::BaselineH264Mp4
             | Clip::Vp9VorbisWebm
             | Clip::Vp9AacMp4
-            | Clip::Vp9Level0FragMp4 => Some(250),
+            | Clip::Vp9Level0FragMp4
+            | Clip::Wmv2WmaAsf
+            | Clip::Flv1AacFlv
+            | Clip::BareFlv
+            | Clip::Mpeg1Mp2Ps
+            | Clip::Mpeg1Mp2PsAudioFirst
+            | Clip::Rv20Ac3Rm => Some(250),
+            Clip::GapAudioFlv => Some(500),
+            Clip::MsClockWmv1Asf => Some(300),
+            Clip::Mpeg1Mp2PsB => Some(200),
+            Clip::SparseKeysPs => Some(750),
             Clip::Hdr10HevcMkv => Some(144),
             Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
@@ -872,6 +979,149 @@ impl Clip {
                 ]));
                 return Some(Recipe::FfmpegPatched(a, level0_bt709_vpcc));
             }
+            Clip::Wmv2WmaAsf => {
+                a.extend(video("320x240", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-c:v", "wmv2", "-b:v", "1M", "-g", "125", "-c:a", "wmav2", "-b:a", "128k", "-ar",
+                    "44100", "-ac", "2", "-f", "asf",
+                ]));
+            }
+            Clip::Flv1AacFlv | Clip::BareFlv => {
+                a.extend(video("320x240", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&["-c:v", "flv", "-b:v", "1M", "-g", "125", "-ar", "44100"]));
+                a.extend(aac);
+                if self == Clip::BareFlv {
+                    a.extend(s(&["-flvflags", "no_metadata"]));
+                }
+                a.extend(s(&["-f", "flv"]));
+            }
+            Clip::GapAudioFlv => {
+                a.extend(video("320x240", "25", 20));
+                a.extend(s(&[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=20",
+                    "-af",
+                    "aselect='not(between(t,5,13))'",
+                    "-c:v",
+                    "flv",
+                    "-b:v",
+                    "1M",
+                    "-g",
+                    "125",
+                ]));
+                a.extend(aac);
+                a.extend(s(&["-f", "flv"]));
+            }
+            Clip::MsClockWmv1Asf => {
+                a.extend(video("320x240", "30000/1001", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-vf",
+                    "settb=1/1000,setpts='round(N*1001/30+3*mod(N\\,4))'",
+                    "-fps_mode",
+                    "passthrough",
+                    "-enc_time_base:v",
+                    "1:1000",
+                    "-c:v",
+                    "wmv1",
+                    "-b:v",
+                    "1M",
+                    "-c:a",
+                    "wmav2",
+                    "-b:a",
+                    "128k",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "asf",
+                ]));
+            }
+            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::Mpeg1Mp2PsAudioFirst => {
+                if self == Clip::Mpeg1Mp2PsB {
+                    a.extend(s(&[
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "testsrc=size=320x240:rate=25:duration=8",
+                    ]));
+                    a.extend(s(&[
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "sine=frequency=660:sample_rate=48000:duration=8",
+                    ]));
+                } else {
+                    a.extend(video("320x240", "25", 10));
+                    a.extend(tone(10));
+                }
+                if self == Clip::Mpeg1Mp2PsAudioFirst {
+                    a.extend(s(&["-map", "1:a", "-map", "0:v"]));
+                }
+                a.extend(s(&[
+                    "-c:v",
+                    "mpeg1video",
+                    "-b:v",
+                    "2M",
+                    "-g",
+                    "15",
+                    "-bf",
+                    "2",
+                    "-c:a",
+                    "mp2",
+                    "-b:a",
+                    "192k",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "mpeg",
+                ]));
+            }
+            Clip::Rv20Ac3Rm => {
+                a.extend(video("352x288", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-c:v", "rv20", "-b:v", "1M", "-g", "125", "-c:a", "ac3", "-b:a", "128k", "-ac", "2",
+                    "-f", "rm",
+                ]));
+            }
+            Clip::CutFlv => return Some(Recipe::Truncate(Clip::Flv1AacFlv, 40)),
+            Clip::CutBareFlv => return Some(Recipe::Truncate(Clip::BareFlv, 40)),
+            Clip::SparseKeysPs => {
+                a.extend(s(&[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=size=320x240:rate=25:duration=30",
+                ]));
+                a.extend(tone(30));
+                a.extend(s(&[
+                    "-c:v",
+                    "mpeg1video",
+                    "-b:v",
+                    "1M",
+                    "-g",
+                    "375",
+                    "-bf",
+                    "0",
+                    "-c:a",
+                    "mp2",
+                    "-b:a",
+                    "128k",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "mpeg",
+                ]));
+            }
+            Clip::JoinedPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::Mpeg1Mp2PsB)),
+            Clip::CutMpeg1Mp2PsB => return Some(Recipe::CutAtSequence(Clip::Mpeg1Mp2PsB, 40)),
+            Clip::JoinedCutPs => return Some(Recipe::Join(Clip::Mpeg1Mp2PsAudioFirst, Clip::CutMpeg1Mp2PsB)),
         }
         Some(Recipe::Ffmpeg(a))
     }
@@ -948,6 +1198,39 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
             patch(&mut b)?;
             std::fs::write(&tmp, b).map_err(|e| e.to_string())
         }),
+        Recipe::Join(a, b) => {
+            let (a, b) = (clip(a)?, clip(b)?);
+            std::fs::read(&a)
+                .and_then(|mut x| {
+                    x.extend(std::fs::read(&b)?);
+                    std::fs::write(&tmp, x)
+                })
+                .map_err(|e| e.to_string())
+        }
+        Recipe::Truncate(from, percent) => {
+            let src = clip(from)?;
+            std::fs::read(&src).map_err(|e| e.to_string()).and_then(|mut b| {
+                b.truncate((b.len() as u64 * percent / 100) as usize);
+                std::fs::write(&tmp, &b).map_err(|e| e.to_string())
+            })
+        }
+        Recipe::CutAtSequence(from, percent) => {
+            let src = clip(from)?;
+            std::fs::read(&src).map_err(|e| e.to_string()).and_then(|b| {
+                let find = |at: usize, code: u8| {
+                    b[at..]
+                        .windows(4)
+                        .position(|w| w == [0, 0, 1, code])
+                        .map(|k| at + k)
+                };
+                let header = find((b.len() as u64 * percent / 100) as usize, 0xB3);
+                let pack = header.and_then(|h| b[..h].windows(4).rposition(|w| w == [0, 0, 1, 0xBA]));
+                match pack {
+                    Some(p) => std::fs::write(&tmp, &b[p..]).map_err(|e| e.to_string()),
+                    None => Err("no sequence header after the cut".into()),
+                }
+            })
+        }
     };
     if let Err(e) = made {
         let _ = std::fs::remove_file(&tmp);

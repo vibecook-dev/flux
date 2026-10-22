@@ -21,6 +21,14 @@ pub(crate) fn video_fourcc(f: [u8; 4]) -> Codec {
         b"MPG2" | b"MPEG" | b"MX5P" | b"HDV1" | b"HDV2" | b"HDV3" => Codec::Mpeg2Video,
         b"WVC1" | b"WMV3" => Codec::Vc1,
         b"APCN" | b"APCH" | b"APCS" | b"APCO" | b"AP4H" | b"AP4X" => Codec::ProRes,
+        b"WMV1" => Codec::Wmv1,
+        b"WMV2" => Codec::Wmv2,
+        // Microsoft MPEG-4 v1–v3 and the DivX 3 hacks of v3.
+        b"MPG4" | b"MP41" | b"DIV1" | b"MP42" | b"DIV2" | b"MP43" | b"DIV3" | b"DIV4" | b"AP41" | b"COL1"
+        | b"DVX3" => Codec::Msmpeg4,
+        b"FLV1" => Codec::Flv1,
+        b"VP60" | b"VP61" | b"VP62" | b"VP6F" | b"VP6A" => Codec::Vp6,
+        b"MPG1" => Codec::Mpeg1Video,
         _ => Codec::Other,
     }
 }
@@ -37,6 +45,8 @@ pub(crate) fn wave_format(tag: u16) -> Codec {
         0x6771 | 0x674f | 0x6750 | 0x6751 => Codec::Vorbis,
         0xf1ac => Codec::Flac,
         0x704f => Codec::Opus,
+        0x0160 | 0x0161 => Codec::Wma,
+        0x0162 => Codec::WmaPro,
         _ => Codec::Other,
     }
 }
@@ -97,5 +107,10 @@ mod tests {
         assert_eq!(video_fourcc(*b"H264"), Codec::H264);
         assert_eq!(video_fourcc(*b"????"), Codec::Other);
         assert_eq!(wave_format(0x55), Codec::Mp3);
+        // Old Windows codecs are named, not "Other".
+        assert_eq!(video_fourcc(*b"DIV3"), Codec::Msmpeg4);
+        assert_eq!(video_fourcc(*b"wmv2"), Codec::Wmv2);
+        assert_eq!(wave_format(0x0161), Codec::Wma);
+        assert_eq!(wave_format(0x0162), Codec::WmaPro);
     }
 }

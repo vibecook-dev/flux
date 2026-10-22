@@ -660,7 +660,7 @@ async fn build_asset(st: &AppState, loc: &AssetLocation) -> Result<Arc<Asset>, H
             .await;
     }
     let ffprobe = st.cfg.ffprobe.clone();
-    // A stalled or endless ffprobe scan is killed (review ROB-1).
+    // A stalled or endless ffprobe run is killed (review ROB-1).
     let limits = st.engine.config().index_scan_limits;
     let (idx, bytes) = tokio::task::spawn_blocking(move || {
         let src = flux_hls::source::Source::open(&path)?;
@@ -1116,11 +1116,22 @@ pub async fn play(
     let prefs = prefs_of(&req, subtitle_files(&st, loc.asset_id).await?);
     let (asset, plan, source) = plan_for(&st, &loc, &caps, &prefs).await?;
     let id = plan_id(loc.asset_id, source, &plan);
-    let duration_ms = loc.duration_ms.or_else(|| {
-        asset
-            .as_ref()
-            .map(|a| (a.index.duration_ns.max(0) / 1_000_000) as u64)
-    });
+    // What the player sees: the span of the playlist for HLS, the file's
+    // duration for direct play. The catalog's can be a header's claim the
+    // packets don't bear out (an AVI's OpenDML `dmlh`, a cut FLV), and the
+    // session's progress and "watched" point follow this.
+    let index_ms = |a: &Arc<Asset>| (a.index.duration_ns.max(0) / 1_000_000) as u64;
+    let duration_ms = match &asset {
+        Some(a) if !plan.is_direct() => {
+            let segs = &a.segments.segments;
+            let span = match (segs.first(), segs.last()) {
+                (Some(f), Some(l)) => (l.end_ns - f.start_ns).max(0) / 1_000_000,
+                _ => 0,
+            };
+            Some(span as u64).filter(|&d| d > 0).or(loc.duration_ms)
+        }
+        a => loc.duration_ms.or_else(|| a.as_ref().map(index_ms)),
+    };
     let entry = st.play.register(PlanEntry {
         id: id.clone(),
         asset_id: loc.asset_id,

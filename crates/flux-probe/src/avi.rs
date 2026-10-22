@@ -84,18 +84,35 @@ pub(crate) fn parse(ctx: &mut Ctx<'_>) -> PResult<Parsed> {
             _ => {}
         }
     }
-    // OpenDML files (> 1 GiB) only count the first RIFF in avih; dmlh has the total.
-    let frames = odml_frames.unwrap_or(total_frames);
-    r.duration_ms = match (odml_frames, video_duration) {
-        (None, Some(d)) => Some(d),
-        _ if frames > 0 && usec_per_frame > 0 => Some(frames * usec_per_frame / 1000),
-        (_, d) => d,
-    };
+    r.duration_ms = duration_ms(video_duration, odml_frames, total_frames, usec_per_frame);
+    if let (Some(v), Some(f)) = (video_duration, odml_frames) {
+        let dmlh = f * usec_per_frame / 1000;
+        if usec_per_frame > 0 && v.abs_diff(dmlh) > (v / 100).max(1000) {
+            ctx.warn(format!(
+                "OpenDML dmlh says {f} frames ({dmlh} ms), the video stream {v} ms: the stream's length is used"
+            ));
+        }
+    }
     r.has_index = flags & AVIF_HASINDEX != 0;
     Ok(Parsed {
         result: r,
         locator: None,
     })
+}
+
+/// The file's duration in ms: the video stream's length (`strh`
+/// dwLength × dwScale / dwRate), which counts every RIFF of an OpenDML file
+/// and is what FFmpeg uses. The frame counts of `dmlh` (OpenDML) and `avih`
+/// (the first RIFF only) are fallbacks: `dmlh` was 0.5×–2.3× the real
+/// length in 7 of 146 AVIs of one library (one counted the audio chunks too).
+fn duration_ms(
+    video: Option<u64>,
+    odml_frames: Option<u64>,
+    avih_frames: u64,
+    usec_per_frame: u64,
+) -> Option<u64> {
+    let frames = odml_frames.unwrap_or(avih_frames);
+    video.or_else(|| (frames > 0 && usec_per_frame > 0).then(|| frames * usec_per_frame / 1000))
 }
 
 /// One stream list → (track, duration in ms).
@@ -211,6 +228,21 @@ mod tests {
         assert_eq!(vprp_sar(&b), None, "header only: FFmpeg ignores it");
         b.extend_from_slice(&[0; 32]); // one VIDEO_FIELD_DESC
         assert_eq!(vprp_sar(&b), Some(flux_core::Rational { num: 32, den: 27 }));
+    }
+
+    /// OpenDML: the video stream's length wins over `dmlh`, which some
+    /// muxers fill with the video plus audio chunk count.
+    #[test]
+    fn opendml_duration_is_the_video_streams() {
+        // 25 fps (40 000 µs per frame), 1000 s of video.
+        assert_eq!(
+            duration_ms(Some(1_000_000), Some(57_000), 9_000, 40_000),
+            Some(1_000_000)
+        );
+        // No stream length: dmlh, then avih.
+        assert_eq!(duration_ms(None, Some(25_000), 9_000, 40_000), Some(1_000_000));
+        assert_eq!(duration_ms(None, None, 9_000, 40_000), Some(360_000));
+        assert_eq!(duration_ms(None, None, 0, 40_000), None);
     }
 
     #[test]

@@ -183,7 +183,7 @@ export const goldenItemDetail = {
         "faststart": null,
         "has_index": true,
         "needs_frame_sei": false,
-        "probe_version": 2,
+        "probe_version": 3,
         "reads": 3,
         "title": "Dune Part Two",
         "tracks": [
@@ -1148,6 +1148,7 @@ export const goldenReasons = [
     "reason": "bitrate_too_high"
   },
   {
+    "container": "asf",
     "reason": "no_index"
   },
   {

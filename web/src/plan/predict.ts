@@ -240,7 +240,7 @@ export function predictPlan({ probe, caps, audioTrack, subtitleTrack, subtitleFi
   }
   // When the video is re-encoded anyway, the container is moot: don't also claim a lossless repackage.
   if (!direct && !INDEXABLE.includes(probe.container) && !transcodeVideo) {
-    reasons.push({ reason: 'no_index' });
+    reasons.push({ reason: 'no_index', container: probe.container });
     transcodeVideo = true;
   }
   // "Repackages the streams (no quality loss)" only when the video is copied (as plan.rs).

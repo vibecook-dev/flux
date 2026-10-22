@@ -19,9 +19,13 @@
 //!   -noaccurate_seek`; an MPEG-TS source is instead fed from that keyframe
 //!   through stdin, [`crate::ts::video_input`], since ffmpeg's TS seek lands
 //!   on any PES), drops the frames before the piece (`trim`), and
-//!   forces an IDR at every piece boundary. Its fragmented-MP4 output is
-//!   parsed as it streams in, and each piece is published as soon as its
-//!   frames are complete, so a request waits only for its own piece.
+//!   forces an IDR at every piece boundary. A container only ffmpeg reads
+//!   has no keyframe list: its run seeks by time a margin before the piece
+//!   and converts to the index's constant frame rate (`fps`, `tpad`), so
+//!   the frame counts are exact by construction (`external_window`).
+//!   Its fragmented-MP4 output is parsed as it streams in, and each piece
+//!   is published as soon as its frames are complete, so a request waits
+//!   only for its own piece.
 //! - Frame counts are exact per piece (`-frames:v`, one IDR per piece, no
 //!   B-frames, CTS = presentation offset D): pieces are independent, any one
 //!   can be produced cold, and they line up with every audio rendition
@@ -214,6 +218,60 @@ fn converts(stts: &[(u32, u32)], timescale: u32, frame_duration: Option<u32>, ra
         }
     }
     true
+}
+
+/// Where a run of an index-less asset (`Layout::External`) starts ffmpeg:
+/// `input` what it opens (the file, or the part of it the run starts in,
+/// [`ExternalLayout::input_at`](crate::index::external::ExternalLayout::input_at)),
+/// `seek_us` its `-ss` (µs from that input's start, as ffmpeg counts it),
+/// and where the run's first piece starts on the input's own clock (µs):
+/// the run keeps the input's timestamps (`-copyts`) and subtracts that.
+/// Without `-copyts` the timestamps after `-ss` depend on the ffmpeg
+/// version for a file whose start time isn't 0: 6.1 left the video's start
+/// time in (an MPEG-PS piece showed the source 0.53 s early), 8.1 takes it
+/// out. Audio agrees across versions, and keeps its `-ss` arithmetic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Window {
+    pub input: String,
+    pub seek_us: i64,
+    pub first_us: i64,
+}
+
+/// The [`Window`] of a run whose first piece is `first`, or `None` for an
+/// indexed asset: the seek margin before the piece
+/// ([`crate::index::external::ExternalLayout::seek_margin_ns`]) plus
+/// `back_us` (a retry, see [`SEEK_BACK_US`]), never before the start of
+/// the input.
+pub(crate) fn external_window(asset: &Asset, first: &Piece, ts: f64, back_us: i64) -> Option<Window> {
+    let Layout::External(l) = &asset.index.layout else {
+        return None;
+    };
+    let t0_ns = (first.start_ticks as f64 * 1e9 / ts).round() as i64;
+    let (input, base_ns, clock_ns) = l.input_at(&asset.index.source.path, t0_ns);
+    let t0 = (t0_ns - base_ns) / 1000;
+    let seek = (t0 - l.seek_margin_ns.max(0) / 1000 - back_us.max(0)).max(0);
+    Some(Window {
+        input,
+        seek_us: seek,
+        first_us: clock_ns / 1000 + t0,
+    })
+}
+
+/// How much further back a time-based run seeks on each retry, µs. A seek
+/// past a file's last keyframe can decode nothing: MPEG-PS seeks land on
+/// any packet, and in a RealMedia file whose index names a stream it
+/// doesn't have, every target after the last keyframe (the last 4.2 s)
+/// decoded no frame. A run that produced no frame at all is retried from
+/// 15 s, then 60 s earlier. The frame grid (`fps=…:start_time=0`) drops
+/// what comes before the piece, so the pieces are the same from any seek
+/// point.
+pub(crate) const SEEK_BACK_US: [i64; 3] = [0, 15_000_000, 60_000_000];
+
+/// µs as ffmpeg seconds ("12.345678", "-0.500000").
+fn micros(us: i64) -> String {
+    let sign = if us < 0 { "-" } else { "" };
+    let us = us.unsigned_abs();
+    format!("{sign}{}.{:06}", us / 1_000_000, us % 1_000_000)
 }
 
 /// Clockwise display rotation of the asset's video (0/90/180/270).
@@ -909,7 +967,8 @@ impl VideoTranscoder {
     /// index lists them (PB-2): frame counts, the trim point and the forced
     /// IDR times then come from real timestamps, not from a frame rate.
     /// `burn` is the subtitle drawn into the picture and what was read from
-    /// it ([`crate::burn`]).
+    /// it ([`crate::burn`]). A time-based run (an index-less asset) seeks
+    /// `seek_back_us` further back than its margin ([`SEEK_BACK_US`]).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn args(
         asset: &Asset,
@@ -920,6 +979,7 @@ impl VideoTranscoder {
         enc: VideoEncoder,
         vaapi_device: &std::path::Path,
         burn: Option<(&BurnIn, &BurnProbe)>,
+        seek_back_us: i64,
     ) -> Result<Vec<String>> {
         let v = asset
             .index
@@ -975,25 +1035,40 @@ impl VideoTranscoder {
         // Matroska/MP4 keyframe times are absolute container times, and
         // ffmpeg adds the file's start_time to `-ss` unless told the seek
         // point is a timestamp (PB-NEW-1: a file starting at 1 s lost its
-        // first second). The ffprobe-scan index already counts from the
-        // start time.
+        // first second). The other indexes count from the start time.
         if matches!(asset.index.layout, Layout::Matroska(_) | Layout::Mp4(_)) {
             a.extend(["-seek_timestamp".to_string(), "1".into()]);
         }
-        if matches!(asset.index.layout, Layout::Ts(_)) {
-            // MPEG-TS: ffmpeg's `-ss` lands on any PES by DTS, not on the
-            // keyframe (HEVC then misses references and loses frames), so
-            // the run reads the source from its keyframe on through stdin
-            // ([`Self::ts_input`]); the input's time starts at that keyframe.
-            a.extend(["-f", "mpegts", "-i", "pipe:0"].map(String::from));
-        } else {
-            // Start exactly on the source keyframe of the run's segment.
-            a.extend([
-                "-ss".to_string(),
-                format!("{:.6}", span.start_ns as f64 / 1e9),
-                "-noaccurate_seek".into(),
-            ]);
-            a.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
+        // Containers only ffmpeg reads have no keyframe list: the run seeks
+        // by time, a margin before its first piece, and ffmpeg's accurate
+        // seek decodes from the keyframe before that (`external_window`).
+        let window = external_window(asset, first, ts, seek_back_us);
+        match (&asset.index.layout, &window) {
+            (Layout::Ts(_), _) => {
+                // MPEG-TS: ffmpeg's `-ss` lands on any PES by DTS, not on
+                // the keyframe (HEVC then misses references and loses
+                // frames), so the run reads the source from its keyframe on
+                // through stdin ([`Self::ts_input`]); the input's time
+                // starts at that keyframe.
+                a.extend(["-f", "mpegts", "-i", "pipe:0"].map(String::from));
+            }
+            (_, Some(w)) => {
+                // The input's own timestamps (see `Window`).
+                a.push("-copyts".to_string());
+                if w.seek_us > 0 {
+                    a.extend(["-ss".to_string(), micros(w.seek_us)]);
+                }
+                a.extend(["-i".to_string(), w.input.clone()]);
+            }
+            _ => {
+                // Start exactly on the source keyframe of the run's segment.
+                a.extend([
+                    "-ss".to_string(),
+                    format!("{:.6}", span.start_ns as f64 / 1e9),
+                    "-noaccurate_seek".into(),
+                ]);
+                a.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
+            }
         }
         // The run's first frame on the source timeline: where the subtitle
         // input is lined up (crate::burn).
@@ -1002,7 +1077,13 @@ impl VideoTranscoder {
             .unwrap_or(first.start_ticks);
         if let Some((b, probe)) = burn {
             let clock = burn::start_clock_origin_s(&asset.index.layout);
-            a.extend(burn::input_args(b, probe, first_ticks as f64 / ts, clock));
+            a.extend(burn::input_args(
+                b,
+                probe,
+                first_ticks as f64 / ts,
+                clock,
+                window.is_some(),
+            ));
         }
         let map = if burn.is_some() { "[out]" } else { "0:v:0" };
         // passthrough: never duplicate/drop frames to fake a constant rate
@@ -1025,10 +1106,21 @@ impl VideoTranscoder {
             ]
             .map(String::from),
         );
-        if run.iter().all(|p| p.frames.is_some()) {
+        // Frames per piece: from the index, else predicted from the frame
+        // grid. A converted constant rate (`external_window`) makes the
+        // prediction exact, also for the file's last piece.
+        let count = |p: &Piece| {
+            p.frames.map(u64::from).or_else(|| {
+                window
+                    .as_ref()
+                    .and(v.frame_duration)
+                    .map(|fd| ((p.end_ticks - p.start_ticks).max(1) as u64).div_ceil(u64::from(fd.max(1))))
+            })
+        };
+        if run.iter().all(|p| count(p).is_some()) {
             let n: u64 = match frames {
                 Some(f) => f.per_piece.iter().map(|x| x.len() as u64).sum(),
-                None => run.iter().map(|p| p.frames.unwrap_or(0) as u64).sum(),
+                None => run.iter().map(|p| count(p).unwrap_or(0)).sum(),
             };
             a.extend(["-frames:v".to_string(), n.max(1).to_string()]);
         }
@@ -1049,14 +1141,27 @@ impl VideoTranscoder {
             _ => 0.0,
         };
         // Then scale, tone-map and rotate for the encoder (crate::encoders).
+        // A time-based run instead puts the piece's start at 0 (in µs, so
+        // AVI's 1/fps timebase doesn't round it to a frame; the input's own
+        // clock, `-copyts`) and converts to the index's constant rate: `fps`
+        // picks the frame on screen at each grid point (those before 0 only
+        // for the first), `tpad` repeats the last one if the video ends
+        // before the file does.
         // A converted video ([`converted_rate`]) instead starts its clock at
         // the piece (in µs, exact) and takes `fps`'s frames: the frame on
         // screen at each grid point (of those before 0, only the last one).
         // In the run that ends the file, `tpad` repeats the last frame where
         // the video ends early, so `-frames:v` ends the run; without it the
         // last piece takes the frames there are (`piece_cut`).
-        let (pre, chain) = match converted_rate(asset) {
-            Some(r) => {
+        let (pre, chain) = match (&window, v.frame_rate, converted_rate(asset)) {
+            (Some(w), Some(r), _) => (
+                format!("settb=AVTB,setpts=PTS-({})/TB", micros(w.first_us)),
+                format!(
+                    "{},fps={}/{}:start_time=0,tpad=stop=-1:stop_mode=clone",
+                    pipe.filters, r.num, r.den
+                ),
+            ),
+            (_, _, Some(r)) => {
                 let us = |s: f64| (s * 1e6).round() as i64;
                 let shift = us(first.start_ticks as f64 / ts) - us(span.start_ns as f64 / 1e9);
                 let end = asset.segments.segments.last().map_or(i64::MAX, |s| s.end_ticks);
@@ -1079,7 +1184,7 @@ impl VideoTranscoder {
                     ),
                 )
             }
-            None => (
+            _ => (
                 format!("trim=start={:.6},setpts=PTS-STARTPTS", trim.max(0.0)),
                 pipe.filters.clone(),
             ),
@@ -1275,13 +1380,22 @@ impl VideoTranscoder {
             cancel: self.cancel.child_token(),
             waiting: AtomicUsize::new(0),
         });
+        // A run reads one part of an MPEG-PS file of joined recordings
+        // (`ExternalLayout::input_at`): it ends where the part does.
+        let part = |n: usize| match &asset.index.layout {
+            Layout::External(l) if !l.parts.is_empty() => {
+                let ts = asset.segments.timescale.max(1) as i128;
+                l.part_of((all[n].start_ticks as i128 * 1_000_000_000 / ts) as i64)
+            }
+            _ => 0,
+        };
         {
             let mut inflight = self.inflight.lock().ok()?;
             let cache = self.cache.lock().ok()?;
             let mut rx0 = None;
             for n in from..(from + self.run_pieces.max(1) as usize).min(all.len()) {
                 let k: VKey = (key.to_string(), target, n as u32);
-                if cache.contains(&k) || inflight.contains_key(&k) {
+                if cache.contains(&k) || inflight.contains_key(&k) || part(n) != part(from) {
                     break;
                 }
                 let (tx, rx) = watch::channel(None);
@@ -1377,152 +1491,169 @@ impl VideoTranscoder {
             Some(p) => p,
             None => self.request_permit().await?,
         };
-        let args = Self::args(
-            asset,
-            &target,
-            &run,
-            frames.as_ref(),
-            &caps,
-            enc,
-            &self.detect.vaapi_device,
-            burn.as_ref().map(|(b, p)| (b.as_ref(), p)),
-        )?;
-        tracing::debug!(first = run[0].seg, pieces = run.len(), %enc, ?args, "video run");
-        let t0 = Instant::now();
-        if let Ok(mut s) = self.stats.lock() {
-            s.runs += 1;
-        }
-        let ts = matches!(asset.index.layout, Layout::Ts(_));
-        let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
-            .args(&args)
-            .stdin(if ts { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| HlsError::Ffmpeg(format!("spawn {}: {e}", self.ffmpeg.display())))?;
-        if let (true, Some(stdin)) = (ts, child.stdin.take()) {
-            Self::ts_input(asset, &run, stdin);
-        }
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HlsError::Ffmpeg("no stdout".into()))?;
-        let mut stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| HlsError::Ffmpeg("no stderr".into()))?;
-        let err_task = tokio::spawn(async move {
-            let mut e = Vec::new();
-            let _ = stderr.read_to_end(&mut e).await;
-            e
-        });
-        let work = async {
-            let mut reader = FragReader::default();
-            let mut avcc: Option<Vec<u8>> = None;
-            let mut pending: Vec<(Bytes, bool)> = Vec::new();
-            let mut next = 0usize; // index into `senders`
-            let mut buf = vec![0u8; 1 << 20];
-            loop {
-                let n = stdout.read(&mut buf).await?;
-                let events = if n == 0 {
-                    Vec::new()
-                } else {
-                    reader.push(&buf[..n])?
-                };
-                for ev in events {
-                    match ev {
-                        FragEvent::Avcc(a) => {
-                            if let Ok(mut m) = self.avcc.lock() {
-                                m.entry((key.to_string(), target)).or_insert_with(|| a.clone());
+        // Index-less assets seek by time (`external_window`).
+        let time_based = matches!(asset.index.layout, Layout::External(_));
+        let mut attempt = 0usize;
+        let produced = loop {
+            let args = Self::args(
+                asset,
+                &target,
+                &run,
+                frames.as_ref(),
+                &caps,
+                enc,
+                &self.detect.vaapi_device,
+                burn.as_ref().map(|(b, p)| (b.as_ref(), p)),
+                SEEK_BACK_US[attempt],
+            )?;
+            tracing::debug!(first = run[0].seg, pieces = run.len(), %enc, ?args, "video run");
+            let t0 = Instant::now();
+            if let Ok(mut s) = self.stats.lock() {
+                s.runs += 1;
+            }
+            let ts = matches!(asset.index.layout, Layout::Ts(_));
+            let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
+                .args(&args)
+                .stdin(if ts { Stdio::piped() } else { Stdio::null() })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| HlsError::Ffmpeg(format!("spawn {}: {e}", self.ffmpeg.display())))?;
+            if let (true, Some(stdin)) = (ts, child.stdin.take()) {
+                Self::ts_input(asset, &run, stdin);
+            }
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| HlsError::Ffmpeg("no stdout".into()))?;
+            let mut stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| HlsError::Ffmpeg("no stderr".into()))?;
+            let err_task = tokio::spawn(async move {
+                let mut e = Vec::new();
+                let _ = stderr.read_to_end(&mut e).await;
+                e
+            });
+            let work = async {
+                let mut reader = FragReader::default();
+                let mut avcc: Option<Vec<u8>> = None;
+                let mut pending: Vec<(Bytes, bool)> = Vec::new();
+                let mut next = 0usize; // index into `senders`
+                let mut buf = vec![0u8; 1 << 20];
+                loop {
+                    let n = stdout.read(&mut buf).await?;
+                    let events = if n == 0 {
+                        Vec::new()
+                    } else {
+                        reader.push(&buf[..n])?
+                    };
+                    for ev in events {
+                        match ev {
+                            FragEvent::Avcc(a) => {
+                                if let Ok(mut m) = self.avcc.lock() {
+                                    m.entry((key.to_string(), target)).or_insert_with(|| a.clone());
+                                }
+                                avcc = Some(a);
                             }
-                            avcc = Some(a);
+                            FragEvent::Samples(s) => pending.extend(s),
                         }
-                        FragEvent::Samples(s) => pending.extend(s),
                     }
-                }
-                // Publish every piece whose frames are complete.
-                while let Some((pn, tx)) = senders.get(next) {
-                    let piece = all[*pn];
-                    let real = frames.as_ref().map(|f| &f.per_piece[next]);
-                    let last = next + 1 == senders.len();
-                    // The frame count from the index (real timestamps), else
-                    // predicted from the frame grid (sources only ffprobe
-                    // indexes, TS). Either way the piece ends at the IDR the
-                    // encoder forced at its boundary: a frame the source
-                    // lacks, or one the decoder drops, shifts the count.
-                    let count = match (piece.frames, real) {
-                        (Some(_), Some(r)) => Some(r.len()),
-                        (Some(f), None) => Some(f as usize),
-                        (None, _) => None,
-                    };
-                    let want = match count {
-                        Some(f) => match piece_cut(&pending, f, last, n == 0) {
-                            Some(w) => w,
+                    // Publish every piece whose frames are complete.
+                    while let Some((pn, tx)) = senders.get(next) {
+                        let piece = all[*pn];
+                        let real = frames.as_ref().map(|f| &f.per_piece[next]);
+                        let last = next + 1 == senders.len();
+                        // The frame count from the index (real timestamps), else
+                        // predicted from the frame grid (sources only ffprobe
+                        // indexes, TS). Either way the piece ends at the IDR the
+                        // encoder forced at its boundary: a frame the source
+                        // lacks, or one the decoder drops, shifts the count.
+                        let count = match (piece.frames, real) {
+                            (Some(_), Some(r)) => Some(r.len()),
+                            (Some(f), None) => Some(f as usize),
+                            (None, _) => None,
+                        };
+                        let want = match count {
+                            Some(f) => match piece_cut(&pending, f, last, n == 0) {
+                                Some(w) => w,
+                                None => break,
+                            },
+                            None if n == 0 => pending.len(),
                             None => break,
-                        },
-                        None if n == 0 => pending.len(),
-                        None => break,
-                    };
-                    if pending.len() < want || want == 0 {
+                        };
+                        if pending.len() < want || want == 0 {
+                            break;
+                        }
+                        // (The file's last piece has no count: it takes the rest.)
+                        if let (Some(_), Some(frames)) = (real, count.filter(|&c| c != want)) {
+                            tracing::warn!(
+                                piece = *pn,
+                                frames,
+                                cut = want,
+                                "transcoded piece cut at the encoder's IDR, not at the index's frame count"
+                            );
+                        }
+                        let a = avcc
+                            .as_deref()
+                            .ok_or_else(|| HlsError::Ffmpeg("encoder output has no avcC".into()))?;
+                        let rest = pending.split_off(want.min(pending.len()));
+                        let ticks = match (&frames, real) {
+                            (Some(f), Some(r)) => Some((r.as_slice(), f.first_at_or_after(piece.end_ticks))),
+                            _ => None,
+                        };
+                        let bytes = Self::package(asset, &piece, *pn, a, &pending, ticks)?;
+                        pending = rest;
+                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        if let Ok(mut c) = self.cache.lock() {
+                            c.put((key.to_string(), target, *pn as u32), bytes.clone());
+                        }
+                        if let Ok(mut s) = self.stats.lock() {
+                            s.segments += 1;
+                            s.total_ms += ms;
+                            s.max_ms = s.max_ms.max(ms);
+                            if next == 0 {
+                                s.first_piece_ms += ms;
+                            }
+                            if is_prefetch {
+                                s.prefetched += 1;
+                            }
+                        }
+                        tracing::debug!(piece = *pn, ms, prefetch = is_prefetch, "video piece transcoded");
+                        let _ = tx.send(Some(Ok(bytes)));
+                        next += 1;
+                    }
+                    if n == 0 {
                         break;
                     }
-                    // (The file's last piece has no count: it takes the rest.)
-                    if let (Some(_), Some(frames)) = (real, count.filter(|&c| c != want)) {
-                        tracing::warn!(
-                            piece = *pn,
-                            frames,
-                            cut = want,
-                            "transcoded piece cut at the encoder's IDR, not at the index's frame count"
-                        );
-                    }
-                    let a = avcc
-                        .as_deref()
-                        .ok_or_else(|| HlsError::Ffmpeg("encoder output has no avcC".into()))?;
-                    let rest = pending.split_off(want.min(pending.len()));
-                    let ticks = match (&frames, real) {
-                        (Some(f), Some(r)) => Some((r.as_slice(), f.first_at_or_after(piece.end_ticks))),
-                        _ => None,
-                    };
-                    let bytes = Self::package(asset, &piece, *pn, a, &pending, ticks)?;
-                    pending = rest;
-                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    if let Ok(mut c) = self.cache.lock() {
-                        c.put((key.to_string(), target, *pn as u32), bytes.clone());
-                    }
-                    if let Ok(mut s) = self.stats.lock() {
-                        s.segments += 1;
-                        s.total_ms += ms;
-                        s.max_ms = s.max_ms.max(ms);
-                        if next == 0 {
-                            s.first_piece_ms += ms;
-                        }
-                        if is_prefetch {
-                            s.prefetched += 1;
-                        }
-                    }
-                    tracing::debug!(piece = *pn, ms, prefetch = is_prefetch, "video piece transcoded");
-                    let _ = tx.send(Some(Ok(bytes)));
-                    next += 1;
                 }
-                if n == 0 {
-                    break;
-                }
+                Ok::<_, HlsError>(next)
+            };
+            let produced = match tokio::time::timeout(self.timeout, work).await {
+                Ok(r) => r?,
+                Err(_) => return Err(HlsError::Ffmpeg("video encode timed out".into())),
+            };
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            if !status.success() {
+                return Err(HlsError::Ffmpeg(format!(
+                    "exit {status}: {}",
+                    String::from_utf8_lossy(&err).trim()
+                )));
             }
-            Ok::<_, HlsError>(next)
+            // A time-based run whose seek found no frame: again, from earlier.
+            if produced == 0 && time_based && attempt + 1 < SEEK_BACK_US.len() {
+                attempt += 1;
+                tracing::debug!(
+                    first = run[0].seg,
+                    back_s = SEEK_BACK_US[attempt] / 1_000_000,
+                    "video run decoded no frame after its seek; seeking further back"
+                );
+                continue;
+            }
+            break produced;
         };
-        let produced = match tokio::time::timeout(self.timeout, work).await {
-            Ok(r) => r?,
-            Err(_) => return Err(HlsError::Ffmpeg("video encode timed out".into())),
-        };
-        let status = child.wait().await?;
-        let err = err_task.await.unwrap_or_default();
-        if !status.success() {
-            return Err(HlsError::Ffmpeg(format!(
-                "exit {status}: {}",
-                String::from_utf8_lossy(&err).trim()
-            )));
-        }
         if produced < senders.len() {
             return Err(HlsError::Ffmpeg(format!(
                 "encoder stopped after {produced} of {} pieces",
@@ -1908,6 +2039,7 @@ mod tests {
                 VideoEncoder::Libx264,
                 std::path::Path::new("/dev/dri/renderD128"),
                 None,
+                0,
             )
             .unwrap();
             assert!(a.windows(2).any(|w| w == ["-map_chapters", "-1"]), "{a:?}");
@@ -2037,6 +2169,7 @@ mod tests {
             VideoEncoder::Libx264,
             std::path::Path::new("/dev/dri/renderD128"),
             None,
+            0,
         )
         .unwrap();
         let arg = |k: &str| a[a.iter().position(|x| x == k).unwrap() + 1].clone();
@@ -2062,6 +2195,7 @@ mod tests {
             VideoEncoder::Libx264,
             std::path::Path::new("/dev/dri/renderD128"),
             None,
+            0,
         )
         .unwrap();
         let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
@@ -2149,6 +2283,7 @@ mod tests {
                     enc,
                     std::path::Path::new("/dev/dri/renderD128"),
                     None,
+                    0,
                 )
                 .unwrap();
                 let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];

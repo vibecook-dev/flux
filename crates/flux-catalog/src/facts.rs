@@ -161,6 +161,13 @@ fn video_codec_name(c: Codec, tag: &str) -> &str {
         Codec::Vc1 => "VC-1",
         Codec::ProRes => "ProRes",
         Codec::Mjpeg => "MJPEG",
+        Codec::Mpeg1Video
+        | Codec::Wmv1
+        | Codec::Wmv2
+        | Codec::Msmpeg4
+        | Codec::Vp6
+        | Codec::Flv1
+        | Codec::RealVideo => c.display_name(),
         _ => tag,
     }
 }
@@ -187,6 +194,7 @@ fn audio_codec_name(t: &Track) -> String {
         Codec::Mp2 => "MP2",
         Codec::Pcm => "PCM",
         Codec::Alac => "ALAC",
+        Codec::Wma | Codec::WmaPro | Codec::RealAudio => t.codec.display_name(),
         _ => return t.codec_tag.clone(),
     };
     name.to_string()

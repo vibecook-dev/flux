@@ -61,7 +61,12 @@ use crate::source::{Source, SourceId};
 /// 11: [`TrackExtra::baseline_tools`] (H.264 Baseline FMO/ASO/redundant
 ///    pictures), and VP9 video: profile, bit depth and level from the first
 ///    frame, with a `vpcC` record ([`IndexTrack::synth_config`]).
-pub const INDEX_VERSION: u16 = 11;
+/// 12: containers flux can't cut (ASF, FLV, RealMedia, MPEG-PS, AVI,
+///     MPEG-TS without H.264/HEVC) are indexed without a packet scan
+///     ([`IndexMethod::HeaderProbe`]): no keyframe list, a frame rate to
+///     convert to, the container and codecs named, FLV/ASF durations from
+///     their last packets.
+pub const INDEX_VERSION: u16 = 12;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
@@ -182,6 +187,12 @@ pub struct TrackExtra {
     /// FlagInterlaced 1/2, MP4 `fiel` with 2/1 fields), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interlaced: Option<bool>,
+    /// MPEG-PS: the stream's id as ffmpeg gives it (0x1e0, 0x1c0, 0x80 for
+    /// AC-3 in private stream 1 …). A joined file's part read alone numbers
+    /// its streams in the order they first appear in it, which can differ
+    /// from the whole file's; the id is the same in every part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<u64>,
     /// H.264 Baseline video: the tools outside Constrained Baseline it uses
     /// (`classify_baseline_tools`); none for other video.
     #[serde(default, skip_serializing_if = "is_no_tools")]
@@ -297,10 +308,14 @@ pub enum IndexMethod {
     Moov,
     /// Fragmented MP4: sample tables built from every `moof`/`traf`/`trun`.
     Fragments,
-    /// No container index (TS/M2TS/AVI): an ffprobe packet scan.
+    /// No container index (TS/M2TS/AVI): an ffprobe packet scan. (Indexes
+    /// before version 12.)
     FfprobeScan,
     /// MPEG-TS/M2TS: one in-process pass over the packets (`crate::ts`).
     TsScan,
+    /// Containers only ffmpeg reads: ffprobe's stream facts and first
+    /// packets, no keyframe list (`external`). Segments lie on a time grid.
+    HeaderProbe,
 }
 
 /// I/O and time spent building the index.
@@ -424,8 +439,9 @@ impl PlaybackIndex {
         Self::build_from(&src)
     }
 
-    /// Like [`PlaybackIndex::build_from`], but falls back to an ffprobe scan
-    /// for containers without an index (TS, M2TS, AVI). The scan is bounded
+    /// Like [`PlaybackIndex::build_from`], but falls back to ffprobe for
+    /// containers flux can't cut itself (ASF, FLV, RealMedia, MPEG-PS, AVI,
+    /// TS without H.264/HEVC): see [`external`]. The ffprobe runs are bounded
     /// by the default [`external::ScanLimits`].
     pub fn build_with_fallback(src: &Source, ffprobe: Option<&Path>) -> Result<Self> {
         Self::build_with_fallback_limits(src, ffprobe, &external::ScanLimits::default())
@@ -753,7 +769,7 @@ pub(crate) fn classify_hdr(color: Option<&ColorInfo>, dovi: bool) -> HdrFormat {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// When two branches each bump `INDEX_VERSION` from the same number, git

@@ -419,7 +419,7 @@ async fn webvtt_from_srt_and_ass() {
 }
 
 #[tokio::test]
-async fn ts_without_index_uses_ffprobe_scan_and_transcodes() {
+async fn ts_without_index_uses_ffprobe_and_transcodes() {
     let Some(p) = media("mpeg2_ac3.ts") else { return };
     if !have_ffprobe() {
         return;
@@ -430,9 +430,10 @@ async fn ts_without_index_uses_ffprobe_scan_and_transcodes() {
         ..Default::default()
     });
     let asset = engine.prepare(&p).await.unwrap();
-    assert_eq!(asset.index.method, IndexMethod::FfprobeScan);
+    assert_eq!(asset.index.method, IndexMethod::HeaderProbe);
     assert!(!asset.index.to_probe_result().has_index);
-    assert!(asset.index.keyframes.len() > 20);
+    // No packet scan: segments on a time grid, no keyframe list.
+    assert!(asset.index.keyframes.is_empty());
     let plan = engine.plan(&asset, &presets::chrome_desktop(), &PlanPrefs::default());
     assert!(matches!(plan.video, VideoOp::Transcode { .. }));
     // AC-3 can't be copied out of TS in-process: it becomes stereo AAC.

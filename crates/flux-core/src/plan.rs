@@ -189,7 +189,15 @@ pub enum Reason {
         bitrate: u64,
         max: u64,
     },
-    NoIndex,
+    /// flux can't cut this container into HLS segments as it is (ASF, FLV,
+    /// RealMedia, MPEG-PS, AVI, MPEG-TS without H.264/HEVC video): ffmpeg
+    /// reads it and the streams are converted. (The name is historical: the
+    /// file may well have an index of its own.) `container` is `unknown` in
+    /// plans made before it was recorded.
+    NoIndex {
+        #[serde(default)]
+        container: Container,
+    },
     /// The client could decode `codec`, but flux can't package it for HLS
     /// (fMP4/CMAF): TrueHD, DTS, Vorbis and PCM audio; video other than
     /// H.264/HEVC/AV1. So it is converted.
@@ -240,7 +248,12 @@ impl Reason {
                 *bitrate as f64 / 1e6,
                 *max as f64 / 1e6
             ),
-            Reason::NoIndex => "The file has no seek index, so flux transcodes it".to_string(),
+            Reason::NoIndex {
+                container: Container::Unknown,
+            } => "flux can't repackage the streams of this file, so it converts them".to_string(),
+            Reason::NoIndex { container } => {
+                format!("flux can't repackage the streams of this {container} file, so it converts them")
+            }
             Reason::CodecNotPackageable { codec } => {
                 format!("{codec} can't be carried in an HLS stream, so flux converts it")
             }
@@ -366,6 +379,34 @@ mod tests {
             }
             .explain(),
             "HEVC level 153 is above this device's limit (150)"
+        );
+    }
+
+    /// Plans saved before the container was recorded still read, and say
+    /// what flux does rather than blaming a missing index.
+    #[test]
+    fn no_index_names_the_container() {
+        let old: Reason = serde_json::from_str(r#"{"reason":"no_index"}"#).unwrap();
+        assert_eq!(
+            old,
+            Reason::NoIndex {
+                container: Container::Unknown
+            }
+        );
+        assert_eq!(
+            old.explain(),
+            "flux can't repackage the streams of this file, so it converts them"
+        );
+        let r = Reason::NoIndex {
+            container: Container::Asf,
+        };
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"reason":"no_index","container":"asf"}"#
+        );
+        assert_eq!(
+            r.explain(),
+            "flux can't repackage the streams of this ASF file, so it converts them"
         );
     }
 

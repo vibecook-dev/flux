@@ -99,6 +99,9 @@ pub(crate) fn run(
     if r.tracks.is_empty() && r.duration_ms.is_none() {
         return Err("ffprobe: no streams".into());
     }
+    // FLV/ASF: the header's duration may outlast the packets (a cut
+    // download); a few reads at the end of the file say where they stop.
+    flux_probe::tail::fix_duration(path, &mut r);
     r.warnings.push("probed by ffprobe".into());
     Ok(r)
 }
@@ -138,6 +141,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A download that stopped at 40 %: the FLV's header says 10 s, the
+    /// catalog gets where its tags end.
+    #[test]
+    fn a_cut_flv_gets_the_duration_of_its_tags() {
+        let (Some(bin), Some(p)) = (
+            flux_test_media::ffprobe(),
+            flux_test_media::clip(flux_test_media::Clip::CutFlv),
+        ) else {
+            return;
+        };
+        let r = run(&bin, &p, Duration::from_secs(20), &|| false).unwrap();
+        let ms = r.duration_ms.unwrap();
+        assert!((3_400..4_400).contains(&ms), "{ms} ms");
+        assert_eq!(r.container, flux_core::Container::Flv);
+    }
+
     /// ROB-4: a hung ffprobe is killed as soon as its scan is cancelled,
     /// not when its (20 s) timeout runs out.
     #[cfg(unix)]
@@ -158,10 +177,20 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(200));
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
             });
-            let err = run(&fake, &junk, Duration::from_secs(20), &|| {
-                flag.load(std::sync::atomic::Ordering::SeqCst)
-            })
-            .unwrap_err();
+            // ETXTBSY: another test spawning a process forked while the
+            // script was open for writing, and its child holds that until it
+            // execs. Retried; the run itself is what this test is about.
+            let mut err = String::new();
+            for _ in 0..50 {
+                err = run(&fake, &junk, Duration::from_secs(20), &|| {
+                    flag.load(std::sync::atomic::Ordering::SeqCst)
+                })
+                .unwrap_err();
+                if !err.contains("Text file busy") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             assert!(err.contains("cancelled"), "{err}");
         });
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());

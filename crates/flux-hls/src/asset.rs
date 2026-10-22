@@ -86,7 +86,7 @@ impl Asset {
         Self::open_with_limits(path, target_ns, ffprobe, &Default::default())
     }
 
-    /// [`Asset::open_with`] with explicit limits on the ffprobe scan.
+    /// [`Asset::open_with`] with explicit limits on the ffprobe runs.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
         target_ns: i64,

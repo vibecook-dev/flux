@@ -23,7 +23,9 @@ export type Id = number;
 
 // ───────────────────────────── media.rs ─────────────────────────────
 
-export const CONTAINERS = ['matroska', 'web_m', 'mp4', 'mov', 'mpeg_ts', 'm2ts', 'avi', 'unknown'] as const;
+export const CONTAINERS = [
+  'matroska', 'web_m', 'mp4', 'mov', 'mpeg_ts', 'm2ts', 'avi', 'asf', 'flv', 'real_media', 'mpeg_ps', 'unknown',
+] as const;
 /** Container formats, sniffed from magic bytes. */
 export type Container = (typeof CONTAINERS)[number];
 
@@ -33,8 +35,10 @@ export type TrackKind = (typeof TRACK_KINDS)[number];
 export const CODECS = [
   // video
   'h264', 'hevc', 'av1', 'vp9', 'vp8', 'mpeg2_video', 'mpeg4_part2', 'vc1', 'pro_res', 'mjpeg',
+  'mpeg1_video', 'wmv1', 'wmv2', 'msmpeg4', 'vp6', 'flv1', 'real_video',
   // audio
   'aac', 'ac3', 'eac3', 'true_hd', 'dts', 'flac', 'opus', 'vorbis', 'mp3', 'mp2', 'pcm', 'alac',
+  'wma', 'wma_pro', 'real_audio',
   // subtitles
   'subrip', 'ass', 'ssa', 'web_vtt', 'mov_text', 'pgs', 'vob_sub', 'dvb_sub',
   'other',
@@ -267,7 +271,7 @@ export type Reason =
   | { reason: 'audio_channels_too_many'; channels: number; max: number }
   | { reason: 'subtitle_needs_burn_in'; codec: Codec }
   | { reason: 'bitrate_too_high'; bitrate: number; max: number }
-  | { reason: 'no_index' }
+  | { reason: 'no_index'; container: Container }
   | { reason: 'codec_not_packageable'; codec: Codec }
   | { reason: 'client_quirk'; note: string };
 
