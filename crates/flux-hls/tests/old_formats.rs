@@ -547,7 +547,7 @@ fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
 
 /// A VobSub track of a file only ffmpeg reads (MPEG-PS, a DVD's VOB) is
 /// drawn in at its own time, also in the pieces after its last subtitle:
-/// their time-based runs (`-copyts`) copy the video of their second input
+/// their time-based runs (`-copyts`) copy the audio of their second input
 /// (the file again, read for the track) to a `null` output until past the
 /// run, whose packets move the subtitle picture on (crate::burn,
 /// "Heartbeats").

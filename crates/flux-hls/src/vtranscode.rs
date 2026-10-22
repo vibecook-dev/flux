@@ -1241,12 +1241,14 @@ impl VideoTranscoder {
             "+frag_keyframe+empty_moov+default_base_moof".into(),
             "pipe:1".into(),
         ]);
-        // A burned-in track's input also feeds a second output, so that the
-        // overlay never waits for that input's end (crate::burn).
-        if let Some((b, _)) = burn {
+        // On ffmpeg 7 and later, a burned-in track's input also feeds a
+        // second output (an audio stream whose sample rate ffmpeg knows), so
+        // that the overlay never waits for that input's end (crate::burn,
+        // "Heartbeats").
+        if let Some((b, probe)) = burn {
             let end = run.last().map_or(first.end_ticks, |p| p.end_ticks);
             let run_s = (end - first_ticks) as f64 / ts;
-            a.extend(burn::companion_output(asset, b, caps, run_s));
+            a.extend(burn::companion_output(b, probe, caps, run_s));
         }
         Ok(a)
     }
@@ -2065,13 +2067,14 @@ mod tests {
         }
     }
 
-    /// A run that burns in a track of the video also copies the subtitle
-    /// input's video to a `null` output until 2 s past the run, so the
-    /// overlay never waits for that input's end (crate::burn,
-    /// "Heartbeats"). A run that burns in a subtitle file, or runs ffmpeg 6,
-    /// has one output.
+    /// A run that burns in a track of the video also copies an audio stream
+    /// of the subtitle input to a `null` output until 2 s past the run, so
+    /// the overlay never waits for that input's end (crate::burn,
+    /// "Heartbeats"). A run that burns in a subtitle file, or a track of a
+    /// file without audio ffmpeg knows the rate of, or runs an ffmpeg before
+    /// 7 or of an unknown release, has one output.
     #[test]
-    fn track_burns_copy_the_subtitle_inputs_video_past_the_run() {
+    fn track_burns_copy_the_subtitle_inputs_audio_past_the_run() {
         use crate::test_mkv::{TestMkv, PPS, SPS_PROGRESSIVE};
         let (path, _) = TestMkv {
             sps: SPS_PROGRESSIVE,
@@ -2107,11 +2110,17 @@ mod tests {
             size: 1,
             ..track.clone()
         };
-        let ffmpeg6 = FfmpegCaps {
-            version: Some("ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023".into()),
+        // An ffmpeg by its libavutil major version (58 = 6.x, 59 = 7.x); the
+        // probe found the audio stream to copy (ffmpeg's stream 1).
+        let ffmpeg = |avutil: u32| FfmpegCaps {
+            avutil_major: Some(avutil),
             ..Default::default()
         };
-        let args_with = |b: &BurnIn, caps: &FfmpegCaps| {
+        let known = BurnProbe {
+            heartbeat_stream: Some(1),
+            ..Default::default()
+        };
+        let args_with = |b: &BurnIn, caps: &FfmpegCaps, probe: &BurnProbe| {
             VideoTranscoder::args(
                 &asset,
                 &target,
@@ -2120,16 +2129,16 @@ mod tests {
                 caps,
                 VideoEncoder::Libx264,
                 std::path::Path::new("/dev/dri/renderD128"),
-                Some((b, &BurnProbe::default())),
+                Some((b, probe)),
                 0,
             )
             .unwrap()
         };
-        let args = |b: &BurnIn| args_with(b, &FfmpegCaps::default());
+        let args = |b: &BurnIn| args_with(b, &ffmpeg(59), &known);
         let a = args(&track);
         let tail = &a[a.iter().position(|x| x == "pipe:1").unwrap() + 1..];
         assert_eq!(tail.len(), 9, "{a:?}");
-        assert_eq!(tail[..5], ["-map", "1:0", "-c", "copy", "-t"], "{a:?}");
+        assert_eq!(tail[..5], ["-map", "1:1", "-c", "copy", "-t"], "{a:?}");
         assert_eq!(tail[6..], ["-f", "null", "-"], "{a:?}");
         let ts = asset.segments.timescale as f64;
         let first = frames.as_ref().map_or(run[0].start_ticks, |f| f.per_piece[0][0]);
@@ -2139,10 +2148,12 @@ mod tests {
             (until - want).abs() < 1e-5 && want > 2.5,
             "{until} vs {want}: {a:?}"
         );
-        let a = args(&file);
-        assert_eq!(a.last().map(String::as_str), Some("pipe:1"), "{a:?}");
-        let a = args_with(&track, &ffmpeg6);
-        assert_eq!(a.last().map(String::as_str), Some("pipe:1"), "{a:?}");
+        let one_output = |a: Vec<String>| assert_eq!(a.last().map(String::as_str), Some("pipe:1"), "{a:?}");
+        one_output(args(&file));
+        one_output(args_with(&track, &ffmpeg(59), &BurnProbe::default()));
+        for caps in [ffmpeg(58), FfmpegCaps::default()] {
+            one_output(args_with(&track, &caps, &known));
+        }
         let _ = std::fs::remove_file(&path);
     }
 

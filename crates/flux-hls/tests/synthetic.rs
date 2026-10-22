@@ -835,7 +835,9 @@ fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
 /// picked by PID. The pieces after the last subtitle wait for the end of
 /// the run's subtitle input, which ffmpeg can drop: this test hung in about
 /// one macOS CI run in five (ffmpeg 9.0.1) until runs also copied that
-/// input's video to a second output (crate::burn, "Heartbeats").
+/// input's audio to a second output (crate::burn, "Heartbeats"). A copy of
+/// its video drew the box two frames late with ffmpeg 8 and 9, and a second
+/// late with 7.1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
     let Some(ff) = flux_test_media::ffmpeg() else {
@@ -917,8 +919,143 @@ async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
     }
 }
 
+/// A PGS track of an M2TS cut far from a keyframe, so that the head ffmpeg
+/// probes (5 MB) holds no parameter set: ffmpeg can't size the video of the
+/// subtitle's input, and a run that copied that video to its second output
+/// failed before its first piece (`[null] dimensions not set`), every run of
+/// the burned-in rendition. The second output copies the audio instead, and
+/// only when ffmpeg knows its rate: in the second file the audio starts past
+/// that head too, and the runs have one output. The subtitle is drawn at its
+/// own time in both. A last subtitle after the video's end keeps every run
+/// from waiting for its input's end (crate::burn, "Heartbeats").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pgs_track_of_an_m2ts_cut_far_from_a_keyframe_is_burned_in() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    let Some(fp) = flux_test_media::ffprobe() else {
+        return;
+    };
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let dir = flux_test_media::scratch("hls-synthetic-burn-cut-m2ts");
+    // Keyframes at 0, 5 and 10 s; the box from 6 s to 8 s, 1 s after the
+    // first keyframe the cut keeps.
+    let sup = dir.join("box.sup");
+    let mut pgs = pgs_box((640, 360), (200, 260, 240, 60), 6.0, 8.0);
+    pgs.extend(pgs_box((640, 360), (0, 0, 8, 8), 13.0, 13.5));
+    std::fs::write(&sup, pgs).unwrap();
+    let probe = |file: &Path, select: &str, entry: &str| {
+        let out = std::process::Command::new(&fp)
+            .args(["-v", "error", "-select_streams", select, "-show_entries"])
+            .arg(format!("stream={entry}"))
+            .args(["-of", "csv=p=0"])
+            .arg(file)
+            .output()
+            .unwrap();
+        // (An MPEG-TS lists its program's streams too.)
+        let out = String::from_utf8_lossy(&out.stdout);
+        out.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    for (name, audio_at) in [("audio", 0.0), ("late-audio", 6.0)] {
+        // Constant 20 Mb/s (x264 pads with filler data): the cut at 1.3 MB
+        // (0.5 s) keeps 9 MB of video before the keyframe at 5 s, and
+        // ffmpeg probes 5 MB of packets.
+        let whole = dir.join(format!("{name}-whole.m2ts"));
+        let st = std::process::Command::new(&ff)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=640x360:rate=30:duration=12.5")
+            .args(["-itsoffset", &audio_at.to_string(), "-f", "lavfi", "-i"])
+            .arg(format!(
+                "sine=frequency=440:sample_rate=48000:duration={}",
+                12.5 - audio_at
+            ))
+            .args(["-seek_timestamp", "1", "-i"])
+            .arg(&sup)
+            .args([
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ])
+            .args([
+                "-b:v", "20M", "-maxrate", "20M", "-bufsize", "10M", "-pix_fmt", "yuv420p",
+            ])
+            .args([
+                "-x264-params",
+                "keyint=150:min-keyint=150:scenecut=0:nal-hrd=cbr:force-cfr=1",
+            ])
+            .args(["-c:a", "aac", "-b:a", "96k", "-c:s", "copy"])
+            .args(["-mpegts_m2ts_mode", "1", "-f", "mpegts"])
+            .arg(&whole)
+            .status()
+            .unwrap();
+        assert!(st.success(), "ffmpeg made no {name} M2TS");
+        let data = std::fs::read(&whole).unwrap();
+        let cut = dir.join(format!("{name}.m2ts"));
+        std::fs::write(&cut, &data[192 * 6800..]).unwrap();
+        drop(data);
+        assert_eq!(probe(&cut, "v", "width"), "0", "{name}: ffmpeg sizes the video");
+        let rate = probe(&cut, "a", "sample_rate");
+        assert_eq!(rate == "0", audio_at > 0.0, "{name}: audio rate {rate}");
+        let engine = HlsEngine::new(EngineConfig {
+            video_encoder: Some(VideoEncoder::Libx264),
+            video_lookahead: 0,
+            audio_lookahead: 0,
+            video_run_segments: 1,
+            ..Default::default()
+        });
+        let asset = engine.prepare(&cut).await.unwrap();
+        assert!(
+            matches!(asset.index.layout, Layout::Ts(_)),
+            "{name}: not indexed as MPEG-TS: {:?}",
+            asset.index.warnings
+        );
+        let track = asset
+            .index
+            .tracks
+            .iter()
+            .find(|t| t.codec == Codec::Pgs)
+            .expect("a PGS track")
+            .index;
+        let prefs = PlanPrefs {
+            subtitle_track: Some(track),
+            ..hls_only()
+        };
+        let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+        let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+            panic!("{name}: {:?}", burned.explain())
+        };
+        assert_eq!(*burn_subtitle, Some(track));
+        let mut plain = burned.clone();
+        if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+            *burn_subtitle = None;
+        }
+        plain.subtitles.clear();
+        let a_name = format!("burned-{name}.mp4");
+        let b_name = format!("plain-{name}.mp4");
+        let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, &a_name).await;
+        let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, &b_name).await;
+        assert_box_burned_in_from_1_to_3(&ff, &a, &b);
+        drop(asset);
+        let _ = std::fs::remove_file(&whole);
+        let _ = std::fs::remove_file(&cut);
+    }
+}
+
 /// A PGS track of a Matroska file is drawn in at its own time, also in the
-/// pieces after its last subtitle: their runs copy the video of their
+/// pieces after its last subtitle: their runs copy the audio of their
 /// second input (the file again, read for the track) to a `null` output,
 /// whose packets move the subtitle picture on (crate::burn, "Heartbeats").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

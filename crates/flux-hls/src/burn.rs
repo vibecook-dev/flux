@@ -28,38 +28,48 @@
 //! - **Heartbeats.** The overlay holds each video frame until it knows the
 //!   subtitle picture for it: the next subtitle picture after the frame, or
 //!   the end of the subtitle input. Between subtitles ffmpeg only moves the
-//!   picture forward on a "heartbeat", a packet of any stream that the
-//!   subtitle's own input delivers, and the subtitle stream is all flux
-//!   reads from that input. A run after a track's last subtitle therefore
-//!   waits for the input's end, which ffmpeg 7 and later drop when it
-//!   reaches the filter graph before the run's first video frame has set
-//!   the graph up. The run then hangs, every ffmpeg thread idle, until
-//!   flux's encode timeout. A demuxer thread starts before ffmpeg's
-//!   scheduler first holds it back, so on a busy machine it can read a short
-//!   input to its end that early: the 10 s test M2TS did on macOS CI with
-//!   ffmpeg 9.0.1. A run that burns in a track of the video therefore also
-//!   copies the subtitle input's video stream to a second output (`-f null`)
-//!   until a margin past the run's last piece (`companion_output`). Its
-//!   packets are heartbeats, which ffmpeg passes through the subtitle's
-//!   decoder in order with the subtitle packets and keeps even when they
-//!   come before the graph is set up, so the overlay never needs the end.
-//!   ffmpeg 6 reads the subtitle input only when the overlay asks for it, so
-//!   its end comes late enough, but it sends heartbeats from its main
-//!   thread, ahead of subtitles still in their decoder: a second output
-//!   there lost the test's subtitle. Its runs keep one output, and so does a
-//!   subtitle file, which has no other stream and still ends its input.
+//!   picture forward on a "heartbeat", a packet of any other stream that the
+//!   subtitle's own input delivers, and the subtitle stream is all flux reads
+//!   from that input. A run after a track's last subtitle therefore waits for
+//!   the input's end, which ffmpeg 7 and later drop when it reaches the filter
+//!   graph before the run's first video frame has set the graph up. The run
+//!   then hangs, every ffmpeg thread idle, until flux's encode timeout. A
+//!   demuxer thread starts before ffmpeg's scheduler first holds it back, so
+//!   on a busy machine it can read a short input to its end that early: the
+//!   10 s test M2TS did on macOS CI with ffmpeg 9.0.1. With ffmpeg 7 and
+//!   later, a run that burns in a track of the video therefore also copies an
+//!   audio stream of the video file to a second output (`-f null`) until a
+//!   margin past the run's last piece (`companion_output`). Its packets are
+//!   heartbeats, which ffmpeg passes through the subtitle's decoder in order
+//!   with the subtitle packets and keeps even when they come before the graph
+//!   is set up, so the overlay never needs the end. A heartbeat moves the
+//!   picture on to its own time, so it must not come before a subtitle that
+//!   starts earlier. Audio is stored in the order it plays; video is not (a
+//!   B-frame's reference is stored first, and shown after it), so the video's
+//!   packets drew the test subtitles two frames late with ffmpeg 8 and 9, and
+//!   the M2TS one a second late with 7.1. The copy is of the first audio
+//!   stream whose sample rate ffmpeg knows (`BurnProbe::heartbeat_stream`); a
+//!   file without one gets no second output. ffmpeg 6 reads the subtitle input
+//!   only when the overlay asks for it, so its end comes late enough, but it
+//!   sends heartbeats from its main thread, ahead of subtitles still in their
+//!   decoder: a copy of the video there lost the M2TS test's subtitle. Its
+//!   runs keep one output, as do those of an ffmpeg of unknown release
+//!   (`HEARTBEAT_RELEASE`) and those that burn in a subtitle file, which has
+//!   no other stream and still ends its input.
 //! - **Canvas.** A PGS or VobSub stream is drawn for a picture size (its
-//!   canvas) that need not be the video's: 1920×1080 subtitles over a
-//!   cropped 1920×800 encode. The canvas is read from the stream
-//!   (`probe`) and passed as `-canvas_size`; the subtitle picture is
-//!   then scaled to the output (exactly like the video when it was drawn
-//!   for the video's own size, else to fit inside, bottom-aligned).
+//!   canvas) that need not be the video's: 1920×1080 subtitles over a cropped
+//!   1920×800 encode. The canvas is read from the stream (`probe`) and passed
+//!   as `-canvas_size`; the subtitle picture is then scaled to the output
+//!   (exactly like the video when it was drawn for the video's own size, else
+//!   to fit inside, bottom-aligned). A track whose canvas flux can't read (one
+//!   of an MPEG-TS) gets the video's size, which is what ffmpeg itself falls
+//!   back to, except where it can't size the video: then it takes 720×576.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use flux_core::Codec;
+use flux_core::{Codec, TrackKind};
 
 use crate::asset::Asset;
 use crate::encoders::FfmpegCaps;
@@ -108,7 +118,8 @@ const EMBEDDED_PREROLL_S: f64 = 10.0;
 /// What a burn-in reads from the subtitle up front (`probe`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BurnProbe {
-    /// The picture size the subtitle is drawn for, when known.
+    /// The picture size the subtitle is drawn for, when known: for a track
+    /// of the video without one of its own, the video's.
     pub canvas: Option<(u32, u32)>,
     /// When a subtitle file's first subtitle shows, in seconds.
     pub first_subtitle_s: Option<f64>,
@@ -119,6 +130,15 @@ pub struct BurnProbe {
     /// … and ffmpeg's start time of the track: its first packet when ffmpeg
     /// probed one, else the file's.
     pub stream_start_s: Option<f64>,
+    /// For a track of the video: ffmpeg's number of the stream a run copies
+    /// to its second output (`companion_output`), the first audio stream of
+    /// the file whose sample rate ffmpeg knows. Its muxer refuses one
+    /// without, and the run with it. ffmpeg reads the rate from the head of
+    /// the file (`-probesize`, 5 MB), which can hold no audio frame (an
+    /// MPEG-TS whose audio starts late), and ffprobe reads the same head the
+    /// same way; it also makes a stream of the AC-3 core a Blu-ray TrueHD
+    /// PID may lack. Matroska and MP4 headers carry the rate.
+    pub heartbeat_stream: Option<u32>,
 }
 
 /// The ffmpeg input options and `-i` of the subtitle input of a run whose
@@ -220,10 +240,22 @@ pub(crate) fn start_clock_origin_s(layout: &Layout) -> Option<f64> {
     }
 }
 
-/// ffmpeg's start times of the file at `path` and of its stream `spec`, in
-/// seconds on ffmpeg's clock ([`BurnProbe::file_start_s`]), as ffprobe
-/// (the same probe as ffmpeg's) reads them. Blocking, bounded.
-fn ffmpeg_start_times(ffprobe: &Path, path: &Path, spec: &str) -> Option<(f64, Option<f64>)> {
+/// What ffprobe, which probes a file exactly as ffmpeg does, reads of the
+/// file at `path` (`ffmpeg_view`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct FfmpegView {
+    /// ffmpeg's start time of the file and of its stream `spec`, in seconds on
+    /// ffmpeg's clock ([`BurnProbe::file_start_s`]); `None` without the
+    /// file's.
+    start_s: Option<(f64, Option<f64>)>,
+    /// ffmpeg's number of its first audio stream with a known sample rate
+    /// ([`BurnProbe::heartbeat_stream`]).
+    heartbeat_stream: Option<u32>,
+}
+
+/// [`FfmpegView`] of the file at `path`, for its subtitle stream `spec` (an
+/// ffmpeg stream specifier, `stream_spec`). Blocking, bounded.
+fn ffmpeg_view(ffprobe: &Path, path: &Path, spec: &str) -> Option<FfmpegView> {
     let limits = crate::index::external::ScanLimits {
         stall: Duration::from_secs(20),
         base: Duration::from_secs(30),
@@ -232,19 +264,51 @@ fn ffmpeg_start_times(ffprobe: &Path, path: &Path, spec: &str) -> Option<(f64, O
     let args = [
         "-v",
         "error",
-        "-select_streams",
-        spec,
         "-show_entries",
-        "format=start_time:stream=start_time",
+        "format=start_time:stream=index,id,codec_type,start_time,sample_rate",
         "-of",
         "json",
     ];
     let out = crate::index::external::run(ffprobe, &args, path, &limits, 0).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    Some(read_ffmpeg_view(&out, spec))
+}
+
+/// [`ffmpeg_view`] from ffprobe's JSON.
+fn read_ffmpeg_view(json: &str, spec: &str) -> FfmpegView {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return FfmpegView::default();
+    };
     let secs = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok());
-    let file = secs(&v["format"]["start_time"])?;
-    let stream = v["streams"].get(0).and_then(|s| secs(&s["start_time"]));
-    Some((file, stream))
+    let streams = v["streams"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let start_s = secs(&v["format"]["start_time"]).map(|file| {
+        let stream = streams.iter().find(|s| is_stream(spec, s));
+        (file, stream.and_then(|s| secs(&s["start_time"])))
+    });
+    // ffprobe numbers the streams as ffmpeg does: it probes the same way.
+    let heartbeat_stream = streams
+        .iter()
+        .find(|s| s["codec_type"] == "audio" && secs(&s["sample_rate"]).is_some_and(|r| r > 0.0))
+        .and_then(|s| u32::try_from(s["index"].as_u64()?).ok());
+    FfmpegView {
+        start_s,
+        heartbeat_stream,
+    }
+}
+
+/// Whether ffprobe's `stream` is the one ffmpeg's stream specifier `spec`
+/// names: `i:<id>` by its id (an MPEG-TS PID, which ffprobe shows in hex),
+/// else by its index.
+fn is_stream(spec: &str, stream: &serde_json::Value) -> bool {
+    match spec.strip_prefix("i:") {
+        Some(id) => {
+            let shown = stream["id"]
+                .as_str()
+                .and_then(|s| s.strip_prefix("0x"))
+                .and_then(|h| u64::from_str_radix(h, 16).ok());
+            shown.is_some() && shown == id.parse().ok()
+        }
+        None => stream["index"].as_u64().is_some_and(|i| spec.parse() == Ok(i)),
+    }
 }
 
 /// How a run's filter graph names the subtitle stream of its second input
@@ -265,28 +329,32 @@ pub(crate) fn stream_spec(asset: &Asset, b: &BurnIn) -> String {
 /// `companion_output`), in seconds.
 const COMPANION_MARGIN_S: f64 = 2.0;
 
+/// The first FFmpeg release whose runs get a companion output (module docs,
+/// "Heartbeats"), by [`FfmpegCaps::major_version`]. An ffmpeg of unknown
+/// release (it printed neither a libavutil version nor a release) gets
+/// none, as before ffmpeg 7: the copy is known to keep subtitles on time
+/// only from 7 on, and without it a run can hang only in that rare race. So
+/// does a git build of the 7.0 cycle from before its libavutil 59.
+const HEARTBEAT_RELEASE: u32 = 7;
+
 /// The second output of a run that burns in a track of the video: the
-/// subtitle input's video stream (by PID in MPEG-TS, as in `stream_spec`)
-/// copied to ffmpeg's `null` muxer until `run_s` (the run's length from its
-/// first frame, where the subtitle input's clock is 0) plus a margin. Its
-/// packets are the subtitle's heartbeats (module docs). Empty for a
-/// subtitle file, a video without a video track in the index, or ffmpeg 6
-/// and earlier.
-pub(crate) fn companion_output(asset: &Asset, b: &BurnIn, caps: &FfmpegCaps, run_s: f64) -> Vec<String> {
-    if caps.major_version().is_some_and(|m| m < 7) {
-        return Vec::new();
+/// audio stream `BurnProbe::heartbeat_stream` of its second input (the
+/// video file again) copied to ffmpeg's `null` muxer until `run_s` (the
+/// run's length from its first frame, where that input's clock is 0) plus
+/// a margin. Its packets are the subtitle's heartbeats (module docs).
+/// Empty for a subtitle file, a video without audio whose sample rate
+/// ffmpeg knows, and an ffmpeg before [`HEARTBEAT_RELEASE`] or of an
+/// unknown release.
+pub(crate) fn companion_output(b: &BurnIn, probe: &BurnProbe, caps: &FfmpegCaps, run_s: f64) -> Vec<String> {
+    match probe.heartbeat_stream {
+        Some(n) if b.embedded && caps.major_version().is_some_and(|m| m >= HEARTBEAT_RELEASE) => {
+            companion_args(&n.to_string(), run_s)
+        }
+        _ => Vec::new(),
     }
-    let Some(v) = asset.index.video_track().filter(|_| b.embedded) else {
-        return Vec::new();
-    };
-    let spec = match &asset.index.layout {
-        Layout::Ts(_) => format!("i:{}", v.id),
-        _ => v.index.to_string(),
-    };
-    companion_args(&spec, run_s)
 }
 
-/// `companion_output` for the video stream `spec` of the second input.
+/// `companion_output` for the stream `spec` of the second input.
 fn companion_args(spec: &str, run_s: f64) -> Vec<String> {
     let until = run_s.max(0.0) + COMPANION_MARGIN_S;
     vec![
@@ -409,19 +477,46 @@ pub(crate) fn vobsub_canvas(idx: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// What `b` is drawn for and when it starts: the canvas from its first
-/// presentation segment (PGS) or index (VobSub), and a file's first
-/// subtitle time. Unknown parts stay `None` (for DVB, ffmpeg then uses the
-/// video's size); for a track of an MPEG-TS (or a file indexed by
-/// ffprobe), ffmpeg's start times of the file and the track. Blocking:
-/// reads the head of a subtitle file, or a track's first block, or runs
-/// ffprobe once.
+/// presentation segment (PGS) or index (VobSub), else for a track the
+/// video's size, and a file's first subtitle time. Unknown parts stay
+/// `None` (ffmpeg then draws a subtitle file on a canvas the size of the
+/// video). For a track of an MPEG-TS (or of a file indexed by ffprobe),
+/// ffmpeg's start times of the file and the track; for any track, the
+/// audio stream a run copies (`BurnProbe::heartbeat_stream`).
+/// Blocking: reads the head of a subtitle file, or a track's first block,
+/// or runs ffprobe once.
 pub(crate) fn probe(asset: &Asset, b: &BurnIn, ffprobe: &Path) -> BurnProbe {
     let mut p = probe_stream(asset, b);
-    if b.embedded && start_clock_origin_s(&asset.index.layout).is_some() {
-        if let Some((file, stream)) = ffmpeg_start_times(ffprobe, &b.path, &stream_spec(asset, b)) {
-            p.file_start_s = Some(file);
-            p.stream_start_s = stream;
+    if !b.embedded {
+        return p;
+    }
+    // A track's canvas unknown (flux reads only a Matroska track's first
+    // block): ffmpeg draws it on a canvas the size of the file's video as
+    // its probe sized it, else 720×576. The index has that size even where
+    // ffmpeg's probe doesn't (an MPEG-TS cut far from a keyframe).
+    if p.canvas.is_none() {
+        p.canvas = asset
+            .index
+            .video_track()
+            .and_then(|v| Some((v.width?, v.height?)));
+    }
+    if start_clock_origin_s(&asset.index.layout).is_some() {
+        if let Some(f) = ffmpeg_view(ffprobe, &b.path, &stream_spec(asset, b)) {
+            if let Some((file, stream)) = f.start_s {
+                p.file_start_s = Some(file);
+                p.stream_start_s = stream;
+            }
+            p.heartbeat_stream = f.heartbeat_stream;
         }
+    } else {
+        // Matroska and MP4: ffmpeg numbers the streams as the index does,
+        // and reads the rate from the track header, as the index did.
+        p.heartbeat_stream = asset
+            .index
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Audio && t.sample_rate.is_some_and(|r| r > 0))
+            .map(|t| t.index);
     }
     p
 }
@@ -606,6 +701,139 @@ mod tests {
             companion_args("0", -1.0).join(" "),
             "-map 1:0 -c copy -t 2.000000 -f null -"
         );
+    }
+
+    /// A run that burns in a track copies the probed audio stream to its
+    /// second output, from ffmpeg 7 on; nothing for a subtitle file, a file
+    /// without audio ffmpeg knows the rate of, or an ffmpeg before 7 or of an
+    /// unknown release.
+    #[test]
+    fn a_track_burn_copies_the_probed_audio_stream_from_ffmpeg_7() {
+        let track = BurnIn {
+            embedded: true,
+            stream: 3,
+            ..file("/m/Film.m2ts", Codec::Pgs)
+        };
+        let ffmpeg = |avutil: u32| FfmpegCaps {
+            avutil_major: Some(avutil),
+            ..Default::default()
+        };
+        let probe = BurnProbe {
+            heartbeat_stream: Some(2),
+            ..Default::default()
+        };
+        let out = |b: &BurnIn, probe: &BurnProbe, caps: &FfmpegCaps| {
+            companion_output(b, probe, caps, 7.96).join(" ")
+        };
+        for avutil in [59, 60, 61, 62] {
+            assert_eq!(
+                out(&track, &probe, &ffmpeg(avutil)),
+                "-map 1:2 -c copy -t 9.960000 -f null -"
+            );
+        }
+        let subtitle_file = file("/m/Film.sup", Codec::Pgs);
+        assert_eq!(out(&subtitle_file, &probe, &ffmpeg(59)), "");
+        assert_eq!(out(&track, &BurnProbe::default(), &ffmpeg(59)), "");
+        for caps in [ffmpeg(57), ffmpeg(58), FfmpegCaps::default()] {
+            assert_eq!(out(&track, &probe, &caps), "", "{caps:?}");
+        }
+    }
+
+    /// ffprobe's view of the file a track is read from: ffmpeg's start times
+    /// of the file and of the track (by PID in MPEG-TS), and ffmpeg's own
+    /// number of its first audio stream with a known sample rate, which is
+    /// not the index's: ffmpeg also counts streams the index leaves out, and
+    /// the AC-3 core it makes of a Blu-ray TrueHD PID.
+    #[test]
+    fn ffprobe_tells_the_start_times_and_the_audio_stream_to_copy() {
+        // A Blu-ray M2TS: video, a data PID the index leaves out, TrueHD
+        // with its AC-3 core (two streams to ffmpeg, one PID), and PGS.
+        let m2ts = r#"{
+            "streams": [
+                { "index": 0, "id": "0x1011", "codec_type": "video", "start_time": "600.512000" },
+                { "index": 1, "id": "0x1800", "codec_type": "data", "start_time": "600.400000" },
+                { "index": 2, "id": "0x1100", "codec_type": "audio", "sample_rate": "48000", "start_time": "600.400000" },
+                { "index": 3, "id": "0x1100", "codec_type": "audio", "sample_rate": "48000", "start_time": "600.400000" },
+                { "index": 4, "id": "0x1200", "codec_type": "subtitle", "start_time": "601.000000" }
+            ],
+            "format": { "start_time": "600.400000" }
+        }"#;
+        assert_eq!(
+            read_ffmpeg_view(m2ts, "i:4608"),
+            FfmpegView {
+                start_s: Some((600.4, Some(601.0))),
+                heartbeat_stream: Some(2),
+            }
+        );
+        // TrueHD without the AC-3 core (as ffmpeg's encoder makes it): the
+        // core's stream has no rate, TrueHD's has.
+        let no_core = m2ts
+            .replacen(r#""sample_rate": "48000""#, r#""sample_rate": "0""#, 2)
+            .replacen(r#""sample_rate": "0""#, r#""sample_rate": "48000""#, 1);
+        assert_eq!(read_ffmpeg_view(&no_core, "i:4608").heartbeat_stream, Some(2));
+        // TrueHD not in the head ffmpeg probes, its core is.
+        let core = m2ts.replacen(r#""sample_rate": "48000""#, r#""sample_rate": "0""#, 1);
+        assert_eq!(read_ffmpeg_view(&core, "i:4608").heartbeat_stream, Some(3));
+        // No audio in that head: nothing to copy.
+        let late = m2ts.replace(r#""sample_rate": "48000""#, r#""sample_rate": "0""#);
+        assert_eq!(read_ffmpeg_view(&late, "i:4608").heartbeat_stream, None);
+        // The track by index (a file ffprobe indexes).
+        assert_eq!(read_ffmpeg_view(m2ts, "4").start_s, Some((600.4, Some(601.0))));
+        // No start time of the file: no start times, the stream still read.
+        let no_start = m2ts.replace(r#""format": { "start_time": "600.400000" }"#, r#""format": {}"#);
+        assert_eq!(
+            read_ffmpeg_view(&no_start, "i:4608"),
+            FfmpegView {
+                start_s: None,
+                heartbeat_stream: Some(2),
+            }
+        );
+        assert_eq!(read_ffmpeg_view("not json", "i:4608"), FfmpegView::default());
+    }
+
+    /// A track of a Matroska file: its runs copy the first audio track with
+    /// a sample rate, by its index (ffmpeg's number there); a track without
+    /// a canvas of its own is drawn on the video's size. No ffprobe runs.
+    #[test]
+    fn a_matroska_track_copies_its_first_audio_track_and_takes_the_videos_size() {
+        use crate::test_mkv::{TestMkv, PPS, SPS_PROGRESSIVE};
+        let (path, _) = TestMkv {
+            sps: SPS_PROGRESSIVE,
+            pps: PPS,
+            inband: vec![vec![]; 3],
+            flag_interlaced: None,
+            idr: vec![],
+        }
+        .write("burn-probe.mkv");
+        let mut asset = Asset::open(&path, 1_000_000_000).unwrap();
+        let track = BurnIn {
+            embedded: true,
+            stream: 7,
+            ..file(&path.display().to_string(), Codec::Pgs)
+        };
+        let not_run = Path::new("no-ffprobe-runs");
+        let v = asset.index.video_track().unwrap().clone();
+        let size = (v.width.unwrap(), v.height.unwrap());
+        let p = probe(&asset, &track, not_run);
+        assert_eq!((p.canvas, p.heartbeat_stream), (Some(size), None));
+        let audio = |index: u32, sample_rate: Option<u32>| crate::index::IndexTrack {
+            index,
+            id: u64::from(index) + 1,
+            kind: TrackKind::Audio,
+            codec: Codec::Aac,
+            sample_rate,
+            ..v.clone()
+        };
+        asset
+            .index
+            .tracks
+            .extend([audio(1, None), audio(2, Some(48_000))]);
+        assert_eq!(probe(&asset, &track, not_run).heartbeat_stream, Some(2));
+        // A subtitle file: neither.
+        let p = probe(&asset, &file("/m/Film.sup", Codec::Pgs), not_run);
+        assert_eq!((p.canvas, p.heartbeat_stream), (None, None));
+        drop(asset);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

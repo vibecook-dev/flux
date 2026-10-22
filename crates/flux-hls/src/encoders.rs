@@ -208,6 +208,10 @@ pub struct FfmpegCaps {
     pub ffmpeg: PathBuf,
     /// First line of `ffmpeg -version`.
     pub version: Option<String>,
+    /// The libavutil major version `ffmpeg -version` lists
+    /// ([`parse_avutil_major`], [`FfmpegCaps::major_version`]).
+    #[serde(skip)]
+    pub avutil_major: Option<u32>,
     /// Why ffmpeg could not be run.
     pub error: Option<String>,
     #[serde(skip)]
@@ -317,15 +321,44 @@ pub fn parse_hwaccel_list(out: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The libavutil major version in `ffmpeg -version` output: the first
+/// number of its `libavutil      60. 26.103 / 60. 26.103` line, the
+/// version ffmpeg was built with (after the slash: the library it loaded).
+pub fn parse_avutil_major(out: &str) -> Option<u32> {
+    out.lines().find_map(|l| {
+        let rest = l.trim_start().strip_prefix("libavutil")?;
+        rest.trim_start().split('.').next()?.trim().parse().ok()
+    })
+}
+
 impl FfmpegCaps {
-    /// The major version in [`FfmpegCaps::version`] (`ffmpeg version 6.1.1-3ubuntu5`,
-    /// `n7.1`, `8.1.3-Jellyfin`); `None` for a git build (`N-118000-g…`) or
-    /// when ffmpeg could not run.
+    /// Reads `ffmpeg -version` output into [`FfmpegCaps::version`] and
+    /// [`FfmpegCaps::avutil_major`].
+    fn read_version(&mut self, out: &str) {
+        self.version = out.lines().next().map(|l| l.trim().to_string());
+        self.avutil_major = parse_avutil_major(out);
+    }
+
+    /// The FFmpeg release this ffmpeg comes from (6 for 6.1.1, 9 for 9.0.1),
+    /// from the libavutil major version it was built with. FFmpeg bumps that
+    /// once per release, to the release plus 52 since FFmpeg 3 (55 in 3.x,
+    /// 58 in 6.x, 59 in 7.x, 60 in 8.x, 61 in 9.0), and it is there for git
+    /// builds too (`N-127900-g…`, gyan.dev's `2023-08-10-git-…`), which name
+    /// no release. Without it, the release on the version line
+    /// (`ffmpeg version 6.1.1-3ubuntu5`, `n7.1`, `8.1.3-Jellyfin`); a number
+    /// of 1000 or more there is a date, not a release. `None` when neither
+    /// tells, or ffmpeg could not run. A git build between two releases
+    /// counts as the earlier one, since FFmpeg bumps the libraries only when
+    /// it branches the next release (7.0's threaded `ffmpeg` landed three
+    /// months before libavutil 59).
     pub fn major_version(&self) -> Option<u32> {
+        if let Some(m) = self.avutil_major.filter(|&m| m >= 55) {
+            return Some(m - 52);
+        }
         let v = self.version.as_deref()?.strip_prefix("ffmpeg version ")?;
         let v = v.strip_prefix('n').unwrap_or(v);
         let end = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
-        v[..end].parse().ok()
+        v[..end].parse().ok().filter(|&m| m < 1000)
     }
 
     /// Probes `ffmpeg` (blocking: run it on a blocking thread).
@@ -341,7 +374,7 @@ impl FfmpegCaps {
             run_capture(ffmpeg, &a, opts.timeout).map(|o| String::from_utf8_lossy(&o).into_owned())
         };
         match q(&["-version"]) {
-            Ok(v) => caps.version = v.lines().next().map(|l| l.trim().to_string()),
+            Ok(v) => caps.read_version(&v),
             Err(e) => {
                 caps.error = Some(e);
                 caps.chosen = opts.forced;
@@ -974,24 +1007,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn major_versions_from_the_version_line() {
-        let caps = |v: &str| FfmpegCaps {
-            version: Some(v.to_string()),
-            ..Default::default()
+    fn major_versions_from_ffmpeg_version_output() {
+        let major = |out: &str| {
+            let mut c = FfmpegCaps::default();
+            c.read_version(out);
+            (c.avutil_major, c.major_version())
         };
-        let major = |v: &str| caps(v).major_version();
+        // Real `ffmpeg -hide_banner -version` output: libavutil decides.
+        let real = [
+            (
+                include_str!("../fixtures/ffmpeg-version/ubuntu-24.04-6.1.1.txt"),
+                58,
+                6,
+            ),
+            (
+                include_str!("../fixtures/ffmpeg-version/debian-13-7.1.5.txt"),
+                59,
+                7,
+            ),
+            (
+                include_str!("../fixtures/ffmpeg-version/jellyfin-8.1.3-win64.txt"),
+                60,
+                8,
+            ),
+            (
+                include_str!("../fixtures/ffmpeg-version/homebrew-9.0.1.txt"),
+                61,
+                9,
+            ),
+            // A git build of master after 9.0 (`N-127900-g…`).
+            (
+                include_str!("../fixtures/ffmpeg-version/btbn-git-N-127900.txt"),
+                61,
+                9,
+            ),
+        ];
+        for (out, avutil, release) in real {
+            let first = out.lines().next().unwrap();
+            assert_eq!(major(out), (Some(avutil), Some(release)), "{first}");
+            // Windows line ends read the same.
+            assert_eq!(
+                major(&out.replace('\n', "\r\n")),
+                (Some(avutil), Some(release)),
+                "{first}"
+            );
+        }
+        // libavutil wins over the version line: a gyan.dev git build names
+        // a date, a git build of the 6.1 → 7.0 cycle no release at all.
+        let gyan =
+            "ffmpeg version 2023-08-10-git-d9d5695390-full_build-www.gyan.dev Copyright (c) 2000-2023\n\
+                    libavutil      58. 16.101 / 58. 16.101\n";
+        assert_eq!(major(gyan), (Some(58), Some(6)));
+        let git = "ffmpeg version N-113000-g0123456789 Copyright (c) 2000-2023\n\
+                   libavutil      58. 33.100 / 58. 33.100\n";
+        assert_eq!(major(git), (Some(58), Some(6)));
+        // Without a libavutil line: the version line, where a date is no
+        // release and a git build names none.
+        let line = |v: &str| major(v).1;
         assert_eq!(
-            major("ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023"),
+            line("ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023"),
             Some(6)
         );
-        assert_eq!(major("ffmpeg version n7.1 Copyright (c) 2000-2024"), Some(7));
+        assert_eq!(line("ffmpeg version n7.1 Copyright (c) 2000-2024"), Some(7));
         assert_eq!(
-            major("ffmpeg version 8.1.3-Jellyfin Copyright (c) 2000-2026"),
+            line("ffmpeg version 8.1.3-Jellyfin Copyright (c) 2000-2026"),
             Some(8)
         );
-        assert_eq!(major("ffmpeg version 9.0.1 Copyright (c) 2000-2026"), Some(9));
-        assert_eq!(major("ffmpeg version 7.1-full_build-www.gyan.dev"), Some(7));
-        assert_eq!(major("ffmpeg version N-118000-gabcdef0123"), None);
+        assert_eq!(line("ffmpeg version 7.1-full_build-www.gyan.dev"), Some(7));
+        assert_eq!(
+            line("ffmpeg version 2023-08-10-git-d9d5695390-full_build-www.gyan.dev"),
+            None
+        );
+        assert_eq!(line("ffmpeg version N-118000-gabcdef0123"), None);
+        assert_eq!(line(""), None);
         assert_eq!(FfmpegCaps::default().major_version(), None);
     }
 
