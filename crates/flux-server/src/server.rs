@@ -153,7 +153,10 @@ pub async fn start_with(
                 // probed by an older flux-probe) the startup scan is a Deep
                 // one: it also re-parses those files (no I/O) and re-probes
                 // them, which a Quick scan never does for unchanged files.
-                // The watcher's catch-up joins it.
+                // The watcher starts first and without its catch-up: the
+                // Deep scan covers that, and a catch-up joining it once it
+                // had started ran a second pass that counted every file
+                // twice.
                 let libs = st.catalog.read(read::list_libraries).await.unwrap_or_default();
                 for lib in libs {
                     let id = lib.id;
@@ -174,13 +177,16 @@ pub async fn start_with(
                     } else {
                         Some(scan::ScanMode::Quick)
                     };
+                    if st.cfg.watch {
+                        match mode {
+                            Some(_) => st.scanner.watch_without_catch_up(id),
+                            None => st.scanner.watch(id),
+                        }
+                    }
                     if let Some(mode) = mode {
                         if let Err(e) = st.scanner.scan_library(id, mode, scan::Priority::Scheduled) {
                             tracing::info!(library_id = id, "not scanning: {e}");
                         }
-                    }
-                    if st.cfg.watch {
-                        st.scanner.watch(id);
                     }
                 }
             }

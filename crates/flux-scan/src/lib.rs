@@ -425,7 +425,17 @@ impl Scanner {
     /// The first call per library also catches up with changes made while
     /// nothing was watching ([`ScannerOptions::startup`]).
     pub fn watch(&self, library_id: Id) -> Result<(), ScanError> {
-        watch::watch(&self.inner, library_id)
+        watch::watch(&self.inner, library_id, true)
+    }
+
+    /// [`Scanner::watch`] without the startup catch-up, for a caller that
+    /// starts a full scan of the library right after: started once the
+    /// watcher is up, that scan sees whatever changed while nothing
+    /// watched, and changes after that are the watcher's. The catch-up
+    /// would only join the running scan as a second, redundant pass whose
+    /// counts add to its summary (a library of 28 files reporting 56).
+    pub fn watch_without_catch_up(&self, library_id: Id) -> Result<(), ScanError> {
+        watch::watch(&self.inner, library_id, false)
     }
 
     pub fn unwatch(&self, library_id: Id) {
