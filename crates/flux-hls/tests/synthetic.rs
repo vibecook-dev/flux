@@ -438,6 +438,84 @@ async fn held_frames_mp4s_transcode_in_short_pieces_that_each_start_on_an_idr() 
     }
 }
 
+/// A resume just after a keyframe that lies inside a converted video's
+/// piece: `warm` starts the encoder run at that piece, the one the player
+/// asks for first (`v/{vn}.m4s`), so serving it takes no run of its own.
+/// `warm` used to start at the first piece starting in the keyframe's
+/// segment, the piece after, and the player's piece then took a second
+/// cold run from the keyframe before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warm_starts_at_the_piece_a_resume_asks_for() {
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::HeldFramesMp4) else {
+        return;
+    };
+    // One keyframe span (5 s) a remux segment: their keyframes then lie
+    // inside the 2 s pieces of the 23.976 fps grid (spans of two, 240
+    // frames, end on a piece's 48).
+    let engine = HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        target_segment: std::time::Duration::from_secs(4),
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let mut client = presets::chrome_desktop();
+    client.max_bitrate = Some(100_000);
+    let plan = engine.plan(&asset, &client, &hls_only());
+    assert!(
+        matches!(plan.video, VideoOp::Transcode { .. }),
+        "{:?}",
+        plan.explain()
+    );
+    let segs = &asset.segments.segments;
+    let piece_ns = engine.config().video_segment_target.as_nanos() as i64;
+    let pieces = flux_hls::vtranscode::pieces(&asset, piece_ns);
+    // A keyframe inside a piece, and a time between it and the end of
+    // both the piece and the keyframe's segment.
+    let (seg, vn) = (1..segs.len())
+        .find_map(|s| {
+            let k = segs[s].start_ticks;
+            let p = pieces.iter().position(|p| p.start_ticks < k && k < p.end_ticks)?;
+            Some((s, p))
+        })
+        .expect("a piece across a keyframe");
+    let mid = (segs[seg].start_ticks + pieces[vn].end_ticks.min(segs[seg].end_ticks)) / 2;
+    let t = (mid - segs[0].start_ticks) as f64 / asset.segments.timescale as f64;
+    assert_eq!(asset.segments.segment_at(t), seg);
+    assert_eq!(
+        engine.segment_at(&asset, &plan, &Rendition::Video, t) as usize,
+        vn
+    );
+    assert!(flux_hls::vtranscode::first_piece_of(&pieces, seg) > vn);
+    engine.warm(&asset, &plan, t);
+    let t0 = std::time::Instant::now();
+    while engine.video_transcode_stats().segments == 0 {
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(120),
+            "warm produced nothing"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let runs = engine.video_transcode_stats().runs;
+    assert_eq!(runs, 1);
+    engine
+        .media_segment(&asset, &plan, &Rendition::Video, vn as u32)
+        .await
+        .unwrap()
+        .into_bytes()
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.video_transcode_stats().runs,
+        runs,
+        "piece {vn} took a run of its own"
+    );
+}
+
 // ---------------------------------------------------------------- subtitles
 
 /// A subtitle file beside a video, as the catalog would offer it.

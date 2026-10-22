@@ -122,7 +122,7 @@ async fn plan_for(st: &AppState, name: &str, preset: &str) -> Result<PlanEntry, 
         },
     );
     // One-round-trip play: start segment 0 of every rendition right away.
-    st.engine.warm(&asset, &plan, 0);
+    st.engine.warm(&asset, &plan, 0.0);
     let entry = Arc::new((asset, plan, prepare_ms));
     if let Ok(mut m) = st.plans.lock() {
         m.insert(key, entry.clone());

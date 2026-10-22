@@ -1083,8 +1083,9 @@ pub async fn play(
         (Some(asset), false) => {
             let t = start_ms as f64 / 1000.0;
             let n = asset.segments.segment_at(t) as u32;
-            // One-round-trip play: segment n of every rendition starts now.
-            st.engine.warm(asset, &plan, n);
+            // One-round-trip play: the segments at t of every rendition start
+            // now.
+            st.engine.warm(asset, &plan, t);
             // A transcoded video rendition is cut into ~2 s pieces, so its
             // segment number differs from the remux segment n.
             let vn = st.engine.segment_at(asset, &plan, &Rendition::Video, t);

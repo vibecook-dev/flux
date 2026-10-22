@@ -800,19 +800,21 @@ impl HlsEngine {
         out
     }
 
-    /// Predictive prefetch (research/08 idea E): starts producing segment
-    /// `start` of the video and the default audio
-    /// ([`HlsEngine::warm_renditions`]) in the background. Call it when a play
+    /// Predictive prefetch (research/08 idea E): starts producing the
+    /// segments of the video and the default audio
+    /// ([`HlsEngine::warm_renditions`]) that cover playlist time `t_secs`
+    /// ([`HlsEngine::segment_at`]), in the background. Call it when a play
     /// request is planned (or a detail page opens), so that the first
     /// segments are in flight or ready before the player asks: transcoded
     /// segments land in the transcoders' caches, remuxed ones in a small
     /// warm cache that the following request is served from
     /// ([`EngineConfig::warm_cache_bytes`]) instead of being produced twice.
     /// Errors are logged, not returned.
-    pub fn warm(&self, asset: &Arc<Asset>, plan: &PlaybackPlan, start: u32) {
+    pub fn warm(&self, asset: &Arc<Asset>, plan: &PlaybackPlan, t_secs: f64) {
         if plan.delivery != DeliveryFormat::HlsFmp4 {
             return;
         }
+        let start = asset.segments.segment_at(t_secs) as u32;
         for r in Self::warm_renditions(plan) {
             if self.check_rendition(asset, plan, &r).is_err() {
                 continue;
@@ -825,11 +827,15 @@ impl HlsEngine {
                 let work = async {
                     match (r, this.video_target(&asset, &plan)?) {
                         (Rendition::Video, Some(t)) => {
-                            // Start the encoder run at the piece where segment
-                            // `start` begins; the init waits for its avcC.
-                            let pieces = this.inner.video.pieces(&asset);
-                            let p = crate::vtranscode::first_piece_of(&pieces, start as usize);
-                            this.inner.video.warm(&asset_key(&asset), asset.clone(), t, p);
+                            // Start the encoder run at the piece the player
+                            // asks for first: the one covering `t_secs`, which
+                            // may start in the remux segment before (a
+                            // converted video's pieces straddle keyframes).
+                            // The init waits for its avcC.
+                            let p = this.segment_at(&asset, &plan, &Rendition::Video, t_secs);
+                            this.inner
+                                .video
+                                .warm(&asset_key(&asset), asset.clone(), t, p as usize);
                             Ok(())
                         }
                         (Rendition::Audio(k), _) if k.recipe != AudioRecipe::Copy => {
@@ -1285,7 +1291,7 @@ mod tests {
                 Rendition::Audio(AudioKey::from_plan(&plan.audio[0]))
             ]
         );
-        engine.warm(&asset, &plan, 0);
+        engine.warm(&asset, &plan, 0.0);
         assert!(wait_for(|| engine.cache_usage().warmed.0 == 2 && engine.cache_usage().warmed.1 > 0).await);
         // Give a stray transcode time to show up.
         tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -1307,7 +1313,7 @@ mod tests {
         let engine = HlsEngine::new(EngineConfig::default());
         let asset = engine.prepare(&p).await.unwrap();
         let plan = engine.plan(&asset, &presets::chrome_desktop(), &PlanPrefs::default());
-        engine.warm(&asset, &plan, 1);
+        engine.warm(&asset, &plan, asset.segments.duration_secs(0));
         assert!(wait_for(|| engine.cache_usage().warmed.0 == 2 && engine.cache_usage().warmed.1 > 0).await);
         let before = asset.source().io_stats();
         let v = engine
