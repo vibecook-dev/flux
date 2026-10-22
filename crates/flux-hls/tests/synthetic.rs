@@ -292,6 +292,156 @@ async fn libx264_pieces_are_deterministic() {
     assert_eq!(got[0], got[1], "piece 2 differs between two cold runs");
 }
 
+/// Interlacing is the container's flag, else the SPS's, for the catalog's
+/// probe and the playback index alike, so `POST /plan` (probe) and `/play`
+/// (index) agree for every client. x264 `fake-interlaced` (an SPS that
+/// allows field coding, progressive frames, flagged progressive) is
+/// remuxed for browsers. Interlaced H.264, as MBAFF fields or as fields
+/// woven into progressive-coded frames, is transcoded for them and
+/// deinterlaced: the marked frames, or every frame when the decoder marks
+/// none. The transcode keeps every frame and starts each piece on an IDR.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interlaced_clips_plan_alike_from_probe_and_index_and_deinterlace() {
+    use flux_hls::encoders::Deinterlace;
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let Some(engine) = x264_engine() else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-interlace");
+    let prefs = PlanPrefs::default();
+    for (c, interlaced, mode) in [
+        (Clip::FakeInterlacedMkv, false, Deinterlace::Off),
+        (Clip::InterlacedMkv, true, Deinterlace::Marked),
+        (Clip::WovenFieldsMkv, true, Deinterlace::All),
+    ] {
+        let Some(p) = clip(c) else { continue };
+        let name = c.file_name();
+        let probe = flux_probe::probe_file(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let asset = engine.prepare(&p).await.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.coded_interlaced(), Some(c != Clip::WovenFieldsMkv), "{name}");
+        assert_eq!(v.interlaced(), Some(interlaced), "{name}");
+        assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced), "{name}");
+        assert_eq!(flux_hls::vtranscode::deinterlace(v), mode, "{name}");
+        for client in ["chrome", "safari", "firefox", "appletv", "androidtv", "legacy"] {
+            let caps = presets::by_name(client).unwrap();
+            let mut a = engine.plan(&asset, &caps, &prefs);
+            let mut b = flux_hls::plan_from_probe(&probe, &caps, &prefs);
+            a.est_cpu_ms_per_min = 0;
+            b.est_cpu_ms_per_min = 0;
+            assert_eq!(a, b, "{name} / {client}: index plan vs probe plan");
+        }
+        let plan = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+        assert_eq!(
+            matches!(plan.video, VideoOp::Transcode { .. }),
+            interlaced,
+            "{name}: {:?}",
+            plan.explain()
+        );
+        if !interlaced {
+            continue;
+        }
+        let (file, segs) = write_rendition(
+            &engine,
+            &asset,
+            &plan,
+            Rendition::Video,
+            &dir,
+            &format!("{name}.chrome.mp4"),
+        )
+        .await;
+        for (n, s) in segs.iter().enumerate() {
+            assert_eq!(
+                first_vcl(s),
+                Some(5),
+                "{name}: piece {n} does not start with an IDR"
+            );
+        }
+        let frames = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(frames.len() as u32, c.frames().unwrap(), "{name}: frames out");
+    }
+}
+
+/// An MP4's `fiel` decides like Matroska's FlagInterlaced, for the probe and
+/// the index alike: the H.264 clip (a progressive SPS) with `fiel` set to
+/// 2 fields is interlaced (fields woven into its frames: every frame is
+/// deinterlaced), with 1 field progressive, without `fiel` the SPS's.
+#[tokio::test]
+async fn mp4_fiel_decides_interlacing_for_probe_and_index() {
+    use flux_hls::encoders::Deinterlace;
+    use mp4_atom::Encode;
+    let Some(src) = clip(Clip::AnamorphicMp4) else {
+        return;
+    };
+    let bytes = std::fs::read(&src).unwrap();
+    // The top-level boxes: `moov` is last (no faststart), so rewriting it
+    // moves no sample data.
+    let mut pos = 0usize;
+    let mut moov = None;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let size = match size {
+            0 => bytes.len() - pos,
+            1 => u64::from_be_bytes(bytes[pos + 8..pos + 16].try_into().unwrap()) as usize,
+            s => s,
+        };
+        if &bytes[pos + 4..pos + 8] == b"moov" {
+            moov = Some(pos);
+        }
+        pos += size.max(8);
+    }
+    let at = moov.expect("moov");
+    let engine = HlsEngine::new(EngineConfig::default());
+    let dir = flux_test_media::scratch("hls-synthetic-fiel");
+    for (fiel, interlaced, mode) in [
+        (Some(2u8), true, Deinterlace::All),
+        (Some(1), false, Deinterlace::Off),
+        (None, false, Deinterlace::Off),
+    ] {
+        let mut m = mp4_atom::Moov::decode(&mut &bytes[at..]).unwrap();
+        let mut set = 0;
+        for t in &mut m.trak {
+            for c in &mut t.mdia.minf.stbl.stsd.codecs {
+                if let mp4_atom::Codec::Avc1(a) = c {
+                    a.fiel = fiel.map(|n| mp4_atom::Fiel {
+                        field_count: n,
+                        field_order: if n == 2 { 1 } else { 0 },
+                    });
+                    set += 1;
+                }
+            }
+        }
+        assert_eq!(set, 1, "one avc1 entry");
+        let mut out = bytes[..at].to_vec();
+        m.encode(&mut out).unwrap();
+        let p = dir.join(format!("fiel-{fiel:?}.mp4"));
+        std::fs::write(&p, &out).unwrap();
+        let probe = flux_probe::probe_file(&p).unwrap();
+        let asset = engine.prepare(&p).await.unwrap();
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.coded_interlaced(), Some(false), "{fiel:?}");
+        assert_eq!(v.extra.interlaced, fiel.map(|n| n == 2), "{fiel:?}");
+        assert_eq!(v.interlaced(), Some(interlaced), "{fiel:?}");
+        assert_eq!(
+            probe.main_video().unwrap().interlaced,
+            Some(interlaced),
+            "{fiel:?}"
+        );
+        assert_eq!(flux_hls::vtranscode::deinterlace(v), mode, "{fiel:?}");
+        let caps = presets::chrome_desktop();
+        let mut a = engine.plan(&asset, &caps, &PlanPrefs::default());
+        let mut b = flux_hls::plan_from_probe(&probe, &caps, &PlanPrefs::default());
+        a.est_cpu_ms_per_min = 0;
+        b.est_cpu_ms_per_min = 0;
+        assert_eq!(a, b, "{fiel:?}");
+        assert_eq!(
+            matches!(a.video, VideoOp::Transcode { .. }),
+            interlaced,
+            "{fiel:?}"
+        );
+    }
+}
+
 /// Stream `map` of a file decoded by ffmpeg to mono 48 kHz samples.
 fn decode_pcm(path: &Path, map: &str) -> Vec<i16> {
     let ff = flux_test_media::ffmpeg().expect("ffmpeg");

@@ -310,6 +310,16 @@ pub enum Clip {
     AnamorphicMp4,
     /// HEVC 1080p60, 3 s: a transcode needs level 4.2 (PB-12).
     Hevc1080p60Mkv,
+    // Interlacing (flux-hls's planner and deinterlacer), 4 s 720×576 25 fps
+    // H.264 in Matroska, no audio:
+    /// x264 `fake-interlaced`: an SPS that allows field coding, progressive
+    /// frames, flagged progressive (FlagInterlaced 2).
+    FakeInterlacedMkv,
+    /// Interlaced MBAFF frames (top field first), flagged interlaced.
+    InterlacedMkv,
+    /// Interlaced frames encoded as progressive frames (fields woven in, no
+    /// `+ildct`), flagged interlaced.
+    WovenFieldsMkv,
     /// 10 s, 640×360 25 fps H.264 (2 s GOP) + two audio tracks of 1 kHz
     /// tone bursts (30 ms every 250 ms, so a shifted stretch shows): stereo
     /// AC-3, then stereo E-AC-3, Matroska.
@@ -320,7 +330,7 @@ pub enum Clip {
     LacedAc3Eac3Mkv,
 }
 
-const CLIP_COUNT: usize = 19;
+const CLIP_COUNT: usize = 22;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -362,6 +372,9 @@ impl Clip {
         Clip::AnamorphicMkv,
         Clip::AnamorphicMp4,
         Clip::Hevc1080p60Mkv,
+        Clip::FakeInterlacedMkv,
+        Clip::InterlacedMkv,
+        Clip::WovenFieldsMkv,
         Clip::Ac3Eac3BurstsMkv,
         Clip::LacedAc3Eac3Mkv,
     ];
@@ -386,6 +399,9 @@ impl Clip {
             Clip::AnamorphicMkv => "anamorphic.mkv",
             Clip::AnamorphicMp4 => "anamorphic.mp4",
             Clip::Hevc1080p60Mkv => "hevc1080p60.mkv",
+            Clip::FakeInterlacedMkv => "fake_interlaced.mkv",
+            Clip::InterlacedMkv => "interlaced_mbaff.mkv",
+            Clip::WovenFieldsMkv => "interlaced_as_frames.mkv",
             Clip::Ac3Eac3BurstsMkv => "bursts_ac3_eac3.mkv",
             Clip::LacedAc3Eac3Mkv => "bursts_ac3_eac3_laced.mkv",
         }
@@ -402,7 +418,11 @@ impl Clip {
             Clip::H264AacMp4 | Clip::H264AacTs | Clip::VfrSectionMkv | Clip::Rot90H264Mov => {
                 &["libx264", "aac"]
             }
-            Clip::AnamorphicMkv | Clip::AnamorphicMp4 => &["libx264"],
+            Clip::AnamorphicMkv
+            | Clip::AnamorphicMp4
+            | Clip::FakeInterlacedMkv
+            | Clip::InterlacedMkv
+            | Clip::WovenFieldsMkv => &["libx264"],
             Clip::HevcAc3Mkv => &["libx265", "ac3"],
             Clip::Mpeg4Mp2Avi => &["mpeg4", "mp2"],
             Clip::Hdr10HevcMkv | Clip::Hevc1080p60Mkv => &["libx265"],
@@ -428,6 +448,7 @@ impl Clip {
             | Clip::Ac3Eac3BurstsMkv
             | Clip::LacedAc3Eac3Mkv => Some(250),
             Clip::Hdr10HevcMkv => Some(144),
+            Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
         }
     }
@@ -632,6 +653,32 @@ impl Clip {
                 a.extend(video("1920x1080", "60", 3));
                 a.extend(x265("keyint=60"));
                 a.extend(s(&["-an", "-f", "matroska"]));
+            }
+            Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => {
+                a.extend(video("720x576", "25", 4));
+                // `setfield` marks the frames interlaced, so ffmpeg flags the
+                // file so (Matroska FlagInterlaced 1); libx264 codes them as
+                // fields (MBAFF) only with `+ildct`.
+                match self {
+                    Clip::FakeInterlacedMkv => {
+                        a.extend(s(&["-x264-params", "fake-interlaced=1:pic-struct=1"]))
+                    }
+                    Clip::InterlacedMkv => a.extend(s(&["-vf", "setfield=tff", "-flags", "+ildct+ilme"])),
+                    _ => a.extend(s(&["-vf", "setfield=tff"])),
+                }
+                a.extend(s(&[
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-g",
+                    "25",
+                    "-an",
+                    "-f",
+                    "matroska",
+                ]));
             }
             Clip::Ac3Eac3BurstsMkv => {
                 a.extend(video("640x360", "25", 10));
