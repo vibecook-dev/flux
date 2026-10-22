@@ -92,6 +92,8 @@ impl From<CatalogError> for ApiError {
             CatalogError::OverlappingRoots { root, other } => ApiError::bad_request(format!(
                 "The folder {root:?} is inside {other:?} (or contains it): a library can't have both. Pick one."
             )),
+            // The same folder in two libraries would list every file twice.
+            e @ CatalogError::RootInOtherLibrary { .. } => ApiError::bad_request(e.to_string()),
             CatalogError::WriterGone => ApiError::unavailable("The server is shutting down"),
             other => ApiError::internal(format!("Catalog error: {other}")),
         }

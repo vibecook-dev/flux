@@ -15,7 +15,7 @@ import type { Library, LibraryKind, ScanStatus } from '../api/types';
 import { Link } from '../app/Link';
 import { Icon } from '../components/Icon';
 import styles from './Admin.module.css';
-import { STATE_LABEL, applyScanProgress, lastScanLine, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
+import { STATE_LABEL, applyScanProgress, lastScanLine, metadataNote, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
 
 const KIND_LABEL: Record<LibraryKind, string> = { movies: 'Films', shows: 'Shows', mixed: 'Mixed' };
 
@@ -292,6 +292,7 @@ export default function Admin() {
   };
 
   const s = server.data;
+  const noMetadata = s ? metadataNote(s.metadata.source) : null;
   return (
     <div className={styles.page}>
       <header className={styles.header}>
@@ -341,6 +342,15 @@ export default function Admin() {
             </dd>
           </div>
         </dl>
+      )}
+
+      {noMetadata && (
+        <p className={styles.metadataNote}>
+          {noMetadata}{' '}
+          <a className={styles.inlineLink} href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">
+            Get a TMDB key
+          </a>
+        </p>
       )}
 
       <div className={styles.libs}>

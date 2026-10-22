@@ -17,6 +17,7 @@ import type {
   Library,
   LibrarySort,
   MarkWatched,
+  MetadataSource,
   Page,
   PlanPreview,
   PlaybackPlan,
@@ -45,6 +46,8 @@ export interface MockOptions {
   tailnet?: 'off' | 'running';
   /** How the browser reached the server (ServerInfo.path). */
   path?: string;
+  /** What the server matches titles against (ServerInfo.metadata); default `tmdb`. */
+  metadata?: MetadataSource;
   /** Prefix for handler paths; tests in Node use an absolute origin. */
   origin?: string;
 }
@@ -106,6 +109,7 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
     path: opts.path ?? 'localhost',
     // ServerInfo.tailnet_name is the server's MagicDNS name.
     tailnet_name: tailnet.dns_name,
+    metadata: { source: opts.metadata ?? 'tmdb' },
   });
 
   const tailnetChanged = () => broadcast({ type: 'tailnet', info: { ...tailnet } });

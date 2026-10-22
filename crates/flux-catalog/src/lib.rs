@@ -55,7 +55,7 @@ use std::thread::JoinHandle;
 
 use rusqlite::{Connection, OpenFlags};
 
-pub use error::{CatalogError, Result};
+pub use error::{CatalogError, Result, RootOverlap};
 pub use jobs::{ClaimJobs, Enqueued, Finished, JobLease, JobResult, JobSpec, JOB_ART, JOB_MATCH};
 pub use model::*;
 pub use read::{FileCounts, ItemSort, ItemsQuery, PooledConn, ReadPool};
