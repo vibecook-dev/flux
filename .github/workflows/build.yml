@@ -164,6 +164,12 @@ jobs:
       # Distributed binaries: no debug info, symbols kept for backtraces.
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_PROFILE_RELEASE_STRIP: debuginfo
+      # Windows: the C runtime linked into flux-server.exe. Windows doesn't
+      # include vcruntime140.dll (the Visual C++ Redistributable does), so a
+      # dynamically linked exe fails to start on a fresh install. The runner
+      # has the DLL, so the smoke test reads the imports instead
+      # (pe-imports.py). Cargo reads this only when building for that target.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       # jemalloc bakes in the page size. 64 KiB covers 4, 16 and 64 KiB
       # kernels (Raspberry Pi 5 and Asahi use 16 KiB); tikv-jemalloc-sys reads

@@ -78,7 +78,7 @@ would remove this step.
      | `x86_64-apple-darwin` | macos-15 | cross-compiled; smoke-tested under Rosetta 2; macOS 11+ (`sidecar-slim`: 13+) |
      | `x86_64-unknown-linux-gnu` | ubuntu-22.04 | glibc 2.35+ |
      | `aarch64-unknown-linux-gnu` | ubuntu-22.04-arm | glibc 2.35+, 4/16/64 KiB pages |
-     | `x86_64-pc-windows-msvc` | windows-2025 | Windows 10+; packaged as a `.zip`; smoke-tested with Ctrl-C and Ctrl-Break stops |
+     | `x86_64-pc-windows-msvc` | windows-2025 | Windows 10+; C runtime linked in (`+crt-static`), so no Visual C++ Redistributable; packaged as a `.zip`; smoke-tested with Ctrl-C and Ctrl-Break stops |
 
      The macOS minimums are the ones [INSTALL.md](INSTALL.md#requirements)
      promises, and `scripts/package/smoke-test.sh` enforces them: it fails a
@@ -86,6 +86,16 @@ would remove this step.
      higher `minos` (`otool -arch all -l`, `LC_BUILD_VERSION`) than
      `MACOS_FLUX_SERVER` (11.0) or `MACOS_SIDECAR` (13.0). Raise one only
      in the script, this table and INSTALL.md together.
+
+     Windows doesn't include `vcruntime140.dll`; the Visual C++
+     Redistributable does. So `build.yml` (and `ci.yml`'s Windows job) set
+     `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=+crt-static`,
+     which links the C runtime into `flux-server.exe`. The runners have the
+     Redistributable, so running the exe there can't catch a regression:
+     `smoke-test.sh` (and the Windows CI job) fail an `.exe` that imports
+     `vcruntime*.dll`, `msvcp*.dll` or another of its DLLs
+     (`scripts/package/pe-imports.py`). The Universal CRT
+     (`api-ms-win-crt-*`) is part of Windows 10 and later.
 
    - packages each as `flux-<version>-<target>.tar.gz`, or `.zip` for
      Windows (`scripts/package/package.sh`), and smoke-tests every package
@@ -302,7 +312,10 @@ least-privilege `permissions:` per job. These settings are needed once:
 The same scripts CI uses, for one target (here macOS on Apple Silicon; on
 Windows, run them in Git Bash with `--target x86_64-pc-windows-msvc`,
 `flux-server.exe` and `sidecar/sidecar-slim.exe`, which gives a `.zip` and
-needs Python 3):
+needs Python 3, and first
+`export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS='-C target-feature=+crt-static'`
+as `build.yml` does, or the smoke test fails the exe for needing the
+Visual C++ Redistributable):
 
 ```sh
 export CARGO_TARGET_DIR="$PWD/target"

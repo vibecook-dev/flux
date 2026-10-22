@@ -264,7 +264,8 @@ flux-<version>-x86_64-pc-windows-msvc\
 ```
 
 `flux-server.exe` finds `web\` and `sidecar-slim.exe` next to itself, so
-keep the folder together. The commands below are for PowerShell.
+keep the folder together. It has the C runtime built in, so it needs no
+Visual C++ Redistributable. The commands below are for PowerShell.
 
 ### Download and check
 
@@ -562,6 +563,12 @@ cargo build --release --locked -p flux-server
 cd web; pnpm install --frozen-lockfile; $env:VITE_FLUX_API = '/'; pnpm build; cd ..
 .\target\release\flux-server.exe --web-dir web\dist --library 'Movies:movies:D:\Media\Movies'
 ```
+
+That exe loads `vcruntime140.dll`, which comes with the Visual C++
+Redistributable, not with Windows. To build one that runs on a Windows
+without it, as the release zip does, set
+`$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'`
+before `cargo build`.
 
 `scripts/package/` (packaging and the smoke test) runs in Git Bash.
 

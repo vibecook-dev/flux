@@ -12,11 +12,14 @@
 # on Apple Silicon under Rosetta 2 (`arch -x86_64`).
 #
 # A Windows package (.zip) is tested on Windows, in Git Bash, and needs
-# Python 3 (zip.py) and Windows PowerShell. flux-server.exe runs from the
-# unpacked folder in a hidden console of its own (windows-console.ps1) and
-# is stopped as a service wrapper (NSSM, WinSW) stops it: once with Ctrl-C,
-# then, started again on the same data dir, with Ctrl-Break. Each stop must
-# log "flux stopped" and exit 0.
+# Python 3 (zip.py, pe-imports.py) and Windows PowerShell. First,
+# flux-server.exe and sidecar-slim.exe must import no DLL of the Visual C++
+# Redistributable, which a fresh Windows lacks and the test machine likely
+# has (pe-imports.py reads the import tables). flux-server.exe then runs
+# from the unpacked folder in a hidden console of its own
+# (windows-console.ps1) and is stopped as a service wrapper (NSSM, WinSW)
+# stops it: once with Ctrl-C, then, started again on the same data dir, with
+# Ctrl-Break. Each stop must log "flux stopped" and exit 0.
 #
 # Usage: scripts/package/smoke-test.sh dist/flux-<version>-<target>.tar.gz|.zip
 #          [--port 18097] [--dir DIR] [--keep]
@@ -66,7 +69,7 @@ while [ $# -gt 0 ]; do
     --port) port=${2:?}; shift 2 ;;
     --dir) dir=${2:?}; shift 2 ;;
     --keep) keep=true; shift ;;
-    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,25p' "$0"; exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *) archive=$1; shift ;;
   esac
@@ -175,6 +178,16 @@ case "$target" in
       check_minos "$root/bin/sidecar-slim" "$MACOS_SIDECAR"
     else
       echo "== no bin/sidecar-slim in this package"
+    fi
+    ;;
+  *-windows-*)
+    # Running the exe here proves nothing about a fresh Windows: this
+    # machine (a GitHub runner, a developer's) likely has the Visual C++
+    # Redistributable, so vcruntime140.dll would load. Read the imports.
+    exes=(flux-server.exe)
+    if [ -f "$root/sidecar-slim.exe" ]; then exes+=(sidecar-slim.exe); fi
+    if ! (cd "$root" && "$python" "$here/pe-imports.py" --no-vc-redist "${exes[@]}") | sed 's/^/== imports of /'; then
+      die "the package's .exe files must start without the Visual C++ Redistributable (see above)"
     fi
     ;;
 esac

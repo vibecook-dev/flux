@@ -142,6 +142,10 @@ jobs:
       # skipping the synthetic-clip tests. The runner has no GPU, so flux
       # picks libx264 after the NVENC and Quick Sync test encodes fail.
       FLUX_TEST_REQUIRE_FFMPEG: "1"
+      # The C runtime linked in, as build.yml builds the release exe (which
+      # then needs no Visual C++ Redistributable), so lints, tests and the
+      # release build below use the same CRT as the package.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
       # The version the Docker image bundles (JELLYFIN_FFMPEG_VERSION in the
       # Dockerfile); the SHA-256 is the release asset's digest. Bump both
       # with the Dockerfile.
@@ -197,6 +201,10 @@ jobs:
       # The release profile (thin LTO) that build.yml packages.
       - name: Release build of flux-server
         run: cargo build --locked --release -p flux-server
+      # The runner has the Visual C++ Redistributable, so running the exe
+      # can't show it needs one; its import table can.
+      - name: flux-server.exe needs no Visual C++ Redistributable
+        run: python scripts/package/pe-imports.py --no-vc-redist "$CARGO_TARGET_DIR/release/flux-server.exe"
 
   msrv:
     name: MSRV
@@ -329,6 +337,9 @@ jobs:
         run: actionlint -color
       - name: shellcheck
         run: shellcheck --severity=style scripts/package/*.sh
+      # scripts/package/test_*.py, on synthetic inputs (pe-imports.py).
+      - name: Packaging script tests
+        run: python3 -m unittest discover -s scripts/package -p 'test_*.py' -v
       - name: hadolint
         run: hadolint Dockerfile
 
