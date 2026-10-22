@@ -131,6 +131,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) reads: u32,
     pub(crate) container: Container,
     pub(crate) warnings: Vec<String>,
+    /// Offsets of the boxes whose children ended in junk (MP4: a child that
+    /// overruns its parent), recorded by walks that only borrow the context.
+    junk: std::cell::RefCell<Vec<u64>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -140,7 +143,21 @@ impl<'a> Ctx<'a> {
             reads,
             container: Container::Unknown,
             warnings: Vec::new(),
+            junk: Default::default(),
         }
+    }
+
+    /// Records that the children of the box at `parent` end in junk.
+    pub(crate) fn note_junk(&self, parent: u64) {
+        let mut j = self.junk.borrow_mut();
+        if !j.contains(&parent) {
+            j.push(parent);
+        }
+    }
+
+    /// How many boxes' children ended in junk ([`Ctx::note_junk`]).
+    pub(crate) fn junk(&self) -> usize {
+        self.junk.borrow().len()
     }
 
     pub(crate) fn file_size(&self) -> u64 {

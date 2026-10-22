@@ -1,5 +1,6 @@
 //! The ffprobe fallback for containers flux-probe does not read
-//! (`ProbeError::UnknownFormat`: FLV, MPEG-PS/VOB, ASF/WMV, OGM, RMVB…).
+//! (`ProbeError::UnknownFormat`: FLV, MPEG-PS/VOB, ASF/WMV, OGM, RMVB…) and
+//! files it finds malformed, which ffmpeg's demuxers often still read.
 //!
 //! flux-probe's own `ffprobe::probe` has no timeout. Here every run is
 //! bounded: at most `ffprobe_workers` processes at once (the pool in

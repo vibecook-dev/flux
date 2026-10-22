@@ -170,7 +170,8 @@ pub enum FrameSeiMode {
 pub struct ProbeOptions {
     /// Keyframe SEI pass policy.
     pub frame_sei: FrameSeiMode,
-    /// Fall back to `ffprobe` when the container is not recognised.
+    /// Fall back to `ffprobe` when the container is not recognised or is
+    /// malformed ([`ProbeError::wants_ffprobe`]).
     pub ffprobe_fallback: bool,
     /// Read/page size in bytes; 0 means [`PAGE`] (64 KiB). Smaller (16 KiB)
     /// is faster on local SSDs, larger is better on high-latency storage.
@@ -197,7 +198,7 @@ pub fn probe_file(path: &Path) -> Result<ProbeResult, ProbeError> {
 pub fn probe_file_with(path: &Path, opts: &ProbeOptions) -> Result<ProbeResult, ProbeError> {
     let src = FileSource::open(path)?;
     match probe_source(src, ContainerHint::from_path(path), opts) {
-        Err(ProbeError::UnknownFormat { .. }) if opts.ffprobe_fallback => crate::ffprobe::probe(path),
+        Err(e) if opts.ffprobe_fallback && e.wants_ffprobe() => crate::ffprobe::probe(path),
         r => r,
     }
 }
