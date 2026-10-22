@@ -80,14 +80,14 @@ fn main() -> ExitCode {
         tracing::info!(signal = stop.name(), "shutting down");
         let budget = stop.budget();
         if let Some(deadline) = budget.deadline {
-            exit_watchdog(deadline, stop.name());
+            exit_watchdog(deadline, stop.name(), WINDOWS_ENDS_IT);
         }
         // Ours is then the last reference, so the state's drop (the
         // catalog's and the scanner's, which join threads) runs after "flux
         // stopped", with the exit watchdog armed.
         let state = server.state.clone();
         server.shutdown(budget.grace).await;
-        exit_watchdog(budget.exit, "\"flux stopped\"");
+        exit_watchdog(budget.exit, "\"flux stopped\"", "a shutdown bug");
         drop(state);
         (ExitCode::SUCCESS, budget.runtime)
     });
@@ -104,9 +104,10 @@ enum Stop {
     /// Ctrl-C (also how NSSM and WinSW stop a service), SIGTERM or
     /// Ctrl-Break: only flux's own limits apply.
     Asked(&'static str),
-    /// Windows is closing flux's console, logging the user off or shutting
-    /// down. It ends the process about 5 s after the event, whatever flux
-    /// is doing, so the whole stop has to fit in that.
+    /// Windows is closing flux's console. It ends the process about 5 s
+    /// after the event, whatever flux is doing, so the whole stop has to fit
+    /// in that. (Logoff and shutdown would be handled the same way, but
+    /// Windows doesn't deliver them to flux: see `ConsoleEvents`.)
     #[cfg_attr(not(windows), allow(dead_code))]
     Closing(&'static str),
 }
@@ -128,6 +129,9 @@ struct Budget {
 /// How long the process may take to end after "flux stopped" (a stop that
 /// was asked for): the state's drop plus the runtime's 2 s.
 const EXIT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Why a stop with a deadline ends there: only a closing console has one.
+const WINDOWS_ENDS_IT: &str = "Windows ends flux 5 s after its console closes";
 
 impl Stop {
     fn name(self) -> &'static str {
@@ -154,6 +158,17 @@ impl Stop {
             },
         }
     }
+
+    /// `next` arrived while this stop was running: the deadline it adds
+    /// from now, if any. Only a closing console bounds a stop that had no
+    /// deadline; a repeated Ctrl-C changes nothing, as on Unix.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn then(self, next: Stop) -> Option<Duration> {
+        match (self.budget().deadline, next.budget().deadline) {
+            (None, Some(deadline)) => Some(deadline),
+            _ => None,
+        }
+    }
 }
 
 /// A backstop, not a fix: if the process still runs `after` from now, it
@@ -161,15 +176,15 @@ impl Stop {
 /// are closed and the catalog committed, so a stuck drop or exit handler
 /// only costs the wait for a supervisor's SIGKILL (Docker's 10 s, systemd's
 /// 90 s); the error and the status keep such a bug visible. `since` names
-/// what happened `after` ago.
-fn exit_watchdog(after: Duration, since: &'static str) {
+/// what happened `after` ago, and `why` why flux can't wait any longer.
+fn exit_watchdog(after: Duration, since: &'static str, why: &'static str) {
     let spawned = std::thread::Builder::new()
         .name("flux-exit-watchdog".into())
         .stack_size(64 << 10)
         .spawn(move || {
             std::thread::sleep(after);
             tracing::error!(
-                "still running {:.1} s after {since} (a shutdown bug); exiting",
+                "still running {:.1} s after {since} ({why}); exiting",
                 after.as_secs_f64()
             );
             hard_exit(1);
@@ -213,32 +228,97 @@ async fn wait_for_signal() -> Stop {
     }
 }
 
-/// Every console control event: Ctrl-C (what NSSM and WinSW send to stop a
-/// service), Ctrl-Break, and the console closing, a logoff or a shutdown.
-/// Without a handler the last four end the process on the spot, with no
-/// "flux stopped" and the catalog's last writes lost.
+/// The first console control event (see [`ConsoleEvents`]). flux keeps
+/// listening until the process ends, so a second event can't cut the stop
+/// short.
 #[cfg(windows)]
 async fn wait_for_signal() -> Stop {
-    use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
-    match (
-        ctrl_c(),
-        ctrl_break(),
-        ctrl_close(),
-        ctrl_shutdown(),
-        ctrl_logoff(),
-    ) {
-        (Ok(mut c), Ok(mut brk), Ok(mut close), Ok(mut shutdown), Ok(mut logoff)) => {
-            tokio::select! {
-                _ = c.recv() => Stop::Asked("Ctrl-C"),
-                _ = brk.recv() => Stop::Asked("Ctrl-Break"),
-                _ = close.recv() => Stop::Closing("console closed"),
-                _ = shutdown.recv() => Stop::Closing("shutdown"),
-                _ = logoff.recv() => Stop::Closing("logoff"),
-            }
+    match (ConsoleEvents::listen(), ConsoleEvents::listen()) {
+        (Ok(mut events), Ok(held)) => {
+            // tokio's handler takes an event while any listener for it is
+            // left, and Windows' default handler, which ends flux on the
+            // spot (exit 0xC000013A), runs only once none is. `held` is
+            // never read and never dropped, so that holds until the process
+            // ends, also after the runtime has dropped the task below:
+            // tokio then ignores a Ctrl-C and keeps a closing console's
+            // event until flux exits (or Windows ends it 5 s later).
+            std::mem::forget(held);
+            let stop = events.next().await;
+            tokio::spawn(events.during_the_stop(stop));
+            stop
         }
-        _ => {
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(
+                error = %e,
+                "cannot listen for console events: Ctrl-Break or closing the console ends flux at once"
+            );
             let _ = tokio::signal::ctrl_c().await;
             Stop::Asked("Ctrl-C")
+        }
+    }
+}
+
+/// Listeners for every console control event: Ctrl-C (what NSSM and WinSW
+/// send to stop a service), Ctrl-Break, and the console closing. Without a
+/// handler the last two end the process on the spot, with no "flux stopped"
+/// and the catalog's last writes lost.
+///
+/// Logoff and shutdown are listened for too, but Windows doesn't deliver
+/// them: it calls no handler for them in a process that has loaded
+/// user32.dll, which flux has (through shell32), and in a user's session
+/// they reach only services anyway. So at logoff or shutdown flux stops
+/// gracefully only if a service wrapper sends it Ctrl-C first.
+#[cfg(windows)]
+struct ConsoleEvents {
+    ctrl_c: tokio::signal::windows::CtrlC,
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    shutdown: tokio::signal::windows::CtrlShutdown,
+    logoff: tokio::signal::windows::CtrlLogoff,
+}
+
+#[cfg(windows)]
+impl ConsoleEvents {
+    fn listen() -> std::io::Result<ConsoleEvents> {
+        use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
+        Ok(ConsoleEvents {
+            ctrl_c: ctrl_c()?,
+            ctrl_break: ctrl_break()?,
+            close: ctrl_close()?,
+            shutdown: ctrl_shutdown()?,
+            logoff: ctrl_logoff()?,
+        })
+    }
+
+    async fn next(&mut self) -> Stop {
+        tokio::select! {
+            _ = self.ctrl_c.recv() => Stop::Asked("Ctrl-C"),
+            _ = self.ctrl_break.recv() => Stop::Asked("Ctrl-Break"),
+            _ = self.close.recv() => Stop::Closing("console closed"),
+            _ = self.shutdown.recv() => Stop::Closing("shutdown"),
+            _ = self.logoff.recv() => Stop::Closing("logoff"),
+        }
+    }
+
+    /// The events after `first`, until the process ends: the stop carries
+    /// on. A closing console also bounds a stop that had no deadline, so
+    /// that flux, not Windows, ends it if it runs long.
+    async fn during_the_stop(mut self, first: Stop) {
+        let mut stop = first;
+        loop {
+            let next = self.next().await;
+            match stop.then(next) {
+                Some(deadline) => {
+                    tracing::warn!(
+                        signal = next.name(),
+                        "already stopping; flux exits within {:.0} s, before Windows ends it",
+                        deadline.as_secs_f64()
+                    );
+                    exit_watchdog(deadline, next.name(), WINDOWS_ENDS_IT);
+                    stop = next;
+                }
+                None => tracing::info!(signal = next.name(), "already stopping"),
+            }
         }
     }
 }
@@ -316,5 +396,19 @@ mod tests {
         assert!(2 * closing.grace + closing.exit <= deadline, "{closing:?}");
         assert!(closing.runtime < closing.exit, "{closing:?}");
         assert_eq!(Stop::Closing("logoff").name(), "logoff");
+    }
+
+    /// A second Ctrl-C during a stop changes nothing (as on Unix); the
+    /// console closing during a Ctrl-C stop bounds it to Windows' 5 s.
+    /// tests/console.rs sends a second Ctrl-Break to a running
+    /// flux-server.exe.
+    #[test]
+    fn a_second_event_bounds_a_stop_only_when_the_console_closes() {
+        let (asked, closing) = (Stop::Asked("Ctrl-C"), Stop::Closing("console closed"));
+        assert_eq!(asked.then(Stop::Asked("Ctrl-Break")), None);
+        assert_eq!(asked.then(closing), closing.budget().deadline);
+        assert!(asked.then(closing).is_some_and(|d| d < Duration::from_secs(5)));
+        assert_eq!(closing.then(asked), None);
+        assert_eq!(closing.then(closing), None);
     }
 }
