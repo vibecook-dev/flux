@@ -761,7 +761,10 @@ mod tests {
     fn version_history_names_each_version_once() {
         let src = include_str!("mod.rs");
         let start = src.find("/// Bump when the index format").expect("the history");
-        let end = start + src[start..].find("pub const INDEX_VERSION").expect("the constant");
+        let end = start
+            + src[start..]
+                .find("pub const INDEX_VERSION")
+                .expect("the constant");
         let listed: Vec<u16> = src[start..end]
             .lines()
             .filter_map(|l| {
