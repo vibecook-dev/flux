@@ -146,7 +146,7 @@ hls-correct regenerated the corpus results on its branch: `bench/results/flux-hl
 Proposals the agents made that the merge did not apply, with why:
 
 - **flux-core `AssetInfo.probe_error`** (scancat; ROB-3/ROB-V1 visibility). A DTO change: web types and the golden fixtures move with it. The catalog stores the reason and `AssetLocation` exposes it.
-- **A "Refresh" action for Deep scans** (scancat). Deep is version-selective now; the server still never issues it.
+- **A "Refresh" action for Deep scans** (scancat). Deep is version-selective now; the server issues it at startup when a library has files of an older parser or probe version, but not on demand.
 - **TS playback index at scan time** (hls-perf). A cold 5.8 GB TS takes 27 s to index on first play. Needs a post-scan job writing `put_asset_index`.
 - **A global allocator that returns memory** (scancat). macOS keeps a cold scan's freed memory (idle footprint 80–88 MB, 12 MB live). Measure mimalloc/jemalloc before adopting.
 - **Mille step 3f** (refreshing the FSEvents token while watching), then `MilleResume` as the macOS default.

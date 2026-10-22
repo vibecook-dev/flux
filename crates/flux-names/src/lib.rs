@@ -143,6 +143,19 @@ pub fn is_video_file(name: &str) -> bool {
     resolve::split_ext(name).1.is_some_and(is_video_ext)
 }
 
+/// The key under which a video file stacks with its siblings as one part of
+/// a multi-part movie (`示例A.mp4` + `示例B.mp4`, `Movie part1` + `Movie
+/// part2`), or `None`. A part only stacks once a sibling with the same key
+/// exists, so when a new part arrives the scanner re-parses the parts it
+/// already has under that key (the first part copied in was parsed alone).
+pub fn stack_key(file_name: &str) -> Option<String> {
+    let (stem, ext) = resolve::split_ext(file_name);
+    if !ext.is_some_and(is_video_ext) {
+        return None;
+    }
+    resolve::stack_key(stem)
+}
+
 /// `true` for paths a scanner should skip before parsing: hidden files and
 /// folders, NAS metadata folders (`@eaDir`, `#recycle`, `.AppleDouble`),
 /// OS litter (`Thumbs.db`, `.DS_Store`, `desktop.ini`) and partial downloads
@@ -185,5 +198,19 @@ mod tests {
         // Probe-readable captures are video; disc images and URL stubs are not.
         assert!(is_video_file("Match.2024.m2t") && is_video_file("Recording.TP"));
         assert!(!is_video_file("Alien (1979).iso") && !is_video_file("Alien.strm"));
+    }
+
+    #[test]
+    fn stack_keys() {
+        assert_eq!(stack_key("示例片A.mp4"), stack_key("示例片B.mp4"));
+        assert!(stack_key("示例片A.mp4").is_some());
+        assert_eq!(
+            stack_key("Some Movie part1.mkv"),
+            stack_key("Some Movie part2.mkv")
+        );
+        assert_ne!(stack_key("示例片A.mp4"), stack_key("其他片B.mp4"));
+        assert_eq!(stack_key("Plan A.mkv"), None);
+        assert_eq!(stack_key("Some Movie (2019).mkv"), None);
+        assert_eq!(stack_key("示例片A.srt"), None);
     }
 }

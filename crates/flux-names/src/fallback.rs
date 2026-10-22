@@ -12,6 +12,7 @@ use hunch::{Confidence, MediaType, Property};
 
 use crate::resolve::{split_ext, Context, FALLBACK_THRESHOLD};
 use crate::rules::{self, Origin};
+use crate::stem::title_looks_like_tags;
 use crate::stem::{MAX_YEAR, MIN_YEAR};
 use crate::text::norm_key;
 
@@ -133,6 +134,14 @@ pub(crate) fn merge(fast: &mut NameGuess, hg: HunchGuess, ctx: &Context) {
         (Some(a), Some(b), Some(alt)) => *a == format!("{b}{}", norm_key(alt)),
         _ => false,
     };
+    // "[Some Studio]" or "中英字幕" as a title: the fast path read the wrong
+    // part of the name; a real title from the fallback wins.
+    let fast_tags = fast.title.as_deref().is_some_and(title_looks_like_tags);
+    let h_tags = h.title.as_deref().is_none_or(title_looks_like_tags);
+    if fast_tags && !h_tags && fast_key != h_key && !artifact && movie_lib_ok(ctx, &h) {
+        take_all(fast, h, "fast-path title looks like tags; took the fallback's");
+        return;
+    }
     match (&fast_key, &h_key) {
         (None, Some(_)) => {
             take_all(fast, h, "fallback supplied the title");
