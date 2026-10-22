@@ -14,7 +14,11 @@
 //!   [`extras_folder_by_word`]) holds extras of the one film beside it.
 //! - **Show folders**: a show owns the folders its episodes are in; a
 //!   subfolder that isn't a season (`Show/alt versions/`) is the same show,
-//!   so its files become more versions of the same episodes.
+//!   so its files become more versions of the same episodes. A subfolder
+//!   takes the year of the folder around it, never the other way round:
+//!   `Show/Show (1978)/` is another series. Two undated same-titled shows
+//!   in nested folders (`Show/` and `Show/US/`) are one show, as nothing
+//!   tells them apart from alternate versions.
 //! - **Samples** are ignored: the file row is kept (so it is never
 //!   re-probed) but it maps to no item.
 //! - **Unknown** files become an "unmatched" movie titled after the cleaned
@@ -775,36 +779,72 @@ fn owns_any_folder(conn: &Connection, show: Id) -> Result<bool> {
         .is_some())
 }
 
-/// Does `show` own a folder that encloses `folder` or sits inside it
-/// (`show/alt versions` and `show`)? Lengths are in characters, as SQLite's
-/// `substr` counts them.
-fn owns_nested_folder(conn: &Connection, show: Id, folder: &str) -> Result<bool> {
-    Ok(conn
-        .prepare_cached(
-            "SELECT 1 FROM item_folder WHERE item_id = ?1 AND (
-                 substr(?2, 1, length(folder) + 1) = folder || '/'
-              OR substr(folder, 1, ?3 + 1) = ?2 || '/')
-             LIMIT 1",
-        )?
-        .query_row(params![show, folder, folder.chars().count() as i64], |_| Ok(()))
-        .optional()?
-        .is_some())
+/// A same-titled show that owns a folder around a file's show folder
+/// (`around`: `show` for `show/alt versions`) or inside it (`inside`).
+struct Nested<'a> {
+    cand: &'a Candidate,
+    around: bool,
+    inside: bool,
 }
 
-/// The candidates that own a folder around `folder` or inside it; `None`
-/// when there are none.
-fn nested_owners<'a>(
-    conn: &Connection,
-    cands: &[&'a Candidate],
-    folder: &str,
-) -> Result<Option<Vec<&'a Candidate>>> {
+/// The candidates that own a folder around `folder` or inside it. Lengths
+/// are in characters, as SQLite's `substr` counts them.
+fn nested_owners<'a>(conn: &Connection, cands: &[&'a Candidate], folder: &str) -> Result<Vec<Nested<'a>>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT COALESCE(MAX(substr(?2, 1, length(folder) + 1) = folder || '/'), 0),
+                COALESCE(MAX(substr(folder, 1, ?3 + 1) = ?2 || '/'), 0)
+           FROM item_folder WHERE item_id = ?1",
+    )?;
     let mut nested = Vec::new();
-    for c in cands {
-        if owns_nested_folder(conn, c.0, folder)? {
-            nested.push(*c);
+    for &c in cands {
+        let (around, inside): (bool, bool) = stmt
+            .query_row(params![c.0, folder, folder.chars().count() as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+        if around || inside {
+            nested.push(Nested {
+                cand: c,
+                around,
+                inside,
+            });
         }
     }
-    Ok((!nested.is_empty()).then_some(nested))
+    Ok(nested)
+}
+
+/// The year rules between shows in nested folders (`Show/` and
+/// `Show/alt versions/`): the same year, or none on either side, is the
+/// same show. A subfolder takes the year of the folder around it, but a
+/// folder never takes a subfolder's year, so a dated series kept inside an
+/// undated same-titled folder (`Show/Show (1978)/`) stays another show.
+/// The rules give the same result in either scan order. `None`: no show.
+fn pick_nested(
+    conn: &Connection,
+    r: &Resolver,
+    w: &WorkTarget,
+    nested: &[Nested<'_>],
+) -> Result<Option<Candidate>> {
+    if let Some(n) = nested.iter().find(|n| n.cand.1 == w.year) {
+        return Ok(Some(n.cand.clone()));
+    }
+    if w.year.is_none() {
+        // An undated subfolder of a dated show's folder: that show.
+        let around: Vec<&Nested<'_>> = nested.iter().filter(|n| n.around).collect();
+        return Ok(match around.as_slice() {
+            [only] => Some(only.cand.clone()),
+            _ => None,
+        });
+    }
+    // A dated folder around an undated show's subfolder: that show, which
+    // takes the folder's year.
+    let inside: Vec<&Nested<'_>> = nested.iter().filter(|n| n.inside && n.cand.1.is_none()).collect();
+    if let [only] = inside.as_slice() {
+        conn.prepare_cached("UPDATE item SET year = ?2, updated_at = ?3 WHERE id = ?1")?
+            .execute(params![only.cand.0, w.year, r.now])?;
+        requeue_match(conn, r, only.cand.0)?;
+        return Ok(Some(only.cand.clone()));
+    }
+    Ok(None)
 }
 
 fn find_work(
@@ -883,11 +923,11 @@ fn find_work(
                 // (folder renamed) unless the years contradict; a yearless
                 // show adopts the new folder's year.
                 pick_by_year(conn, r, w, &[*p])?
-            } else if let Some(nested) = nested_owners(conn, &compatible, folder)? {
+            } else if let Some(c) = pick_nested(conn, r, w, &nested_owners(conn, &compatible, folder)?)? {
                 // A subfolder of a show's folder (`Show/alt versions/`), or
                 // the folder around one: the same show, so its files become
                 // more versions of the same episodes, in either scan order.
-                pick_by_year(conn, r, w, &nested)?
+                Some(c)
             } else {
                 // Shows that don't know their folders yet (files at the
                 // root, or catalogs from before v3) still join by year rules.

@@ -557,3 +557,139 @@ fn nested_folders_still_respect_titles_and_years() {
     ]);
     assert_eq!(shows(&e).len(), 2);
 }
+
+/// A dated series kept in a subfolder of an undated same-titled show folder
+/// (`Starhold/` beside `Starhold/Starhold (1978)/`, an original inside the
+/// franchise folder) is another series: a subfolder takes its parent
+/// folder's year, but a parent folder never takes a subfolder's. In either
+/// scan order the two stay apart, and the undated show keeps no year.
+#[test]
+fn a_dated_series_in_a_subfolder_of_an_undated_show_stays_apart() {
+    let parent = |n: u16| {
+        upsert(
+            &format!("Starhold/Season 1/Starhold.S01E{n:02}.mkv"),
+            episode("Starhold", None, 1, &[n]),
+            None,
+        )
+    };
+    let child = |n: u16| {
+        upsert(
+            &format!("Starhold/Starhold (1978)/Season 1/Starhold.1978.S01E{n:02}.mkv"),
+            episode("Starhold", Some(1978), 1, &[n]),
+            None,
+        )
+    };
+    for order in ["parent first", "subfolder first", "one batch"] {
+        let e = env(LibraryKind::Shows);
+        match order {
+            "parent first" => {
+                e.apply((1..=2).map(parent).collect());
+                e.apply((1..=2).map(child).collect());
+            }
+            "subfolder first" => {
+                e.apply((1..=2).map(child).collect());
+                e.apply((1..=2).map(parent).collect());
+            }
+            _ => {
+                e.apply((1..=2).flat_map(|n| [parent(n), child(n)]).collect());
+            }
+        }
+        let mut s = shows(&e);
+        s.sort_by_key(|i| i.year);
+        assert_eq!(s.len(), 2, "{order}: {s:#?}");
+        assert_eq!(
+            s.iter().map(|i| i.year).collect::<Vec<_>>(),
+            [None, Some(1978)],
+            "{order}: the undated show takes no year from its subfolder"
+        );
+        for show in &s {
+            let seasons = e.children(show.id);
+            assert_eq!(seasons.len(), 1, "{order}");
+            for ep in e.children(seasons[0].id) {
+                assert_eq!(e.detail(ep.id).assets.len(), 1, "{order}: one file per episode");
+            }
+        }
+        // Later files keep landing on their own show.
+        e.apply(vec![parent(3), child(3)]);
+        assert_eq!(shows(&e).len(), 2, "{order}");
+        assert_eq!(episode_count(&e, s[0].id), 3, "{order}");
+        assert_eq!(episode_count(&e, s[1].id), 3, "{order}");
+    }
+}
+
+/// An undated subfolder of a dated show folder (`Starhold (2004)/WEB/`)
+/// takes the folder's year: one show, in either scan order, with both
+/// files as versions of each episode.
+#[test]
+fn an_undated_subfolder_of_a_dated_show_joins_it() {
+    let parent = |n: u16| {
+        upsert(
+            &format!("Starhold (2004)/Starhold.2004.S01E{n:02}.mkv"),
+            episode("Starhold", Some(2004), 1, &[n]),
+            None,
+        )
+    };
+    let child = |n: u16| {
+        upsert(
+            &format!("Starhold (2004)/WEB/Starhold.S01E{n:02}.mkv"),
+            episode("Starhold", None, 1, &[n]),
+            None,
+        )
+    };
+    for order in ["parent first", "subfolder first"] {
+        let e = env(LibraryKind::Shows);
+        if order == "parent first" {
+            e.apply((1..=2).map(parent).collect());
+            e.apply((1..=2).map(child).collect());
+        } else {
+            e.apply((1..=2).map(child).collect());
+            e.apply((1..=2).map(parent).collect());
+        }
+        let s = shows(&e);
+        assert_eq!(s.len(), 1, "{order}: {s:#?}");
+        assert_eq!(s[0].year, Some(2004), "{order}");
+        let seasons = e.children(s[0].id);
+        assert_eq!(seasons.len(), 1, "{order}");
+        for ep in e.children(seasons[0].id) {
+            assert_eq!(e.detail(ep.id).assets.len(), 2, "{order}: both files");
+        }
+    }
+}
+
+/// Two undated same-titled shows, one in a subfolder of the other
+/// (`Workplace/` and `Workplace/US/`), are one show: nothing tells them
+/// apart from a folder of alternate versions. This is deliberate; a year
+/// or another title in the names, or sibling folders, keeps two series
+/// apart.
+#[test]
+fn undated_same_titled_nested_folders_are_one_show() {
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Workplace/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Workplace/US/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    assert_eq!(shows(&e).len(), 1);
+    // Sibling folders stay apart.
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Workplace/UK/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Workplace/US/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    assert_eq!(shows(&e).len(), 2);
+}
