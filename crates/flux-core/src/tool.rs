@@ -8,7 +8,11 @@
 //!   flux itself runs without one (as a service), and a Ctrl-C or Ctrl-Break
 //!   sent to flux's console (typed, or sent by a service manager) reaches
 //!   flux only. flux then stops its helpers itself, rather than each one
-//!   dying mid-work on its own;
+//!   dying mid-work on its own. The flag gives each helper a hidden console
+//!   of its own (a `conhost.exe`, some 20-30 ms per start). `DETACHED_PROCESS`
+//!   would save that, but a helper that starts a console program itself (a
+//!   `.cmd` wrapper, or the shim `ffmpeg.exe` that Scoop and Chocolatey
+//!   install) would then open a visible console window for it;
 //! - leads its own process group (`CREATE_NEW_PROCESS_GROUP`), which also
 //!   turns Ctrl-C off for it, for a helper that does end up on a console;
 //! - runs below normal priority (`BELOW_NORMAL_PRIORITY_CLASS`) when it is
