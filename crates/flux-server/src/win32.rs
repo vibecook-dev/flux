@@ -147,11 +147,29 @@ pub fn local_app_data() -> io::Result<PathBuf> {
             let wide = std::slice::from_raw_parts(path, len);
             Ok(PathBuf::from(OsString::from_wide(wide)))
         } else {
-            Err(io::Error::from_raw_os_error(hr))
+            Err(hresult_error(hr))
         };
         CoTaskMemFree(path.cast_const().cast());
         result
     }
+}
+
+/// An `io::Error` for a failed HRESULT: its message, and the HRESULT in hex
+/// as Microsoft documents it ("The system cannot find the path specified.
+/// (HRESULT 0x80070003)"). As a raw OS error it printed as a negative
+/// decimal ("os error -2147024893"). A Win32 error wrapped in an HRESULT
+/// (facility 7, `0x8007xxxx`) also gets that error's kind (`NotFound`).
+pub fn hresult_error(hr: i32) -> io::Error {
+    let code = hr as u32;
+    let os = if code & 0xFFFF_0000 == 0x8007_0000 {
+        io::Error::from_raw_os_error((code & 0xFFFF) as i32)
+    } else {
+        io::Error::from_raw_os_error(hr)
+    };
+    let text = os.to_string();
+    // Rust appends " (os error N)" to the system's message.
+    let message = text.rsplit_once(" (os error ").map_or(text.as_str(), |(m, _)| m);
+    io::Error::new(os.kind(), format!("{message} (HRESULT 0x{code:08X})"))
 }
 
 /// The unicast addresses of this machine's network adapters, as
@@ -295,5 +313,28 @@ mod tests {
     #[test]
     fn ctrl_c_can_be_turned_back_on() {
         accept_ctrl_c().unwrap();
+    }
+
+    /// The known-folder error printed "(os error -2147024893)".
+    #[test]
+    fn hresults_read_as_a_message_and_hex() {
+        let e = hresult_error(0x8007_0003_u32 as i32);
+        let text = e.to_string();
+        assert!(text.ends_with("(HRESULT 0x80070003)"), "{text}");
+        assert!(
+            !text.contains("-2147024893") && !text.contains("os error"),
+            "{text}"
+        );
+        assert!(
+            text.len() > "(HRESULT 0x80070003)".len() + 5,
+            "a message too: {text}"
+        );
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        // Not a Win32 error: still hex, never negative.
+        let text = hresult_error(0x8000_4005_u32 as i32).to_string();
+        assert!(
+            text.ends_with("(HRESULT 0x80004005)") && !text.contains("-2147"),
+            "{text}"
+        );
     }
 }

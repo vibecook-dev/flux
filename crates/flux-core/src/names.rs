@@ -3,7 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump when the parser's output changes in a way that should trigger re-parsing.
-pub const PARSER_VERSION: u16 = 2;
+///
+/// 3: no change in the parser's output. A catalog a version-2 build already
+/// re-parsed is re-parsed once more, so the catalog's re-parse rules regroup
+/// and retitle it as they do a version-1 catalog.
+pub const PARSER_VERSION: u16 = 3;
 
 /// What kind of library a root belongs to. It is a strong prior for parsing:
 /// `Show 1x03.mkv` in a movie library is still probably an episode, but

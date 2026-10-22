@@ -32,7 +32,7 @@ pub struct AppState {
     pub engine: HlsEngine,
     pub events: EventBus,
     pub play: PlayState,
-    pub art: ArtStore,
+    pub art: Arc<ArtStore>,
     pub web: Option<WebUi>,
     pub users: Users,
     pub tailnet: TailnetView,
