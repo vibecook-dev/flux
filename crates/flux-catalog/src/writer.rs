@@ -938,13 +938,50 @@ impl Writer {
     }
 }
 
+/// A root as the catalog stores it: without a trailing separator, except
+/// where that would change what it names (`/`, a volume root such as `D:\`
+/// or `\\?\Volume{…}\`). A Windows path (see [`is_windows_path`]) is
+/// spelled with `\` throughout, so the asset paths built from it
+/// ([`crate::read`]) read one way.
 fn normalize_root_path(p: &str) -> String {
+    if is_windows_path(p) {
+        let s = p.replace('/', "\\");
+        let t = s.trim_end_matches('\\');
+        return if names_a_volume_not_its_root(t) {
+            format!("{t}\\")
+        } else {
+            t.to_string()
+        };
+    }
     let t = p.trim_end_matches('/');
     if t.is_empty() {
         "/".into()
     } else {
         t.to_string()
     }
+}
+
+/// A Windows path: it starts with a drive letter (`D:`) or `\\` (a share,
+/// `\\server\share`, or a verbatim `\\?\` path). Decided by spelling, not
+/// by the platform, so a catalog reads the same everywhere; absolute paths
+/// of other platforms (`/…`) never look like one.
+pub(crate) fn is_windows_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') || p.starts_with("\\\\")
+}
+
+/// A Windows path (trailing `\` removed) that, without that `\`, names
+/// something other than a volume's root folder: `D:` (drive D's current
+/// folder), or a single component in the device namespace, `\\?\D:`,
+/// `\\?\Volume{…}`, `\\.\D:` (the volume device itself, which can't be
+/// listed: "Incorrect function").
+fn names_a_volume_not_its_root(t: &str) -> bool {
+    if t.is_empty() || t.ends_with(':') {
+        return true;
+    }
+    t.strip_prefix("\\\\?\\")
+        .or_else(|| t.strip_prefix("\\\\.\\"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('\\'))
 }
 
 /// The same folder, or one inside the other, compared by whole path

@@ -7,14 +7,22 @@ use flux_catalog::{Catalog, CatalogConfig, FileFacts, FileUpsert, ProbeUpdate, S
 use flux_core::api::{CreateLibrary, Id, Library};
 use flux_core::{ExtraKind, GuessKind, LibraryKind, NameGuess, ProbeResult, ProviderIds};
 
+/// Fields drop in declaration order: the catalog closes its database
+/// before the temporary directory is removed (Windows can't delete a file
+/// that is still open, so the other order leaked a directory per test).
 pub struct Env {
-    pub _dir: tempfile::TempDir,
     pub cat: Catalog,
     pub lib: Library,
     pub root: Id,
+    pub _dir: tempfile::TempDir,
 }
 
 pub fn env(kind: LibraryKind) -> Env {
+    env_at(kind, "/media/lib/")
+}
+
+/// [`env`] with a library on `root` (as a user typed it).
+pub fn env_at(kind: LibraryKind, root: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cat = Catalog::open(dir.path().join("catalog.db"), CatalogConfig::default()).unwrap();
     let lib = cat
@@ -22,7 +30,7 @@ pub fn env(kind: LibraryKind) -> Env {
         .create_library(CreateLibrary {
             name: "Lib".into(),
             kind,
-            roots: vec!["/media/lib/".into()],
+            roots: vec![root.into()],
         })
         .wait()
         .unwrap();
@@ -30,10 +38,10 @@ pub fn env(kind: LibraryKind) -> Env {
         .read_blocking(|c| Ok(flux_catalog::scan_support::list_roots(c)?[0].id))
         .unwrap();
     Env {
-        _dir: dir,
         cat,
         lib,
         root,
+        _dir: dir,
     }
 }
 

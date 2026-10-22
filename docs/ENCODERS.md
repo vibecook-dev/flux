@@ -191,11 +191,11 @@ the final check.
   use `seek_read`, ffprobe index scans are killed with `taskkill /T`
   instead of a process-group `SIGKILL`, the host name comes from
   `COMPUTERNAME`, jemalloc is off, and Unix-only tests (symlinks,
-  permission bits) are compiled out. What is missing is file identity:
-  std has no stable device/file index on Windows, so the "same file, not
-  replaced or re-pointed" checks in flux-hls (`source.rs`) and the scan
-  fall back to size and mtime. That needs a Windows identity source
-  (volume serial + file index) before flux can be trusted there.
+  permission bits) are compiled out. File identity (std has no stable
+  device/file index on Windows) comes from the handle's volume serial
+  number and file id (`flux_core::file_id`), so the "same file, not
+  replaced or re-pointed" checks in flux-hls (`source.rs`), the server
+  and the scan hold there too.
   Embedded remote access looks for `sidecar-slim.exe` next to the binary,
   but no Windows sidecar is packaged. Windows is not a release target.
 

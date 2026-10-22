@@ -28,6 +28,15 @@ crossbeam-channel = "0.5"
 # statfs (device class), getrusage (bench).
 libc = "0.2"
 
+# Device class on Windows: volume, drive type, seek penalty and bus type.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
 [dev-dependencies]
 # Corpus (FLUX_TEST_MEDIA), bench output (FLUX_BENCH_RESULTS) and scratch
 # copies for the tests and the pipeline_smoke example.

@@ -711,9 +711,12 @@ mod tests {
     fn flags_beat_the_file_and_defaults_apply() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("flux.toml");
+        // Absolute on every platform ("/m" has no drive letter on Windows);
+        // a TOML literal string keeps Windows backslashes as they are.
         std::fs::write(
             &file,
-            r#"
+            format!(
+                r#"
 port = 9000
 tailnet = "system"
 jobs = false
@@ -722,10 +725,13 @@ localhost_role = "none"
 [[library]]
 name = "Movies"
 kind = "movies"
-path = "/m"
+path = '{}'
 "#,
+                dir.path().join("m").display()
+            ),
         )
         .unwrap();
+        let tv = format!("TV:shows:{}", dir.path().join("tv").display());
         let cli = Cli::try_parse_from([
             "flux-server",
             "--config",
@@ -733,7 +739,7 @@ path = "/m"
             "--port",
             "9100",
             "--library",
-            "TV:shows:/tv",
+            tv.as_str(),
             "--data-dir",
             dir.path().to_str().unwrap(),
             "--allow-host",
