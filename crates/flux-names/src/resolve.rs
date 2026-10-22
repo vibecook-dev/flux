@@ -484,6 +484,17 @@ fn letter_stack<'a>(stem: &'a str, siblings: &[&str]) -> Option<(&'a str, u8)> {
     run.then_some((core, part))
 }
 
+/// The stacking key of a stem: [`letter_part`]'s or [`STACK_RE`]'s prefix,
+/// normalised (see [`crate::stack_key`]).
+pub(crate) fn stack_key(stem: &str) -> Option<String> {
+    let prefix = match letter_part(stem) {
+        Some((core, _)) => core.to_string(),
+        None => STACK_RE.captures(stem)?[1].to_string(),
+    };
+    let key = norm_key(&prefix);
+    (!key.is_empty()).then_some(key)
+}
+
 /// `示例A` → (`示例`, 1); `Movie-b` → (`Movie`, 2).
 fn letter_part(stem: &str) -> Option<(&str, u8)> {
     let last = stem.chars().last()?;
