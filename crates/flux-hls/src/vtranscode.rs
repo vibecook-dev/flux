@@ -1849,6 +1849,7 @@ mod tests {
                 pps: PPS,
                 inband: vec![vec![]; 3],
                 flag_interlaced: flag,
+                idr: vec![],
             }
             .write(&format!("run-args-{n}.mkv"));
             let case = format!("case {n}: {flag:?}, frame_mbs_only {}", sps == SPS_PROGRESSIVE);
@@ -1867,7 +1868,8 @@ mod tests {
             assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced), "{case}");
             for client in [crate::presets::chrome_desktop(), crate::presets::safari_macos()] {
                 let prefs = crate::PlanPrefs::default();
-                let from_index = crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, false);
+                let from_index =
+                    crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, Default::default());
                 let from_probe = crate::planner::plan(&probe, &client, &prefs);
                 assert_eq!(from_index.video, from_probe.video, "{case}, {}", client.client);
                 assert_eq!(

@@ -19,6 +19,7 @@ use flux_core::{
 };
 use serde::{Deserialize, Serialize};
 
+pub use crate::codec::h264::BaselineTools;
 use crate::error::{HlsError, Result};
 use crate::source::{Source, SourceId};
 
@@ -44,7 +45,10 @@ use crate::source::{Source, SourceId};
 ///    durations most of its frames have (`mp4::dominant_rate`), not their
 ///    average: frames held for seconds made 23.976 fps 22.75, and a
 ///    transcode converts such a video at this rate.
-pub const INDEX_VERSION: u16 = 9;
+/// 11: [`TrackExtra::baseline_tools`] (H.264 Baseline FMO/ASO/redundant
+///    pictures), and VP9 video: profile, bit depth and level from the first
+///    frame, with a `vpcC` record ([`IndexTrack::synth_config`]).
+pub const INDEX_VERSION: u16 = 11;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
@@ -165,6 +169,14 @@ pub struct TrackExtra {
     /// FlagInterlaced 1/2, MP4 `fiel` with 2/1 fields), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interlaced: Option<bool>,
+    /// H.264 Baseline video: the tools outside Constrained Baseline it uses
+    /// ([`classify_baseline_tools`]); none for other video.
+    #[serde(default, skip_serializing_if = "is_no_tools")]
+    pub baseline_tools: BaselineTools,
+}
+
+fn is_no_tools(t: &BaselineTools) -> bool {
+    !t.any()
 }
 
 fn is_zero(v: &u16) -> bool {
@@ -348,6 +360,32 @@ pub(crate) fn classify_open_gop(t: &IndexTrack, firsts: &[Vec<u8>]) -> bool {
     firsts
         .iter()
         .any(|f| crate::codec::idr_random_access(f, ls, flavor) == Some(false))
+}
+
+/// The Baseline-only tools an H.264 track with `profile_idc` 66 and no
+/// `constraint_set1_flag` uses: slice groups and redundant pictures from
+/// the PPSs of its record and of the sampled `pictures`, arbitrary slice
+/// order from the slices of those pictures (the keyframes sampled for
+/// [`classify_open_gop`]: free, they are read anyway). Other tracks,
+/// including Constrained Baseline ones, use none.
+pub(crate) fn classify_baseline_tools(t: &IndexTrack, pictures: &[Vec<u8>]) -> BaselineTools {
+    let mut tools = BaselineTools::default();
+    if t.codec != Codec::H264 {
+        return tools;
+    }
+    let Some(c) = crate::codec::h264::AvcConfig::parse(&t.codec_private) else {
+        return tools;
+    };
+    if c.profile_idc != 66 || c.constraint_flags & 0x40 != 0 {
+        return tools;
+    }
+    for pps in &c.pps {
+        tools.add_pps(pps);
+    }
+    for p in pictures {
+        tools.add_access_unit(p, c.length_size as usize);
+    }
+    tools
 }
 
 /// Sniffed container family.
@@ -816,6 +854,133 @@ mod tests {
             open_gop: false,
             bitrate: None,
             extra: TrackExtra::default(),
+        }
+    }
+
+    /// H.264 Baseline: slice groups from the record's PPS or one a keyframe
+    /// repeats, arbitrary slice order from the sampled keyframes; the
+    /// engine's plan transcodes those streams for a client that lists only
+    /// Main and High, and plays the plain one as it is.
+    #[tokio::test]
+    async fn baseline_tools_from_the_record_and_the_sampled_keyframes() {
+        use crate::codec::h264::tests::{baseline_pps, baseline_sps, slice};
+        use crate::test_mkv::TestMkv;
+        use flux_core::{Reason, VideoOp};
+        let (plain, cb) = (baseline_sps(0x80), baseline_sps(0xC0));
+        let (pps, fmo) = (baseline_pps(1, false), baseline_pps(2, false));
+        let redundant = baseline_pps(1, true);
+        let (plain, cb, pps, fmo, redundant) = (&plain[..], &cb[..], &pps[..], &fmo[..], &redundant[..]);
+        let out_of_order = vec![slice(5, 4), slice(5, 0)];
+        struct Case<'a> {
+            name: &'a str,
+            sps: &'a [u8],
+            pps: &'a [u8],
+            inband: Vec<Vec<&'a [u8]>>,
+            idr: Vec<Vec<u8>>,
+            want: BaselineTools,
+        }
+        fn case<'a>(
+            name: &'a str,
+            sps: &'a [u8],
+            pps: &'a [u8],
+            idr: Vec<Vec<u8>>,
+            want: BaselineTools,
+        ) -> Case<'a> {
+            Case {
+                name,
+                sps,
+                pps,
+                inband: vec![vec![]; 3],
+                idr,
+                want,
+            }
+        }
+        let none = BaselineTools::default();
+        let fmo_used = BaselineTools {
+            slice_groups: true,
+            ..none
+        };
+        let cases = [
+            case("plain", plain, pps, vec![], none),
+            case("fmo", plain, fmo, vec![], fmo_used),
+            Case {
+                inband: vec![vec![plain, fmo]; 3],
+                ..case("inband-fmo", plain, pps, vec![], fmo_used)
+            },
+            case(
+                "aso",
+                plain,
+                pps,
+                out_of_order.clone(),
+                BaselineTools {
+                    arbitrary_slice_order: true,
+                    ..none
+                },
+            ),
+            case(
+                "redundant",
+                plain,
+                redundant,
+                vec![],
+                BaselineTools {
+                    redundant_pictures: true,
+                    ..none
+                },
+            ),
+            // Constrained Baseline says it has none of them.
+            case("constrained", cb, fmo, out_of_order, none),
+        ];
+        let mut caps = crate::presets::chrome_desktop();
+        caps.video[0].profiles = vec!["high".into(), "main".into()];
+        caps.progressive_containers.push(Container::Matroska);
+        let engine = crate::HlsEngine::new(crate::EngineConfig::default());
+        for Case {
+            name,
+            sps,
+            pps,
+            inband,
+            idr,
+            want,
+        } in cases
+        {
+            let (path, _) = TestMkv {
+                sps,
+                pps,
+                inband,
+                flag_interlaced: None,
+                idr,
+            }
+            .write(&format!("baseline-{name}.mkv"));
+            let idx = PlaybackIndex::build(&path).unwrap();
+            let v = idx.video_track().unwrap();
+            assert_eq!(v.extra.baseline_tools, want, "{name}");
+            let profile = if name == "constrained" {
+                "Constrained Baseline"
+            } else {
+                "Baseline"
+            };
+            assert_eq!(v.profile.as_deref(), Some(profile), "{name}");
+            // Serialized only when used (older indexes read as none).
+            let json = String::from_utf8(idx.to_json().unwrap()).unwrap();
+            assert_eq!(json.contains("baseline_tools"), want.any(), "{name}");
+            let asset = crate::Asset::with_index(idx, 6_000_000_000).unwrap();
+            let plan = engine.plan(&asset, &caps, &crate::PlanPrefs::default());
+            if want.any() {
+                assert!(
+                    matches!(plan.video, VideoOp::Transcode { .. }),
+                    "{name}: {:?}",
+                    plan.video
+                );
+                assert!(
+                    plan.reasons.iter().any(|r| matches!(r,
+                        Reason::VideoProfileUnsupported { profile, .. } if profile.starts_with("Baseline ("))),
+                    "{name}: {:?}",
+                    plan.reasons
+                );
+            } else {
+                assert!(plan.is_direct(), "{name}: {:?}", plan.reasons);
+            }
+            let _ = std::fs::remove_file(&path);
         }
     }
 

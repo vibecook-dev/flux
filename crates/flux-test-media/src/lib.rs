@@ -342,9 +342,17 @@ pub enum Clip {
     /// for over nine tenths of the samples, then a frame held 2.08 s, from
     /// before the 2 s piece at 26 s to after it.
     HeldLateMp4,
+    /// 10 s, 640×360 25 fps H.264 Baseline (2 s GOP) + stereo AAC, MP4
+    /// (faststart), with `constraint_set1_flag` cleared in the `avcC` and
+    /// its SPS: Baseline as phones, webcams and Flash-era encoders write it
+    /// (libx264 marks its Baseline output Constrained Baseline).
+    BaselineH264Mp4,
+    /// 10 s, 640×360 25 fps VP9 (libvpx, 2 s GOP, hidden alt-ref frames in
+    /// superframes) + stereo Vorbis, WebM.
+    Vp9VorbisWebm,
 }
 
-const CLIP_COUNT: usize = 24;
+const CLIP_COUNT: usize = 26;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -364,6 +372,8 @@ enum Recipe {
     /// A copy of another Matroska clip with its audio frames laced this
     /// many to a block.
     LaceAudio(Clip, usize),
+    /// ffmpeg with these arguments, then this change to the file's bytes.
+    FfmpegPatched(Vec<String>, fn(&mut [u8]) -> Result<(), String>),
 }
 
 impl Clip {
@@ -393,6 +403,8 @@ impl Clip {
         Clip::LacedAc3Eac3Mkv,
         Clip::HeldFramesMp4,
         Clip::HeldLateMp4,
+        Clip::BaselineH264Mp4,
+        Clip::Vp9VorbisWebm,
     ];
 
     /// File name of the cached clip.
@@ -422,6 +434,8 @@ impl Clip {
             Clip::LacedAc3Eac3Mkv => "bursts_ac3_eac3_laced.mkv",
             Clip::HeldFramesMp4 => "held_frames.mp4",
             Clip::HeldLateMp4 => "held_late.mp4",
+            Clip::BaselineH264Mp4 => "baseline_h264_aac.mp4",
+            Clip::Vp9VorbisWebm => "vp9_vorbis.webm",
         }
     }
 
@@ -433,9 +447,13 @@ impl Clip {
     /// Encoders the clip (and the clips it is made from) need.
     pub fn encoders(self) -> &'static [&'static str] {
         match self {
-            Clip::H264AacMp4 | Clip::H264AacTs | Clip::VfrSectionMkv | Clip::Rot90H264Mov => {
-                &["libx264", "aac"]
-            }
+            Clip::H264AacMp4
+            | Clip::H264AacTs
+            | Clip::VfrSectionMkv
+            | Clip::Rot90H264Mov
+            | Clip::BaselineH264Mp4 => &["libx264", "aac"],
+            // ffmpeg's own Vorbis encoder (experimental, in every build).
+            Clip::Vp9VorbisWebm => &["libvpx-vp9", "vorbis"],
             Clip::AnamorphicMkv
             | Clip::AnamorphicMp4
             | Clip::FakeInterlacedMkv
@@ -466,7 +484,9 @@ impl Clip {
             | Clip::HevcAacTs
             | Clip::Mpeg4Mp2Avi
             | Clip::Ac3Eac3BurstsMkv
-            | Clip::LacedAc3Eac3Mkv => Some(250),
+            | Clip::LacedAc3Eac3Mkv
+            | Clip::BaselineH264Mp4
+            | Clip::Vp9VorbisWebm => Some(250),
             Clip::Hdr10HevcMkv => Some(144),
             Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
@@ -745,6 +765,59 @@ impl Clip {
                     "mp4",
                 ]));
             }
+            Clip::BaselineH264Mp4 => {
+                a.extend(video("640x360", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-profile:v",
+                    "baseline",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-g",
+                    "50",
+                    "-keyint_min",
+                    "50",
+                    "-sc_threshold",
+                    "0",
+                ]));
+                a.extend(aac);
+                a.extend(s(&["-movflags", "+faststart", "-f", "mp4"]));
+                return Some(Recipe::FfmpegPatched(a, clear_constraint_set1));
+            }
+            Clip::Vp9VorbisWebm => {
+                a.extend(video("640x360", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-deadline",
+                    "good",
+                    "-cpu-used",
+                    "8",
+                    "-b:v",
+                    "400k",
+                    "-g",
+                    "50",
+                    "-auto-alt-ref",
+                    "1",
+                    "-lag-in-frames",
+                    "16",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "vorbis",
+                    "-strict",
+                    "-2",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "webm",
+                ]));
+            }
         }
         Some(Recipe::Ffmpeg(a))
     }
@@ -816,6 +889,11 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
                 .and_then(|b| mkv_lace::lace_audio(&b, per))
                 .and_then(|b| std::fs::write(&tmp, b).map_err(|e| e.to_string()))
         }
+        Recipe::FfmpegPatched(args, patch) => run_ffmpeg(&ff, &args, &tmp, c.file_name()).and_then(|()| {
+            let mut b = std::fs::read(&tmp).map_err(|e| e.to_string())?;
+            patch(&mut b)?;
+            std::fs::write(&tmp, b).map_err(|e| e.to_string())
+        }),
     };
     if let Err(e) = made {
         let _ = std::fs::remove_file(&tmp);
@@ -892,6 +970,24 @@ fn run_ffmpeg(ff: &Path, args: &[String], out: &Path, name: &str) -> Result<(), 
         "{name}: ffmpeg hung twice making this clip ({} s each); args: {args:?}",
         CLIP_TIMEOUT.as_secs()
     );
+}
+
+/// Clears `constraint_set1_flag` in an MP4's `avcC`: its
+/// profile_compatibility byte and the constraint byte of its SPS. libx264's
+/// Baseline (Constrained Baseline) then reads as plain Baseline, as phones,
+/// webcams and Flash-era encoders write it; decoders ignore the flag.
+fn clear_constraint_set1(b: &mut [u8]) -> Result<(), String> {
+    let i = b.windows(4).position(|w| w == b"avcC").ok_or("no avcC box")?;
+    // version, profile, compatibility, level, length size, SPS count, SPS
+    // length (2), then the SPS: NAL header, profile_idc, constraint flags.
+    let r = i + 4;
+    let rec = b.get(r..r + 12).ok_or("avcC too short")?;
+    if rec[0] != 1 || rec[1] != 66 || rec[5] & 0x1F == 0 || rec[8] & 0x1F != 7 || rec[9] != 66 {
+        return Err(format!("not a Baseline avcC with an SPS: {rec:02x?}"));
+    }
+    b[r + 2] &= !0x40;
+    b[r + 10] &= !0x40;
+    Ok(())
 }
 
 /// Overwrites the first Matroska DefaultDuration element (ID 23 E3 83, in
@@ -984,6 +1080,22 @@ mod tests {
             assert_eq!(*c as usize, i, "Clip::ALL is in declaration order");
             assert_eq!(Clip::named(c.file_name()), Some(*c));
         }
+    }
+
+    #[test]
+    fn clears_constraint_set1() {
+        // An avcC of libx264's Baseline (Constrained: 0xC0) inside some box bytes.
+        let mut b = b"....avcC".to_vec();
+        b.extend_from_slice(&[1, 66, 0xC0, 30, 0xFF, 0xE1, 0, 4, 0x67, 66, 0xC0, 30, 0x68]);
+        clear_constraint_set1(&mut b).unwrap();
+        assert_eq!(
+            &b[8..20],
+            &[1, 66, 0x80, 30, 0xFF, 0xE1, 0, 4, 0x67, 66, 0x80, 30]
+        );
+        let mut high = b"avcC".to_vec();
+        high.extend_from_slice(&[1, 100, 0, 30, 0xFF, 0xE1, 0, 4, 0x67, 100, 0, 30]);
+        assert!(clear_constraint_set1(&mut high).is_err());
+        assert!(clear_constraint_set1(&mut [0u8; 8]).is_err());
     }
 
     #[test]

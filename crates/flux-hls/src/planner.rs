@@ -15,6 +15,8 @@ use flux_core::{
     ProbeResult, Reason, SubtitleFile, SubtitleOp, SubtitlePlan, Track, VideoCap, VideoOp,
 };
 
+pub use crate::codec::h264::BaselineTools;
+
 /// User/session preferences that shape a plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanPrefs {
@@ -63,9 +65,12 @@ fn fmp4_audio(c: Codec) -> bool {
     )
 }
 
-/// Video codecs that can be packaged into fMP4 as-is.
+/// Video codecs that can be packaged into fMP4 as-is. VP9 goes in a
+/// `vp09` sample entry with its `vpcC` record (ISO-BMFF binding of VP9),
+/// which Chrome's and Firefox's MediaSource play; for Apple's HLS player
+/// see [`Quirks::no_vp9_hls`].
 fn fmp4_video(c: Codec) -> bool {
-    matches!(c, Codec::H264 | Codec::Hevc | Codec::Av1)
+    matches!(c, Codec::H264 | Codec::Hevc | Codec::Av1 | Codec::Vp9)
 }
 
 fn norm(s: &str) -> String {
@@ -85,6 +90,14 @@ fn norm(s: &str) -> String {
 /// client (found by the workspace integration check). H.264 Annex A:
 /// - Constrained Baseline (constraint_set1_flag) is the common subset of
 ///   Baseline and Main, and High decoders decode Main (A.2.1.1, A.2.4).
+/// - Baseline is taken as Constrained Baseline: a Baseline stream without
+///   slice groups, arbitrary slice order or redundant pictures (A.2.1.1) is
+///   one, whatever its constraint_set1_flag says, and that is nearly every
+///   Baseline file (phones, webcams and Flash-era encoders left the flag
+///   unset). Browsers decode them, and `isTypeSupported("avc1.42001e")`
+///   says so. The playback index finds the streams that do use those tools
+///   ([`BaselineTools`]); for them [`plan_with_index_facts`] asks for a
+///   decoder that lists Baseline.
 /// - The "… Intra" profiles obey every constraint of their base profile
 ///   (A.2.8–A.2.11), so "High 10" covers "High 10 Intra" (not the reverse).
 /// - "High 4:4:4 Predictive" is ffprobe's name for profile_idc 244, which the
@@ -102,8 +115,8 @@ fn profile_satisfies(allowed: &str, profile: &str) -> bool {
     if a == p {
         return true;
     }
-    if p == "constrainedbaseline" {
-        return matches!(a.as_str(), "baseline" | "main" | "high");
+    if p == "constrainedbaseline" || p == "baseline" {
+        return matches!(a.as_str(), "baseline" | "constrainedbaseline" | "main" | "high");
     }
     p.strip_suffix("intra").is_some_and(|base| canon(base) == a)
 }
@@ -111,15 +124,34 @@ fn profile_satisfies(allowed: &str, profile: &str) -> bool {
 /// Checks a video track against a client's video capabilities; returns the
 /// reasons it cannot be played as-is (empty = playable).
 pub fn video_problems(t: &Track, caps: &ClientCaps) -> Vec<Reason> {
+    video_problems_with(t, caps, BaselineTools::default())
+}
+
+/// [`video_problems`] for a stream that uses the Baseline-only `tools`
+/// (H.264): it needs a decoder that lists Baseline itself, and the reason
+/// names the tools ("H.264 Baseline (FMO) video").
+fn video_problems_with(t: &Track, caps: &ClientCaps, tools: BaselineTools) -> Vec<Reason> {
     let Some(cap) = caps.video.iter().find(|c| c.codec == t.codec) else {
         return vec![Reason::VideoCodecUnsupported { codec: t.codec }];
     };
     let mut r = Vec::new();
     if let Some(p) = &t.profile {
-        if !cap.profiles.is_empty() && !cap.profiles.iter().any(|x| profile_satisfies(x, p)) {
+        let full_baseline = t.codec == Codec::H264 && tools.any() && norm(p) == "baseline";
+        let ok = |x: &String| {
+            if full_baseline {
+                norm(x) == "baseline"
+            } else {
+                profile_satisfies(x, p)
+            }
+        };
+        if !cap.profiles.is_empty() && !cap.profiles.iter().any(ok) {
             r.push(Reason::VideoProfileUnsupported {
                 codec: t.codec,
-                profile: p.clone(),
+                profile: if full_baseline {
+                    format!("{p} ({})", tools.names())
+                } else {
+                    p.clone()
+                },
             });
         }
     }
@@ -194,6 +226,15 @@ fn audio_cap(caps: &ClientCaps, c: Codec) -> Option<&AudioCap> {
 
 /// Builds the playback plan for `probe` on a client with `caps`.
 pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> PlaybackPlan {
+    plan_impl(probe, caps, prefs, BaselineTools::default())
+}
+
+fn plan_impl(
+    probe: &ProbeResult,
+    caps: &ClientCaps,
+    prefs: &PlanPrefs,
+    tools: BaselineTools,
+) -> PlaybackPlan {
     let mut reasons = Vec::new();
     let video = probe.main_video();
     let audio_tracks: Vec<&Track> = probe.audio().collect();
@@ -268,7 +309,9 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         }
     }
 
-    let mut video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    let mut video_issues = video
+        .map(|v| video_problems_with(v, caps, tools))
+        .unwrap_or_default();
     // H.264 only: the codecs browsers decode whose transcode deinterlaces
     // (MPEG-2 and VC-1 are transcoded for browsers anyway; an HEVC, AV1 or
     // VP9 transcode would come out as interlaced as it went in).
@@ -342,13 +385,15 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         reasons.push(Reason::NoIndex);
     }
     let mut cpu_ms_per_min = 0f64;
+    let vp9_hls_quirk = |v: &Track| v.codec == Codec::Vp9 && quirks(&caps.client).no_vp9_hls;
     let video_op = match video {
         Some(v)
             if can_index
                 && video_issues.is_empty()
                 && burn_in.is_none()
                 && bitrate_issue.is_none()
-                && fmp4_video(v.codec) =>
+                && fmp4_video(v.codec)
+                && !vp9_hls_quirk(v) =>
         {
             // Remux: measured ≈1 ms CPU per MB served (research/03 §4.6).
             let mbps = v.bitrate.or(probe.bitrate).unwrap_or(8_000_000) as f64 / 1e6;
@@ -371,6 +416,10 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
             if !fmp4_video(v.codec) && video_issues.is_empty() {
                 // The client decodes it; flux can't put it in CMAF segments.
                 reasons.push(Reason::CodecNotPackageable { codec: v.codec });
+            } else if vp9_hls_quirk(v) && video_issues.is_empty() {
+                reasons.push(Reason::ClientQuirk {
+                    note: "Apple's HLS player doesn't play VP9, so flux converts it".into(),
+                });
             }
             cpu_ms_per_min += VIDEO_TRANSCODE_CPU_MS_PER_MIN;
             transcode_op(v, caps, burn_in)
@@ -501,9 +550,11 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
 ///
 /// What only the index knows is not modelled: a missing codec configuration
 /// (e.g. AC-3 with no sync frame), open-GOP video on clients that seek
-/// only to IDR pictures ([`Quirks`]), and MPEG-TS files the in-process
-/// remux rejects after reading them (field-coded H.264, parameter sets that
-/// change mid-stream, scrambled video).
+/// only to IDR pictures ([`Quirks`]), H.264 Baseline streams that use slice
+/// groups, arbitrary slice order or redundant pictures ([`BaselineTools`]:
+/// a probe's Baseline plays as Constrained Baseline), and MPEG-TS files the
+/// in-process remux rejects after reading them (field-coded H.264,
+/// parameter sets that change mid-stream, scrambled video).
 pub fn plan_from_probe(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> PlaybackPlan {
     let remuxable = matches!(
         probe.container,
@@ -643,6 +694,12 @@ pub struct Quirks {
     /// a 576i DVD clip looked so in Chrome). Interlaced H.264 is
     /// transcoded, and the transcode deinterlaces it.
     pub no_deinterlacer: bool,
+    /// Apple's players (AVFoundation, which plays HLS in Safari and on
+    /// every Apple device) don't take VP9 in HLS: Apple's HLS spec lists
+    /// H.264, HEVC and AV1 only, and Safari's VP9 decoder serves its WebM
+    /// file player and WebRTC. VP9 is transcoded for their HLS (a WebM file
+    /// they list still plays directly).
+    pub no_vp9_hls: bool,
 }
 
 /// The quirks of a client id such as `"web/firefox-157/macos"`.
@@ -657,6 +714,7 @@ pub fn quirks(client: &str) -> Quirks {
         idr_random_access_only: c.starts_with("web/firefox") && c.ends_with("/macos"),
         needs_hvc1: apple_native || webkit,
         no_deinterlacer: c.starts_with("web/"),
+        no_vp9_hls: apple_native || webkit,
     }
 }
 
@@ -707,29 +765,46 @@ fn entry_problem(v: &Track, caps: &ClientCaps) -> Option<Reason> {
     None
 }
 
-/// Plans `probe` for a client whose quirks need facts only the playback
-/// index has: with `open_gop` video on a client that seeks only to IDR
-/// pictures, the video is transcoded (direct play is not offered either:
-/// the browser's file demuxer has the same keyframe rule).
+/// What the playback index knows about the main video that a probe
+/// doesn't ([`plan_with_index_facts`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexFacts {
+    /// Keyframes after the first are open-GOP random-access points
+    /// (`IndexTrack::open_gop`).
+    pub open_gop: bool,
+    /// The Baseline-only H.264 tools the video uses
+    /// (`TrackExtra::baseline_tools`).
+    pub baseline_tools: BaselineTools,
+}
+
+/// Plans `probe` with facts only the playback index has:
+/// - with `open_gop` video on a client that seeks only to IDR pictures, the
+///   video is transcoded (direct play is not offered either: the browser's
+///   file demuxer has the same keyframe rule);
+/// - H.264 Baseline video that uses slice groups, arbitrary slice order or
+///   redundant pictures plays only where the client lists Baseline itself,
+///   else it is transcoded (other Baseline video plays as Constrained
+///   Baseline, see [`profile_satisfies`]).
 pub fn plan_with_index_facts(
     probe: &ProbeResult,
     caps: &ClientCaps,
     prefs: &PlanPrefs,
-    open_gop: bool,
+    facts: IndexFacts,
 ) -> PlaybackPlan {
-    let affected = open_gop
+    let affected = facts.open_gop
         && quirks(&caps.client).idr_random_access_only
         && probe.main_video().is_some_and(|v| v.codec == Codec::Hevc);
     if !affected {
-        return plan(probe, caps, prefs);
+        return plan_impl(probe, caps, prefs, facts.baseline_tools);
     }
-    let mut p = plan(
+    let mut p = plan_impl(
         probe,
         caps,
         &PlanPrefs {
             allow_direct_play: false,
             ..prefs.clone()
         },
+        facts.baseline_tools,
     );
     if let (VideoOp::Copy { .. }, Some(v)) = (&p.video, probe.main_video()) {
         apply_open_gop_quirk(&mut p, v, caps);
@@ -1178,7 +1253,13 @@ mod tests {
         assert!(profile_satisfies("main10", "Main 10"));
         // Supersets are not subsets.
         assert!(!profile_satisfies("Baseline", "Main"));
-        assert!(!profile_satisfies("Constrained Baseline", "Baseline"));
+        // Baseline is taken as Constrained Baseline (no slice groups, ASO or
+        // redundant pictures; the index finds the streams that use them).
+        assert!(profile_satisfies("Constrained Baseline", "Baseline"));
+        assert!(profile_satisfies("main", "Baseline"));
+        assert!(profile_satisfies("high", "Baseline"));
+        assert!(!profile_satisfies("Extended", "Baseline"));
+        assert!(!profile_satisfies("main10", "Baseline"));
         assert!(!profile_satisfies("High 10 Intra", "High 10"));
         assert!(!profile_satisfies("Main", "Main 10"));
 
@@ -1603,28 +1684,295 @@ mod tests {
             .contains(&Reason::CodecNotPackageable { codec: Codec::TrueHd }));
         assert!(thd.audio.iter().all(|a| a.op != AudioOp::Copy));
 
-        // VP9 in MKV on Chrome: Chrome decodes VP9, but flux's CMAF writer
-        // doesn't package it, so this is not "can't decode".
+        // MPEG-4 Part 2 in MKV on a client that lists it: decodable, but
+        // flux's CMAF writer doesn't package it, so this is not "can't decode".
+        let mut caps = presets::chrome_desktop();
+        caps.video.push(VideoCap {
+            codec: Codec::Mpeg4Part2,
+            profiles: vec![],
+            max_level: None,
+            max_bit_depth: Some(8),
+            max_width: None,
+            max_height: None,
+            hdr: vec![],
+            dovi_profiles: vec![],
+        });
         let p = probe(
             Container::Matroska,
             vec![
                 Track {
-                    width: Some(1920),
-                    height: Some(1080),
-                    ..track(0, TrackKind::Video, Codec::Vp9)
+                    width: Some(720),
+                    height: Some(480),
+                    ..track(0, TrackKind::Video, Codec::Mpeg4Part2)
                 },
-                track(1, TrackKind::Audio, Codec::Opus),
+                track(1, TrackKind::Audio, Codec::Aac),
             ],
         );
-        let vp9 = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
-        assert!(matches!(vp9.video, VideoOp::Transcode { .. }));
-        assert!(vp9
-            .reasons
-            .contains(&Reason::CodecNotPackageable { codec: Codec::Vp9 }));
-        assert!(!vp9
+        let asp = plan(&p, &caps, &PlanPrefs::default());
+        assert!(matches!(asp.video, VideoOp::Transcode { .. }));
+        assert!(asp.reasons.contains(&Reason::CodecNotPackageable {
+            codec: Codec::Mpeg4Part2
+        }));
+        assert!(!asp
             .reasons
             .iter()
             .any(|r| matches!(r, Reason::VideoCodecUnsupported { .. })));
+    }
+
+    /// The web client's caps: what `web/src/caps/detect.ts` reports on
+    /// Chrome for Windows (H.264 High and Main, VP9 profiles 0 and 2; no
+    /// Baseline, Vorbis or AC-3 entries).
+    fn chrome_web() -> ClientCaps {
+        let v = |codec, profiles: &[&str], depth| VideoCap {
+            codec,
+            profiles: profiles.iter().map(|s| s.to_string()).collect(),
+            max_level: Some(51),
+            max_bit_depth: Some(depth),
+            max_width: Some(3840),
+            max_height: Some(2160),
+            hdr: vec![],
+            dovi_profiles: vec![],
+        };
+        ClientCaps {
+            client: "web/chrome-141/windows".into(),
+            delivery: vec![
+                DeliveryFormat::ProgressiveFile,
+                DeliveryFormat::HlsFmp4,
+                DeliveryFormat::HlsTs,
+            ],
+            progressive_containers: vec![Container::Mp4, Container::WebM, Container::Matroska],
+            video: vec![
+                v(Codec::H264, &["high", "main"], 8),
+                v(Codec::Vp9, &["profile2", "profile0"], 10),
+            ],
+            audio: vec![
+                AudioCap {
+                    codec: Codec::Aac,
+                    max_channels: 8,
+                },
+                AudioCap {
+                    codec: Codec::Opus,
+                    max_channels: 8,
+                },
+            ],
+            subtitles: vec![Codec::WebVtt],
+            display_hdr: false,
+            needs_demuxed_audio: false,
+            max_bitrate: None,
+        }
+    }
+
+    /// H.264 Baseline (constraint_set1_flag unset, as phones, webcams and
+    /// Flash-era encoders write it) was video-transcoded on every browser:
+    /// it plays as Constrained Baseline unless the index saw slice groups,
+    /// arbitrary slice order or redundant pictures.
+    #[test]
+    fn baseline_plays_unless_it_uses_baseline_only_tools() {
+        let baseline = |container| {
+            probe(
+                container,
+                vec![
+                    Track {
+                        profile: Some("Baseline".into()),
+                        level: Some(30),
+                        width: Some(640),
+                        height: Some(480),
+                        ..h264()
+                    },
+                    Track {
+                        channels: Some(2),
+                        ..track(1, TrackKind::Audio, Codec::Aac)
+                    },
+                ],
+            )
+        };
+        let mut safari_web = chrome_web();
+        safari_web.client = "web/safari-26/macos".into();
+        safari_web.progressive_containers = vec![Container::Mp4, Container::Mov];
+        let none = IndexFacts::default();
+        for caps in [chrome_web(), safari_web, presets::chrome_desktop()] {
+            // The dry run (probe only) and an index that saw no such tools.
+            let mp4 = baseline(Container::Mp4);
+            assert!(
+                plan(&mp4, &caps, &PlanPrefs::default()).is_direct(),
+                "{}",
+                caps.client
+            );
+            let p = plan_with_index_facts(&mp4, &caps, &PlanPrefs::default(), none);
+            assert!(p.is_direct(), "{}: {:?}", caps.client, p.reasons);
+            // Over HLS (a container the client doesn't open): video copied.
+            let hls = PlanPrefs {
+                allow_direct_play: false,
+                ..PlanPrefs::default()
+            };
+            let p = plan_with_index_facts(&baseline(Container::Matroska), &caps, &hls, none);
+            assert!(
+                matches!(p.video, VideoOp::Copy { .. }),
+                "{}: {:?}",
+                caps.client,
+                p.reasons
+            );
+        }
+
+        // Slice groups (FMO): transcoded where the decoder lists only Main/High.
+        let fmo = IndexFacts {
+            baseline_tools: BaselineTools {
+                slice_groups: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mp4 = baseline(Container::Mp4);
+        let p = plan_with_index_facts(&mp4, &chrome_web(), &PlanPrefs::default(), fmo);
+        assert!(matches!(p.video, VideoOp::Transcode { .. }), "{:?}", p.video);
+        assert_eq!(
+            p.reasons,
+            vec![Reason::VideoProfileUnsupported {
+                codec: Codec::H264,
+                profile: "Baseline (FMO)".into()
+            }]
+        );
+        assert_eq!(p.audio[0].op, AudioOp::Copy);
+        // A client that lists Baseline itself decodes the whole profile.
+        let mut full = chrome_web();
+        full.video[0].profiles.push("baseline".into());
+        assert!(plan_with_index_facts(&mp4, &full, &PlanPrefs::default(), fmo).is_direct());
+        // Arbitrary slice order and redundant pictures, named in the reason.
+        let both = IndexFacts {
+            baseline_tools: BaselineTools {
+                arbitrary_slice_order: true,
+                redundant_pictures: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let p = plan_with_index_facts(&mp4, &chrome_web(), &PlanPrefs::default(), both);
+        assert!(
+            p.explain()
+                .iter()
+                .any(|e| e.contains("H.264 Baseline (ASO, redundant pictures)")),
+            "{:?}",
+            p.explain()
+        );
+        // The facts don't touch other profiles.
+        let high = probe(
+            Container::Mp4,
+            vec![h264(), track(1, TrackKind::Audio, Codec::Aac)],
+        );
+        assert!(plan_with_index_facts(&high, &chrome_web(), &PlanPrefs::default(), fmo).is_direct());
+    }
+
+    /// VP9 WebM/MKV on Chrome was transcoded ("VP9 can't be carried in
+    /// HLS"): it is copied into fMP4 (a `vp09` entry), the audio converted
+    /// when the client lacks it; profile and bit depth are checked against
+    /// the caps. Apple's HLS player still gets H.264.
+    #[test]
+    fn vp9_is_copied_into_fmp4_where_the_client_decodes_it() {
+        let vp9 = |profile: &str, depth, audio| {
+            probe(
+                Container::WebM,
+                vec![
+                    Track {
+                        profile: Some(profile.into()),
+                        bit_depth: Some(depth),
+                        width: Some(1920),
+                        height: Some(1080),
+                        ..track(0, TrackKind::Video, Codec::Vp9)
+                    },
+                    Track {
+                        channels: Some(2),
+                        ..track(1, TrackKind::Audio, audio)
+                    },
+                ],
+            )
+        };
+        let no_direct = PlanPrefs {
+            allow_direct_play: false,
+            ..Default::default()
+        };
+        // Vorbis isn't in the caps: no direct play; VP9 copied, Vorbis → AAC.
+        let p = plan(
+            &vp9("Profile 0", 8, Codec::Vorbis),
+            &chrome_web(),
+            &PlanPrefs::default(),
+        );
+        assert_eq!(p.delivery, DeliveryFormat::HlsFmp4);
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
+        assert!(p.audio.iter().all(|a| matches!(
+            a.op,
+            AudioOp::Transcode {
+                codec: Codec::Aac,
+                ..
+            }
+        )));
+        assert!(!p
+            .reasons
+            .contains(&Reason::CodecNotPackageable { codec: Codec::Vp9 }));
+        // With Opus (which the client has) the WebM plays as it is…
+        assert!(plan(
+            &vp9("Profile 0", 8, Codec::Opus),
+            &chrome_web(),
+            &PlanPrefs::default()
+        )
+        .is_direct());
+        // … and with Vorbis once the client reports it (the web client now does).
+        let mut vorbis = chrome_web();
+        vorbis.audio.push(AudioCap {
+            codec: Codec::Vorbis,
+            max_channels: 8,
+        });
+        assert!(plan(
+            &vp9("Profile 0", 8, Codec::Vorbis),
+            &vorbis,
+            &PlanPrefs::default()
+        )
+        .is_direct());
+        // 10-bit profile 2 is listed; 4:4:4 profile 1 and 12-bit are not.
+        let p = plan(&vp9("Profile 2", 10, Codec::Opus), &chrome_web(), &no_direct);
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
+        let p = plan(
+            &vp9("Profile 1", 8, Codec::Opus),
+            &chrome_web(),
+            &PlanPrefs::default(),
+        );
+        assert!(matches!(p.video, VideoOp::Transcode { .. }));
+        assert!(p.reasons.contains(&Reason::VideoProfileUnsupported {
+            codec: Codec::Vp9,
+            profile: "Profile 1".into()
+        }));
+        let p = plan(
+            &vp9("Profile 2", 12, Codec::Opus),
+            &chrome_web(),
+            &PlanPrefs::default(),
+        );
+        assert!(p
+            .reasons
+            .contains(&Reason::VideoBitDepthUnsupported { bit_depth: 12 }));
+        // A WebM probe without profile or depth (no CodecPrivate) still copies.
+        let mut bare = vp9("Profile 0", 8, Codec::Vorbis);
+        bare.tracks[0].profile = None;
+        bare.tracks[0].bit_depth = None;
+        let p = plan_from_probe(&bare, &chrome_web(), &PlanPrefs::default());
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
+        // Apple's HLS player: transcoded, saying why, even with VP9 in the caps.
+        let mut safari = presets::safari_macos();
+        safari.video.push(chrome_web().video[1].clone());
+        let p = plan(&vp9("Profile 0", 8, Codec::Opus), &safari, &PlanPrefs::default());
+        assert!(matches!(p.video, VideoOp::Transcode { .. }));
+        assert!(
+            p.reasons
+                .iter()
+                .any(|r| matches!(r, Reason::ClientQuirk { note } if note.contains("VP9"))),
+            "{:?}",
+            p.reasons
+        );
+        // Firefox (MSE) copies it.
+        let p = plan(
+            &vp9("Profile 0", 8, Codec::Vorbis),
+            &presets::firefox(),
+            &no_direct,
+        );
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
     }
 
     #[test]
@@ -1740,7 +2088,11 @@ mod tests {
                         ],
                     );
                     for open_gop in [false, true] {
-                        let plan = plan_with_index_facts(&p, &caps, &PlanPrefs::default(), open_gop);
+                        let facts = IndexFacts {
+                            open_gop,
+                            ..Default::default()
+                        };
+                        let plan = plan_with_index_facts(&p, &caps, &PlanPrefs::default(), facts);
                         let claims = plan
                             .reasons
                             .iter()

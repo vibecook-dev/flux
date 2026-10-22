@@ -410,16 +410,21 @@ impl HlsEngine {
     /// Plans playback of `asset` for a client. Removes renditions the engine
     /// cannot produce (e.g. copy of an audio codec with no configuration).
     ///
-    /// It also applies client quirks that need the index, e.g. open-GOP
-    /// video on a client that seeks only to IDR pictures
-    /// ([`planner::Quirks::idr_random_access_only`]).
+    /// It also applies what only the index knows ([`planner::IndexFacts`]):
+    /// open-GOP video on a client that seeks only to IDR pictures
+    /// ([`planner::Quirks::idr_random_access_only`]), H.264 Baseline video
+    /// that uses slice groups, arbitrary slice order or redundant pictures.
     pub fn plan(&self, asset: &Asset, caps: &ClientCaps, prefs: &PlanPrefs) -> PlaybackPlan {
         let probe = asset.index.to_probe_result();
-        let open_gop = asset.index.video_track().is_some_and(|v| v.open_gop);
-        self.finalize_plan(
-            asset,
-            planner::plan_with_index_facts(&probe, caps, prefs, open_gop),
-        )
+        let facts = asset
+            .index
+            .video_track()
+            .map(|v| planner::IndexFacts {
+                open_gop: v.open_gop,
+                baseline_tools: v.extra.baseline_tools,
+            })
+            .unwrap_or_default();
+        self.finalize_plan(asset, planner::plan_with_index_facts(&probe, caps, prefs, facts))
     }
 
     /// Adapts a plan made elsewhere (e.g. `planner::plan` on flux-probe's

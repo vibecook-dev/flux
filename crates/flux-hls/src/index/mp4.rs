@@ -12,7 +12,7 @@ use super::{
     classify_hdr, mkv::avc_profile_name, mkv::parse_dovi, ticks_to_ns, DoviRecord, IndexMethod, IndexStats,
     IndexTrack, Keyframe, Layout, PlaybackIndex, INDEX_VERSION,
 };
-use crate::codec::{self, audio, h264, hevc, NalFlavor};
+use crate::codec::{self, audio, h264, hevc, vp9, NalFlavor};
 use crate::error::{HlsError, Result};
 use crate::source::Source;
 
@@ -534,6 +534,7 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
             }
         }
         tracks[vi].open_gop = super::classify_open_gop(&tracks[vi], &firsts);
+        tracks[vi].extra.baseline_tools = super::classify_baseline_tools(&tracks[vi], &firsts);
     }
 
     // D = the largest edit-list shift beyond the smallest composition offset,
@@ -705,8 +706,8 @@ fn track_from_trak(
             t.height = Some(e.visual.height as u32);
             t.color = colr_info(&e.colr);
         }
-        // Not packageable as fMP4 (the planner transcodes them for HLS), but
-        // a client may play the file as is, and a transcode needs the size.
+        // Copied into fMP4 with the source's `vpcC` (a level the spec
+        // doesn't define, such as 0, is replaced by the picture's).
         SampleEntry::Vp09(e) => {
             pasp = pasp_of(&e.pasp);
             t.codec = Codec::Vp9;
@@ -715,6 +716,33 @@ fn track_from_trak(
             t.height = Some(e.visual.height as u32);
             t.bit_depth = Some(e.vpcc.bit_depth);
             t.color = colr_info(&e.colr);
+            let v = &e.vpcc;
+            let c = vp9::Vp9Config {
+                profile: v.profile,
+                level: if vp9::is_level(v.level) {
+                    v.level
+                } else {
+                    vp9::level(e.visual.width as u32, e.visual.height as u32, None)
+                },
+                bit_depth: v.bit_depth,
+                chroma_subsampling: v.chroma_subsampling,
+                full_range: v.video_full_range_flag,
+                primaries: v.color_primaries,
+                transfer: v.transfer_characteristics,
+                matrix: v.matrix_coefficients,
+            };
+            t.profile = Some(c.profile_name());
+            t.level = Some(u16::from(c.level));
+            t.codec_string = Some(c.codec_string());
+            t.synth_config = Some(c.vpcc());
+            if t.color.is_none() {
+                t.color = Some(ColorInfo {
+                    primaries: Some(c.primaries).filter(|&v| v != 2),
+                    transfer: Some(c.transfer).filter(|&v| v != 2),
+                    matrix: Some(c.matrix).filter(|&v| v != 2),
+                    full_range: Some(c.full_range),
+                });
+            }
         }
         SampleEntry::Vp08(e) => {
             pasp = pasp_of(&e.pasp);

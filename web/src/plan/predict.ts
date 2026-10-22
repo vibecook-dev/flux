@@ -41,9 +41,10 @@ export interface PredictedPlan {
 
 /**
  * What flux-hls packages into fMP4 HLS as-is (`fmp4_video` / `fmp4_audio`).
+ * VP9 goes in a `vp09` entry (not for Apple's HLS player: `appleHls`).
  * Not MP3: Chrome's and Firefox's MSE reject MP3 in fMP4, so it becomes AAC.
  */
-const FMP4_VIDEO: Codec[] = ['h264', 'hevc', 'av1'];
+const FMP4_VIDEO: Codec[] = ['h264', 'hevc', 'av1', 'vp9'];
 const FMP4_AUDIO: Codec[] = ['aac', 'ac3', 'eac3', 'opus', 'flac'];
 
 /** Containers flux-hls always indexes (Cue-less Matroska by a cluster scan, fragmented MP4 from `moof`). */
@@ -52,9 +53,39 @@ const INDEXABLE: ProbeResult['container'][] = ['matroska', 'web_m', 'mp4', 'mov'
 /** `Codec::is_text_subtitle()`: convertible to WebVTT without OCR. */
 const TEXT_SUBS: Codec[] = ['subrip', 'ass', 'ssa', 'web_vtt', 'mov_text'];
 
-/** "Main 10" → "main10", "High" → "high": the profile names ClientCaps uses. */
+/** "Main 10" → "main10", "High 4:4:4" → "high444": the profile names ClientCaps uses (planner.rs `norm`). */
 export function normalizeProfile(p: string | null): string | null {
-  return p ? p.toLowerCase().replace(/\s+/g, '') : null;
+  return p ? p.replace(/[^A-Za-z0-9]/g, '').toLowerCase() : null;
+}
+
+/**
+ * planner.rs `profile_satisfies`: whether a decoder of profile `allowed` plays a
+ * stream of `profile` (the probe's ffprobe-style name). Constrained Baseline is
+ * the subset of Baseline, Main and High; Baseline is taken as Constrained
+ * Baseline (only the playback index sees the slice groups, arbitrary slice
+ * order or redundant pictures that make a Baseline stream need a full Baseline
+ * decoder); an "… Intra" profile is its base profile's subset.
+ */
+export function profileSatisfies(allowed: string, profile: string): boolean {
+  const canon = (s: string) => {
+    const n = normalizeProfile(s) ?? '';
+    return n === 'high444predictive' ? 'high444' : n;
+  };
+  const a = canon(allowed);
+  const p = canon(profile);
+  if (a === p) return true;
+  if (p === 'constrainedbaseline' || p === 'baseline') return ['baseline', 'constrainedbaseline', 'main', 'high'].includes(a);
+  return p.endsWith('intra') && canon(p.slice(0, -'intra'.length)) === a;
+}
+
+/**
+ * planner.rs `Quirks::no_vp9_hls`: Apple's players (Safari, every iOS browser,
+ * Apple's apps) don't take VP9 in HLS, so it is transcoded for them.
+ */
+export function appleHls(client: string): boolean {
+  const c = client.toLowerCase();
+  const native = ['ios/', 'ipados/', 'tvos/', 'visionos/', 'macos/'].some((p) => c.startsWith(p));
+  return native || c.startsWith('web/safari') || (c.startsWith('web/') && c.endsWith('/ios'));
 }
 
 /** The audio track playback starts with: the requested one, else the default, else the first. */
@@ -95,13 +126,13 @@ export function predictPlan({ probe, caps, audioTrack, subtitleTrack, subtitleFi
   // Video.
   if (video) {
     const cap = caps.video.find((c) => c.codec === video.codec);
-    const profile = normalizeProfile(video.profile);
+    const profile = video.profile;
     if (!cap) {
       reasons.push({ reason: 'video_codec_unsupported', codec: video.codec });
       transcodeVideo = true;
     } else {
-      if (profile && cap.profiles.length > 0 && !cap.profiles.includes(profile) && video.codec !== 'h264') {
-        reasons.push({ reason: 'video_profile_unsupported', codec: video.codec, profile: video.profile ?? profile });
+      if (profile && cap.profiles.length > 0 && !cap.profiles.some((x) => profileSatisfies(x, profile))) {
+        reasons.push({ reason: 'video_profile_unsupported', codec: video.codec, profile });
         transcodeVideo = true;
       }
       if (video.bit_depth && cap.max_bit_depth && video.bit_depth > cap.max_bit_depth) {
@@ -189,10 +220,13 @@ export function predictPlan({ probe, caps, audioTrack, subtitleTrack, subtitleFi
   // Container: direct play only when nothing else needs changing.
   const containerOk = caps.progressive_containers.includes(probe.container);
   const direct = containerOk && !transcodeVideo && !audioConverts && fixes.length === 0 && caps.delivery.includes('progressive_file');
-  // Over HLS, a codec the client decodes may still not fit in fMP4 (TrueHD, DTS, PCM, Vorbis; VP9 video).
+  // Over HLS, a codec the client decodes may still not fit in fMP4 (TrueHD, DTS, PCM, Vorbis; MPEG-4 Part 2 video).
   if (!direct) {
     if (video && !transcodeVideo && !FMP4_VIDEO.includes(video.codec)) {
       reasons.push({ reason: 'codec_not_packageable', codec: video.codec });
+      transcodeVideo = true;
+    } else if (video && !transcodeVideo && video.codec === 'vp9' && appleHls(caps.client)) {
+      reasons.push({ reason: 'client_quirk', note: "Apple's HLS player doesn't play VP9, so flux converts it" });
       transcodeVideo = true;
     }
     for (const a of audioPlans) {
