@@ -36,7 +36,11 @@ use crate::source::{Source, SourceId};
 ///    video entries keep their size.
 /// 7: [`TrackExtra::interlaced`]: the container's interlace flag (Matroska
 ///    FlagInterlaced, MP4 `fiel`), which decides over the SPS.
-pub const INDEX_VERSION: u16 = 7;
+/// 8: laced E-AC-3 in Matroska: dec3 and the bitrate describe one access
+///    unit, not the whole first block (8× too high with 8-frame lacing).
+///    play-audio had bumped to 6 alongside play-dv; 8 makes every index
+///    cached by any of these builds rebuild once.
+pub const INDEX_VERSION: u16 = 8;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its

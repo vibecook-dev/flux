@@ -25,6 +25,11 @@ use crate::SegmentBody;
 /// the parse buffer (zero-copy slices) instead of being re-read from the file.
 pub const DEFAULT_INLINE_LIMIT: usize = 16 << 20;
 
+/// How far before a requested time [`Asset::audio_frames`] looks for
+/// Matroska blocks: a laced block's frames can start up to its lace span
+/// (typically 8 frames, ≤ 0.4 s) before the first frame wanted.
+const MKV_LACE_REACH_NS: i64 = 1_000_000_000;
+
 /// One source audio frame, for the transcoder.
 #[derive(Debug, Clone)]
 pub struct SourceFrame {
@@ -748,10 +753,11 @@ impl Asset {
         match &self.index.layout {
             Layout::Matroska(l) => {
                 let kf = &self.index.keyframes;
-                // Start at a cluster a little before t0 (muxers interleave by
-                // decode time, so audio can trail the video keyframe).
+                // Start at a cluster at or before the lace reach (muxers
+                // interleave by decode time, so audio can trail the video
+                // keyframe).
                 let start_k = kf
-                    .partition_point(|k| k.pts_ns <= t0_ns - 1_000_000_000)
+                    .partition_point(|k| k.pts_ns <= t0_ns.saturating_sub(MKV_LACE_REACH_NS))
                     .saturating_sub(1);
                 let start_pos = if start_k == 0 {
                     l.first_cluster
@@ -763,12 +769,19 @@ impl Asset {
                 let ts_scale = l.timestamp_scale.max(1) as i64;
                 let delay = a.codec_delay_ns as i64;
                 let others = [a.id];
+                // A laced block carries one timestamp for all its frames
+                // (8 × 32 ms AC-3 frames = 256 ms is common), so a block that
+                // starts before t0 can hold frames at or after t0. Blocks are
+                // selected from a reach before t0 and each frame is then kept
+                // by its own PTS; selecting by block timestamp dropped those
+                // frames, which made the transcoder start late (holes at the
+                // segment seams, shifted audio).
                 let q = SegmentQuery {
                     video: None,
                     video_start: 0,
                     video_end: None,
                     others: &others,
-                    t_start: (t0_ns + delay).div_euclid(ts_scale),
+                    t_start: (t0_ns.saturating_sub(MKV_LACE_REACH_NS) + delay).div_euclid(ts_scale),
                     t_end: if t1_ns == i64::MAX {
                         i64::MAX
                     } else {
@@ -789,14 +802,15 @@ impl Asset {
                     let lace_ns = fd
                         .map(|fd| ticks_to_ns(fd * f.lace as i64, a.timescale))
                         .unwrap_or(0);
+                    let pts_ns = l.ts_ns(f.ts) - delay + lace_ns;
+                    if pts_ns < t0_ns || pts_ns >= t1_ns {
+                        continue;
+                    }
                     let data = match &f.data {
                         Some(d) => self.with_prefix(a, d),
                         None => Bytes::from(self.sample_bytes(a, &mut win, f.offset, f.len)?),
                     };
-                    out.push(SourceFrame {
-                        pts_ns: l.ts_ns(f.ts) - a.codec_delay_ns as i64 + lace_ns,
-                        data,
-                    });
+                    out.push(SourceFrame { pts_ns, data });
                 }
                 Ok(out)
             }
