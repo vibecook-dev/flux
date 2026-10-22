@@ -141,6 +141,14 @@ pub(crate) fn scan_root(
         }
     };
     let idx = Indexes::build(&snapshot, matches!(scope, Scope::Dirs(_)));
+    // The subtitle files the catalog has there (one index range per dir).
+    let sub_prefixes: Vec<String> = match &scope {
+        Scope::Full(_) => vec![String::new()],
+        Scope::Dirs(dirs) => dirs.iter().filter_map(|d| rel_of(&root_abs, d)).collect(),
+    };
+    let sub_snapshot = inner
+        .catalog
+        .read_blocking(move |c| flux_catalog::sidecar::load_snapshot(c, rid, &sub_prefixes))?;
     Progress::add(&p.diff_ns, ms(t));
 
     // 4. Batcher thread and the context workers share.
@@ -222,6 +230,7 @@ pub(crate) fn scan_root(
         with_entries: HashSet::new(),
         dir_dev: HashMap::new(),
         renumbered: HashMap::new(),
+        subtitles: HashMap::new(),
     };
     let t = Instant::now();
     let walked = match &scope {
@@ -302,7 +311,20 @@ pub(crate) fn scan_root(
     }
     let t = Instant::now();
     let rec = w.reconcile();
+    let (sub_upserts, sub_removed) = w.subtitle_changes(&sub_snapshot);
     Progress::add(&p.diff_ns, ms(t));
+    if !sub_upserts.is_empty() || !sub_removed.is_empty() {
+        // Their own command: not a file batch (no items change).
+        Progress::add(&p.writer_commands, 1);
+        if let Err(e) = inner
+            .catalog
+            .writer()
+            .sync_subtitle_files(root.id, sub_upserts, sub_removed)
+            .wait()
+        {
+            tracing::warn!(root = %root.path, error = %e, "could not record subtitle files");
+        }
+    }
     if !w.unread.is_empty() {
         let mut u = lock(&p.unread);
         let mut list: Vec<&String> = w.unread.iter().collect();
@@ -575,6 +597,8 @@ struct Walk<'a> {
     /// Devices renumbered since the snapshot (old → new), seen on files
     /// with the same inode at the same path.
     renumbered: HashMap<u64, u64>,
+    /// Subtitle files walked (sidecars): relative path → (size, mtime).
+    subtitles: HashMap<String, (u64, i64)>,
 }
 
 impl Walk<'_> {
@@ -919,6 +943,14 @@ impl Walk<'_> {
                 return Visit::Continue;
             };
             group.names.push(name.to_string());
+            // Subtitle files are recorded as they are (no link that leaves
+            // the library: its target is read when a subtitle is played).
+            if !external
+                && flux_catalog::sidecar::is_subtitle_file_name(name)
+                && !flux_names::is_ignored(Path::new(&rel))
+            {
+                self.subtitles.insert(rel.clone(), (e.size, e.mtime_ns));
+            }
             if is_video_name(name) && !flux_names::is_ignored(Path::new(&rel)) {
                 // Mille reports dev = ino = 0 where the platform has no inode
                 // (Windows); the catalog's "unknown" is None. A file behind a
@@ -1068,6 +1100,34 @@ impl Walk<'_> {
                 }
             }
         }
+    }
+
+    /// The subtitle files to write after the walk: new or changed ones,
+    /// and those of `before` (the catalog's) a listing proved gone
+    /// ([`Walk::gone_at`]; under an unread folder nothing is). Nothing when
+    /// nothing changed: an unchanged rescan writes nothing.
+    fn subtitle_changes(
+        &self,
+        before: &HashMap<String, (u64, i64)>,
+    ) -> (Vec<flux_catalog::SubtitleFileRow>, Vec<String>) {
+        let mut upserts: Vec<flux_catalog::SubtitleFileRow> = self
+            .subtitles
+            .iter()
+            .filter(|(rel, now)| before.get(*rel) != Some(*now))
+            .map(|(rel, &(size, mtime_ns))| flux_catalog::SubtitleFileRow {
+                rel_path: rel.clone(),
+                size,
+                mtime_ns,
+            })
+            .collect();
+        upserts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let mut removed: Vec<String> = before
+            .keys()
+            .filter(|rel| !self.subtitles.contains_key(*rel) && self.gone_at(rel).is_some())
+            .cloned()
+            .collect();
+        removed.sort();
+        (upserts, removed)
     }
 
     /// Whether a successful listing proves `rel` (not seen) is gone: its

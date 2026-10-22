@@ -18,7 +18,7 @@ import { api } from '../api/client';
 import { keys, recallSummary, rememberSummaries, useChildren, useItem } from '../api/queries';
 import { refreshLibrary } from '../api/library-list';
 import { invalidateQueries, useQuery } from '../api/query';
-import { assetFacts, audioLabel, subtitleLabel, versionNames, videoLabel } from '../api/tracks';
+import { assetFacts, audioLabel, subtitleChoices, subtitleFileLabel, subtitleLabel, versionNames, videoLabel } from '../api/tracks';
 import type { AssetInfo, ItemDetail, ItemSummary, PlanPreview, Track } from '../api/types';
 import { useCaps } from '../caps/useCaps';
 import { Art } from '../components/Art';
@@ -180,6 +180,11 @@ function FilesPanel({ assets }: { assets: AssetInfo[] }) {
               </p>
             </>
           )}
+          {a.subtitle_files.length > 0 && (
+            <p className={`edge ${styles.probeNote}`}>
+              Subtitle files: {a.subtitle_files.map((f) => `${f.path.split(/[\\/]/).pop() ?? f.path} (${subtitleFileLabel(f)})`).join(', ')}
+            </p>
+          )}
         </details>
       ))}
     </section>
@@ -201,7 +206,7 @@ function ExpectedPlayback({ itemId, asset, audio, sub }: { itemId: number; asset
     { enabled: ready, staleMs: 60_000 },
   );
   const sketch = useMemo(
-    () => (preview.status === 'error' && caps && asset?.probe ? predictPlan({ probe: asset.probe, caps, audioTrack: audio, subtitleTrack: sub }) : null),
+    () => (preview.status === 'error' && caps && asset?.probe ? predictPlan({ probe: asset.probe, caps, audioTrack: audio, subtitleTrack: sub, subtitleFiles: asset.subtitle_files }) : null),
     [preview.status, caps, asset, audio, sub],
   );
   const predicted = preview.data ? { plan: preview.data.plan, explain: preview.data.explain } : sketch;
@@ -263,7 +268,8 @@ function VersionPicker({ assets, value, onChange }: { assets: AssetInfo[]; value
 function TrackPickers({ asset, audio, sub, onAudio, onSub }: { asset: AssetInfo | undefined; audio: number | null; sub: number | null; onAudio: (i: number | null) => void; onSub: (i: number | null) => void }) {
   const tracks = asset?.probe?.tracks ?? [];
   const audios = tracks.filter((t) => t.kind === 'audio');
-  const subs = tracks.filter((t) => t.kind === 'subtitle');
+  // Tracks of the file, then subtitle files beside it.
+  const subs = subtitleChoices(asset);
   if (audios.length < 2 && subs.length === 0) return null;
   const defaultAudio = audios.find((t) => t.default) ?? audios[0];
   return (
@@ -285,9 +291,9 @@ function TrackPickers({ asset, audio, sub, onAudio, onSub }: { asset: AssetInfo 
           <span>Subtitles</span>
           <select className="select" value={sub ?? ''} onChange={(e) => onSub(e.target.value === '' ? null : Number(e.target.value))}>
             <option value="">Off</option>
-            {subs.map((t) => (
-              <option key={t.index} value={t.index}>
-                {subtitleLabel(t)}
+            {subs.map((s) => (
+              <option key={s.track} value={s.track}>
+                {s.burnIn ? `${s.label} · burned in` : s.label}
               </option>
             ))}
           </select>

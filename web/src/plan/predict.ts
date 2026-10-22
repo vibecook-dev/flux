@@ -17,6 +17,7 @@ import type {
   PlaybackPlan,
   ProbeResult,
   Reason,
+  SubtitleFile,
   SubtitlePlan,
   Track,
   VideoOp,
@@ -27,8 +28,10 @@ export interface PlanInput {
   caps: ClientCaps;
   /** Source track index of the chosen audio; `null` = default track. */
   audioTrack: number | null;
-  /** Source track index of the chosen subtitle; `null` = off. */
+  /** Source track index (or a subtitle file's track) of the chosen subtitle; `null` = off. */
   subtitleTrack: number | null;
+  /** Subtitle files beside the video (`AssetInfo.subtitle_files`). */
+  subtitleFiles?: SubtitleFile[];
 }
 
 export interface PredictedPlan {
@@ -79,7 +82,7 @@ export function addOtherAudioTracks(plan: PlaybackPlan, probe: ProbeResult, caps
   }
 }
 
-export function predictPlan({ probe, caps, audioTrack, subtitleTrack }: PlanInput): PredictedPlan {
+export function predictPlan({ probe, caps, audioTrack, subtitleTrack, subtitleFiles }: PlanInput): PredictedPlan {
   const reasons: Reason[] = [];
   const video = probe.tracks.find((t) => t.kind === 'video');
   const audio = pickAudio(probe, audioTrack);
@@ -135,15 +138,25 @@ export function predictPlan({ probe, caps, audioTrack, subtitleTrack }: PlanInpu
 
   // Subtitles: text → WebVTT sidecar; image → client render if possible, else burn in.
   const subtitles: SubtitlePlan[] = [];
+  const subFile = sub ? undefined : subtitleFiles?.find((f) => f.track === subtitleTrack);
   if (sub) {
     // ASS/SSA lose styling as WebVTT; client rendering (JASSUB) isn't bundled yet.
     if (TEXT_SUBS.includes(sub.codec)) {
-      subtitles.push({ track: sub.index, op: { op: 'web_vtt' } });
+      subtitles.push({ track: sub.index, op: { op: 'web_vtt' }, file: null });
     } else if (caps.subtitles.includes(sub.codec)) {
-      subtitles.push({ track: sub.index, op: { op: 'client_render' } });
+      subtitles.push({ track: sub.index, op: { op: 'client_render' }, file: null });
     } else {
       reasons.push({ reason: 'subtitle_needs_burn_in', codec: sub.codec });
-      subtitles.push({ track: sub.index, op: { op: 'burn_in' } });
+      subtitles.push({ track: sub.index, op: { op: 'burn_in' }, file: null });
+      transcodeVideo = true;
+    }
+  } else if (subFile) {
+    // A file is never sent as it is: text as WebVTT, a picture format burned in.
+    if (TEXT_SUBS.includes(subFile.codec)) {
+      subtitles.push({ track: subFile.track, op: { op: 'web_vtt' }, file: subFile });
+    } else {
+      reasons.push({ reason: 'subtitle_needs_burn_in', codec: subFile.codec });
+      subtitles.push({ track: subFile.track, op: { op: 'burn_in' }, file: subFile });
       transcodeVideo = true;
     }
   }

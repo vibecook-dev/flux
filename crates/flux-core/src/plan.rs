@@ -258,8 +258,44 @@ pub struct AudioPlan {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubtitlePlan {
+    /// Track index in the source file, or a subtitle file's track number
+    /// (≥ [`SUBTITLE_FILE_TRACK_BASE`], see [`SubtitleFile`]).
     pub track: u32,
     pub op: SubtitleOp,
+    /// The subtitle file `track` names, when it is one (a sidecar beside the
+    /// video rather than a track inside it). It is part of the plan, so a
+    /// plan (and its id) pins the file's identity. (Plans written before
+    /// subtitle files existed read as `None`.)
+    #[serde(default)]
+    pub file: Option<SubtitleFile>,
+}
+
+/// Track numbers from here up name subtitle **files** next to the video
+/// ([`SubtitleFile`]), not tracks inside it: no container numbers its tracks
+/// this high.
+pub const SUBTITLE_FILE_TRACK_BASE: u32 = 1 << 20;
+
+/// A subtitle file beside a video (a sidecar: `Film.en.srt`, `Film.chs.ass`,
+/// an episode's `.sup`), offered like one of its tracks under `track`.
+/// Language, title and flags are read from the file name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubtitleFile {
+    /// The number to ask for it by (`PlayRequest::subtitle_track`), at least
+    /// [`SUBTITLE_FILE_TRACK_BASE`].
+    pub track: u32,
+    /// Where the file is on the server (like `AssetInfo::path`).
+    pub path: String,
+    pub codec: Codec,
+    /// ISO 639-2 ("eng") or BCP 47 ("zh-Hans") from the name's tags.
+    pub language: Option<String>,
+    /// What the name says besides language and flags ("Commentary", a
+    /// fansub group), if anything.
+    pub title: Option<String>,
+    pub forced: bool,
+    pub hearing_impaired: bool,
+    /// The file's size and modification time when cataloged.
+    pub size: u64,
+    pub mtime_ns: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use flux_core::{
-    AudioOp, ClientCaps, Codec, DeliveryFormat, PlaybackPlan, ProbeResult, SubtitleOp, TrackKind, VideoOp,
+    AudioOp, ClientCaps, Codec, DeliveryFormat, PlaybackPlan, ProbeResult, SubtitleFile, SubtitleOp,
+    SubtitlePlan, TrackKind, VideoOp,
 };
 use tokio::sync::{OnceCell, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::asset::{Asset, DEFAULT_INLINE_LIMIT};
+use crate::burn::BurnIn;
 use crate::cache::LruCache;
 use crate::error::{HlsError, Result};
 use crate::index::PlaybackIndex;
@@ -253,6 +255,7 @@ impl HlsEngine {
             cancel.clone(),
         );
         video.lookahead = cfg.video_lookahead;
+        video.ffprobe = cfg.ffprobe.clone();
         video.detect.forced = cfg.video_encoder;
         video.detect.vaapi_device = cfg.vaapi_device.clone();
         video.piece_ns = cfg.video_segment_target.as_nanos() as i64;
@@ -430,11 +433,73 @@ impl HlsEngine {
         // `VideoOp::Transcode::hardware` stays the planner's "hardware
         // first": the plan (and its id) must not depend on when encoder
         // detection ran. `video_caps` says which encoder is used.
-        planner::finalize_with(
+        let mut plan = planner::finalize_with(
             plan,
             |track| asset.audio_copy_entry(track).is_ok(),
             |track| crate::transcode::can_transcode(asset, track),
-        )
+        );
+        // WebVTT only of tracks whose cues the engine reads (files are read
+        // whole when asked for): never offer a rendition that can't be served.
+        plan.subtitles.retain(|s| {
+            s.op != SubtitleOp::WebVtt || s.file.is_some() || asset.text_subtitle_readable(s.track)
+        });
+        plan
+    }
+
+    /// The subtitle `plan` burns into its video, if any: the plan's
+    /// `BurnIn` entry for `VideoOp::Transcode::burn_subtitle`, a picture
+    /// format (a file of one, or such a track of the asset).
+    fn burn_in(asset: &Asset, plan: &PlaybackPlan) -> Result<Option<BurnIn>> {
+        let VideoOp::Transcode {
+            burn_subtitle: Some(track),
+            ..
+        } = &plan.video
+        else {
+            return Ok(None);
+        };
+        let entry = plan
+            .subtitles
+            .iter()
+            .find(|s| s.track == *track && s.op == SubtitleOp::BurnIn);
+        let unsupported = || HlsError::Unsupported(format!("subtitle {track} can't be drawn into the video"));
+        match entry {
+            Some(SubtitlePlan { file: Some(f), .. }) if f.codec.is_image_subtitle() => Ok(Some(BurnIn {
+                path: f.path.clone().into(),
+                stream: 0,
+                codec: f.codec,
+                embedded: false,
+                size: f.size,
+                mtime_ns: f.mtime_ns,
+            })),
+            Some(SubtitlePlan { file: None, .. }) => {
+                let t = asset
+                    .index
+                    .track(*track)
+                    .filter(|t| t.kind == TrackKind::Subtitle && t.codec.is_image_subtitle())
+                    .ok_or_else(unsupported)?;
+                Ok(Some(BurnIn {
+                    path: asset.index.source.path.clone(),
+                    stream: t.index,
+                    codec: t.codec,
+                    embedded: true,
+                    size: 0,
+                    mtime_ns: 0,
+                }))
+            }
+            _ => Err(unsupported()),
+        }
+    }
+
+    /// The video transcode of `plan` (with the subtitle it burns in), if it
+    /// transcodes.
+    fn video_target(&self, asset: &Asset, plan: &PlaybackPlan) -> Result<Option<VideoTarget>> {
+        let Some(mut t) = VideoTarget::from_op(&plan.video) else {
+            return Ok(None);
+        };
+        if let Some(b) = Self::burn_in(asset, plan)? {
+            t.burn = Some(self.inner.video.burn_key(b));
+        }
+        Ok(Some(t))
     }
 
     fn check_rendition(&self, asset: &Asset, plan: &PlaybackPlan, r: &Rendition) -> Result<()> {
@@ -442,16 +507,7 @@ impl HlsEngine {
             return Err(HlsError::NotFound("plan is not HLS".into()));
         }
         match r {
-            Rendition::Video => match &plan.video {
-                VideoOp::Copy { .. } => Ok(()),
-                VideoOp::Transcode {
-                    burn_subtitle: Some(_),
-                    ..
-                } => Err(HlsError::Unsupported(
-                    "subtitle burn-in is not implemented yet".into(),
-                )),
-                VideoOp::Transcode { .. } => Ok(()),
-            },
+            Rendition::Video => Self::burn_in(asset, plan).map(|_| ()),
             Rendition::Audio(k) => {
                 if plan.audio.iter().any(|a| AudioKey::from_plan(a) == *k) {
                     Ok(())
@@ -463,14 +519,14 @@ impl HlsEngine {
                 }
             }
             Rendition::Subtitle(t) => {
-                let ok = plan
-                    .subtitles
-                    .iter()
-                    .any(|s| s.track == *t && s.op == SubtitleOp::WebVtt)
-                    && asset
-                        .index
-                        .track(*t)
-                        .is_some_and(|x| x.kind == TrackKind::Subtitle);
+                let ok = plan.subtitles.iter().any(|s| {
+                    s.track == *t
+                        && s.op == SubtitleOp::WebVtt
+                        && match &s.file {
+                            Some(f) => f.codec.is_text_subtitle(),
+                            None => asset.text_subtitle_readable(*t),
+                        }
+                });
                 if ok {
                     Ok(())
                 } else {
@@ -569,7 +625,7 @@ impl HlsEngine {
         r: &Rendition,
     ) -> Result<Bytes> {
         self.check_rendition(asset, plan, r)?;
-        if let (Rendition::Video, Some(t)) = (r, VideoTarget::from_op(&plan.video)) {
+        if let (Rendition::Video, Some(t)) = (r, self.video_target(asset, plan)?) {
             let init = self
                 .inner
                 .video
@@ -608,7 +664,7 @@ impl HlsEngine {
     ) -> Result<SegmentBody> {
         self.check_rendition(asset, plan, r)?;
         let n = n as usize;
-        let video_target = VideoTarget::from_op(&plan.video);
+        let video_target = self.video_target(asset, plan)?;
         let transcoded_video = matches!(r, Rendition::Video) && video_target.is_some();
         if !transcoded_video && n >= asset.segments.len() {
             return Err(HlsError::NotFound(format!("segment {n}")));
@@ -767,7 +823,7 @@ impl HlsEngine {
             let cancel = self.inner.cancel.clone();
             tokio::spawn(async move {
                 let work = async {
-                    match (r, VideoTarget::from_op(&plan.video)) {
+                    match (r, this.video_target(&asset, &plan)?) {
                         (Rendition::Video, Some(t)) => {
                             // Start the encoder run at the piece where segment
                             // `start` begins; the init waits for its avcC.
@@ -793,7 +849,22 @@ impl HlsEngine {
         }
     }
 
+    /// The cache cell of WebVTT document `key`.
+    fn subtitle_slot(&self, key: &(String, u32)) -> Result<Shared<Arc<str>>> {
+        let mut m = self.inner.subs.lock().map_err(|_| HlsError::Cancelled)?;
+        Ok(match m.get(key) {
+            Some(c) => c,
+            None => {
+                let c: Shared<Arc<str>> = Arc::new(OnceCell::new());
+                m.put(key.clone(), c.clone(), 0);
+                c
+            }
+        })
+    }
+
     /// The codec of text subtitle track `track`, its cache key and cell.
+    /// Fails for a track whose cues the engine can't read
+    /// ([`Asset::text_subtitle_readable`]), before anything is sent.
     fn subtitle_cell(&self, asset: &Asset, track: u32) -> Result<SubtitleSlot> {
         let t = asset
             .index
@@ -802,18 +873,13 @@ impl HlsEngine {
         let codec = t
             .map(|t| t.codec)
             .ok_or_else(|| HlsError::NotFound(format!("text subtitle track {track}")))?;
+        if !asset.text_subtitle_readable(track) {
+            return Err(HlsError::Unsupported(format!(
+                "{codec} subtitles of this file can't be converted to WebVTT"
+            )));
+        }
         let key = (asset_key(asset), track);
-        let cell = {
-            let mut m = self.inner.subs.lock().map_err(|_| HlsError::Cancelled)?;
-            match m.get(&key) {
-                Some(c) => c,
-                None => {
-                    let c: Shared<Arc<str>> = Arc::new(OnceCell::new());
-                    m.put(key.clone(), c.clone(), 0);
-                    c
-                }
-            }
-        };
+        let cell = self.subtitle_slot(&key)?;
         Ok((codec, key, cell))
     }
 
@@ -846,25 +912,97 @@ impl HlsEngine {
         Ok(vtt)
     }
 
-    /// [`HlsEngine::webvtt_body`] of a subtitle rendition of an HLS `plan`
-    /// (404 when the plan has no such rendition).
+    /// WebVTT of a text subtitle **file** beside `asset`'s video (a
+    /// sidecar: SubRip, ASS/SSA or WebVTT), read and converted whole, then
+    /// cached. Its cues are on the video's timeline (0 = the video's
+    /// start), like a track's. A file that has changed size since the plan
+    /// was made is refused (start playback again); a file larger than
+    /// 32 MiB is not a subtitle file.
+    pub async fn file_webvtt(&self, asset: &Arc<Asset>, file: &SubtitleFile) -> Result<Arc<str>> {
+        const MAX_BYTES: u64 = 32 << 20;
+        if !file.codec.is_text_subtitle() {
+            return Err(HlsError::NotFound(format!("text subtitle {}", file.track)));
+        }
+        let key = (
+            format!(
+                "{}|{}:{}:{}",
+                asset_key(asset),
+                file.path,
+                file.size,
+                file.mtime_ns
+            ),
+            file.track,
+        );
+        let cell = self.subtitle_slot(&key)?;
+        let (asset, file) = (asset.clone(), file.clone());
+        let vtt = cell
+            .get_or_try_init(|| async move {
+                tokio::task::spawn_blocking(move || -> Result<Arc<str>> {
+                    let len = std::fs::metadata(&file.path)?.len();
+                    if len != file.size {
+                        return Err(HlsError::NotFound(
+                            "the subtitle file changed since playback started; start it again".into(),
+                        ));
+                    }
+                    if len > MAX_BYTES {
+                        return Err(HlsError::Unsupported(format!("a {len}-byte subtitle file")));
+                    }
+                    let bytes = std::fs::read(&file.path)?;
+                    let cues = subtitle::parse_file(file.codec, &subtitle::decode_text(&bytes));
+                    Ok(Arc::from(subtitle::to_webvtt(
+                        file.codec,
+                        &cues,
+                        asset.index.presentation_offset_ns,
+                    )))
+                })
+                .await
+                .map_err(|e| HlsError::Io(std::io::Error::other(e)))?
+            })
+            .await?
+            .clone();
+        if let Ok(mut m) = self.inner.subs.lock() {
+            m.reweigh(&key, vtt.len() + 64);
+        }
+        Ok(vtt)
+    }
+
+    /// WebVTT of subtitle rendition `track` of `plan` for a response: a
+    /// subtitle file of the plan ([`HlsEngine::file_webvtt`]), else a text
+    /// track of `asset` ([`HlsEngine::webvtt_body`]). 404 when an HLS plan
+    /// has no such rendition; a direct-play plan serves its subtitle files
+    /// and any readable text track (the `<track>` elements of the page).
     pub async fn plan_webvtt_body(
         &self,
         asset: &Arc<Asset>,
         plan: &PlaybackPlan,
         track: u32,
     ) -> Result<WebVttBody> {
-        self.check_rendition(asset, plan, &Rendition::Subtitle(track))?;
-        self.webvtt_body(asset, track).await
+        if !plan.is_direct() {
+            self.check_rendition(asset, plan, &Rendition::Subtitle(track))?;
+        }
+        let file = plan
+            .subtitles
+            .iter()
+            .find(|s| s.track == track && s.op == SubtitleOp::WebVtt)
+            .and_then(|s| s.file.as_ref());
+        match file {
+            Some(f) => Ok(WebVttBody::Whole(self.file_webvtt(asset, f).await?)),
+            None => self.webvtt_body(asset, track).await,
+        }
     }
 
     /// WebVTT of a text subtitle track for a response: the cached document
     /// when the track was extracted before, else the cues **as they are
-    /// read** (review PB-7): the header goes out at once and each cue right
-    /// after its block is read, so the first cue doesn't wait for a walk of
-    /// a Cue-less file. A completed extraction is cached (later requests get
-    /// [`WebVttBody::Whole`], byte for byte the same); one the client
-    /// abandons stops reading.
+    /// read** (review PB-7): the response starts with the first cue, and
+    /// each cue follows right after its block is read, so the first cue
+    /// doesn't wait for a walk of a Cue-less file. A completed extraction is
+    /// cached (later requests get [`WebVttBody::Whole`], byte for byte the
+    /// same); one the client abandons stops reading.
+    ///
+    /// Nothing is sent until the track has been read up to its first cue
+    /// (or its end): a track that can't be read at all is an error, never a
+    /// `200` that breaks off (only a read failing later, a file cut short
+    /// mid-way, still can).
     pub async fn webvtt_body(&self, asset: &Arc<Asset>, track: u32) -> Result<WebVttBody> {
         let (codec, key, cell) = self.subtitle_cell(asset, track)?;
         if let Some(v) = cell.get() {
@@ -877,27 +1015,33 @@ impl HlsEngine {
             .acquire_owned()
             .await
             .map_err(|_| HlsError::Cancelled)?;
-        let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(16);
         let asset = asset.clone();
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let header = subtitle::WebVttWriter::header(asset.index.presentation_offset_ns);
             let mut doc = header.clone();
-            if tx.blocking_send(Ok(Bytes::from(header))).is_err() {
-                return;
-            }
+            // Sent with the first cue (or alone at the end).
+            let mut pending = Some(header);
             let mut w = subtitle::WebVttWriter::new(codec);
             let mut open = true;
             let res = asset.for_each_subtitle_block(track, &mut |(start, end, payload)| {
                 if let Some(cue) = w.cue(start, end, &payload) {
                     doc.push_str(&cue);
-                    open = tx.blocking_send(Ok(Bytes::from(cue))).is_ok();
+                    let chunk = match pending.take() {
+                        Some(h) => h + &cue,
+                        None => cue,
+                    };
+                    open = tx.blocking_send(Ok(Bytes::from(chunk))).is_ok();
                 }
                 open
             });
             match res {
                 Ok(_) if open => {
+                    if let Some(h) = pending.take() {
+                        let _ = tx.blocking_send(Ok(Bytes::from(h)));
+                    }
                     let doc: Arc<str> = Arc::from(doc);
                     let len = doc.len();
                     if cell.set(doc).is_ok() {
@@ -912,9 +1056,16 @@ impl HlsEngine {
                 }
             }
         });
-        Ok(WebVttBody::Streaming(Box::pin(futures::stream::unfold(
-            rx,
-            |mut rx| async move { rx.recv().await.map(|item| (item, rx)) },
+        let first = match rx.recv().await {
+            Some(Ok(b)) => b,
+            Some(Err(e)) => return Err(HlsError::Io(e)),
+            None => return Err(HlsError::Cancelled),
+        };
+        let rest =
+            futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|item| (item, rx)) });
+        Ok(WebVttBody::Streaming(Box::pin(futures::StreamExt::chain(
+            futures::stream::once(async move { Ok(first) }),
+            rest,
         ))))
     }
 
@@ -979,10 +1130,19 @@ impl HlsEngine {
             }
             HlsResource::WebVtt(t) => {
                 self.check_rendition(asset, plan, &Rendition::Subtitle(t))?;
+                let file = plan
+                    .subtitles
+                    .iter()
+                    .find(|s| s.track == t && s.op == SubtitleOp::WebVtt)
+                    .and_then(|s| s.file.as_ref());
+                let vtt = match file {
+                    Some(f) => self.file_webvtt(asset, f).await?,
+                    None => self.webvtt(asset, t).await?,
+                };
                 HlsResponse {
                     content_type: "text/vtt; charset=utf-8",
                     cache_control: IMMUTABLE,
-                    body: SegmentBody::from_bytes(Bytes::from(self.webvtt(asset, t).await?.to_string())),
+                    body: SegmentBody::from_bytes(Bytes::from(vtt.to_string())),
                 }
             }
         })

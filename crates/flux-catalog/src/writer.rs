@@ -624,6 +624,18 @@ impl Writer {
         self.exec(move |c| scan_support::attach_fingerprints(c, root_id, &fps, grace, max_attempts))
     }
 
+    /// A scan's subtitle files of a root ([`crate::sidecar::sync`]):
+    /// `upserts` new or changed, `removed` (root-relative paths) proven
+    /// gone. Returns the rows changed.
+    pub fn sync_subtitle_files(
+        &self,
+        root_id: Id,
+        upserts: Vec<crate::sidecar::SubtitleFileRow>,
+        removed: Vec<String>,
+    ) -> Request<u64> {
+        self.exec_quiet(move |c| crate::sidecar::sync(c, root_id, &upserts, &removed))
+    }
+
     /// Delete tombstoned files older than their grace period, and items left
     /// with nothing playable. `now_ms` is injectable for tests.
     pub fn purge_tombstones(&self, now_ms: i64) -> Request<PurgeOutcome> {

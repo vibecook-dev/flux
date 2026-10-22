@@ -9,10 +9,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flux_core::{AudioOp, Codec, PlaybackPlan, VideoOp};
+use flux_core::{AudioOp, Codec, PlaybackPlan, SubtitleFile, SubtitleOp, VideoOp, SUBTITLE_FILE_TRACK_BASE};
+use flux_hls::index::Layout;
 use flux_hls::playlist::{HlsResource, Rendition};
-use flux_hls::{presets, Asset, AudioKey, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder};
+use flux_hls::{presets, Asset, AudioKey, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder, WebVttBody};
 use flux_test_media::{clip, ffprobe_video_frames, Clip};
+use futures::StreamExt;
 use mp4_atom::{Any, Decode};
 
 fn hls_only() -> PlanPrefs {
@@ -680,4 +682,402 @@ fn laced_eac3_reports_the_bitrate_it_was_encoded_at() {
         seen += 1;
     }
     assert_eq!(seen, 2);
+}
+
+// ---------------------------------------------------------------- subtitles
+
+/// A subtitle file beside a video, as the catalog would offer it.
+fn subtitle_file(path: &Path, codec: Codec, n: u32) -> SubtitleFile {
+    SubtitleFile {
+        track: SUBTITLE_FILE_TRACK_BASE + n,
+        path: path.display().to_string(),
+        codec,
+        language: None,
+        title: None,
+        forced: false,
+        hearing_impaired: false,
+        size: std::fs::metadata(path).unwrap().len(),
+        mtime_ns: 0,
+    }
+}
+
+/// The body of a WebVTT response.
+async fn vtt_of(body: WebVttBody) -> String {
+    match body {
+        WebVttBody::Whole(doc) => doc.to_string(),
+        WebVttBody::Streaming(s) => {
+            let parts: Vec<_> = s.collect().await;
+            let mut doc = Vec::new();
+            for p in parts {
+                doc.extend_from_slice(&p.unwrap());
+            }
+            String::from_utf8(doc).unwrap()
+        }
+    }
+}
+
+/// MP4 `mov_text` (tx3g) subtitles are served as WebVTT: they were offered
+/// before, but every fetch failed after a 200 ("subtitles: Matroska only").
+/// The response starts only once the first cue is read.
+#[tokio::test]
+async fn mp4_text_subtitles_are_served_as_webvtt() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-movtext");
+    let srt = dir.join("subs.srt");
+    std::fs::write(
+        &srt,
+        "1\n00:00:01,000 --> 00:00:02,500\nFish & chips > fries\n\n2\n00:00:04,000 --> 00:00:05,000\n示例字幕\n",
+    )
+    .unwrap();
+    let out = dir.join("movtext.mp4");
+    let st = std::process::Command::new(&ff)
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&p)
+        .arg("-i")
+        .arg(&srt)
+        .args([
+            "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text", "-f", "mp4",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(st.success(), "ffmpeg made no mov_text MP4");
+    let engine = HlsEngine::new(EngineConfig::default());
+    let asset = engine.prepare(&out).await.unwrap();
+    let t = asset
+        .index
+        .tracks
+        .iter()
+        .find(|t| t.codec == Codec::MovText)
+        .expect("a tx3g track")
+        .index;
+    assert!(asset.text_subtitle_readable(t));
+    let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+    assert!(plan
+        .subtitles
+        .iter()
+        .any(|s| s.track == t && s.op == SubtitleOp::WebVtt));
+    // Streamed the first time: the first chunk is the header and a cue.
+    let first = match engine.plan_webvtt_body(&asset, &plan, t).await.unwrap() {
+        WebVttBody::Streaming(mut s) => String::from_utf8(s.next().await.unwrap().unwrap().to_vec()).unwrap(),
+        WebVttBody::Whole(_) => panic!("nothing was extracted yet"),
+    };
+    assert!(
+        first.starts_with("WEBVTT\n") && first.contains(" --> "),
+        "{first}"
+    );
+    let vtt = engine.webvtt(&asset, t).await.unwrap();
+    // Plain text: `&` and `>` are escaped (ffmpeg's SRT reader would take
+    // `<…>` for a tag, so none here).
+    assert!(
+        vtt.contains("00:00:01.000 --> 00:00:02.500\nFish &amp; chips &gt; fries\n"),
+        "{vtt}"
+    );
+    assert!(vtt.contains("00:00:04.000 --> 00:00:05.000\n示例字幕\n"), "{vtt}");
+    // Through the HLS route too.
+    let r = engine.serve(&asset, &plan, HlsResource::WebVtt(t)).await.unwrap();
+    let served = String::from_utf8(r.body.into_bytes().await.unwrap().to_vec()).unwrap();
+    assert_eq!(served, *vtt);
+}
+
+/// A text subtitle file beside the video (ASS, UTF-8 with a byte-order
+/// mark) is offered and served as WebVTT with its CJK text; a picture
+/// track that can't be converted is refused before any response starts.
+#[tokio::test]
+async fn subtitle_files_are_served_as_webvtt() {
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-sidecar");
+    let ass = dir.join("Clip.chs.ass");
+    std::fs::write(
+        &ass,
+        "\u{feff}[Script Info]\nScriptType: v4.00+\n\n[Events]\n\
+         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+         Dialogue: 0,0:00:01.50,0:00:03.00,Default,,0,0,0,,{\\b1}示例字幕{\\b0}\\N第二行\n",
+    )
+    .unwrap();
+    let file = subtitle_file(&ass, Codec::Ass, 7);
+    let engine = HlsEngine::new(EngineConfig::default());
+    let asset = engine.prepare(&p).await.unwrap();
+    let prefs = PlanPrefs {
+        subtitle_files: vec![file.clone()],
+        ..hls_only()
+    };
+    let plan = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+    let entry = plan
+        .subtitles
+        .iter()
+        .find(|s| s.track == file.track)
+        .expect("offered");
+    assert_eq!(entry.op, SubtitleOp::WebVtt);
+    let master = engine.master_playlist(&asset, &plan).unwrap();
+    assert!(
+        master.contains(&format!("URI=\"s/{}.m3u8\"", file.track)),
+        "{master}"
+    );
+    let vtt = vtt_of(engine.plan_webvtt_body(&asset, &plan, file.track).await.unwrap()).await;
+    assert!(
+        vtt.contains("00:00:01.500 --> 00:00:03.000\n示例字幕\n第二行\n"),
+        "{vtt}"
+    );
+    // Direct play serves it too (a `<track>` of the page).
+    let direct = engine.plan(
+        &asset,
+        &presets::chrome_desktop(),
+        &PlanPrefs {
+            subtitle_files: vec![file.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(direct.is_direct());
+    let again = vtt_of(
+        engine
+            .plan_webvtt_body(&asset, &direct, file.track)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(again, vtt);
+    // A file that changed since the plan was made is refused, not served stale.
+    std::fs::write(&ass, "[Events]\n").unwrap();
+    let fresh = HlsEngine::new(EngineConfig::default());
+    let a2 = fresh.prepare(&p).await.unwrap();
+    assert!(fresh.plan_webvtt_body(&a2, &plan, file.track).await.is_err());
+    // Not a text track: an error before anything is sent.
+    assert!(fresh.webvtt_body(&a2, 0).await.is_err());
+}
+
+/// One PGS display set in `.sup` form: a white box at `rect` on a `canvas`
+/// from `from` seconds, cleared at `to`.
+fn pgs_box(canvas: (u16, u16), rect: (u16, u16, u16, u16), from: f64, to: f64) -> Vec<u8> {
+    fn seg(out: &mut Vec<u8>, pts: f64, ty: u8, body: &[u8]) {
+        out.extend_from_slice(b"PG");
+        out.extend_from_slice(&((pts * 90_000.0) as u32).to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.push(ty);
+        out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        out.extend_from_slice(body);
+    }
+    let be = |v: u16| v.to_be_bytes();
+    let (x, y, w, h) = rect;
+    let mut out = Vec::new();
+    // Presentation composition: epoch start, one object in window 0.
+    let mut pcs = [be(canvas.0), be(canvas.1)].concat();
+    pcs.extend_from_slice(&[0x10, 0, 1, 0x80, 0, 0, 1, 0, 0, 0, 0]);
+    pcs.extend_from_slice(&[be(x), be(y)].concat());
+    let wds = [&[1u8, 0][..], &be(x), &be(y), &be(w), &be(h)].concat();
+    // Palette 0: entry 1 is opaque white (Y, Cr, Cb, alpha).
+    let pds = [0u8, 0, 1, 235, 128, 128, 255];
+    // Object: every line one run of colour 1, then end of line.
+    let mut rle = Vec::new();
+    for _ in 0..h {
+        rle.extend_from_slice(&[0, 0xC0 | (w >> 8) as u8, (w & 0xFF) as u8, 1, 0, 0]);
+    }
+    let len = (rle.len() + 4) as u32;
+    let mut ods = vec![0, 0, 0, 0xC0];
+    ods.extend_from_slice(&len.to_be_bytes()[1..]);
+    ods.extend_from_slice(&[be(w), be(h)].concat());
+    ods.extend_from_slice(&rle);
+    seg(&mut out, from, 0x16, &pcs);
+    seg(&mut out, from, 0x17, &wds);
+    seg(&mut out, from, 0x14, &pds);
+    seg(&mut out, from, 0x15, &ods);
+    seg(&mut out, from, 0x80, &[]);
+    // Cleared: a composition with no objects.
+    let mut clear = [be(canvas.0), be(canvas.1)].concat();
+    clear.extend_from_slice(&[0x10, 0, 2, 0x00, 0, 0, 0]);
+    seg(&mut out, to, 0x16, &clear);
+    seg(&mut out, to, 0x17, &wds);
+    seg(&mut out, to, 0x80, &[]);
+    out
+}
+
+/// The luma of the frame shown at `t` seconds.
+fn gray_frame(ff: &Path, file: &Path, t: f64) -> Vec<u8> {
+    let out = std::process::Command::new(ff)
+        .args(["-v", "error", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    out.stdout
+}
+
+/// Mean absolute difference of two 640-wide gray frames inside `(x0, y0, x1, y1)`.
+fn diff_in(a: &[u8], b: &[u8], (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let mut sum = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            sum += (a[y * 640 + x] as i64 - b[y * 640 + x] as i64).unsigned_abs();
+        }
+    }
+    sum as f64 / ((x1 - x0) * (y1 - y0)) as f64
+}
+
+/// A PGS subtitle file is drawn into the transcode exactly while it is on
+/// screen: compared with the same transcode without it, the box differs
+/// from 1 s to 3 s and nowhere else. Each 2 s piece is its own encoder run,
+/// so the run of the piece starting at 2 s has to draw a subtitle that
+/// appeared before its first frame (and before its seek point).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pgs_file_is_burned_in_where_and_when_it_shows() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-burn");
+    let sup = dir.join("Clip.sup");
+    std::fs::write(&sup, pgs_box((640, 360), (200, 260, 240, 60), 1.0, 3.0)).unwrap();
+    let file = subtitle_file(&sup, Codec::Pgs, 1);
+    let engine = HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        video_run_segments: 1,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let prefs = PlanPrefs {
+        subtitle_track: Some(file.track),
+        subtitle_files: vec![file.clone()],
+        ..hls_only()
+    };
+    let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+    let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+        panic!("{:?}", burned.explain())
+    };
+    assert_eq!(*burn_subtitle, Some(file.track));
+    let mut plain = burned.clone();
+    if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+        *burn_subtitle = None;
+    }
+    plain.subtitles.clear();
+    let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, "burned.mp4").await;
+    let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, "plain.mp4").await;
+    assert_box_burned_in_from_1_to_3(&ff, &a, &b);
+}
+
+/// `burned`, a rendition with the box of [`pgs_box`] at (200, 260, 240, 60)
+/// shown from 1 s to 3 s drawn in, against `plain`, the same transcode
+/// without it: they differ inside the box exactly while it is shown, and
+/// nowhere else.
+fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
+    let what = burned.file_name().unwrap().to_string_lossy();
+    let (a, b) = (burned, plain);
+    let inside = (208, 268, 432, 312);
+    let above = (0, 0, 640, 200);
+    for (t, shown) in [(0.5, false), (1.5, true), (2.5, true), (3.5, false), (6.5, false)] {
+        let (fa, fb) = (gray_frame(ff, a, t), gray_frame(ff, b, t));
+        assert_eq!(fa.len(), 640 * 360, "{what}, t = {t}");
+        let (d_in, d_out) = (diff_in(&fa, &fb, inside), diff_in(&fa, &fb, above));
+        assert!(
+            d_out < 8.0,
+            "{what}, t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
+        );
+        if shown {
+            assert!(d_in > 40.0, "{what}, t = {t}: no subtitle drawn ({d_in:.1})");
+            let white = fa[290 * 640 + 320];
+            assert!(white > 200, "{what}, t = {t}: the box is not white ({white})");
+        } else {
+            assert!(
+                d_in < 8.0,
+                "{what}, t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
+            );
+        }
+    }
+}
+
+/// A PGS track of an M2TS whose timestamps start at 21.4 s (a Blu-ray rip)
+/// is drawn in at its own time. ffmpeg counts a TS from its start time,
+/// where the source timeline has 0, and lines up a track that starts later
+/// (here at 22.4 s, with its first subtitle) from its first packet when
+/// seeked before it: the track used to land 21.4 s late, or not at all.
+/// With TrueHD audio (when this ffmpeg can make it) ffmpeg also counts the
+/// AC-3 core of the TrueHD PID as a stream of its own, so the track is
+/// picked by PID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-burn-m2ts");
+    let sup = dir.join("box.sup");
+    std::fs::write(&sup, pgs_box((640, 360), (200, 260, 240, 60), 1.0, 3.0)).unwrap();
+    let mut audio: Vec<(&str, &[&str])> = vec![("aac", &["-c:a", "copy"])];
+    if flux_test_media::ffmpeg_encoders().iter().any(|e| e == "truehd") {
+        audio.push(("truehd", &["-c:a", "truehd", "-strict", "-2"]));
+    }
+    for (name, args) in audio {
+        let m2ts = dir.join(format!("Clip-{name}.m2ts"));
+        // `-seek_timestamp 1`: both inputs keep their times (the box at 1 s).
+        let st = std::process::Command::new(&ff)
+            .args(["-v", "error", "-y", "-seek_timestamp", "1", "-i"])
+            .arg(&p)
+            .args(["-seek_timestamp", "1", "-i"])
+            .arg(&sup)
+            .args(["-map", "0:v", "-map", "0:a", "-map", "1", "-c:v", "copy"])
+            .args(args)
+            .args([
+                "-c:s",
+                "copy",
+                "-output_ts_offset",
+                "20",
+                "-mpegts_m2ts_mode",
+                "1",
+                "-f",
+                "mpegts",
+            ])
+            .arg(&m2ts)
+            .status()
+            .unwrap();
+        assert!(st.success(), "ffmpeg made no {name} M2TS");
+        let engine = HlsEngine::new(EngineConfig {
+            video_encoder: Some(VideoEncoder::Libx264),
+            video_lookahead: 0,
+            audio_lookahead: 0,
+            video_run_segments: 1,
+            ..Default::default()
+        });
+        let asset = engine.prepare(&m2ts).await.unwrap();
+        let Layout::Ts(ts) = &asset.index.layout else {
+            panic!("{name}: not indexed as MPEG-TS: {:?}", asset.index.warnings)
+        };
+        assert!(ts.origin > 20 * 90_000, "{name}: starts at {} ticks", ts.origin);
+        let track = asset
+            .index
+            .tracks
+            .iter()
+            .find(|t| t.codec == Codec::Pgs)
+            .expect("a PGS track")
+            .index;
+        let prefs = PlanPrefs {
+            subtitle_track: Some(track),
+            ..hls_only()
+        };
+        let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+        let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+            panic!("{name}: {:?}", burned.explain())
+        };
+        assert_eq!(*burn_subtitle, Some(track));
+        let mut plain = burned.clone();
+        if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+            *burn_subtitle = None;
+        }
+        plain.subtitles.clear();
+        let a_name = format!("burned-{name}.mp4");
+        let b_name = format!("plain-{name}.mp4");
+        let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, &a_name).await;
+        let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, &b_name).await;
+        assert_box_burned_in_from_1_to_3(&ff, &a, &b);
+    }
 }

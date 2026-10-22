@@ -247,6 +247,20 @@ fn caps() -> ClientCaps {
     }
 }
 
+fn subtitle_file() -> SubtitleFile {
+    SubtitleFile {
+        track: SUBTITLE_FILE_TRACK_BASE + 4,
+        path: "/media/Movies/Dune Part Two (2024)/Dune Part Two (2024).zh-Hans.forced.srt".into(),
+        codec: Codec::Subrip,
+        language: Some("zh-Hans".into()),
+        title: None,
+        forced: true,
+        hearing_impaired: false,
+        size: 48_213,
+        mtime_ns: 1_760_000_000_000_000_000,
+    }
+}
+
 fn plans() -> Vec<PlaybackPlan> {
     let base = PlaybackPlan {
         delivery: DeliveryFormat::HlsFmp4,
@@ -254,8 +268,9 @@ fn plans() -> Vec<PlaybackPlan> {
         video: VideoOp::Copy { fixes: vec![BitstreamFix::DoviP7To81] },
         audio: vec![AudioPlan { track: 1, op: AudioOp::Transcode { codec: Codec::Aac, channels: 6, bitrate: 640_000 } }],
         subtitles: vec![
-            SubtitlePlan { track: 2, op: SubtitleOp::WebVtt },
-            SubtitlePlan { track: 3, op: SubtitleOp::ClientRender },
+            SubtitlePlan { track: 2, op: SubtitleOp::WebVtt, file: None },
+            SubtitlePlan { track: 3, op: SubtitleOp::ClientRender, file: None },
+            SubtitlePlan { track: SUBTITLE_FILE_TRACK_BASE + 4, op: SubtitleOp::WebVtt, file: Some(subtitle_file()) },
         ],
         demuxed_audio: true,
         reasons: vec![Reason::ContainerUnsupported { container: Container::Matroska }],
@@ -272,7 +287,7 @@ fn plans() -> Vec<PlaybackPlan> {
     };
     let stream = PlaybackPlan {
         audio: vec![AudioPlan { track: 1, op: AudioOp::Copy }],
-        subtitles: vec![SubtitlePlan { track: 2, op: SubtitleOp::BurnIn }],
+        subtitles: vec![SubtitlePlan { track: 2, op: SubtitleOp::BurnIn, file: None }],
         ..base.clone()
     };
     let transcode = PlaybackPlan {
@@ -413,6 +428,20 @@ fn main() {
             hdr: Some(HdrFormat::Hdr10),
             available: true,
             probe: Some(probe()),
+            subtitle_files: vec![
+                subtitle_file(),
+                SubtitleFile {
+                    track: SUBTITLE_FILE_TRACK_BASE + 5,
+                    path: "/media/Movies/Dune Part Two (2024)/Subs/Dune Part Two (2024).Commentary.sup".into(),
+                    codec: Codec::Pgs,
+                    language: None,
+                    title: Some("Commentary".into()),
+                    forced: false,
+                    hearing_impaired: false,
+                    size: 9_000_000,
+                    mtime_ns: 1_760_000_000_000_000_000,
+                },
+            ],
         }],
         show_id: None,
         season_number: None,

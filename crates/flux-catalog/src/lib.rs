@@ -19,6 +19,7 @@
 //! - [`jobs`]: the durable job queue (match, art) the server's executor polls.
 //! - [`rekey`]: re-placing episode assets (anime absolute numbering), carrying user state.
 //! - [`merge`]: merging two works once provider ids agree (two show folders, one show).
+//! - [`sidecar`]: subtitle files beside the videos, and which belong to an asset.
 //!
 //! ```no_run
 //! # async fn demo() -> flux_catalog::Result<()> {
@@ -46,6 +47,7 @@ pub mod read;
 pub mod rekey;
 pub mod scan_support;
 pub mod schema;
+pub mod sidecar;
 pub mod synth;
 pub mod writer;
 
@@ -60,6 +62,7 @@ pub use jobs::{ClaimJobs, Enqueued, Finished, JobLease, JobResult, JobSpec, JOB_
 pub use model::*;
 pub use read::{FileCounts, ItemSort, ItemsQuery, PooledConn, ReadPool};
 pub use rekey::{EpisodeRekey, RekeyOutcome};
+pub use sidecar::SubtitleFileRow;
 pub use writer::{
     release_free_memory, release_thread_memory, set_release_hook, Reply, Request, Writer, WriterConfig,
     WriterStats,

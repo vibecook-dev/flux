@@ -12,7 +12,7 @@
 
 use flux_core::{
     AudioCap, AudioOp, AudioPlan, ClientCaps, Codec, Container, DeliveryFormat, HdrFormat, PlaybackPlan,
-    ProbeResult, Reason, SubtitleOp, SubtitlePlan, Track, VideoCap, VideoOp,
+    ProbeResult, Reason, SubtitleFile, SubtitleOp, SubtitlePlan, Track, VideoCap, VideoOp,
 };
 
 /// User/session preferences that shape a plan.
@@ -26,6 +26,10 @@ pub struct PlanPrefs {
     pub all_audio_tracks: bool,
     /// Offer every text subtitle track as a WebVTT rendition.
     pub all_text_subtitles: bool,
+    /// Subtitle files beside the video (sidecars), offered like its tracks
+    /// under their own track numbers: text files as WebVTT renditions
+    /// (with `all_text_subtitles`), a selected picture file burned in.
+    pub subtitle_files: Vec<SubtitleFile>,
     /// Allow progressive direct play.
     pub allow_direct_play: bool,
     /// For multichannel sources a client can't decode, offer E-AC-3 5.1 when
@@ -40,6 +44,7 @@ impl Default for PlanPrefs {
             subtitle_track: None,
             all_audio_tracks: true,
             all_text_subtitles: true,
+            subtitle_files: Vec::new(),
             allow_direct_play: true,
             prefer_eac3_surround: true,
         }
@@ -218,7 +223,29 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
             burn_in = Some(st.index);
             SubtitleOp::BurnIn
         };
-        subtitles.push(SubtitlePlan { track: st.index, op });
+        subtitles.push(SubtitlePlan {
+            track: st.index,
+            op,
+            file: None,
+        });
+    } else if let Some(f) = prefs
+        .subtitle_track
+        .and_then(|i| prefs.subtitle_files.iter().find(|f| f.track == i))
+    {
+        // A file is never sent as it is: text becomes WebVTT, a picture
+        // format is drawn into the video.
+        let op = if f.codec.is_text_subtitle() {
+            SubtitleOp::WebVtt
+        } else {
+            reasons.push(Reason::SubtitleNeedsBurnIn { codec: f.codec });
+            burn_in = Some(f.track);
+            SubtitleOp::BurnIn
+        };
+        subtitles.push(SubtitlePlan {
+            track: f.track,
+            op,
+            file: Some(f.clone()),
+        });
     }
     if prefs.all_text_subtitles {
         for st in probe.subtitles().filter(|t| t.codec.is_text_subtitle()) {
@@ -226,6 +253,16 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
                 subtitles.push(SubtitlePlan {
                     track: st.index,
                     op: SubtitleOp::WebVtt,
+                    file: None,
+                });
+            }
+        }
+        for f in prefs.subtitle_files.iter().filter(|f| f.codec.is_text_subtitle()) {
+            if !subtitles.iter().any(|s| s.track == f.track) {
+                subtitles.push(SubtitlePlan {
+                    track: f.track,
+                    op: SubtitleOp::WebVtt,
+                    file: Some(f.clone()),
                 });
             }
         }
@@ -483,11 +520,29 @@ pub fn plan_from_probe(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs
                 .find(|t| t.index == track)
                 .is_some_and(crate::ts::copyable)
     };
-    finalize_with(
+    let mut plan = finalize_with(
         plan(probe, caps, prefs),
         |track| (remuxable || ts_copy(track)) && codec_of(track).is_some_and(fmp4_audio),
         |track| !remuxable || codec_of(track).is_some_and(transcoder_reads),
-    )
+    );
+    // WebVTT only from tracks the engine reads cues of
+    // (`Asset::text_subtitle_readable`); files are read whole.
+    plan.subtitles.retain(|s| {
+        s.op != SubtitleOp::WebVtt
+            || s.file.is_some()
+            || codec_of(s.track).is_some_and(|c| text_subtitle_readable(probe.container, c))
+    });
+    plan
+}
+
+/// A text subtitle track of `codec` in a `container` that flux reads the
+/// cues of (as `Asset::text_subtitle_readable` decides from the index).
+fn text_subtitle_readable(container: Container, codec: Codec) -> bool {
+    match container {
+        Container::Matroska | Container::WebM => codec.is_text_subtitle(),
+        Container::Mp4 | Container::Mov => matches!(codec, Codec::MovText | Codec::WebVtt),
+        _ => false,
+    }
 }
 
 /// Audio codecs the transcoder can read from an indexed (Matroska/MP4)
@@ -1408,6 +1463,118 @@ mod tests {
         assert!(plan
             .reasons
             .contains(&Reason::SubtitleNeedsBurnIn { codec: Codec::Pgs }));
+    }
+
+    fn sub_file(track: u32, codec: Codec) -> SubtitleFile {
+        SubtitleFile {
+            track,
+            path: format!("/m/Show/Show.S01E01.chs.{track}"),
+            codec,
+            language: Some("zh-Hans".into()),
+            title: None,
+            forced: false,
+            hearing_impaired: false,
+            size: 1000,
+            mtime_ns: 1,
+        }
+    }
+
+    #[test]
+    fn subtitle_files_play_as_webvtt_or_burn_in() {
+        let p = probe(
+            Container::Matroska,
+            vec![
+                h264(),
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+                track(2, TrackKind::Subtitle, Codec::Subrip),
+            ],
+        );
+        let base = flux_core::SUBTITLE_FILE_TRACK_BASE;
+        let files = vec![sub_file(base + 7, Codec::Ass), sub_file(base + 9, Codec::Pgs)];
+        let caps = presets::chrome_desktop();
+        // Nothing selected: the text file is offered beside the track as
+        // WebVTT, the picture file is not offered as a rendition.
+        let prefs = PlanPrefs {
+            subtitle_files: files.clone(),
+            ..Default::default()
+        };
+        let pl = plan(&p, &caps, &prefs);
+        let offered: Vec<(u32, SubtitleOp, bool)> = pl
+            .subtitles
+            .iter()
+            .map(|s| (s.track, s.op.clone(), s.file.is_some()))
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                (2, SubtitleOp::WebVtt, false),
+                (base + 7, SubtitleOp::WebVtt, true)
+            ]
+        );
+        assert!(!matches!(pl.video, VideoOp::Transcode { .. }));
+        // A selected text file stays a WebVTT rendition (no transcode).
+        let prefs = PlanPrefs {
+            subtitle_track: Some(base + 7),
+            subtitle_files: files.clone(),
+            ..Default::default()
+        };
+        let pl = plan(&p, &caps, &prefs);
+        assert_eq!(pl.subtitles[0].track, base + 7);
+        assert_eq!(pl.subtitles[0].op, SubtitleOp::WebVtt);
+        assert!(!matches!(pl.video, VideoOp::Transcode { .. }));
+        // A selected picture file is drawn into the video.
+        let prefs = PlanPrefs {
+            subtitle_track: Some(base + 9),
+            subtitle_files: files,
+            ..Default::default()
+        };
+        let pl = plan(&p, &caps, &prefs);
+        assert!(
+            matches!(pl.video, VideoOp::Transcode { burn_subtitle: Some(t), .. } if t == base + 9),
+            "{:?}",
+            pl.video
+        );
+        assert_eq!(pl.subtitles[0].op, SubtitleOp::BurnIn);
+        assert_eq!(pl.subtitles[0].file.as_ref().map(|f| f.codec), Some(Codec::Pgs));
+        assert!(pl
+            .reasons
+            .contains(&Reason::SubtitleNeedsBurnIn { codec: Codec::Pgs }));
+        // The other text tracks stay switchable.
+        assert!(pl
+            .subtitles
+            .iter()
+            .any(|s| s.track == 2 && s.op == SubtitleOp::WebVtt));
+    }
+
+    #[test]
+    fn dry_run_offers_webvtt_only_from_readable_tracks() {
+        let audio = Track {
+            channels: Some(2),
+            ..track(1, TrackKind::Audio, Codec::Aac)
+        };
+        let caps = presets::chrome_desktop();
+        // MPEG-TS: the engine reads no subtitle cues from it.
+        let p = probe(
+            Container::MpegTs,
+            vec![
+                h264(),
+                audio.clone(),
+                track(2, TrackKind::Subtitle, Codec::Subrip),
+            ],
+        );
+        let pl = plan_from_probe(&p, &caps, &PlanPrefs::default());
+        assert!(pl.subtitles.is_empty(), "{:?}", pl.subtitles);
+        // MP4: tx3g is read from the sample table.
+        let p = probe(
+            Container::Mp4,
+            vec![h264(), audio, track(2, TrackKind::Subtitle, Codec::MovText)],
+        );
+        let pl = plan_from_probe(&p, &caps, &PlanPrefs::default());
+        assert_eq!(pl.subtitles.len(), 1);
+        assert_eq!(pl.subtitles[0].op, SubtitleOp::WebVtt);
     }
 
     #[test]

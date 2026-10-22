@@ -273,8 +273,30 @@ export interface AudioPlan {
 }
 
 export interface SubtitlePlan {
+  /** A track of the file, or a subtitle file's track number (≥ `SUBTITLE_FILE_TRACK_BASE`). */
   track: number;
   op: SubtitleOp;
+  /** The subtitle file `track` names (a sidecar beside the video), else null. */
+  file: SubtitleFile | null;
+}
+
+/** Track numbers from here up name subtitle files beside the video (`SubtitleFile`). */
+export const SUBTITLE_FILE_TRACK_BASE = 1 << 20;
+
+/** A subtitle file beside a video (`Film.en.srt`, an episode's `.sup`), offered like one of its tracks. */
+export interface SubtitleFile {
+  /** What `PlayRequest.subtitle_track` takes for it. */
+  track: number;
+  path: string;
+  codec: Codec;
+  /** ISO 639-2 ("eng") or BCP 47 ("zh-Hans"), from the name's tags. */
+  language: string | null;
+  /** What the name says besides language and flags ("Commentary", a fansub group). */
+  title: string | null;
+  forced: boolean;
+  hearing_impaired: boolean;
+  size: number;
+  mtime_ns: number;
 }
 
 export interface PlaybackPlan {
@@ -453,6 +475,8 @@ export interface AssetInfo {
   /** `false` when the source root is offline. */
   available: boolean;
   probe: ProbeResult | null;
+  /** Subtitle files beside the video, offered like its subtitle tracks (text ones as WebVTT, picture ones drawn into the video). */
+  subtitle_files: SubtitleFile[];
 }
 
 /** `ItemSummary` flattened together with the detail fields. */
