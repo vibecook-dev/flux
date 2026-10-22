@@ -178,7 +178,7 @@ pub struct TrackExtra {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interlaced: Option<bool>,
     /// H.264 Baseline video: the tools outside Constrained Baseline it uses
-    /// ([`classify_baseline_tools`]); none for other video.
+    /// (`classify_baseline_tools`); none for other video.
     #[serde(default, skip_serializing_if = "is_no_tools")]
     pub baseline_tools: BaselineTools,
 }

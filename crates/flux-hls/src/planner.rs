@@ -784,7 +784,7 @@ pub struct IndexFacts {
 /// - H.264 Baseline video that uses slice groups, arbitrary slice order or
 ///   redundant pictures plays only where the client lists Baseline itself,
 ///   else it is transcoded (other Baseline video plays as Constrained
-///   Baseline, see [`profile_satisfies`]).
+///   Baseline, see `profile_satisfies`).
 pub fn plan_with_index_facts(
     probe: &ProbeResult,
     caps: &ClientCaps,
