@@ -26,10 +26,11 @@
 //!   B-frames, CTS = presentation offset D): pieces are independent, any one
 //!   can be produced cold, and they line up with every audio rendition
 //!   (tfdt = piece start on the asset's timeline).
-//! - An MP4 video without a constant frame duration is converted to its
-//!   nominal rate ([`converted_rate`]): its pieces lie on that rate's grid
-//!   and `fps` makes their frame counts exact, whatever frames the source
-//!   holds for seconds or the decoder drops.
+//! - An MP4 video without a constant frame duration, or with frames held
+//!   longer, is converted to its nominal rate ([`converted_rate`]): its
+//!   pieces lie on that rate's grid and `fps` makes their frame counts
+//!   exact, whatever frames the source holds for seconds or the decoder
+//!   drops.
 //! - The init segment needs the encoder's `avcC`: it waits for the run that
 //!   covers the first piece requested (or `warm`ed). Each piece also carries
 //!   SPS/PPS in-band in its IDR sample, so a run whose encoder session
@@ -142,8 +143,9 @@ pub fn source_fps(asset: &Asset) -> f64 {
 
 /// The constant frame rate a transcode converts `asset`'s video to, if
 /// any: an MP4 track without a constant sample duration (variable rate,
-/// or a coarse clock's alternating deltas) is converted to its nominal
-/// rate, the one most of its frames have
+/// or a coarse clock's alternating deltas), or with samples held for more
+/// than one and a half frames, is converted to its nominal rate, the one
+/// most of its frames have
 /// ([`IndexTrack::frame_rate`](crate::index::IndexTrack::frame_rate)).
 ///
 /// The frames of such a file can't be counted from its index. A stream cut
@@ -156,15 +158,24 @@ pub fn source_fps(asset: &Asset) -> f64 {
 /// pieces stay ~2 s long across the held frames instead of a whole
 /// keyframe span of up to 52 s.
 pub fn converted_rate(asset: &Asset) -> Option<Rational> {
-    if !matches!(asset.index.layout, Layout::Mp4(_)) {
+    let Layout::Mp4(l) = &asset.index.layout else {
         return None;
-    }
+    };
     let v = asset.index.video_track()?;
-    if v.frame_duration.is_some() {
-        return None;
+    let rate = v
+        .frame_rate
+        .filter(|r| r.num > 0 && r.den > 0 && (1.0..=240.0).contains(&r.as_f64()))?;
+    match v.frame_duration {
+        None => Some(rate),
+        // One duration for nine tenths of the samples, and a cut in the
+        // rest (or a last frame held): the same stream.
+        Some(fd) => {
+            let stts = &asset.index.video.and_then(|i| l.tracks.get(i))?.stts;
+            stts.iter()
+                .any(|&(_, d)| u64::from(d) * 2 > u64::from(fd) * 3)
+                .then_some(rate)
+        }
     }
-    v.frame_rate
-        .filter(|r| r.num > 0 && r.den > 0 && (1.0..=240.0).contains(&r.as_f64()))
 }
 
 /// Clockwise display rotation of the asset's video (0/90/180/270).
@@ -236,9 +247,10 @@ pub struct Piece {
 }
 
 /// Splits every remux segment of `asset` into pieces of about `piece_ns`
-/// on the frame grid. An MP4 video without one is converted to its
-/// nominal rate, on whose grid its pieces lie (`grid_pieces`); other
-/// sources without a frame grid keep one piece per segment.
+/// on the frame grid. An MP4 video without one, or with frames held
+/// longer, is converted to its nominal rate, on whose grid its pieces lie
+/// (`grid_pieces`); other sources without a frame grid keep one piece per
+/// segment.
 /// `Piece::frames` is a prediction from the frame rate: the encoder run
 /// counts and times its frames from the index's real timestamps
 /// ([`run_frames`]), so VFR stretches stay exact.

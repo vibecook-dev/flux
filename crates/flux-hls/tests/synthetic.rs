@@ -321,114 +321,121 @@ fn decoded_frames(path: &Path) -> (u64, u64) {
     (n.first().copied().unwrap_or(0), n.get(1).copied().unwrap_or(0))
 }
 
-/// An MP4 cut like a stream edited without re-encoding
-/// ([`Clip::HeldFramesMp4`]): 23.976 fps on a 90 kHz clock, so no constant
-/// sample duration; two frames held for seconds; and frames after the cuts
-/// that the decoder drops. Pieces cut at the index's frame counts once
-/// started on P frames after the cuts (a piece played alone showed
-/// nothing), and lasted a whole keyframe span. Converted to 24000/1001
-/// instead, a forced transcode is cut in pieces of 48 frames (2.002 s)
-/// across the held frames, each starting with an IDR and decoding alone,
-/// contiguous, with the frames the playlist promises.
+/// MP4s cut like a stream edited without re-encoding: frames held for
+/// seconds, and frames after the cuts that the decoder drops.
+/// [`Clip::HeldFramesMp4`] is 23.976 fps on a 90 kHz clock, so it has no
+/// constant sample duration; [`Clip::HeldLateMp4`] is 25 fps with one
+/// duration for nine tenths of its samples and its cut in the rest. Pieces
+/// cut at the index's frame counts once started on P frames after the cuts
+/// (a piece played alone showed nothing), and lasted a whole keyframe
+/// span. Converted to their nominal rate instead, a forced transcode is cut
+/// in pieces of 2 s across the held frames, each starting with an IDR and
+/// decoding alone, contiguous, with the frames the playlist promises.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn held_frames_mp4_transcodes_in_short_pieces_that_each_start_on_an_idr() {
+async fn held_frames_mp4s_transcode_in_short_pieces_that_each_start_on_an_idr() {
     if flux_test_media::ffprobe().is_none() {
         return;
     }
     let Some(engine) = x264_engine() else { return };
-    let Some(p) = clip(Clip::HeldFramesMp4) else {
-        return;
-    };
-    let name = Clip::HeldFramesMp4.file_name();
-    let asset = engine.prepare(&p).await.unwrap();
-    let mut client = presets::chrome_desktop();
-    client.max_bitrate = Some(100_000);
-    let plan = engine.plan(&asset, &client, &hls_only());
-    assert!(
-        matches!(plan.video, VideoOp::Transcode { .. }),
-        "{:?}",
-        plan.explain()
-    );
     let dir = flux_test_media::scratch("hls-synthetic-held-frames");
-    let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, name).await;
-    let init = engine
-        .serve(&asset, &plan, HlsResource::Init(Rendition::Video))
-        .await
-        .unwrap()
-        .body
-        .into_bytes()
-        .await
-        .unwrap();
-    let mut next_dts = None;
-    let (mut lens, mut idrs) = (Vec::new(), Vec::new());
-    for (n, s) in segs.iter().enumerate() {
-        let (tfdt, samples) = trun(s);
+    // (clip, rate, frame duration at 90 kHz, frames a piece)
+    let cases = [
+        (Clip::HeldFramesMp4, (24000, 1001), None, 48),
+        (Clip::HeldLateMp4, (25, 1), Some(3600), 50),
+    ];
+    for (c, (num, den), fd, per) in cases {
+        let Some(p) = clip(c) else { continue };
+        let name = c.file_name();
+        let asset = engine.prepare(&p).await.unwrap();
+        let mut client = presets::chrome_desktop();
+        client.max_bitrate = Some(100_000);
+        let plan = engine.plan(&asset, &client, &hls_only());
         assert!(
-            samples[0].2,
-            "{name}: piece {n} does not start with a sync sample"
+            matches!(plan.video, VideoOp::Transcode { .. }),
+            "{name}: {:?}",
+            plan.explain()
         );
-        assert_eq!(
-            first_vcl(s),
-            Some(5),
-            "{name}: piece {n} does not start with an IDR"
-        );
-        if let Some(d) = next_dts {
-            assert_eq!(tfdt, d, "{name}: piece {n} is not contiguous");
+        let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, name).await;
+        let init = engine
+            .serve(&asset, &plan, HlsResource::Init(Rendition::Video))
+            .await
+            .unwrap()
+            .body
+            .into_bytes()
+            .await
+            .unwrap();
+        let mut next_dts = None;
+        let (mut lens, mut idrs) = (Vec::new(), Vec::new());
+        for (n, s) in segs.iter().enumerate() {
+            let (tfdt, samples) = trun(s);
+            assert!(
+                samples[0].2,
+                "{name}: piece {n} does not start with a sync sample"
+            );
+            assert_eq!(
+                first_vcl(s),
+                Some(5),
+                "{name}: piece {n} does not start with an IDR"
+            );
+            if let Some(d) = next_dts {
+                assert_eq!(tfdt, d, "{name}: piece {n} is not contiguous");
+            }
+            next_dts = Some(tfdt + samples.iter().map(|x| x.0 as u64).sum::<u64>());
+            // Alone, as a player starts or seeks there: every frame decodes.
+            let alone = dir.join(format!("{name}.piece{n}.mp4"));
+            std::fs::write(&alone, [init.as_ref(), s.as_slice()].concat()).unwrap();
+            let (decoded, packets) = decoded_frames(&alone);
+            assert_eq!(packets, samples.len() as u64, "{name}: piece {n}");
+            assert_eq!(
+                decoded, packets,
+                "{name}: piece {n} decodes {decoded} of {packets} frames alone"
+            );
+            let _ = std::fs::remove_file(&alone);
+            lens.push(samples.len());
+            idrs.push(samples.iter().filter(|x| x.2).count());
         }
-        next_dts = Some(tfdt + samples.iter().map(|x| x.0 as u64).sum::<u64>());
-        // Alone, as a player starts or seeks there: every frame decodes.
-        let alone = dir.join(format!("{name}.piece{n}.mp4"));
-        std::fs::write(&alone, [init.as_ref(), s.as_slice()].concat()).unwrap();
-        let (decoded, packets) = decoded_frames(&alone);
-        assert_eq!(packets, samples.len() as u64, "{name}: piece {n}");
-        assert_eq!(
-            decoded, packets,
-            "{name}: piece {n} decodes {decoded} of {packets} frames alone"
+        // One IDR a piece, and 2 s of frames (a keyframe span made a piece
+        // of 177).
+        assert!(idrs.iter().all(|&n| n == 1), "{name}: IDRs per piece {idrs:?}");
+        assert!(
+            lens[..lens.len() - 1].iter().all(|&n| n == per),
+            "{name}: {lens:?}"
         );
-        let _ = std::fs::remove_file(&alone);
-        lens.push(samples.len());
-        idrs.push(samples.iter().filter(|x| x.2).count());
+        // The playlist: pieces of 2 s, the last one the rest.
+        let step = per as f64 * den as f64 / num as f64;
+        let playlist = engine.media_playlist(&asset, &plan, &Rendition::Video).unwrap();
+        let durs: Vec<f64> = playlist
+            .lines()
+            .filter_map(|l| l.strip_prefix("#EXTINF:"))
+            .map(|d| d.trim_end_matches(',').parse().unwrap())
+            .collect();
+        assert_eq!(durs.len(), segs.len(), "{name}");
+        assert!(
+            durs[..durs.len() - 1].iter().all(|d| (d - step).abs() < 1e-3),
+            "{name}: {durs:?}"
+        );
+        assert!(playlist.contains("#EXT-X-TARGETDURATION:2\n"), "{playlist}");
+        // Every frame of the grid, the held and dropped frames filled.
+        let frames: usize = lens.iter().sum();
+        let expect = (durs.iter().sum::<f64>() * num as f64 / den as f64).round() as usize;
+        assert!(
+            expect as f64 > durs.iter().sum::<f64>() * 23.0,
+            "{name}: {expect}"
+        );
+        assert_eq!(frames, expect, "{name}");
+        let all = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(all.len(), frames, "{name}: frames out");
+        assert_eq!(
+            all.iter().filter(|f| f.1).count(),
+            segs.len(),
+            "{name}: keyframes"
+        );
+        // The rate most frames have (the average over the held frames was
+        // lower).
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.frame_duration, fd, "{name}");
+        assert_eq!(v.frame_rate, Some(flux_core::Rational { num, den }), "{name}");
     }
-    // One IDR a piece, and 48 frames (one keyframe span made a piece of 177).
-    assert!(idrs.iter().all(|&n| n == 1), "{name}: IDRs per piece {idrs:?}");
-    let frames: usize = lens.iter().sum();
-    assert!(
-        lens[..lens.len() - 1].iter().all(|&n| n == 48),
-        "{name}: {lens:?}"
-    );
-    // The playlist: pieces of 2.002 s, the last one the rest.
-    let playlist = engine.media_playlist(&asset, &plan, &Rendition::Video).unwrap();
-    let durs: Vec<f64> = playlist
-        .lines()
-        .filter_map(|l| l.strip_prefix("#EXTINF:"))
-        .map(|d| d.trim_end_matches(',').parse().unwrap())
-        .collect();
-    assert_eq!(durs.len(), segs.len());
-    assert!(
-        durs[..durs.len() - 1].iter().all(|d| (d - 2.002).abs() < 1e-3),
-        "{durs:?}"
-    );
-    assert!(playlist.contains("#EXT-X-TARGETDURATION:2\n"), "{playlist}");
-    // 24 s at 23.976 fps on the grid, the held and dropped frames filled.
-    let expect = (durs.iter().sum::<f64>() * 24000.0 / 1001.0).round() as usize;
-    assert!(expect > 570, "{expect}");
-    assert_eq!(frames, expect, "{name}");
-    let all = ffprobe_video_frames(&file).expect("ffprobe");
-    assert_eq!(all.len(), frames, "{name}: frames out");
-    assert_eq!(
-        all.iter().filter(|f| f.1).count(),
-        segs.len(),
-        "{name}: keyframes"
-    );
-    let v = asset.index.video_track().unwrap();
-    assert_eq!(v.frame_duration, None);
-    assert_eq!(
-        v.frame_rate,
-        Some(flux_core::Rational {
-            num: 24000,
-            den: 1001
-        })
-    );
 }
 
 // ---------------------------------------------------------------- subtitles
