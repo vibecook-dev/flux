@@ -846,6 +846,8 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
             t.first_pts_ns = keyframes.first().map(|k| k.pts_ns);
             t.inband_parameter_sets = true;
             t.open_gop = open_gop;
+            // Slice groups and redundant pictures, from the PPSs (no pictures sampled).
+            t.extra.baseline_tools = crate::index::classify_baseline_tools(&t, &[]);
             // The video's own end: TS has no other duration (see above).
             t.extra.end_ns = Some(duration_ns);
             // Reorder depth: the SPS's promise or what the stream does.

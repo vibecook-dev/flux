@@ -113,6 +113,19 @@ describe('detectCaps', () => {
     expect(caps.audio.map((a) => a.codec)).not.toContain('ac3');
   });
 
+  it('reports Vorbis where the browser plays it in WebM files (not over MSE)', async () => {
+    const caps = await detectCaps(
+      fakeProbe({
+        ua: UA.chromeMac,
+        mse: ['avc1', 'vp09', 'mp4a.40.2', 'opus'],
+        canPlay: ['video/mp4', 'video/webm', 'audio/webm; codecs="vorbis"'],
+      }),
+    );
+    expect(caps.audio.map((a) => a.codec)).toEqual(['aac', 'opus', 'vorbis']);
+    expect(caps.progressive_containers).toContain('web_m');
+    expect(caps.video.find((v) => v.codec === 'vp9')?.profiles).toEqual(['profile2', 'profile0']);
+  });
+
   it('caps 1080p decoders at 1920×1080', async () => {
     const caps = await detectCaps(fakeProbe({ ua: UA.chromeMac, mse: ['avc1', 'mp4a.40.2'], canPlay: ['video/mp4'], uhd: false }));
     const h264 = caps.video.find((v) => v.codec === 'h264');

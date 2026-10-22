@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { planLabel } from '../api/explain';
 import type { ClientCaps, ProbeResult } from '../api/types';
 import type { Fixtures } from '../mock/db';
-import { predictPlan } from './predict';
+import { appleHls, predictPlan, profileSatisfies } from './predict';
 
 const fx = JSON.parse(readFileSync(new URL('../mock/fixtures.json', import.meta.url), 'utf8')) as Fixtures;
 const probe = (file: string): ProbeResult => fx.profiles[file].probe;
@@ -146,6 +146,69 @@ describe('predictPlan on the feature clips', () => {
     const p = predictPlan({ probe: { ...probe('h264_flac.mkv'), has_index: false }, caps: chrome, audioTrack: null, subtitleTrack: null });
     expect(planLabel(p.plan)).toBe('Direct stream');
     expect(p.plan.reasons.map((r) => r.reason)).not.toContain('no_index');
+  });
+
+  it('plays H.264 Baseline as Constrained Baseline (planner.rs profile_satisfies)', () => {
+    const base = probe('h264_aac_faststart.mp4');
+    const baseline: ProbeResult = { ...base, tracks: base.tracks.map((t) => (t.kind === 'video' ? { ...t, profile: 'Baseline', level: 30 } : t)) };
+    const p = predictPlan({ probe: baseline, caps: chrome, audioTrack: null, subtitleTrack: null });
+    expect(planLabel(p.plan)).toBe('Direct play');
+    expect(p.plan.reasons).toEqual([]);
+    // Extended (B slices, SP/SI, data partitioning) still needs a decoder that lists it.
+    const extended: ProbeResult = { ...base, tracks: base.tracks.map((t) => (t.kind === 'video' ? { ...t, profile: 'Extended' } : t)) };
+    const q = predictPlan({ probe: extended, caps: chrome, audioTrack: null, subtitleTrack: null });
+    expect(q.plan.reasons).toContainEqual({ reason: 'video_profile_unsupported', codec: 'h264', profile: 'Extended' });
+    expect(planLabel(q.plan)).toBe('Transcode');
+  });
+
+  it('matches profile names as the server does', () => {
+    expect(profileSatisfies('main', 'Constrained Baseline')).toBe(true);
+    expect(profileSatisfies('high', 'Baseline')).toBe(true);
+    expect(profileSatisfies('constrainedbaseline', 'Baseline')).toBe(true);
+    expect(profileSatisfies('main', 'High')).toBe(false);
+    expect(profileSatisfies('main10', 'Main 10')).toBe(true);
+    expect(profileSatisfies('high444', 'High 4:4:4 Predictive')).toBe(true);
+    expect(profileSatisfies('high10', 'High 10 Intra')).toBe(true);
+    expect(profileSatisfies('high10intra', 'High 10')).toBe(false);
+    expect(profileSatisfies('profile0', 'Profile 0')).toBe(true);
+    expect(profileSatisfies('profile0', 'Profile 1')).toBe(false);
+  });
+
+  describe('VP9 WebM', () => {
+    const vp9Caps: ClientCaps = {
+      ...chrome,
+      video: [...chrome.video, { codec: 'vp9', profiles: ['profile2', 'profile0'], max_level: 51, max_bit_depth: 10, max_width: 3840, max_height: 2160, hdr: [], dovi_profiles: [] }],
+    };
+    const webm = (audio: 'vorbis' | 'opus', profile = 'Profile 0'): ProbeResult => {
+      const base = probe('av1_opus.webm');
+      return {
+        ...base,
+        tracks: base.tracks.map((t) =>
+          t.kind === 'video' ? { ...t, codec: 'vp9', codec_tag: 'V_VP9', profile, bit_depth: 8 } : t.kind === 'audio' ? { ...t, codec: audio } : t,
+        ),
+      };
+    };
+    it('copies VP9 into fMP4 and converts Vorbis the client lacks', () => {
+      const p = predictPlan({ probe: webm('vorbis'), caps: vp9Caps, audioTrack: null, subtitleTrack: null });
+      expect(p.plan.delivery).toBe('hls_fmp4');
+      expect(p.plan.video).toEqual({ op: 'copy', fixes: [] });
+      expect(p.plan.audio[0].op).toMatchObject({ op: 'transcode', codec: 'aac' });
+      expect(p.plan.reasons.map((r) => r.reason)).toEqual(['audio_codec_unsupported']);
+    });
+    it('plays the file itself when the client reports Vorbis', () => {
+      const withVorbis: ClientCaps = { ...vp9Caps, audio: [...vp9Caps.audio, { codec: 'vorbis', max_channels: 8 }] };
+      expect(planLabel(predictPlan({ probe: webm('vorbis'), caps: withVorbis, audioTrack: null, subtitleTrack: null }).plan)).toBe('Direct play');
+    });
+    it('transcodes a profile the client lacks, and for Apple’s HLS player', () => {
+      const p = predictPlan({ probe: webm('opus', 'Profile 1'), caps: vp9Caps, audioTrack: null, subtitleTrack: null });
+      expect(p.plan.reasons).toContainEqual({ reason: 'video_profile_unsupported', codec: 'vp9', profile: 'Profile 1' });
+      const safari: ClientCaps = { ...vp9Caps, client: 'web/safari-26/macos', progressive_containers: ['mp4', 'mov'] };
+      const q = predictPlan({ probe: webm('opus'), caps: safari, audioTrack: null, subtitleTrack: null });
+      expect(planLabel(q.plan)).toBe('Transcode');
+      expect(q.plan.reasons.map((r) => r.reason)).toContain('client_quirk');
+      expect(appleHls('web/chrome-141/ios')).toBe(true);
+      expect(appleHls('web/chrome-141/windows')).toBe(false);
+    });
   });
 
   it('transcodes when the path is slower than the file', () => {

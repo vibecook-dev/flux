@@ -208,6 +208,11 @@ pub async fn start_with(
     if cfg.jobs {
         tasks.push(jobs::spawn(state.clone()));
     }
+    // Idle playback gives the caches' memory back.
+    tasks.push(tokio::spawn(crate::play::trim_when_idle(
+        state.clone(),
+        cfg.cache_idle,
+    )));
     if cfg.detect_encoder_at_start {
         // Which H.264 encoder video transcodes use (logged), so the first
         // transcode doesn't wait for the probes and test encodes.
