@@ -397,14 +397,562 @@ fn top_level_moov(src: &Source) -> Result<(u64, u64)> {
     Err(HlsError::mp4("no moov box"))
 }
 
+/// Box types [`normalize_moov`] descends into: the plain containers on the
+/// way to the sample tables (their bodies are child boxes and nothing else).
+const MOOV_CONTAINERS: [&[u8; 4]; 7] = [b"trak", b"mdia", b"minf", b"stbl", b"edts", b"dinf", b"mvex"];
+
+/// Sample entries whose configuration is an `avcC` (Dolby Vision's AVC
+/// entries extend `avc1`/`avc3`).
+const AVC_ENTRIES: [&[u8; 4]; 4] = [b"avc1", b"avc3", b"dva1", b"dvav"];
+
+/// What [`normalize_moov`] changed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MoovRepairs {
+    /// `udta` and `meta` boxes left out.
+    pub metadata: usize,
+    /// Text fields (`hdlr` names, data references) that were not UTF-8.
+    pub text: usize,
+    /// Bytes left out after the last whole child of a container: a child
+    /// that overruns its parent (or a header that can't be one) and all
+    /// that follows it.
+    pub junk: u64,
+    /// Sample tables and `avcC` records with bytes past their entries.
+    pub trimmed: usize,
+    /// `esds` boxes rebuilt: descriptors that overran their parent, bytes
+    /// past them, or optional fields mp4-atom doesn't read.
+    pub esds: usize,
+}
+
+impl MoovRepairs {
+    /// Index warnings for anything beyond dropping metadata (which every
+    /// file with a title has, so it is not worth a warning).
+    pub fn warnings(&self) -> Vec<String> {
+        let mut w = Vec::new();
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        if self.text > 0 {
+            w.push(format!(
+                "moov: {} text field{} not UTF-8 (decoded lossily)",
+                self.text,
+                s(self.text)
+            ));
+        }
+        if self.junk > 0 {
+            w.push(format!(
+                "moov: {} bytes after the last whole box of a container ignored (a box overran its parent)",
+                self.junk
+            ));
+        }
+        if self.esds > 0 {
+            w.push(format!(
+                "moov: {} esds box{} rebuilt from {} AudioSpecificConfig",
+                self.esds,
+                if self.esds == 1 { "" } else { "es" },
+                if self.esds == 1 { "its" } else { "their" }
+            ));
+        }
+        if self.trimmed > 0 {
+            w.push(format!(
+                "moov: {} box{} with bytes past {} entries (ignored)",
+                self.trimmed,
+                if self.trimmed == 1 { "" } else { "es" },
+                if self.trimmed == 1 { "its" } else { "their" }
+            ));
+        }
+        w
+    }
+}
+
+/// A copy of the `moov` box `moov` (header included) that mp4-atom decodes
+/// whatever text and junk the file carries, as ffmpeg reads it:
+/// - `udta` and `meta` boxes are left out. They hold titles, iTunes `ilst`
+///   items and chapters as free text in any code page (non-UTF-8 text failed
+///   the whole `moov`); the index needs none of it (flux-probe reads titles).
+/// - `hdlr` names and data references that are not UTF-8 are decoded
+///   lossily (QuickTime writes Pascal strings in the system code page, and
+///   `alis` records in binary).
+/// - A child box that overruns its parent, or a remainder too short to be
+///   a box, ends the container: it and anything after it are left out
+///   (ffmpeg clamps such a box to its parent and skips it as unknown).
+/// - Sample tables (`stts`, `stsz`, …) and `avcC` records end after their
+///   last entry: some muxers pad them, and mp4-atom fails a box with bytes
+///   it did not read. An `esds` whose descriptors overrun (or trail bytes)
+///   is rebuilt from its decoder configuration.
+///
+/// Containers and the boxes fixed are rewritten with 32-bit sizes; every
+/// other box is copied as is. Sample tables hold absolute file offsets, so
+/// nothing else moves.
+pub(crate) fn normalize_moov(moov: &[u8], repairs: &mut MoovRepairs) -> Vec<u8> {
+    let mut out = Vec::with_capacity(moov.len());
+    match box_extent(moov) {
+        Some((_, header)) => {
+            let body = &moov[header..];
+            container(*b"moov", body, 0, repairs, &mut out);
+        }
+        None => out.extend_from_slice(moov),
+    }
+    out
+}
+
+/// (size, header length) of the box at the start of `b`, the size clamped
+/// to nothing past `b`. `None` when fewer than 8 bytes remain, or the size is
+/// below the header's or runs past `b`.
+fn box_extent(b: &[u8]) -> Option<(usize, usize)> {
+    let size = u32::from_be_bytes(b.get(..4)?.try_into().ok()?) as u64;
+    b.get(4..8)?;
+    let (size, header) = match size {
+        0 => (b.len() as u64, 8),
+        1 => (u64::from_be_bytes(b.get(8..16)?.try_into().ok()?), 16),
+        s => (s, 8),
+    };
+    (size >= header as u64 && size <= b.len() as u64).then_some((size as usize, header))
+}
+
+/// Writes `kind` with `body` (a 32-bit header).
+fn put_box(kind: &[u8], body: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+}
+
+/// Starts a box whose size [`end_box`] fills in; returns where it starts.
+fn begin_box(kind: &[u8], out: &mut Vec<u8>) -> usize {
+    let start = out.len();
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(kind);
+    start
+}
+
+fn end_box(start: usize, out: &mut [u8]) {
+    let size = (out.len() - start) as u32;
+    out[start..start + 4].copy_from_slice(&size.to_be_bytes());
+}
+
+/// Writes container `kind` with the normalized children of `body`.
+fn container(kind: [u8; 4], body: &[u8], depth: u32, r: &mut MoovRepairs, out: &mut Vec<u8>) {
+    let start = begin_box(&kind, out);
+    let mut p = 0usize;
+    while p < body.len() {
+        let rest = &body[p..];
+        let Some((size, header)) = box_extent(rest) else {
+            // QuickTime may end a container with a 32-bit zero terminator.
+            if rest.iter().any(|&b| b != 0) {
+                r.junk += rest.len() as u64;
+            }
+            break;
+        };
+        let child = &rest[..size];
+        let ck: [u8; 4] = child[4..8].try_into().expect("8-byte header");
+        let cb = &child[header..];
+        match &ck {
+            b"udta" | b"meta" => r.metadata += 1,
+            k if depth < 8 && MOOV_CONTAINERS.contains(&k) => container(ck, cb, depth + 1, r, out),
+            // hdlr: version/flags, pre_defined, handler_type, 12 reserved bytes, name.
+            b"hdlr" => text_box(&ck, cb, 24, r, out),
+            b"dref" => dref(cb, r, out),
+            b"stsd" => stsd(cb, r, out),
+            k => match table_len(k, cb).filter(|&n| n < cb.len()) {
+                Some(n) => {
+                    r.trimmed += 1;
+                    put_box(k, &cb[..n], out);
+                }
+                None => out.extend_from_slice(child),
+            },
+        }
+        p += size;
+    }
+    end_box(start, out);
+}
+
+/// Bytes a sample table's body (`kind`, version and flags included) needs
+/// for the entries it declares, when that is computable.
+fn table_len(kind: &[u8; 4], b: &[u8]) -> Option<usize> {
+    let be32 = |at: usize| {
+        b.get(at..at + 4)
+            .map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]) as u64)
+    };
+    let n = be32(4)?;
+    let need = match kind {
+        b"stts" | b"ctts" | b"co64" => 8 + 8 * n,
+        b"stss" | b"stco" => 8 + 4 * n,
+        b"stsc" => 8 + 12 * n,
+        // stsz: sample_size, then sample_count and (if sizes vary) the sizes.
+        b"stsz" => 12 + if n == 0 { 4 * be32(8)? } else { 0 },
+        b"elst" => 8 + n * if b[0] == 1 { 20 } else { 12 },
+        _ => return None,
+    };
+    usize::try_from(need).ok()
+}
+
+/// Length of an `avcC` record (ISO/IEC 14496-15 §5.3.3.1): the SPS and PPS
+/// arrays, and the High-profile extension when it is whole. `None` when
+/// the arrays don't fit.
+fn avcc_len(b: &[u8]) -> Option<usize> {
+    fn units(b: &[u8], mut p: usize, n: usize) -> Option<usize> {
+        for _ in 0..n {
+            let len = u16::from_be_bytes([*b.get(p)?, *b.get(p + 1)?]) as usize;
+            p += 2 + len;
+        }
+        (p <= b.len()).then_some(p)
+    }
+    let p = units(b, 6, (*b.get(5)? & 0x1F) as usize)?;
+    let p = units(b, p + 1, *b.get(p)? as usize)?;
+    // What follows is the extension (mp4-atom reads it whenever bytes
+    // remain): keep it when whole, drop it when it can't be one.
+    match b.get(p + 3) {
+        Some(&n) => Some(units(b, p + 4, n as usize).unwrap_or(p)),
+        None => Some(p),
+    }
+}
+
+/// Bytes of fields before the child boxes of a sample entry `e` (header
+/// `h` bytes long) whose children [`stsd`] fixes, if it is one.
+fn entry_fields(e: &[u8], h: usize) -> Option<usize> {
+    let kind = &e[4..8];
+    if AVC_ENTRIES.iter().any(|k| &k[..] == kind) {
+        // VisualSampleEntry.
+        return Some(78);
+    }
+    // AudioSampleEntry, and QuickTime's sound description versions 1 and 2.
+    (kind == b"mp4a").then(|| {
+        28 + match e.get(h + 8..h + 10) {
+            Some([0, 1]) => 16,
+            Some([0, 2]) => 36,
+            _ => 0,
+        }
+    })
+}
+
+/// Copies an `stsd` with the `avcC` records of its AVC entries ending after
+/// their last field and the `esds` of its `mp4a` entries rebuilt when
+/// mp4-atom can't read them.
+fn stsd(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
+    let start = begin_box(b"stsd", out);
+    out.extend_from_slice(&b[..b.len().min(8)]);
+    let mut p = 8;
+    while p < b.len() {
+        let Some((size, h)) = box_extent(&b[p..]) else {
+            out.extend_from_slice(&b[p..]);
+            break;
+        };
+        let e = &b[p..p + size];
+        match entry_fields(e, h).filter(|&f| e.len() >= h + f) {
+            Some(f) => {
+                let entry = begin_box(&e[4..8], out);
+                out.extend_from_slice(&e[h..h + f]);
+                let mut q = h + f;
+                while let Some((cs, ch)) = box_extent(&e[q..]) {
+                    let c = &e[q..q + cs];
+                    let body = &c[ch..];
+                    match &c[4..8] {
+                        b"avcC" => match avcc_len(body).filter(|&n| n < body.len()) {
+                            Some(n) => {
+                                r.trimmed += 1;
+                                put_box(b"avcC", &body[..n], out);
+                            }
+                            None => out.extend_from_slice(c),
+                        },
+                        b"esds" => match repair_esds(body) {
+                            Some(fixed) => {
+                                r.esds += 1;
+                                put_box(b"esds", &fixed, out);
+                            }
+                            None => out.extend_from_slice(c),
+                        },
+                        _ => out.extend_from_slice(c),
+                    }
+                    q += cs;
+                }
+                out.extend_from_slice(&e[q..]);
+                end_box(entry, out);
+            }
+            None => out.extend_from_slice(e),
+        }
+        p += size;
+    }
+    end_box(start, out);
+}
+
+/// The MPEG-4 descriptor at `p` of `b` (ISO/IEC 14496-1 §8.3.3): its tag,
+/// body start and body end, the end clamped to `b`. `None` when its header
+/// runs past `b`.
+fn descriptor(b: &[u8], p: usize) -> Option<(u8, usize, usize)> {
+    let tag = *b.get(p)?;
+    let (mut len, mut q) = (0usize, p + 1);
+    for _ in 0..4 {
+        let x = *b.get(q)?;
+        q += 1;
+        len = (len << 7) | (x & 0x7F) as usize;
+        if x & 0x80 == 0 {
+            break;
+        }
+    }
+    Some((tag, q, (q + len).min(b.len())))
+}
+
+/// The first descriptor tagged `tag` among those in `b[from..]`, read as far
+/// as their headers hold.
+fn find_descriptor(b: &[u8], mut from: usize, tag: u8) -> Option<(usize, usize)> {
+    while from < b.len() {
+        let (t, s, e) = descriptor(b, from)?;
+        if t == tag {
+            return Some((s, e));
+        }
+        from = e;
+    }
+    None
+}
+
+fn put_descriptor(tag: u8, body: &[u8], out: &mut Vec<u8>) {
+    out.push(tag);
+    let n = body.len();
+    if n < 0x80 {
+        out.push(n as u8);
+    } else {
+        out.extend_from_slice(&[
+            0x80 | ((n >> 21) as u8 & 0x7F),
+            0x80 | ((n >> 14) as u8 & 0x7F),
+            0x80 | ((n >> 7) as u8 & 0x7F),
+            n as u8 & 0x7F,
+        ]);
+    }
+    out.extend_from_slice(body);
+}
+
+/// An `esds` body (version and flags, then an ES_Descriptor) that mp4-atom
+/// can't read, rebuilt as one it can: the ES_ID, the
+/// DecoderConfigDescriptor's fields and AudioSpecificConfig, and a
+/// predefined SLConfigDescriptor. Descriptors are read leniently (lengths
+/// clamped to their parent, as ffmpeg reads them): muxers write lengths that
+/// overrun (a DecoderConfigDescriptor swallowing half the SLConfig's
+/// header), trailing bytes, or optional ES fields mp4-atom doesn't read.
+/// `None` when the box reads as is, or has no DecoderConfigDescriptor.
+fn repair_esds(b: &[u8]) -> Option<Vec<u8>> {
+    let mut boxed = Vec::new();
+    put_box(b"esds", b, &mut boxed);
+    if mp4_atom::Esds::decode(&mut boxed.as_slice()).is_ok() {
+        return None;
+    }
+    let (s, e) = find_descriptor(b, 4, 3).filter(|&(s, e)| e >= s + 3)?;
+    let es = &b[..e];
+    let flags = es[s + 2];
+    let mut p = s + 3;
+    if flags & 0x80 != 0 {
+        p += 2; // dependsOn_ES_ID
+    }
+    if flags & 0x40 != 0 {
+        p += 1 + *es.get(p)? as usize; // URL
+    }
+    if flags & 0x20 != 0 {
+        p += 2; // OCR_ES_Id
+    }
+    let (ds, de) = find_descriptor(es, p, 4)?;
+    let mut dc = es.get(ds..ds + 13)?.to_vec();
+    if let Some((xs, xe)) = find_descriptor(&es[..de], ds + 13, 5) {
+        put_descriptor(5, &es[xs..xe], &mut dc);
+    }
+    let mut body = vec![es[s], es[s + 1], 0];
+    put_descriptor(4, &dc, &mut body);
+    put_descriptor(6, &[2], &mut body);
+    let mut out = b[..4].to_vec();
+    put_descriptor(3, &body, &mut out);
+    Some(out)
+}
+
+/// Writes `kind` with `body`, whose NUL-terminated string starts `fields`
+/// bytes in, decoding the string lossily when it is not UTF-8.
+fn text_box(kind: &[u8], body: &[u8], fields: usize, r: &mut MoovRepairs, out: &mut Vec<u8>) {
+    let s = body.get(fields..).unwrap_or_default();
+    let s = &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())];
+    if std::str::from_utf8(s).is_ok() {
+        put_box(kind, body, out);
+        return;
+    }
+    r.text += 1;
+    let fixed = String::from_utf8_lossy(s);
+    put_box(kind, &[&body[..fields], fixed.as_bytes(), &[0]].concat(), out);
+}
+
+/// Copies a `dref` (version/flags, entry_count, entries), each entry's text
+/// made UTF-8: mp4-atom reads every entry as a `url ` location, also a
+/// QuickTime `alis`, whose record is binary when it points elsewhere.
+fn dref(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
+    let start = begin_box(b"dref", out);
+    out.extend_from_slice(&b[..b.len().min(8)]);
+    let mut p = 8;
+    while p < b.len() {
+        let Some((size, h)) = box_extent(&b[p..]) else {
+            r.junk += (b.len() - p) as u64;
+            break;
+        };
+        let e = &b[p..p + size];
+        text_box(&e[4..8], &e[h..], 4, r, out);
+        p += size;
+    }
+    end_box(start, out);
+}
+
+/// Placeholder sample-entry type for an entry mp4-atom can't decode (an
+/// `esds` whose descriptors overrun it, …); its own type is kept in
+/// [`EntryExtras::entry_fourcc`].
+const UNDECODABLE_ENTRY: &[u8; 4] = b"fxun";
+
+/// The `trak`s of a normalized `moov` that mp4-atom decodes, with their
+/// position among all `trak`s (the stream index ffmpeg gives them) and
+/// their [`EntryExtras`]. One `trak` mp4-atom can't decode costs that
+/// track, not the file:
+/// - a Dolby Vision entry renamed to the standard entry it extends that then
+///   fails (a missing or rejected `hvcC`, …) decodes as the unknown entry it
+///   was (a transcode), as before Dolby Vision entries were recognised;
+/// - any other entry that fails decodes as an unknown entry too (video is
+///   then transcoded: ffmpeg reads what mp4-atom rejects), an AC-3/E-AC-3
+///   one as an entry configured from its first frame;
+/// - a `trak` that still fails (an empty `stbl`) is left out.
+fn decode_moov(
+    buf: &mut [u8],
+    extras: Vec<EntryExtras>,
+    warnings: &mut Vec<String>,
+) -> Result<(Moov, Vec<(u32, EntryExtras)>)> {
+    let mut moov = Moov::default();
+    let mut mvhd = None;
+    let mut kept = Vec::new();
+    let mut extras = extras.into_iter();
+    let mut ordinal = 0u32;
+    let err = |e: mp4_atom::Error| HlsError::mp4(format!("moov: {e}"));
+    for (kind, s, e) in child_boxes(buf, 8) {
+        match &kind {
+            b"mvhd" => mvhd = Some(mp4_atom::Mvhd::decode(&mut &buf[s..e]).map_err(err)?),
+            b"mvex" => moov.mvex = Some(mp4_atom::Mvex::decode(&mut &buf[s..e]).map_err(err)?),
+            b"trak" => {
+                let n = ordinal;
+                ordinal += 1;
+                let mut x = extras.next().unwrap_or_default();
+                let mut r = Trak::decode(&mut &buf[s..e]);
+                if let Err(first) = &r {
+                    if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
+                        buf[at..at + 4].copy_from_slice(&dv);
+                        warnings.push(format!(
+                            "Dolby Vision sample entry not decodable as its standard entry ({first}): indexed as unknown"
+                        ));
+                        r = Trak::decode(&mut &buf[s..e]);
+                    }
+                }
+                if let Err(first) = &r {
+                    if let Some(at) = trak_stsd(buf, s, e)
+                        .and_then(|(ss, se)| child_boxes(&buf[..se], ss + 16).first().map(|c| c.1 + 4))
+                    {
+                        let own: [u8; 4] = buf[at..at + 4].try_into().expect("fourcc");
+                        // AC-3 with a `dac3` mp4-atom rejects: configured
+                        // from the first frame, as without one.
+                        let placeholder = match &own {
+                            b"ac-3" => UNCONFIGURED_AC3,
+                            b"ec-3" => UNCONFIGURED_EAC3,
+                            _ => UNDECODABLE_ENTRY,
+                        };
+                        buf[at..at + 4].copy_from_slice(placeholder);
+                        match Trak::decode(&mut &buf[s..e]) {
+                            Ok(t) => {
+                                warnings.push(format!(
+                                    "trak {n}: sample entry {} not decodable ({first}): indexed as unknown",
+                                    String::from_utf8_lossy(&own)
+                                ));
+                                x.entry_fourcc = Some(own);
+                                r = Ok(t);
+                            }
+                            Err(_) => buf[at..at + 4].copy_from_slice(&own),
+                        }
+                    }
+                }
+                match r {
+                    Ok(t) => {
+                        moov.trak.push(t);
+                        kept.push((n, x));
+                    }
+                    Err(e) => warnings.push(format!("trak {n}: {e}: left out")),
+                }
+            }
+            _ => {}
+        }
+    }
+    moov.mvhd = mvhd.ok_or_else(|| HlsError::mp4("moov: missing box: mvhd"))?;
+    Ok((moov, kept))
+}
+
+/// A `ctts` offset as ffmpeg reads it: signed 32-bit, whatever the box's
+/// version. mp4-atom reads version-0 offsets as unsigned (ISO/IEC 14496-12
+/// before 2008), but QuickTime always defined them as signed, and encoders
+/// write negative ones in version-0 boxes; read as unsigned, one is 2^32
+/// ticks late (a remuxed MOV's last segment ran ~2^32 ticks long). Only such
+/// a negative offset can reach 2^31.
+fn composition_offset(raw: i64) -> i64 {
+    raw as u32 as i32 as i64
+}
+
+/// `stts` deltas above this are not durations but negative corrections
+/// written as unsigned (ffmpeg's default `max_stts_delta`).
+const MAX_STTS_DELTA: u32 = u32::MAX - 48_000 * 10;
+
+/// Clips `stts` deltas above [`MAX_STTS_DELTA`] to one tick, as ffmpeg does:
+/// some muxers end a track with a negative delta (2^32 − 32 000 at 25 kHz:
+/// −1.28 s) that, read as unsigned, made the last remuxed segment last
+/// ~2^32 ticks (24 files of a real library: playlists of ~172 000 s). The
+/// correction it stood for is taken out of the following deltas, never
+/// below one tick (ffmpeg's `mov_read_stts`). Returns the entries clipped.
+fn clip_stts_deltas(stts: &mut [(u32, u32)]) -> usize {
+    let (mut corrected, mut current) = (0i64, 0i64);
+    let mut clipped = 0;
+    for e in stts.iter_mut() {
+        let count = e.0 as i64;
+        if e.1 > MAX_STTS_DELTA {
+            let magnitude = e.1 as i32 as i64;
+            e.1 = 1;
+            corrected += if magnitude < 0 { magnitude } else { 1 } * count;
+            clipped += 1;
+        } else {
+            corrected += e.1 as i64 * count;
+        }
+        current += e.1 as i64 * count;
+        // A zero delta has nothing to give (ffmpeg's unsigned `duration - 1`
+        // wraps there; here it is left alone).
+        if current > corrected && e.1 > 0 {
+            let drift = (current - corrected) / count.max(1);
+            let correction = if e.1 as i64 > drift { drift } else { e.1 as i64 - 1 };
+            current -= correction * count;
+            e.1 -= correction as u32;
+        }
+    }
+    clipped
+}
+
+/// Zeroes composition offsets larger than the track itself (its decode
+/// span, at most 2^28 ticks, at least a second): no reordering is that
+/// deep, and one would stretch the last segment or shift every presentation
+/// time (ffmpeg drops a `ctts` with an offset beyond 2^28: "CTTS invalid").
+/// Returns how many entries were zeroed.
+fn drop_implausible_offsets(ctts: &mut [(u32, i64)], stts: &[(u32, u32)], timescale: u32) -> usize {
+    let span: i64 = stts.iter().map(|e| e.0 as i64 * e.1 as i64).sum();
+    let limit = span.min(1 << 28).max(timescale as i64);
+    let mut n = 0;
+    for e in ctts.iter_mut().filter(|e| e.1.abs() > limit) {
+        e.1 = 0;
+        n += 1;
+    }
+    n
+}
+
 /// Builds the playback index of an MP4/MOV file.
 pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
     let (moov_pos, moov_size) = top_level_moov(src)?;
     if moov_size > 512 << 20 {
         return Err(HlsError::mp4("moov larger than 512 MiB"));
     }
-    let mut buf = src.read_at(moov_pos, moov_size as usize)?;
-    let mut warnings = Vec::new();
+    if moov_pos.saturating_add(moov_size) > src.len() {
+        return Err(HlsError::mp4("moov runs past the end of the file (truncated)"));
+    }
+    let raw = src.read_at(moov_pos, moov_size as usize)?;
+    let mut repairs = MoovRepairs::default();
+    let mut buf = normalize_moov(&raw, &mut repairs);
+    drop(raw);
+    let mut warnings = repairs.warnings();
     // QuickTime writes AC-3/E-AC-3 sample entries without dac3/dec3, which
     // mp4-atom requires; rename them so they decode as unknown entries and
     // synthesize the configuration from the first sync frame (as for MKV).
@@ -417,26 +965,8 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
     }
     // Dolby Vision entries (`dvhe`, `dvh1`, …) decode as the standard entry
     // they extend; their DV record is read here (mp4-atom skips it).
-    let mut extras = take_dolby_vision_entries(&mut buf);
-    let moov = match Moov::decode(&mut buf.as_slice()) {
-        Ok(moov) => moov,
-        // A Dolby Vision entry without the box its standard entry requires
-        // (or with one mp4-atom rejects) fails the whole `moov` once
-        // renamed: decode it as an unknown entry again (a transcode), as
-        // before DV entries were recognised, instead of losing every track.
-        Err(e) if extras.iter().any(|x| x.renamed_at.is_some()) => {
-            for x in &mut extras {
-                if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
-                    buf[at..at + 4].copy_from_slice(&dv);
-                }
-            }
-            warnings.push(format!(
-                "Dolby Vision sample entry not decodable as its standard entry ({e}): indexed as unknown"
-            ));
-            Moov::decode(&mut buf.as_slice()).map_err(|e| HlsError::mp4(format!("moov: {e}")))?
-        }
-        Err(e) => return Err(HlsError::mp4(format!("moov: {e}"))),
-    };
+    let extras = take_dolby_vision_entries(&mut buf);
+    let (moov, extras) = decode_moov(&mut buf, extras, &mut warnings)?;
     // Fragmented MP4 (empty `moov` + `moof`/`mdat` pairs): sample tables come
     // from the fragments' `traf`/`trun` boxes.
     let fragmented = moov.mvex.is_some()
@@ -488,10 +1018,9 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
 
     let mut tracks = Vec::new();
     let mut tables = Vec::new();
-    for (i, trak) in moov.trak.iter().enumerate() {
+    for (trak, (n, x)) in moov.trak.iter().zip(extras) {
         let frag = frag_tables.as_mut().and_then(|m| m.remove(&trak.tkhd.track_id));
-        let x = extras.get(i).cloned().unwrap_or_default();
-        match track_from_trak(i as u32, trak, movie_ts, src, &mut warnings, frag, x) {
+        match track_from_trak(n, trak, movie_ts, src, &mut warnings, frag, x) {
             Ok((t, tab)) => {
                 tracks.push(t);
                 tables.push(tab);
@@ -562,6 +1091,17 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
             .max()
             .unwrap_or(0)
     };
+    // The video's end sets the last segment's: one far past the movie's
+    // duration (an edit list can trim a little) means bad timing tables.
+    if let Some(end) = video.and_then(|vi| tracks[vi].extra.end_ns) {
+        if duration_ns > 0 && end > duration_ns.saturating_mul(2).saturating_add(60_000_000_000) {
+            warnings.push(format!(
+                "video ends at {:.3} s, far past the movie's {:.3} s",
+                end as f64 / 1e9,
+                duration_ns as f64 / 1e9
+            ));
+        }
+    }
 
     Ok(PlaybackIndex {
         version: INDEX_VERSION,
@@ -839,31 +1379,48 @@ fn track_from_trak(
         }
         _ => t.codec_tag = "other".into(),
     }
-    // A Dolby Vision entry keeps its own name (`dvhe`, `dvh1`…) and record.
-    if let Some(dv) = extras.dovi_fourcc {
-        t.codec_tag = String::from_utf8_lossy(&dv).into_owned();
+    // A Dolby Vision entry keeps its own name (`dvhe`, `dvh1`…) and record,
+    // and so does an entry read as unknown.
+    if let Some(f) = extras.dovi_fourcc.or(extras.entry_fourcc) {
+        t.codec_tag = String::from_utf8_lossy(&f).into_owned();
     }
     if kind == TrackKind::Video {
         t.dovi = extras.dovi;
     }
 
     // Tables
-    let stts: Vec<(u32, u32)> = stbl
+    let mut stts: Vec<(u32, u32)> = stbl
         .stts
         .entries
         .iter()
         .map(|e| (e.sample_count, e.sample_delta))
         .collect();
-    let ctts: Vec<(u32, i64)> = stbl
+    let clipped = clip_stts_deltas(&mut stts);
+    if clipped > 0 {
+        warnings.push(format!(
+            "track {}: {clipped} stts entr{} with a delta of nearly 2^32 ticks (a negative one) clipped to 1 tick",
+            trak.tkhd.track_id,
+            if clipped == 1 { "y" } else { "ies" }
+        ));
+    }
+    let mut ctts: Vec<(u32, i64)> = stbl
         .ctts
         .as_ref()
         .map(|c| {
             c.entries
                 .iter()
-                .map(|e| (e.sample_count, e.sample_offset))
+                .map(|e| (e.sample_count, composition_offset(e.sample_offset)))
                 .collect()
         })
         .unwrap_or_default();
+    let dropped = drop_implausible_offsets(&mut ctts, &stts, timescale);
+    if dropped > 0 {
+        warnings.push(format!(
+            "track {}: {dropped} ctts entr{} with an offset longer than the track ignored",
+            trak.tkhd.track_id,
+            if dropped == 1 { "y" } else { "ies" }
+        ));
+    }
     let (sizes, constant_size, sample_count) = match &stbl.stsz.samples {
         StszSamples::Identical { count, size } => (Vec::new(), Some(*size), *count),
         StszSamples::Different { sizes } => (sizes.clone(), None, sizes.len() as u32),
@@ -1168,19 +1725,22 @@ fn stsd_boxes(moov: &[u8]) -> Vec<Option<(usize, usize)>> {
     child_boxes(moov, 8)
         .into_iter()
         .filter(|c| &c.0 == b"trak")
-        .map(|(_, s, e)| {
-            let mut level = vec![(s, e)];
-            for want in [b"mdia", b"minf", b"stbl", b"stsd"] {
-                level = level
-                    .iter()
-                    .flat_map(|&(s, e)| child_boxes(&moov[..e], s + 8))
-                    .filter(|c| &c.0 == want)
-                    .map(|c| (c.1, c.2))
-                    .collect();
-            }
-            level.first().copied()
-        })
+        .map(|(_, s, e)| trak_stsd(moov, s, e))
         .collect()
+}
+
+/// The `stsd` box (start, end) of the `trak` at `s..e` of a `moov` buffer.
+fn trak_stsd(moov: &[u8], s: usize, e: usize) -> Option<(usize, usize)> {
+    let mut level = vec![(s, e)];
+    for want in [b"mdia", b"minf", b"stbl", b"stsd"] {
+        level = level
+            .iter()
+            .flat_map(|&(s, e)| child_boxes(&moov[..e], s + 8))
+            .filter(|c| &c.0 == want)
+            .map(|c| (c.1, c.2))
+            .collect();
+    }
+    level.first().copied()
 }
 
 /// Dolby Vision sample entries and the standard entry each one extends
@@ -1209,6 +1769,9 @@ struct EntryExtras {
     /// Where the entry's type was renamed to the standard entry's (the
     /// offset of its four bytes in the `moov` buffer).
     renamed_at: Option<usize>,
+    /// The entry's own type when mp4-atom could not decode it and it was
+    /// read as an unknown entry ([`UNDECODABLE_ENTRY`]).
+    entry_fourcc: Option<[u8; 4]>,
 }
 
 /// Reads the Dolby Vision record of each track's first sample entry and
@@ -2225,5 +2788,354 @@ mod tests {
             dominant_rate(&[(60, 1500), (40, 3000)], 90_000),
             Some(Rational { num: 60, den: 1 })
         );
+    }
+
+    /// QuickTime defines `ctts` offsets as signed, and encoders write
+    /// negative ones in version-0 boxes, which mp4-atom reads as unsigned (a
+    /// remuxed MOV's last segment was ~2^32 ticks long, 324 files of a real
+    /// library). They are signed whatever the version, and an offset longer
+    /// than the track is ignored.
+    #[test]
+    fn composition_offsets_are_signed_in_version_0_boxes() {
+        assert_eq!(composition_offset(0xFFFF_FFFF), -1);
+        assert_eq!(composition_offset((1i64 << 32) - 2002), -2002);
+        assert_eq!(composition_offset(2002), 2002);
+        // Version 1 boxes are read as signed already.
+        assert_eq!(composition_offset(-1001), -1001);
+        // 100 frames of one tick at 25 fps.
+        let stts = [(100u32, 1u32)];
+        let mut ctts = vec![(1, 2), (2, -1), (1, 1 << 20), (1, -(1 << 20)), (95, 0)];
+        assert_eq!(drop_implausible_offsets(&mut ctts, &stts, 25), 2);
+        assert_eq!(ctts, vec![(1, 2), (2, -1), (1, 0), (1, 0), (95, 0)]);
+        // A second is plausible however short the track.
+        let mut short = vec![(2, 24_000)];
+        assert_eq!(drop_implausible_offsets(&mut short, &[(2, 1001)], 24_000), 0);
+    }
+
+    /// A last `stts` delta of 2^32 − 32 000 (a −1.28 s correction at 25 kHz,
+    /// written unsigned) made the last remuxed segment ~2^32 ticks long. It
+    /// is clipped to a tick, and a correction mid-track is taken out of the
+    /// deltas that follow, never below a tick, as ffmpeg does.
+    #[test]
+    fn huge_stts_deltas_are_clipped_like_ffmpeg() {
+        let mut last = vec![(13_555, 1000), (1, u32::MAX - 31_999)];
+        assert_eq!(clip_stts_deltas(&mut last), 1);
+        assert_eq!(last, vec![(13_555, 1000), (1, 1)]);
+        let mut mid = vec![(10, 1000), (1, u32::MAX - 2_999), (10, 1000)];
+        assert_eq!(clip_stts_deltas(&mut mid), 1);
+        assert_eq!(mid, vec![(10, 1000), (1, 1), (10, 700)]);
+        // A zero delta after a correction stays zero (no underflow).
+        let mut zero = vec![(10, 1000), (1, u32::MAX - 2_999), (1, 0), (10, 1000)];
+        assert_eq!(clip_stts_deltas(&mut zero), 1);
+        assert_eq!(zero, vec![(10, 1000), (1, 1), (1, 0), (10, 700)]);
+        let mut fine = vec![(10, 1000), (1, 480_000)];
+        assert_eq!(clip_stts_deltas(&mut fine), 0);
+        assert_eq!(fine, vec![(10, 1000), (1, 480_000)]);
+    }
+
+    /// `udta` holding iTunes items in a legacy code page.
+    fn udta_with_ilst(text: &[u8]) -> flux_test_media::moov::Bx {
+        use flux_test_media::moov::Bx;
+        let data = |t: &[u8]| Bx::leaf(b"data", [&[0u8, 0, 0, 1, 0, 0, 0, 0][..], t].concat());
+        let item = |k: &[u8; 4]| Bx::leaf(k, data(text).to_bytes()).to_bytes();
+        let ilst = Bx::leaf(b"ilst", [item(b"\xa9nam"), item(b"cprt")].concat());
+        let hdlr = Bx::leaf(b"hdlr", [&[0u8; 8][..], b"mdir", b"appl", &[0; 9]].concat());
+        let meta = Bx::leaf(
+            b"meta",
+            [&[0u8; 4][..], &hdlr.to_bytes(), &ilst.to_bytes()].concat(),
+        );
+        Bx::container(b"udta", vec![meta])
+    }
+
+    /// Text in a legacy code page anywhere in `moov` (handler names, iTunes
+    /// items), a QuickTime `alis` self-reference and junk after the last
+    /// box failed the whole `moov` ("invalid string", "Only UTF-8 text is
+    /// supported in ilst data atoms": a 501 for 215 files of a real
+    /// library). Each indexes like the clean file.
+    #[test]
+    fn legacy_text_and_junk_in_moov_index_like_the_clean_file() {
+        use flux_test_media::moov::{find_moov, Bx};
+        // "视频" in GBK: not UTF-8.
+        const GBK: &[u8] = b"\xca\xd3\xc6\xb5";
+        let clean_path = synthetic_mp4(b"hvc1", None, aac_stereo());
+        let clean = crate::index::PlaybackIndex::build(&clean_path).unwrap();
+        let bytes = std::fs::read(&clean_path).unwrap();
+        let (at, size) = find_moov(&bytes).unwrap();
+        type Edit = fn(&mut Bx);
+        let cases: [(&str, Edit, &str); 7] = [
+            (
+                "hdlr names",
+                |m| {
+                    m.visit(&mut |_, b| {
+                        if &b.kind == b"hdlr" {
+                            b.body.truncate(24);
+                            b.body.extend_from_slice(GBK);
+                            b.body.push(0);
+                        }
+                    })
+                },
+                "not UTF-8",
+            ),
+            (
+                "ilst text",
+                |m| m.kids.as_mut().unwrap().push(udta_with_ilst(GBK)),
+                "",
+            ),
+            (
+                "track udta name",
+                |m| {
+                    for t in m.traks_mut(b"soun") {
+                        let name = Bx::leaf(b"name", GBK.to_vec());
+                        t.kids.as_mut().unwrap().push(Bx::container(b"udta", vec![name]));
+                        t.kids.as_mut().unwrap().push(udta_with_ilst(GBK));
+                    }
+                },
+                "",
+            ),
+            (
+                "alis record",
+                |m| {
+                    // A reference to another file: a binary alias record.
+                    let alis = Bx::leaf(b"alis", [&[0u8, 0, 0, 0][..], GBK].concat()).to_bytes();
+                    m.visit(&mut |_, b| {
+                        if &b.kind == b"dref" {
+                            b.body = [&[0u8, 0, 0, 0, 0, 0, 0, 1][..], &alis].concat();
+                        }
+                    })
+                },
+                "not UTF-8",
+            ),
+            (
+                "padded tables",
+                |m| {
+                    m.visit(&mut |_, b| {
+                        if matches!(&b.kind, b"stts" | b"stsc" | b"stsz" | b"stco") {
+                            b.body.extend_from_slice(&[0; 4]);
+                        }
+                    })
+                },
+                "bytes past their entries",
+            ),
+            (
+                "empty stbl",
+                |m| {
+                    // A third track whose stbl holds nothing (mp4-atom
+                    // requires stsd): it is left out, the others are kept.
+                    let mut t = m.traks_mut(b"soun")[0].clone();
+                    t.visit(&mut |_, b| {
+                        if &b.kind == b"tkhd" {
+                            b.body[12..16].copy_from_slice(&3u32.to_be_bytes());
+                        }
+                        if &b.kind == b"stbl" {
+                            b.kids = Some(Vec::new());
+                        }
+                    });
+                    m.kids.as_mut().unwrap().push(t);
+                },
+                "left out",
+            ),
+            (
+                "junk tail",
+                |m| {
+                    // As found: a 32-bit word read as a size far past `moov`.
+                    let mut junk = vec![0x3c, 0xc7, 0x09, 0xf3, 0x03, 0x80, 0x00, 0x00];
+                    junk.extend((0..440u32).map(|i| (i * 7) as u8));
+                    m.kids.as_mut().unwrap().push(Bx::raw(junk));
+                },
+                "after the last whole box",
+            ),
+        ];
+        for (what, edit, warning) in cases {
+            let mut m = Bx::parse(&bytes[at..at + size]);
+            edit(&mut m);
+            let moov = m.to_bytes();
+            assert!(
+                Moov::decode(&mut moov.as_slice()).is_err(),
+                "{what}: mp4-atom alone fails"
+            );
+            // The moov grows in place: fragments are addressed from their moof.
+            let file = [&bytes[..at], &moov[..], &bytes[at + size..]].concat();
+            let path = clean_path.with_file_name(format!("{}.mp4", what.replace(' ', "-")));
+            std::fs::write(&path, &file).unwrap();
+            let idx = crate::index::PlaybackIndex::build(&path).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(idx.tracks, clean.tracks, "{what}");
+            assert_eq!(idx.keyframes, clean.keyframes, "{what}");
+            assert_eq!(idx.duration_ns, clean.duration_ns, "{what}");
+            assert!(
+                warning.is_empty() || idx.warnings.iter().any(|w| w.contains(warning)),
+                "{what}: {:?}",
+                idx.warnings
+            );
+        }
+        // A moov that runs past the end of the file still fails.
+        let cut = &bytes[..at + size - 1];
+        let path = clean_path.with_file_name("cut.mp4");
+        std::fs::write(&path, cut).unwrap();
+        let e = crate::index::PlaybackIndex::build(&path).unwrap_err().to_string();
+        assert!(e.contains("truncated"), "{e}");
+    }
+
+    /// A sample entry mp4-atom rejects (here an `hvcC` cut short, and a
+    /// `dac3` cut short) failed the whole `moov`. The track is indexed as an
+    /// unknown entry (video: a transcode), and AC-3 as configured from its
+    /// first frame.
+    #[test]
+    fn an_entry_mp4_atom_rejects_costs_only_its_track() {
+        use flux_test_media::moov::{find_moov, Bx};
+        let path = synthetic_mp4(b"hvc1", None, ac3_51());
+        let bytes = std::fs::read(&path).unwrap();
+        let (at, size) = find_moov(&bytes).unwrap();
+        let mut m = Bx::parse(&bytes[at..at + size]);
+        m.visit(&mut |_, b| {
+            if &b.kind == b"stsd" {
+                match &b.body[12..16] {
+                    b"hvc1" => b.edit_entry_child(b"hvcC", |c| c[..5].to_vec()),
+                    b"ac-3" => b.edit_entry_child(b"dac3", |c| c[..1].to_vec()),
+                    _ => {}
+                }
+            }
+        });
+        let moov = m.to_bytes();
+        assert!(Moov::decode(&mut moov.as_slice()).is_err());
+        let path = path.with_file_name("rejected-entries.mp4");
+        std::fs::write(&path, [&bytes[..at], &moov[..], &bytes[at + size..]].concat()).unwrap();
+        let idx = crate::index::PlaybackIndex::build(&path).unwrap();
+        let shape: Vec<_> = idx
+            .tracks
+            .iter()
+            .map(|t| (t.codec, t.codec_tag.as_str(), t.width, t.height))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (Codec::Other, "hvc1", Some(3832), Some(1592)),
+                (Codec::Ac3, "ac-3", None, None)
+            ],
+            "{:?}",
+            idx.warnings
+        );
+        assert_eq!(
+            idx.warnings
+                .iter()
+                .filter(|w| w.contains("not decodable"))
+                .count(),
+            2,
+            "{:?}",
+            idx.warnings
+        );
+        let plan = crate::planner::plan(
+            &idx.to_probe_result(),
+            &crate::presets::chrome_desktop(),
+            &Default::default(),
+        );
+        assert!(
+            matches!(plan.video, flux_core::VideoOp::Transcode { .. }),
+            "{plan:?}"
+        );
+    }
+
+    /// An `esds` mp4-atom can't read (a DecoderConfigDescriptor whose length
+    /// swallows half the SLConfig's header, as found in a real file; bytes
+    /// after the ES_Descriptor; a length past the box) is rebuilt from its
+    /// decoder configuration; a clean one is left alone.
+    #[test]
+    fn esds_is_rebuilt_only_when_mp4_atom_cant_read_it() {
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        // ES_Descriptor { ES_ID 2, DecoderConfig { AAC, ASC 12 10 }, SLConfig },
+        // with 4-byte lengths, as many muxers write them.
+        let clean = hex(concat!(
+            "00000000",
+            "0380808022",
+            "000200",
+            "0480808014",
+            "4015000000000496e80002ee00",
+            "0580808002",
+            "1210",
+            "0680808001",
+            "02"
+        ));
+        assert_eq!(repair_esds(&clean), None);
+        // The DecoderConfigDescriptor claims 23 bytes: it ends inside the
+        // SLConfig's length.
+        let swallowing = hex(concat!(
+            "00000000",
+            "0380808022",
+            "000200",
+            "0480808017",
+            "4015000000000496e80002ee00",
+            "0580808002",
+            "1210",
+            "0680808001",
+            "02"
+        ));
+        let trailing = [&clean[..], &[1, 2, 3]].concat();
+        let mut over = clean.clone();
+        over[8] += 50;
+        for (what, b) in [
+            ("swallowing", &swallowing),
+            ("trailing", &trailing),
+            ("over", &over),
+        ] {
+            let mut raw = Vec::new();
+            put_box(b"esds", b, &mut raw);
+            assert!(mp4_atom::Esds::decode(&mut raw.as_slice()).is_err(), "{what}");
+            let fixed = repair_esds(b).unwrap_or_else(|| panic!("{what}"));
+            let mut boxed = Vec::new();
+            put_box(b"esds", &fixed, &mut boxed);
+            let esds = mp4_atom::Esds::decode(&mut boxed.as_slice()).unwrap();
+            let dc = &esds.es_desc.dec_config;
+            assert_eq!(dc.object_type_indication, 0x40, "{what}");
+            assert_eq!(
+                dc.dec_specific.as_ref().map(|d| d.raw.clone()),
+                Some(vec![0x12, 0x10]),
+                "{what}"
+            );
+        }
+    }
+
+    /// An `avcC` ends after its parameter sets, or after its High-profile
+    /// extension when that is whole: what follows made mp4-atom fail the
+    /// whole `moov` ("under decode: avcC").
+    #[test]
+    fn avcc_records_end_after_their_last_field() {
+        // Main profile, one 4-byte SPS, one 2-byte PPS.
+        let base = [
+            1u8, 77, 0, 30, 0xFF, 0xE1, 0, 4, 0x67, 77, 0, 30, 1, 0, 2, 0x68, 0xEE,
+        ];
+        assert_eq!(avcc_len(&base), Some(base.len()));
+        let padded = [&base[..], &[0, 0]].concat();
+        assert_eq!(avcc_len(&padded), Some(base.len()));
+        // High-profile extension (4:2:0, 8 bit, no SPS extensions): kept;
+        // trailing bytes after it are not.
+        let ext = [&base[..], &[0xFD, 0xF8, 0xF8, 0]].concat();
+        assert_eq!(avcc_len(&ext), Some(ext.len()));
+        assert_eq!(avcc_len(&[&ext[..], &[9]].concat()), Some(ext.len()));
+        // An extension that claims an SPS extension it doesn't have: dropped.
+        assert_eq!(
+            avcc_len(&[&base[..], &[0xFD, 0xF8, 0xF8, 1, 0, 9]].concat()),
+            Some(base.len())
+        );
+        // Parameter sets past the end: not a record to trim.
+        assert_eq!(avcc_len(&base[..12]), None);
+    }
+
+    /// The normalized `moov` of a clean file is the file's own (no text to
+    /// fix, no junk): containers are rewritten with the same sizes.
+    #[test]
+    fn a_clean_moov_normalizes_to_itself() {
+        use flux_test_media::moov::find_moov;
+        let bytes = std::fs::read(synthetic_mp4(b"hvc1", None, aac_stereo())).unwrap();
+        let (at, size) = find_moov(&bytes).unwrap();
+        let mut r = MoovRepairs::default();
+        assert_eq!(
+            normalize_moov(&bytes[at..at + size], &mut r),
+            bytes[at..at + size]
+        );
+        assert_eq!(r, MoovRepairs::default());
     }
 }

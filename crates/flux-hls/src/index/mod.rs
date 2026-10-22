@@ -44,7 +44,11 @@ use crate::source::{Source, SourceId};
 ///    durations most of its frames have (`mp4::dominant_rate`), not their
 ///    average: frames held for seconds made 23.976 fps 22.75, and a
 ///    transcode converts such a video at this rate.
-pub const INDEX_VERSION: u16 = 9;
+/// 10: MP4/MOV `ctts` offsets are signed in version-0 boxes too (were 2^32
+///     ticks late when negative), `stts` deltas of nearly 2^32 are clipped,
+///     and a `moov` with non-UTF-8 text, padded boxes or junk indexes (was
+///     an error).
+pub const INDEX_VERSION: u16 = 10;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
