@@ -57,7 +57,7 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
            new / changed / Deep ─► WorkerPool (priority heap, shared):
                  open → PageCache(16 KiB pages on Fast, 64 on Slow)
                  → fp128 + oshash (head + tail 64 KiB) → probe_cached (head hits the cache)
-                 → UnknownFormat → ffprobe pool (ffprobe_workers, timeout, kill)
+                 → UnknownFormat / Malformed → ffprobe pool (ffprobe_workers, timeout, kill)
                  → flux-names (rel path, siblings = the directory's file names, library kind)
                  ─► batcher (≤ batch_rows or ≤ batch_interval) ─► Writer::apply
                     ─► ItemsChanged + ScanProgress after each commit
@@ -123,7 +123,7 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 
 ### ffprobe fallback
 
-`ProbeError::UnknownFormat` sends the file to a pool of `ffprobe_workers` threads behind a bounded queue (64). Each run has `ffprobe_timeout`; past it the child is killed and reaped, and the file is stored as a probe failure (still browsable by name). In the test, `.flv` and `.mpg` fall back to ffprobe and `.webm` stays in-process. A copy of a known `.flv`, held as a possible move, still goes to ffprobe. With a 1 ms timeout all three fail promptly.
+`ProbeError::UnknownFormat` sends the file to a pool of `ffprobe_workers` threads behind a bounded queue (64), and so does `ProbeError::Malformed`: ffmpeg's demuxers read many files flux-probe finds inconsistent. Each run has `ffprobe_timeout`; past it the child is killed and reaped, and the file is stored as a probe failure (still browsable by name). In the test, `.flv` and `.mpg` fall back to ffprobe and `.webm` stays in-process. A copy of a known `.flv`, held as a possible move, still goes to ffprobe. With a 1 ms timeout all three fail promptly.
 
 ### Watcher
 

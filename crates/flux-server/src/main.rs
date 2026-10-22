@@ -62,9 +62,9 @@ fn main() -> ExitCode {
     if let Some(older) = &cfg.older_data_dir {
         tracing::warn!(
             "{} holds a catalog from an earlier flux (the default data dir on Windows up to \
-             0.1.0-alpha.2), but this run uses {}. To keep its libraries and watched and resume \
-             state, stop flux and pass --data-dir \"{}\", or move that folder's contents here; \
-             delete it if you don't need it",
+             0.1.0-alpha.2), but this run uses {}. To keep its libraries, artwork and watched and \
+             resume state, stop flux, then pass --data-dir \"{}\" or move that folder's contents \
+             here; delete it if you don't need it",
             older.display(),
             cfg.data_dir.display(),
             older.display()

@@ -54,6 +54,10 @@ use crate::source::{Source, SourceId};
 ///    durations most of its frames have (`mp4::dominant_rate`), not their
 ///    average: frames held for seconds made 23.976 fps 22.75, and a
 ///    transcode converts such a video at this rate.
+/// 10: MP4/MOV `ctts` offsets are signed in version-0 boxes too (were 2^32
+///     ticks late when negative), `stts` deltas of nearly 2^32 are clipped,
+///     and a `moov` with non-UTF-8 text, padded boxes or junk indexes (was
+///     an error).
 /// 11: [`TrackExtra::baseline_tools`] (H.264 Baseline FMO/ASO/redundant
 ///    pictures), and VP9 video: profile, bit depth and level from the first
 ///    frame, with a `vpcC` record ([`IndexTrack::synth_config`]).
