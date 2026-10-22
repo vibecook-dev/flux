@@ -26,11 +26,12 @@ use crate::source::{Source, SourceId};
 /// Bump when the index format or its derivation changes.
 ///
 /// Branches that bump it side by side all change it to the same number, and
-/// git merges that line without a conflict. The branch that lands second
-/// takes the next number, with its own line below: a build made between the
-/// merges caches indexes under the first one's number, which the second
-/// change must not accept as current. `version_history_names_each_version_once`
-/// checks that the list runs 3, 4, … up to `INDEX_VERSION`, one line each.
+/// git merges that line without a conflict. Each branch takes a number of its
+/// own instead, with its own line below: a build made between the merges
+/// caches indexes under the first one's number, which the second change must
+/// not accept as current. A number can be skipped (one taken by a branch that
+/// lands later); `version_history_names_each_version_once` checks that the
+/// list starts at 3, rises line by line and ends at `INDEX_VERSION`.
 ///
 /// 3: H.264 Constrained Baseline is named as such (was "Baseline").
 /// 4: [`IndexTrack::extra`] (rotation, pixel aspect, video end), measured
@@ -755,8 +756,9 @@ mod tests {
     /// merges the constant cleanly and only the history lines conflict.
     /// Keeping both lines leaves two changes under one number, and indexes
     /// that a build with only the first change cached pass as current for
-    /// the second. The history must run 3, 4, … without gaps or repeats and
-    /// end at the constant.
+    /// the second. The history must start at 3, rise without repeats (a
+    /// number taken by a branch that lands later may be missing) and end at
+    /// the constant.
     #[test]
     fn version_history_names_each_version_once() {
         let src = include_str!("mod.rs");
@@ -773,12 +775,16 @@ mod tests {
             })
             .collect();
         assert_eq!(listed.first(), Some(&3), "the history starts at 3: {listed:?}");
-        let want: Vec<u16> = (3..=INDEX_VERSION).collect();
+        assert!(
+            listed.windows(2).all(|w| w[0] < w[1]),
+            "each INDEX_VERSION needs exactly one history line, in rising order; a branch \
+             merged after another that bumped to the same number takes a number of its own: \
+             {listed:?}"
+        );
         assert_eq!(
-            listed, want,
-            "each INDEX_VERSION needs exactly one history line, in order, ending at \
-             INDEX_VERSION ({INDEX_VERSION}); a branch merged after another that bumped \
-             to the same number takes the next one"
+            listed.last(),
+            Some(&INDEX_VERSION),
+            "the history ends at INDEX_VERSION: {listed:?}"
         );
     }
 
