@@ -392,6 +392,9 @@ pub struct Config {
     /// `FLUX_TAILNET=off`) is explicit: then flux runs no `tailscale`
     /// command at all, unless the UI switches remote access on.
     pub probe_system_tailscale: bool,
+    /// Playback idle this long (no media request): the playback caches are
+    /// dropped and their memory returned ([`crate::play::trim_when_idle`]).
+    pub cache_idle: Duration,
 }
 
 impl Config {
@@ -502,6 +505,7 @@ impl Config {
                 .unwrap_or_else(|| "info".into()),
             jobs_delay: Duration::from_secs(10),
             probe_system_tailscale: !(tailnet_explicit && tailnet == TailnetChoice::Off),
+            cache_idle: crate::play::CACHE_IDLE,
             data_dir,
             older_data_dir,
         })
@@ -535,6 +539,7 @@ impl Config {
             log: "warn".into(),
             jobs_delay: Duration::ZERO,
             probe_system_tailscale: false,
+            cache_idle: crate::play::CACHE_IDLE,
             data_dir,
             older_data_dir: None,
         }

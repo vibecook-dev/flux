@@ -888,6 +888,11 @@ impl VideoTranscoder {
         self.cache.lock().map(|c| c.usage()).unwrap_or_default()
     }
 
+    /// Drops the cached pieces ([`crate::HlsEngine::trim`]); returns their bytes.
+    pub(crate) fn clear_cache(&self) -> usize {
+        self.cache.lock().map(|mut c| c.clear()).unwrap_or(0)
+    }
+
     /// The pieces (output segments) of `asset`.
     pub fn pieces(&self, asset: &Asset) -> Vec<Piece> {
         pieces(asset, self.piece_ns)

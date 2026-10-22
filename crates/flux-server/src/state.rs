@@ -118,6 +118,11 @@ impl Activity {
             .store(flux_catalog::now_ms(), Ordering::Relaxed);
     }
 
+    /// Unix ms of the last media request (0: none yet).
+    pub fn last_media_ms(&self) -> i64 {
+        self.last_media_ms.load(Ordering::Relaxed)
+    }
+
     /// Milliseconds since the last media request (`i64::MAX` if none).
     pub fn media_idle_ms(&self) -> i64 {
         match self.last_media_ms.load(Ordering::Relaxed) {

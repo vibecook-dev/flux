@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::http::{Method, StatusCode};
 use common::*;
@@ -214,6 +214,84 @@ async fn subtitle_files_play_end_to_end() {
         "{:?}",
         preview.plan.video
     );
+}
+
+/// Idle playback gives the caches' memory back: the prepared asset stays
+/// cached while media requests come (seeks and the next segments still hit
+/// it), is dropped once none came for the idle time, and playback goes on
+/// afterwards. Before, the caches kept their contents for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_playback_drops_the_caches() {
+    let Some(src) = flux_test_media::clip(Clip::H264AacMp4) else {
+        return;
+    };
+    let dir = scratch("play-idle-trim");
+    let lib = dir.path().join("lib");
+    let file = lib.join("Idle Test (2020)").join("Idle Test (2020).mp4");
+    flux_test_media::clone_file(&src, &file).unwrap();
+    let cfg = Config::for_tests(dir.path().join("data"));
+    let (st, _) = build_state(cfg, Instant::now(), None).await.unwrap();
+    let cat = st.catalog.clone();
+    tokio::task::block_in_place(|| seed(&cat, "Movies", LibraryKind::Movies, &lib, |_| true));
+    let (item, asset) = item_of(&cat, "Idle Test (2020).mp4");
+    let app = router(st.clone());
+
+    // An HLS-only client: the MP4 is remuxed from its prepared asset.
+    let mut caps = flux_hls::presets::chrome_desktop();
+    caps.delivery.retain(|d| *d != DeliveryFormat::ProgressiveFile);
+    let r = post(
+        &app,
+        "/api/v1/play",
+        json!({"item_id": item, "asset_id": asset, "caps": caps, "audio_track": null, "subtitle_track": null, "start_ms": 0}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let play: PlayResponse = r.json();
+    assert!(
+        matches!(play.plan.video, VideoOp::Copy { .. }),
+        "{:?}",
+        play.explain
+    );
+    let base = play.url.trim_end_matches("master.m3u8").to_string();
+    let master = get(&app, &play.url).await;
+    let variant_rel = playlist_uris(&master.text()).into_iter().next().expect("variant");
+    let variant = get(&app, &format!("{base}{variant_rel}")).await;
+    let pieces = playlist_uris(&variant.text());
+    let seg = format!(
+        "{base}{}{}",
+        variant_rel.trim_end_matches("index.m3u8"),
+        pieces[0]
+    );
+    let first = get(&app, &seg).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    assert_eq!(st.play.assets_cached(), 1);
+
+    let idle = Duration::from_secs(1);
+    let trimmer = tokio::spawn(flux_server::play::trim_when_idle(st.clone(), idle));
+    // Playing: a request every 100 ms for 2.5 s; nothing is dropped.
+    for _ in 0..25 {
+        assert_eq!(get(&app, &seg).await.status, StatusCode::OK);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(st.play.assets_cached(), 1, "dropped while playing");
+    // Idle: dropped within a few checks.
+    let t0 = Instant::now();
+    while st.play.assets_cached() > 0 && t0.elapsed() < Duration::from_secs(15) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        st.play.assets_cached(),
+        0,
+        "not dropped after {:?} idle",
+        t0.elapsed()
+    );
+    assert_eq!(st.engine.cache_usage().bytes(), 0);
+    // Playback goes on from the catalog's index, the same bytes.
+    let again = get(&app, &seg).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body, first.body);
+    assert_eq!(st.play.assets_cached(), 1);
+    trimmer.abort();
 }
 
 /// What the web client reports on Chrome for Windows

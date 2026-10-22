@@ -213,6 +213,13 @@ pub struct CacheUsage {
     pub warmed: (usize, usize, u64),
 }
 
+impl CacheUsage {
+    /// Bytes held by all the caches.
+    pub fn bytes(&self) -> usize {
+        self.assets.1 + self.subtitles.1 + self.audio_segments.1 + self.video_segments.1 + self.warmed.1
+    }
+}
+
 struct Inner {
     cfg: EngineConfig,
     assets: Mutex<LruCache<PathBuf, Shared<Arc<Asset>>>>,
@@ -1186,6 +1193,33 @@ impl HlsEngine {
         }
     }
 
+    /// Drops every cached segment, WebVTT track and prepared asset, and
+    /// returns what they held. For a server whose playback went idle: the
+    /// caches keep up to their budgets (about 1.1 GB by default) until
+    /// something evicts them, which on an idle server never happens.
+    ///
+    /// Nothing breaks: a request in flight keeps the asset it holds (an
+    /// `Arc`), a transcode still running puts its pieces back, and the next
+    /// request rebuilds what it needs (an index from the catalog, a piece by
+    /// encoding it again). It costs that rebuild, so call it only after
+    /// minutes without media requests: during playback the caches are what
+    /// make seeks back and prefetched pieces instant.
+    pub fn trim(&self) -> CacheUsage {
+        let before = self.cache_usage();
+        if let Ok(mut m) = self.inner.assets.lock() {
+            m.clear();
+        }
+        if let Ok(mut m) = self.inner.subs.lock() {
+            m.clear();
+        }
+        if let Ok(mut m) = self.inner.warmed.lock() {
+            m.clear();
+        }
+        self.inner.audio.clear_cache();
+        self.inner.video.clear_cache();
+        before
+    }
+
     /// True when every response for `res` under `plan` has the same bytes,
     /// however and in whatever order it was requested, so that a strong
     /// validator (`ETag: "…"`, `If-Range`) is correct for it.
@@ -1271,6 +1305,70 @@ mod tests {
         assert_ne!(truth, old);
         assert_eq!(engine.webvtt(&a2, 3).await.unwrap(), truth, "stale WebVTT");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An idle server gives the caches' memory back: `trim` drops the
+    /// prepared asset, the warmed segments and the transcoded audio, and
+    /// playback goes on afterwards (the next request makes its segment
+    /// again, the same bytes).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trim_empties_the_caches_and_playback_goes_on() {
+        let Some(src) = flux_test_media::clip(flux_test_media::Clip::Ac3Eac3BurstsMkv) else {
+            return;
+        };
+        let (Some(ffmpeg), Some(ffprobe)) = (flux_test_media::ffmpeg(), flux_test_media::ffprobe()) else {
+            return;
+        };
+        let engine = HlsEngine::new(EngineConfig {
+            ffmpeg,
+            ffprobe,
+            // No prefetch: nothing lands in a cache after the requests.
+            audio_lookahead: 0,
+            ..EngineConfig::default()
+        });
+        let asset = engine.prepare(&src).await.unwrap();
+        let plan = engine.plan(&asset, &presets::chrome_desktop(), &PlanPrefs::default());
+        // AC-3 isn't Chrome's: the first audio rendition is AAC, transcoded.
+        assert!(matches!(plan.audio[0].op, AudioOp::Transcode { .. }), "{plan:?}");
+        let r = Rendition::Audio(AudioKey::from_plan(&plan.audio[0]));
+        let first = engine
+            .media_segment(&asset, &plan, &r, 0)
+            .await
+            .unwrap()
+            .read_all()
+            .unwrap();
+        // Segment 1 (it starts where segment 0 ends): the copied video into
+        // the warm cache, the AAC into the audio transcoder's.
+        engine.warm(&asset, &plan, asset.segments.duration_secs(0));
+        assert!(
+            wait_for(|| {
+                let u = engine.cache_usage();
+                u.warmed.0 == 1 && u.audio_segments.0 == 2
+            })
+            .await
+        );
+        let used = engine.cache_usage();
+        assert!(used.assets.0 == 1 && used.bytes() > 0, "{used:?}");
+
+        assert_eq!(engine.trim().bytes(), used.bytes());
+        let after = engine.cache_usage();
+        assert_eq!(after.bytes(), 0, "{after:?}");
+        assert_eq!(
+            (after.assets.0, after.audio_segments.0, after.warmed.0),
+            (0, 0, 0)
+        );
+        // Not evictions: the counters say what the budgets did.
+        assert_eq!(after.audio_segments.2, used.audio_segments.2);
+
+        let again = engine
+            .media_segment(&asset, &plan, &r, 0)
+            .await
+            .unwrap()
+            .read_all()
+            .unwrap();
+        assert_eq!(again, first);
+        engine.prepare(&src).await.unwrap();
+        assert_eq!(engine.cache_usage().assets.0, 1, "prepared again");
     }
 
     /// PB-6: `warm` produces the video and the first audio track only, not

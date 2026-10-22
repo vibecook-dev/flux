@@ -93,6 +93,16 @@ impl<K: Hash + Eq + Clone, V: Clone> LruCache<K, V> {
     pub(crate) fn usage(&self) -> (usize, usize, u64) {
         (self.map.len(), self.bytes, self.evicted)
     }
+
+    /// Drops every entry and the tables' memory (not counted as
+    /// evictions); returns the bytes the entries weighed.
+    pub(crate) fn clear(&mut self) -> usize {
+        let freed = self.bytes;
+        self.map = HashMap::new();
+        self.order = BTreeMap::new();
+        self.bytes = 0;
+        freed
+    }
 }
 
 /// Produced segments by key, weighed by their length.
@@ -122,6 +132,10 @@ impl<K: Hash + Eq + Clone> ByteCache<K> {
     pub(crate) fn usage(&self) -> (usize, usize, u64) {
         self.0.usage()
     }
+
+    pub(crate) fn clear(&mut self) -> usize {
+        self.0.clear()
+    }
 }
 
 #[cfg(test)]
@@ -141,5 +155,17 @@ mod tests {
         assert_eq!(c.usage(), (1, 9, 2));
         c.put("big", 0, 50); // larger than the budget: evicts everything, itself last
         assert_eq!(c.usage().0, 0);
+    }
+
+    #[test]
+    fn clear_drops_everything_and_keeps_working() {
+        let mut c = ByteCache::new(100);
+        c.put(1, Bytes::from_static(b"abcd"));
+        c.put(2, Bytes::from_static(b"ef"));
+        assert_eq!(c.clear(), 6);
+        assert_eq!(c.usage(), (0, 0, 0), "a clear is not an eviction");
+        assert!(c.get(&1).is_none());
+        c.put(3, Bytes::from_static(b"g"));
+        assert_eq!(c.usage(), (1, 1, 0));
     }
 }
