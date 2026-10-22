@@ -95,6 +95,16 @@ says so. Sources the hardware decoders are not trusted with (MPEG-2,
 MPEG-4 Part 2, AV1, VP9, VC-1) decode in software on every path: a failed
 hwaccel with hardware output frames has no software fallback in ffmpeg.
 
+**Dolby Vision profile 5** is the exception to the table's HDR → SDR
+column. It has no HDR10 or SDR base layer: the decoded picture stays in
+Dolby's IPT colour space until the RPU reshapes it, and only `tonemapx`
+does that (`apply_dovi`, on by default). So when the build has `tonemapx`,
+such a source always takes the software chain, on VideoToolbox and VAAPI
+too (`scale_vt` and `tonemap_vaapi` would leave it purple and green).
+Without `tonemapx` nothing reshapes it, and `--check` says so. Frame
+posters of these sources are tone-mapped by `tonemapx` as well; without
+it they get no frame art.
+
 Rate control is the same target on every encoder: the plan's bitrate on
 average, peaks to 1.5×, a buffer of 2× (`-b:v`/`-maxrate`/`-bufsize`; NVENC
 `-rc vbr`, VAAPI `-rc_mode VBR`). libx264 runs capped CRF instead: preset
@@ -142,11 +152,14 @@ encoders, in the order flux tries them:
   no  h264_qsv           not built into this ffmpeg
   no  h264_vaapi         not built into this ffmpeg
   ok  libx264            test encode passed
-nothing missing
+missing:
+  - no Dolby Vision reshaping (needs jellyfin-ffmpeg's tonemapx): Dolby Vision profile 5 sources transcode with a purple/green picture
 ```
 
-With `FLUX_VIDEO_ENCODER=libx264` the same machine reports `h264 →
-libx264 (software, forced)` and lists what is missing: no tone mapping
+Every ffmpeg without `tonemapx` (upstream builds such as Homebrew's and
+the Linux distributions') lists that Dolby Vision line, even with hardware
+tone mapping. With `FLUX_VIDEO_ENCODER=libx264` the same machine reports
+`h264 → libx264 (software, forced)` and also lists no tone mapping
 (Homebrew's ffmpeg has neither `zscale` nor `tonemapx`) and no hardware
 encoder. `--check` probes every candidate, not just up to the first that
 passes, and exits 1 when ffmpeg or ffprobe cannot run (2 for a bad flag).
