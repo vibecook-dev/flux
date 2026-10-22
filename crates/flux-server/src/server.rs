@@ -86,7 +86,7 @@ pub async fn build_state(
     }
     let state = Arc::new(AppState {
         play: PlayState::new(&cfg.data_dir, engine.config().asset_cache_bytes),
-        art: ArtStore::new(&cfg.data_dir),
+        art: Arc::new(ArtStore::new(&cfg.data_dir)),
         catalog,
         scanner,
         engine,
@@ -144,6 +144,19 @@ pub async fn start_with(
         tasks.push(tokio::spawn(async move {
             let s = st.clone();
             let _ = tokio::task::spawn_blocking(move || s.play.prune_plan_files()).await;
+            // Items an upgrade by an earlier build left with no file (a
+            // re-parse moved them all elsewhere), hidden ever since: they
+            // go, with their images. Their users' state went with the files.
+            match st.catalog.writer().purge_empty_items().await {
+                Ok(ids) if !ids.is_empty() => {
+                    tracing::info!(
+                        items = ids.len(),
+                        "deleted items an earlier upgrade left without files"
+                    )
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(error = %e, "purge_empty_items"),
+            }
             if st.cfg.scan {
                 // watch() catches up with a Quick scan (Scheduled priority)
                 // the first time, then follows changes. Without watching,
@@ -153,7 +166,10 @@ pub async fn start_with(
                 // probed by an older flux-probe) the startup scan is a Deep
                 // one: it also re-parses those files (no I/O) and re-probes
                 // them, which a Quick scan never does for unchanged files.
-                // The watcher's catch-up joins it.
+                // The watcher starts first and without its catch-up: the
+                // Deep scan covers that, and a catch-up joining it once it
+                // had started ran a second pass that counted every file
+                // twice.
                 let libs = st.catalog.read(read::list_libraries).await.unwrap_or_default();
                 for lib in libs {
                     let id = lib.id;
@@ -174,13 +190,16 @@ pub async fn start_with(
                     } else {
                         Some(scan::ScanMode::Quick)
                     };
+                    if st.cfg.watch {
+                        match mode {
+                            Some(_) => st.scanner.watch_without_catch_up(id),
+                            None => st.scanner.watch(id),
+                        }
+                    }
                     if let Some(mode) = mode {
                         if let Err(e) = st.scanner.scan_library(id, mode, scan::Priority::Scheduled) {
                             tracing::info!(library_id = id, "not scanning: {e}");
                         }
-                    }
-                    if st.cfg.watch {
-                        st.scanner.watch(id);
                     }
                 }
             }

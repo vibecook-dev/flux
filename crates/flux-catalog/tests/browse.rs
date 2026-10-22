@@ -497,6 +497,8 @@ fn metadata_and_art_flow_into_summaries() {
                 blurhash: Some("LEHV6nWB2yk8".into()),
                 attribution: None,
                 generator: None,
+                gen_version: None,
+                gen_title: None,
             },
         )
         .wait()
@@ -513,6 +515,8 @@ fn metadata_and_art_flow_into_summaries() {
             blurhash: None,
             attribution: Some("TMDB".into()),
             generator: None,
+            gen_version: None,
+            gen_title: None,
         },
     )
     .wait()
