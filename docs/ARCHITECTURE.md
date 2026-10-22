@@ -91,8 +91,8 @@ Dependencies point strictly downward, with no cycles:
   - MKV: SeekHead → Cues → keyframe `(pts, cluster offset)`, plus CodecPrivate.
   - MP4: `moov` sample tables (counts bounded by the file size before any allocation).
   - MPEG-TS/M2TS with H.264/HEVC: one sequential packet scan (`ts`), remuxed in process.
-  - Anything else (AVI, rejected TS): a bounded ffprobe packet scan (stall and size-scaled deadlines; killed at shutdown).
-- **Segment plan:** cut at keyframes at or after the 6 s target.
+  - Anything else (ASF/WMV, FLV, RealMedia, MPEG-PS, AVI, rejected TS): one short, bounded ffprobe run (streams and the first 600 packets: the real frame rate and GOP length), plus where FLV/ASF packets end. No packet scan, so playback starts at once; ffmpeg paths only.
+- **Segment plan:** cut at keyframes at or after the 6 s target. Index-less files: a fixed 6 s grid on the frame grid of the rate their video is converted to; each video run seeks ffmpeg by time (a margin early: 1.5 GOPs for MPEG-PS/TS, whose seeks land on any packet), converts to that constant rate and pads past the video's end, so every piece has a known frame count.
 - **fMP4 writer:** init `ftyp+moov(mvex)`; media `styp+moof+mdat`.
 - **Timestamps:**
   - DTS synthesized from sorted PTS.

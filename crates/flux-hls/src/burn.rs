@@ -171,7 +171,7 @@ const TS_WRAP: i64 = 1 << 33;
 
 /// For a video file whose timestamps ffmpeg counts from its start time, where
 /// the source timeline (the playback index's, the pieces') starts on
-/// ffmpeg's clock, in seconds: the ffprobe-scan index counts from the start
+/// ffmpeg's clock, in seconds: the ffprobe-built index counts from the start
 /// time, and the MPEG-TS index from its origin (ffmpeg's start time,
 /// unwrapped: ffmpeg instead takes the wrap off a file that starts less
 /// than 60 s before it, whose timestamps then start below 0).
@@ -591,6 +591,8 @@ mod tests {
         assert_eq!(start_clock_origin_s(&ts(far)), Some(far as f64 / 90_000.0));
         let ext = Layout::External(crate::index::external::ExternalLayout {
             start_time_ns: 1_400_000_000,
+            seek_margin_ns: 500_000_000,
+            parts: Vec::new(),
         });
         assert_eq!(start_clock_origin_s(&ext), Some(1.4));
     }

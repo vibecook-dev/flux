@@ -101,9 +101,9 @@ pub struct EngineConfig {
     /// How long an unused source file keeps its descriptor open
     /// (process-wide, see [`crate::source::idle_timeout`]).
     pub source_idle_timeout: Duration,
-    /// Limits on the ffprobe scan that indexes containers flux-hls can't
-    /// read itself (AVI, rejected MPEG-TS): a stalled or endless scan is
-    /// killed (review ROB-1).
+    /// Limits on the ffprobe runs that index containers flux-hls can't
+    /// read itself (ASF, FLV, AVI, MPEG-PS, rejected MPEG-TS …): a stalled or
+    /// endless run is killed (review ROB-1).
     pub index_scan_limits: crate::index::external::ScanLimits,
 }
 

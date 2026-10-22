@@ -480,6 +480,14 @@ impl AudioTranscoder {
     /// exact sample (TS timestamps are 90 kHz), so the encoder input again
     /// starts at grid position E + d. The TS index's timeline origin is
     /// ffmpeg's `start_time`, which `-ss` is relative to.
+    ///
+    /// Where the source has no audio (a track that starts late or ends
+    /// early, a gap), the part is silence, not missing: `aresample` fills
+    /// from the timestamps (`first_pts=0`: from the seek point on) and
+    /// `apad` past the end, so every part has its frames (an AVI whose MP3
+    /// started at 29 s answered segment 0 with 500, "encoder produced no
+    /// frames"). The file's last part ends with the last segment, so the
+    /// padding is bounded there too.
     fn plan_direct(
         asset: &Asset,
         track: u32,
@@ -499,7 +507,16 @@ impl AudioTranscoder {
         // from a segment of an H.264+AC-3 AVI), which accurate seek can't
         // repair; TS seeks are fine either way.
         const SEEK_MARGIN_S: i64 = 3;
-        let pre = (start - SEEK_MARGIN_S * g.rate as i64).max(0);
+        // An MPEG-PS file of joined recordings: the part `start` lies in,
+        // on that part's own clock (`base`: where it starts).
+        let (input, base) = match &asset.index.layout {
+            Layout::External(l) => {
+                let (input, base_ns) = l.input_at(&asset.index.source.path, ticks_to_ns(start, g.rate));
+                (input, ns_to_ticks(base_ns, g.rate))
+            }
+            _ => (asset.index.source.path.display().to_string(), 0),
+        };
+        let pre = (start - base - SEEK_MARGIN_S * g.rate as i64).max(0);
         let mut args: Vec<String> = [
             "-hide_banner",
             "-nostdin",
@@ -515,7 +532,8 @@ impl AudioTranscoder {
         if pre > 0 {
             args.extend(["-ss".to_string(), secs(pre)]);
         }
-        args.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
+        args.extend(["-i".to_string(), input]);
+        const FILL: &str = "aresample=async=1:first_pts=0,apad";
         match (&asset.index.layout, asset.index.track(track)) {
             // By PID: ffmpeg's stream numbers count streams the index skips.
             // A filtergraph input takes the *first* stream of the PID: for
@@ -523,14 +541,26 @@ impl AudioTranscoder {
             // same PID, which `-map 0:i:<pid>` would map too.
             (Layout::Ts(_), Some(t)) => args.extend([
                 "-filter_complex".to_string(),
-                format!("[0:i:{}]anull[a]", t.id),
+                format!("[0:i:{}]{FILL}[a]", t.id),
                 "-map".to_string(),
                 "[a]".to_string(),
             ]),
-            _ => args.extend(["-map".to_string(), format!("0:{track}")]),
+            _ => args.extend([
+                "-map".to_string(),
+                format!("0:{track}"),
+                "-af".to_string(),
+                FILL.to_string(),
+            ]),
         }
-        args.extend(["-ss".to_string(), secs(start - pre)]);
-        if let Some(e) = to {
+        args.extend(["-ss".to_string(), secs(start - base - pre)]);
+        // The last part ends where the last segment does (`apad` would
+        // never end otherwise).
+        let end = to.or_else(|| {
+            let last = asset.segments.segments.last()?;
+            let t = ns_to_ticks(last.end_ns, g.rate) - g.a0;
+            Some(((t + fsz - 1) / fsz).max(from + 1))
+        });
+        if let Some(e) = end {
             args.extend(["-t".to_string(), secs(g.a0 + (e + 2) * fsz - start)]);
         }
         let (codec_name, muxer) = if target.codec == Codec::Eac3 {
@@ -556,7 +586,7 @@ impl AudioTranscoder {
             args,
             first_index: enc_start,
             keep_from: from,
-            keep_to: to,
+            keep_to: to.or(end),
         }
     }
 

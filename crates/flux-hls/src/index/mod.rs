@@ -44,7 +44,12 @@ use crate::source::{Source, SourceId};
 ///    durations most of its frames have (`mp4::dominant_rate`), not their
 ///    average: frames held for seconds made 23.976 fps 22.75, and a
 ///    transcode converts such a video at this rate.
-pub const INDEX_VERSION: u16 = 9;
+/// 12: containers flux can't cut (ASF, FLV, RealMedia, MPEG-PS, AVI,
+///     MPEG-TS without H.264/HEVC) are indexed without a packet scan
+///     ([`IndexMethod::HeaderProbe`]): no keyframe list, a frame rate to
+///     convert to, the container and codecs named, FLV/ASF durations from
+///     their last packets.
+pub const INDEX_VERSION: u16 = 12;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
@@ -272,10 +277,14 @@ pub enum IndexMethod {
     Moov,
     /// Fragmented MP4: sample tables built from every `moof`/`traf`/`trun`.
     Fragments,
-    /// No container index (TS/M2TS/AVI): an ffprobe packet scan.
+    /// No container index (TS/M2TS/AVI): an ffprobe packet scan. (Indexes
+    /// before version 12.)
     FfprobeScan,
     /// MPEG-TS/M2TS: one in-process pass over the packets (`crate::ts`).
     TsScan,
+    /// Containers only ffmpeg reads: ffprobe's stream facts and first
+    /// packets, no keyframe list (`external`). Segments lie on a time grid.
+    HeaderProbe,
 }
 
 /// I/O and time spent building the index.
@@ -373,8 +382,9 @@ impl PlaybackIndex {
         Self::build_from(&src)
     }
 
-    /// Like [`PlaybackIndex::build_from`], but falls back to an ffprobe scan
-    /// for containers without an index (TS, M2TS, AVI). The scan is bounded
+    /// Like [`PlaybackIndex::build_from`], but falls back to ffprobe for
+    /// containers flux can't cut itself (ASF, FLV, RealMedia, MPEG-PS, AVI,
+    /// TS without H.264/HEVC): see [`external`]. The ffprobe runs are bounded
     /// by the default [`external::ScanLimits`].
     pub fn build_with_fallback(src: &Source, ffprobe: Option<&Path>) -> Result<Self> {
         Self::build_with_fallback_limits(src, ffprobe, &external::ScanLimits::default())
@@ -702,7 +712,7 @@ pub(crate) fn classify_hdr(color: Option<&ColorInfo>, dovi: bool) -> HdrFormat {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]

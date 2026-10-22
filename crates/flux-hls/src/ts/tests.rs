@@ -294,7 +294,7 @@ async fn rejected_ts_falls_back_to_the_ffmpeg_paths() {
     }
     let src = crate::source::Source::open(&p).unwrap();
     let idx = PlaybackIndex::build_with_fallback(&src, Some(&cfg.ffprobe)).unwrap();
-    assert_eq!(idx.method, IndexMethod::FfprobeScan);
+    assert_eq!(idx.method, IndexMethod::HeaderProbe);
     assert!(
         idx.warnings.iter().any(|w| w.starts_with(super::NO_REMUX)),
         "{:?}",

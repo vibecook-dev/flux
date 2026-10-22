@@ -19,9 +19,13 @@
 //!   -noaccurate_seek`; an MPEG-TS source is instead fed from that keyframe
 //!   through stdin, [`crate::ts::video_input`], since ffmpeg's TS seek lands
 //!   on any PES), drops the frames before the piece (`trim`), and
-//!   forces an IDR at every piece boundary. Its fragmented-MP4 output is
-//!   parsed as it streams in, and each piece is published as soon as its
-//!   frames are complete, so a request waits only for its own piece.
+//!   forces an IDR at every piece boundary. A container only ffmpeg reads
+//!   has no keyframe list: its run seeks by time a margin before the piece
+//!   and converts to the index's constant frame rate (`fps`, `tpad`), so
+//!   the frame counts are exact by construction (`external_window`).
+//!   Its fragmented-MP4 output is parsed as it streams in, and each piece
+//!   is published as soon as its frames are complete, so a request waits
+//!   only for its own piece.
 //! - Frame counts are exact per piece (`-frames:v`, one IDR per piece, no
 //!   B-frames, CTS = presentation offset D): pieces are independent, any one
 //!   can be produced cold, and they line up with every audio rendition
@@ -214,6 +218,42 @@ fn converts(stts: &[(u32, u32)], timescale: u32, frame_duration: Option<u32>, ra
         }
     }
     true
+}
+
+/// Where a run of an index-less asset (`Layout::External`) starts ffmpeg:
+/// `input` what it opens (the file, or the part of it the run starts in,
+/// [`ExternalLayout::input_at`](crate::index::external::ExternalLayout::input_at)),
+/// `seek_us` its `-ss` (µs on that input's clock), `shift_us` from there to
+/// the run's first piece.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Window {
+    pub input: String,
+    pub seek_us: i64,
+    pub shift_us: i64,
+}
+
+/// The [`Window`] of a run whose first piece is `first`, or `None` for an
+/// indexed asset: the seek margin before the piece
+/// ([`crate::index::external::ExternalLayout::seek_margin_ns`]), never
+/// before the start of the input.
+pub(crate) fn external_window(asset: &Asset, first: &Piece, ts: f64) -> Option<Window> {
+    let Layout::External(l) = &asset.index.layout else {
+        return None;
+    };
+    let t0_ns = (first.start_ticks as f64 * 1e9 / ts).round() as i64;
+    let (input, base_ns) = l.input_at(&asset.index.source.path, t0_ns);
+    let t0 = (t0_ns - base_ns) / 1000;
+    let seek = (t0 - l.seek_margin_ns.max(0) / 1000).max(0);
+    Some(Window {
+        input,
+        seek_us: seek,
+        shift_us: t0 - seek,
+    })
+}
+
+/// µs as ffmpeg seconds ("12.345678").
+fn micros(us: i64) -> String {
+    format!("{}.{:06}", us / 1_000_000, us % 1_000_000)
 }
 
 /// Clockwise display rotation of the asset's video (0/90/180/270).
@@ -964,25 +1004,38 @@ impl VideoTranscoder {
         // Matroska/MP4 keyframe times are absolute container times, and
         // ffmpeg adds the file's start_time to `-ss` unless told the seek
         // point is a timestamp (PB-NEW-1: a file starting at 1 s lost its
-        // first second). The ffprobe-scan index already counts from the
-        // start time.
+        // first second). The other indexes count from the start time.
         if matches!(asset.index.layout, Layout::Matroska(_) | Layout::Mp4(_)) {
             a.extend(["-seek_timestamp".to_string(), "1".into()]);
         }
-        if matches!(asset.index.layout, Layout::Ts(_)) {
-            // MPEG-TS: ffmpeg's `-ss` lands on any PES by DTS, not on the
-            // keyframe (HEVC then misses references and loses frames), so
-            // the run reads the source from its keyframe on through stdin
-            // ([`Self::ts_input`]); the input's time starts at that keyframe.
-            a.extend(["-f", "mpegts", "-i", "pipe:0"].map(String::from));
-        } else {
-            // Start exactly on the source keyframe of the run's segment.
-            a.extend([
-                "-ss".to_string(),
-                format!("{:.6}", span.start_ns as f64 / 1e9),
-                "-noaccurate_seek".into(),
-            ]);
-            a.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
+        // Containers only ffmpeg reads have no keyframe list: the run seeks
+        // by time, a margin before its first piece, and ffmpeg's accurate
+        // seek decodes from the keyframe before that (`external_window`).
+        let window = external_window(asset, first, ts);
+        match (&asset.index.layout, &window) {
+            (Layout::Ts(_), _) => {
+                // MPEG-TS: ffmpeg's `-ss` lands on any PES by DTS, not on
+                // the keyframe (HEVC then misses references and loses
+                // frames), so the run reads the source from its keyframe on
+                // through stdin ([`Self::ts_input`]); the input's time
+                // starts at that keyframe.
+                a.extend(["-f", "mpegts", "-i", "pipe:0"].map(String::from));
+            }
+            (_, Some(w)) => {
+                if w.seek_us > 0 {
+                    a.extend(["-ss".to_string(), micros(w.seek_us)]);
+                }
+                a.extend(["-i".to_string(), w.input.clone()]);
+            }
+            _ => {
+                // Start exactly on the source keyframe of the run's segment.
+                a.extend([
+                    "-ss".to_string(),
+                    format!("{:.6}", span.start_ns as f64 / 1e9),
+                    "-noaccurate_seek".into(),
+                ]);
+                a.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
+            }
         }
         // The run's first frame on the source timeline: where the subtitle
         // input is lined up (crate::burn).
@@ -1014,10 +1067,21 @@ impl VideoTranscoder {
             ]
             .map(String::from),
         );
-        if run.iter().all(|p| p.frames.is_some()) {
+        // Frames per piece: from the index, else predicted from the frame
+        // grid. A converted constant rate (`external_window`) makes the
+        // prediction exact, also for the file's last piece.
+        let count = |p: &Piece| {
+            p.frames.map(u64::from).or_else(|| {
+                window
+                    .as_ref()
+                    .and(v.frame_duration)
+                    .map(|fd| ((p.end_ticks - p.start_ticks).max(1) as u64).div_ceil(u64::from(fd.max(1))))
+            })
+        };
+        if run.iter().all(|p| count(p).is_some()) {
             let n: u64 = match frames {
                 Some(f) => f.per_piece.iter().map(|x| x.len() as u64).sum(),
-                None => run.iter().map(|p| p.frames.unwrap_or(0) as u64).sum(),
+                None => run.iter().map(|p| count(p).unwrap_or(0)).sum(),
             };
             a.extend(["-frames:v".to_string(), n.max(1).to_string()]);
         }
@@ -1038,14 +1102,26 @@ impl VideoTranscoder {
             _ => 0.0,
         };
         // Then scale, tone-map and rotate for the encoder (crate::encoders).
+        // A time-based run instead puts the piece's start at 0 (in µs, so
+        // AVI's 1/fps timebase doesn't round it to a frame) and converts to
+        // the index's constant rate: `fps` picks the frame on screen at
+        // each grid point (those before 0 only for the first), `tpad`
+        // repeats the last one if the video ends before the file does.
         // A converted video ([`converted_rate`]) instead starts its clock at
         // the piece (in µs, exact) and takes `fps`'s frames: the frame on
         // screen at each grid point (of those before 0, only the last one).
         // In the run that ends the file, `tpad` repeats the last frame where
         // the video ends early, so `-frames:v` ends the run; without it the
         // last piece takes the frames there are (`piece_cut`).
-        let (pre, chain) = match converted_rate(asset) {
-            Some(r) => {
+        let (pre, chain) = match (&window, v.frame_rate, converted_rate(asset)) {
+            (Some(w), Some(r), _) => (
+                format!("settb=AVTB,setpts=PTS-{}/TB", micros(w.shift_us)),
+                format!(
+                    "{},fps={}/{}:start_time=0,tpad=stop=-1:stop_mode=clone",
+                    pipe.filters, r.num, r.den
+                ),
+            ),
+            (_, _, Some(r)) => {
                 let us = |s: f64| (s * 1e6).round() as i64;
                 let shift = us(first.start_ticks as f64 / ts) - us(span.start_ns as f64 / 1e9);
                 let end = asset.segments.segments.last().map_or(i64::MAX, |s| s.end_ticks);
@@ -1068,7 +1144,7 @@ impl VideoTranscoder {
                     ),
                 )
             }
-            None => (
+            _ => (
                 format!("trim=start={:.6},setpts=PTS-STARTPTS", trim.max(0.0)),
                 pipe.filters.clone(),
             ),
@@ -1264,13 +1340,22 @@ impl VideoTranscoder {
             cancel: self.cancel.child_token(),
             waiting: AtomicUsize::new(0),
         });
+        // A run reads one part of an MPEG-PS file of joined recordings
+        // (`ExternalLayout::input_at`): it ends where the part does.
+        let part = |n: usize| match &asset.index.layout {
+            Layout::External(l) if !l.parts.is_empty() => {
+                let ts = asset.segments.timescale.max(1) as i128;
+                l.part_of((all[n].start_ticks as i128 * 1_000_000_000 / ts) as i64)
+            }
+            _ => 0,
+        };
         {
             let mut inflight = self.inflight.lock().ok()?;
             let cache = self.cache.lock().ok()?;
             let mut rx0 = None;
             for n in from..(from + self.run_pieces.max(1) as usize).min(all.len()) {
                 let k: VKey = (key.to_string(), target, n as u32);
-                if cache.contains(&k) || inflight.contains_key(&k) {
+                if cache.contains(&k) || inflight.contains_key(&k) || part(n) != part(from) {
                     break;
                 }
                 let (tx, rx) = watch::channel(None);
