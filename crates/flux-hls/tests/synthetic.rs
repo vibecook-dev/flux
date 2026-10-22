@@ -333,14 +333,54 @@ fn burst_onsets(pcm: &[i16]) -> Vec<usize> {
     onsets
 }
 
+fn rms(x: &[i16]) -> f64 {
+    let n = x.len().max(1) as f64;
+    (x.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() / n).sqrt()
+}
+
+/// Where `got` is silent but the reference is loud: tone replaced by
+/// silence, which onsets can't see when it falls inside a burst. Each is
+/// decoded PCM with its timeline origin (48 kHz ticks). 1 ms windows of the
+/// reference from tick `after` on count when the reference is loud from
+/// 3 ms before to 3 ms after them (so burst edges and small lags don't) and
+/// `got` is below a tenth of it there. Returns the stretches as inclusive
+/// ms ranges on the timeline.
+fn silenced(reference: (&[i16], i64), got: (&[i16], i64), after: i64) -> Vec<(i64, i64)> {
+    const W: usize = 48;
+    let env: Vec<f64> = reference.0.chunks(W).map(rms).collect();
+    let loud = env.iter().copied().fold(0.0, f64::max) / 4.0;
+    let mut runs: Vec<(i64, i64)> = Vec::new();
+    for k in 3..env.len().saturating_sub(3) {
+        let at = reference.1 + (k * W) as i64;
+        if at < after || env[k - 3..=k + 3].iter().any(|&e| e < loud) {
+            continue;
+        }
+        let level = usize::try_from(at - got.1)
+            .ok()
+            .and_then(|j| got.0.get(j..j + W))
+            .map_or(0.0, rms);
+        if level < env[k] / 10.0 {
+            let ms = at / 48;
+            match runs.last_mut() {
+                Some(r) if r.1 + 1 == ms => r.1 = ms,
+                _ => runs.push((ms, ms)),
+            }
+        }
+    }
+    runs
+}
+
 /// AC-3 and E-AC-3 in Matroska with their frames laced 8 to a block
 /// (256 ms per block, as many releases are muxed), transcoded to AAC for
 /// Chrome. Each segment (and each of its parallel parts) once lost the
 /// frames of the laced block that began before its window: frames went
 /// missing at the seams (21–256 ms holes) and the rest of the segment slid
 /// earlier. Every segment must hold all its grid frames and end exactly
-/// where the next begins, and every tone burst must sit where it is in the
-/// copied original (a constant offset, across seams and part joins).
+/// where the next begins, every tone burst must sit where it is in the
+/// copied original (a constant offset, across seams and part joins), and no
+/// tone may be lost: the transcoder pads a source that starts late with
+/// silence, which keeps the frame count and the onsets right, so frames
+/// lost at the start of a part show only as silence where the copy is loud.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn laced_ac3_in_matroska_transcodes_without_gaps() {
     if flux_test_media::ffmpeg().is_none() {
@@ -363,13 +403,12 @@ async fn laced_ac3_in_matroska_transcodes_without_gaps() {
     // The reference: the same tracks copied for Safari, frame for frame.
     let safari = engine.plan(&asset, &presets::safari_macos(), &hls_only());
     let dir = flux_test_media::scratch("hls-synthetic-laced-ac3");
-    // Burst onsets on a rendition's timeline (48 kHz ticks).
-    let onsets = |file: &Path, segs: &[Vec<u8>]| -> Vec<i64> {
-        let t0 = trun(&segs[0]).0 as i64;
-        burst_onsets(&decode_pcm(file, "0:a:0"))
-            .into_iter()
-            .map(|i| t0 + i as i64)
-            .collect()
+    // A rendition decoded, with its timeline origin: the first tfdt (48 kHz
+    // ticks; the segments are contiguous).
+    let decode = |file: &Path, segs: &[Vec<u8>]| (decode_pcm(file, "0:a:0"), trun(&segs[0]).0 as i64);
+    // Burst onsets on a rendition's timeline.
+    let onsets = |(pcm, t0): &(Vec<i16>, i64)| -> Vec<i64> {
+        burst_onsets(pcm).into_iter().map(|i| t0 + i as i64).collect()
     };
     for a in &plan.audio {
         let t = asset.index.track(a.track).expect("track");
@@ -428,9 +467,11 @@ async fn laced_ac3_in_matroska_transcodes_without_gaps() {
             &format!("laced.a{}.copy.mp4", a.track),
         )
         .await;
-        let reference = onsets(&copy_file, &copy_segs);
+        let want = decode(&copy_file, &copy_segs);
+        let got = decode(&file, &segs);
+        let reference = onsets(&want);
         assert!(reference.len() >= 38, "{name}: {} bursts", reference.len());
-        let lags: Vec<i64> = onsets(&file, &segs)
+        let lags: Vec<i64> = onsets(&got)
             .into_iter()
             .filter(|&at| at > reference[0] + 4800)
             .map(|at| {
@@ -448,6 +489,14 @@ async fn laced_ac3_in_matroska_transcodes_without_gaps() {
         assert!(
             lags.iter().all(|l| l.abs() <= 96),
             "{name}: burst offsets from the copy (ticks) {lags:?}"
+        );
+        // Part joins fall inside bursts here (a part is ~47 AAC frames, just
+        // over 1 s; bursts come every 0.25 s), so a burst cut short at a join
+        // keeps its onset: compare the level too, past the first burst.
+        let lost = silenced((&want.0, want.1), (&got.0, got.1), reference[0] + 4800);
+        assert!(
+            lost.is_empty(),
+            "{name}: silent where the copy is loud (ms on the timeline) {lost:?}"
         );
     }
 }
