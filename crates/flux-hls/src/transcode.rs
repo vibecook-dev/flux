@@ -303,6 +303,8 @@ struct SegmentGrid {
     /// Grid frames [g_k, g_end) of the segment (`None` = to the end).
     g_k: i64,
     g_end: Option<i64>,
+    /// Where the segment starts on the asset's timeline, ns.
+    start_ns: i64,
 }
 
 fn segment_grid(asset: &Asset, track: u32, target: AudioTarget, n: usize) -> Result<SegmentGrid> {
@@ -334,6 +336,7 @@ fn segment_grid(asset: &Asset, track: u32, target: AudioTarget, n: usize) -> Res
         frame,
         g_k,
         g_end: next.map(|s| grid(s.start_ns)),
+        start_ns: span.start_ns,
     })
 }
 
@@ -498,7 +501,22 @@ impl AudioTranscoder {
     ) -> Job {
         const PREROLL_FRAMES: i64 = 3;
         let fsz = g.frame;
-        let enc_start = (from - PREROLL_FRAMES).max(0);
+        // An MPEG-PS file of joined recordings: the part the segment lies in
+        // (segments start anew at each), read alone, on its own clock
+        // (`base`: where it starts on the asset's timeline).
+        let (input, base) = match &asset.index.layout {
+            Layout::External(l) => {
+                let (input, base_ns, _) = l.input_at(&asset.index.source.path, g.start_ns);
+                (input, ns_to_ticks(base_ns, g.rate))
+            }
+            _ => (asset.index.source.path.display().to_string(), 0),
+        };
+        // The pre-roll stays in that part: the first grid frame whose
+        // encoder input starts at or after the part's start. (Taken from the
+        // part before, it read that part, which ends at the join: the first
+        // segment after a join was ~3 s of silence.)
+        let in_part = (base - g.a0 - target.delay() + fsz - 1).max(0) / fsz;
+        let enc_start = (from - PREROLL_FRAMES).max(in_part).min(from).max(0);
         let start = g.a0 + enc_start * fsz + target.delay();
         let secs = |ticks: i64| format!("{:.6}", ticks.max(0) as f64 / g.rate as f64);
         // Seek the demuxer a few seconds early and cut exactly on the output
@@ -507,15 +525,6 @@ impl AudioTranscoder {
         // from a segment of an H.264+AC-3 AVI), which accurate seek can't
         // repair; TS seeks are fine either way.
         const SEEK_MARGIN_S: i64 = 3;
-        // An MPEG-PS file of joined recordings: the part `start` lies in,
-        // on that part's own clock (`base`: where it starts).
-        let (input, base) = match &asset.index.layout {
-            Layout::External(l) => {
-                let (input, base_ns, _) = l.input_at(&asset.index.source.path, ticks_to_ns(start, g.rate));
-                (input, ns_to_ticks(base_ns, g.rate))
-            }
-            _ => (asset.index.source.path.display().to_string(), 0),
-        };
         let pre = (start - base - SEEK_MARGIN_S * g.rate as i64).max(0);
         let mut args: Vec<String> = [
             "-hide_banner",

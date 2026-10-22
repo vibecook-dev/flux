@@ -538,8 +538,11 @@ async fn a_subtitle_file_is_burned_into_an_index_less_file_on_time() {
 
 /// Two recordings joined byte for byte, the clock starting over at 10 s:
 /// ffprobe calls the file 8 s long (the last clock) and its seeks can't
-/// tell the parts apart. The playlist covers both parts, and a piece of
-/// either, asked for cold, shows that part's pictures at its time.
+/// tell the parts apart. The playlist covers both parts, a piece of
+/// either, asked for cold, shows that part's pictures at its time, and the
+/// first audio segment after the join is the second part's tone from its
+/// start (its first 3 s were silent: the encode that starts it read the
+/// first part, which ends at the join).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn joined_program_streams_play_both_parts() {
     let Some(engine) = x264_engine() else { return };
@@ -579,17 +582,57 @@ async fn joined_program_streams_play_both_parts() {
             "piece {n} is not its part at {at} s (min PSNR {psnr:.1} dB)"
         );
     }
+    let after = first_segment_of(&asset, l.parts[1].start_ns);
     for a in &plan.audio {
         let r = Rendition::Audio(AudioKey::from_plan(a));
         let n = engine.segment_count(&asset, &plan, &r) as u32;
         let (_, segs) = write_segments(&engine, &asset, &plan, r, 0..n, &dir, "joined.a.mp4").await;
         let total: u64 = segs.iter().map(|s| trun(s).1.len() as u64 * 1024).sum();
         assert!((total as f64 / 48_000.0 - secs).abs() < 0.2, "audio {total}");
+        let init = bytes(&engine, &asset, &plan, HlsResource::Init(r)).await;
+        let pcm = decode_s16(&init, &segs[after as usize], &dir, "joined.a.after.mp4");
+        assert_tone(
+            &pcm,
+            48_000.0,
+            5.5,
+            660.0,
+            "the first audio segment after the join",
+        );
     }
     // The catalog's probe agrees.
     let probed = flux_probe::ffprobe::probe(&p).unwrap();
     let ms = probed.duration_ms.unwrap();
     assert!((17_600..18_400).contains(&ms), "{ms} ms");
+}
+
+/// The segment that starts at `t_ns` (a part's start).
+fn first_segment_of(asset: &Asset, t_ns: i64) -> u32 {
+    asset
+        .segments
+        .segments
+        .iter()
+        .position(|s| s.start_ns == t_ns)
+        .unwrap_or_else(|| panic!("no segment starts at {t_ns} ns")) as u32
+}
+
+/// `pcm` (`rate` Hz) is a tone of `hz` for `secs` from 50 ms on: every half
+/// second of it loud and of that frequency (by its zero crossings). The
+/// first 50 ms are left out: decoders started cold there (the source's at
+/// the start of a part, the AAC decoder on a lone segment) warm up.
+fn assert_tone(pcm: &[i16], rate: f64, secs: f64, hz: f64, what: &str) {
+    let (skip, win) = ((rate / 20.0) as usize, (rate / 2.0) as usize);
+    let n = (secs * 2.0) as usize;
+    assert!(pcm.len() >= skip + n * win, "{what}: {} samples", pcm.len());
+    for (k, w) in pcm[skip..].chunks(win).take(n).enumerate() {
+        let crossings = w.windows(2).filter(|p| (p[0] < 0) != (p[1] < 0)).count();
+        let (level, f) = (rms(w), crossings as f64);
+        let from = 0.05 + k as f64 / 2.0;
+        assert!(
+            level > 1000.0 && (f - hz).abs() < 20.0,
+            "{what}: {from:.2}–{:.2} s: RMS {level:.0}, {f:.0} Hz",
+            from + 0.5
+        );
+    }
 }
 
 /// A download that stopped at 40 %: the FLV's header still says 10 s, but
