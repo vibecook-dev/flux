@@ -278,6 +278,163 @@ fn reparse_retitles_a_work_named_by_its_old_parse_and_queues_its_art() {
     fts_ok(&e);
 }
 
+/// A build between two releases re-parsed an older catalog and stored the
+/// new guesses without retitling, so a later re-parse has no old title to
+/// go by: old and new guess are the same. Every re-parsed item whose title
+/// none of its files gives takes the one they give, as in a fresh scan:
+/// an episode named after a release tag gets its placeholder, or the
+/// episode title another of its files gives; a dotted show or movie title
+/// gets its parsed one, preferring a file that keeps the work's
+/// normalised title. A provider's or the user's title stays, and a
+/// retitled show or movie gets its art job. A second re-parse changes
+/// nothing.
+#[test]
+fn reparse_heals_titles_no_file_gives_when_the_old_guess_is_the_new_one() {
+    let e = env(LibraryKind::Mixed);
+    let ep_path = |n: u16| format!("Quiet Harbor/S01/Quiet.Harbor.S01E0{n}.Tagword.mkv");
+    let named_e2 = "Quiet Harbor/S01/Quiet.Harbor.S01E02.The.Pier.mkv";
+    let named = || {
+        let mut g = episode("Quiet Harbor", None, 1, &[2]);
+        g.episode_title = Some("The Pier".into());
+        g
+    };
+    let kite = "Paper Kite 2 (2024)/PK-7 Paper.Kite.2.2024.1080p.mkv";
+    let lantern = "Lantern Field (2011)/Lantern.Field.2011.mkv";
+    // Two films one provider id makes one work; the first file's name
+    // gives another title than the work's.
+    let alias = "Copper Sky (2019)/Sky of Copper.mkv";
+    let copper = "Copper Sky (2019)/Copper Sky (2019).mkv";
+    let files = move || {
+        let mut v: Vec<_> = (1..=3)
+            .map(|n| upsert(&ep_path(n), episode("Quiet Harbor", None, 1, &[n]), None))
+            .collect();
+        v.push(upsert(named_e2, named(), None));
+        v.push(upsert(kite, movie("PK-7 Paper Kite 2", Some(2024)), None));
+        v.push(upsert(lantern, movie("Lantern Field", Some(2011)), None));
+        v.push(upsert(alias, movie_tmdb("Sky of Copper", Some(2019), 77), None));
+        v.push(upsert(copper, movie_tmdb("Copper Sky", Some(2019), 77), None));
+        v
+    };
+    // The episode's untitled file comes first (the lower file id); its
+    // titled one, scanned later, replaces the placeholder.
+    let mut first_scan = files();
+    let titled = first_scan.remove(3);
+    e.apply(first_scan);
+    e.apply(vec![titled]);
+    let show = e.find_top("Quiet Harbor").id;
+    let eps = episodes(&e, show);
+    assert_eq!(eps.len(), 3);
+    assert_eq!(eps[1].title, "The Pier", "a real title replaces the placeholder");
+    let film = e.find_top("PK-7 Paper Kite 2").id;
+    let field = e.find_top("Lantern Field").id;
+    let sky = e.find_top("Sky of Copper").id;
+    assert_eq!(e.detail(sky).assets.len(), 2);
+
+    // What the old parse titled them, kept through the re-parse that
+    // stored the guesses above.
+    for ep in &eps {
+        sql(
+            &e,
+            "UPDATE item SET title = 'Tagword', sort_title = 'tagword' WHERE id = ?1",
+            ep.id,
+        );
+    }
+    sql(
+        &e,
+        "UPDATE item SET match_state = 'locked' WHERE id = ?1",
+        eps[2].id,
+    );
+    sql(
+        &e,
+        "UPDATE item SET title = 'Quiet.Harbor', sort_title = 'quiet.harbor' WHERE id = ?1",
+        show,
+    );
+    sql(
+        &e,
+        "UPDATE item SET title = 'PK-7 Paper.Kite.2', sort_title = 'pk-7 paper.kite.2' WHERE id = ?1",
+        film,
+    );
+    sql(
+        &e,
+        "UPDATE item SET title = 'Lantern Field: Director''s Cut', sort_title = 'lantern field',
+                match_state = 'matched' WHERE id = ?1",
+        field,
+    );
+    sql(
+        &e,
+        "UPDATE item SET title = 'Copper.Sky', sort_title = 'copper.sky', group_key = 'copper sky' WHERE id = ?1",
+        sky,
+    );
+    e.cat.writer().rebuild_search_index().wait().unwrap();
+    finish_all_jobs(&e);
+
+    // The re-parse reads every name as the stored guess does.
+    let out = e.apply(files());
+    let titles: Vec<String> = episodes(&e, show).into_iter().map(|ep| ep.title).collect();
+    assert_eq!(titles, ["Episode 1", "The Pier", "Tagword"]);
+    assert_eq!(e.detail(show).summary.title, "Quiet Harbor");
+    assert_eq!(e.detail(film).summary.title, "PK-7 Paper Kite 2");
+    assert_eq!(
+        e.detail(sky).summary.title,
+        "Copper Sky",
+        "the file that keeps the work's normalised title names it"
+    );
+    assert_eq!(
+        e.detail(field).summary.title,
+        "Lantern Field: Director's Cut",
+        "a provider's title stays"
+    );
+    for id in [show, film, sky, eps[0].id, eps[1].id] {
+        assert!(out.items_updated.contains(&id), "{id}: {out:?}");
+    }
+    for id in [show, film, sky] {
+        assert_eq!(queued_art_jobs(&e, id), 1, "{id}: its poster carries the title");
+    }
+    assert_eq!(queued_art_jobs(&e, field), 0);
+    let search = |q: &'static str| -> Vec<Id> {
+        e.cat
+            .read_blocking(move |c| read::search(c, q, 10, None))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.id)
+            .collect()
+    };
+    assert_eq!(search("Tagword"), [eps[2].id], "only the locked one");
+    assert_eq!(search("pier"), [eps[1].id]);
+    assert_eq!(search("paper kite"), [film]);
+    fts_ok(&e);
+
+    finish_all_jobs(&e);
+    e.apply(files());
+    let again: Vec<String> = episodes(&e, show).into_iter().map(|ep| ep.title).collect();
+    assert_eq!(again, titles);
+    for id in [show, film, sky, field] {
+        assert_eq!(queued_art_jobs(&e, id), 0, "{id}: nothing changed");
+    }
+}
+
+/// A catalog a version-2 build parsed counts as outdated, so the server's
+/// startup Deep scan re-parses it once more and the rules above heal it.
+#[test]
+fn a_catalog_a_version_2_build_parsed_is_re_parsed() {
+    let e = env(LibraryKind::Movies);
+    let path = "Copper Sky (2019)/Copper Sky (2019).mkv";
+    e.apply(vec![upsert(path, movie("Copper Sky", Some(2019)), None)]);
+    let lib = e.lib.id;
+    let outdated = || {
+        e.cat
+            .read_blocking(move |c| read::outdated_files(c, lib))
+            .unwrap()
+    };
+    assert_eq!(outdated(), 0);
+    sql(
+        &e,
+        "UPDATE file SET parse_version = 2 WHERE id = ?1",
+        e.file_id(path),
+    );
+    assert_eq!(outdated(), 1);
+}
+
 /// A film the old parser cataloged as a film of its own is an extra of
 /// another film now. The emptied film goes, with its images; its users'
 /// state moves to the extra. Nothing is left hidden.

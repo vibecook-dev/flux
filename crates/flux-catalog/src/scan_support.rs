@@ -268,8 +268,13 @@ struct Apply<'c> {
     /// Items this job deleted: works merged into the work their last file
     /// moved to (see [`crate::merge::carry_emptied`]).
     deleted: BTreeSet<Id>,
-    /// Items a re-parse retitled ([`group::retitle_parsed`]).
+    /// Items a re-parse retitled ([`group::retitle_parsed`],
+    /// [`group::heal_parsed_title`]).
     retitled: BTreeSet<Id>,
+    /// Items a re-parse placed a file in. Once the batch is placed, a
+    /// title none of their files gives any more follows them
+    /// ([`Apply::heal_titles`]).
+    reparsed: BTreeSet<Id>,
 }
 
 /// Backoff before a failed probe is retried: 1 min, doubling per failed
@@ -306,6 +311,7 @@ impl<'c> Apply<'c> {
                 expect: HashMap::new(),
                 deleted: BTreeSet::new(),
                 retitled: BTreeSet::new(),
+                reparsed: BTreeSet::new(),
             },
             state == RootState::Unavailable.as_str(),
         ))
@@ -396,6 +402,7 @@ pub(crate) fn apply_batch(
         ap.retry_pending()?;
     }
     ap.regroup_word_extras()?;
+    ap.heal_titles()?;
     if let Some(cursor) = &b.cursor {
         conn.prepare_cached("UPDATE root SET cursor = ?2 WHERE id = ?1")?
             .execute(params![b.root_id, cursor])?;
@@ -820,6 +827,9 @@ impl Apply<'_> {
                 if let Some(Placement::Movie { work: was, .. }) = &was {
                     self.retitle(item, &was.title, &work.title)?;
                 }
+                if was.is_some() {
+                    self.reparsed.insert(item);
+                }
                 self.placed_parent = true;
                 if let Some((dir, _)) = rel_path.rsplit_once('/') {
                     self.movie_dirs.insert(dir.to_string());
@@ -883,6 +893,10 @@ impl Apply<'_> {
                 }
                 if let (Some(was), [ep], [item]) = (was_episode, episodes.as_slice(), items.as_slice()) {
                     self.retitle(*item, &was, &group::episode_title(ep, title))?;
+                }
+                if was.is_some() {
+                    self.reparsed.insert(show_id);
+                    self.reparsed.extend(items.iter().copied());
                 }
                 self.placed_parent = true;
                 self.link(file_id, current, &items, None, None, guess, probe)?;
@@ -1052,12 +1066,29 @@ impl Apply<'_> {
     }
 
     /// A re-parse changed the title the file's name gives `id` (`old` →
-    /// `new`): see [`group::retitle_parsed`]. A retitled movie or show gets
-    /// its art job again, as its frame poster carries the title.
+    /// `new`): see [`group::retitle_parsed`].
     fn retitle(&mut self, id: Id, old: &str, new: &str) -> Result<()> {
         if self.deleted.contains(&id) || !group::retitle_parsed(self.conn, &self.r, id, old, new)? {
             return Ok(());
         }
+        self.mark_retitled(id)
+    }
+
+    /// Re-parsed items whose title none of their files gives any more take
+    /// the one they give ([`group::heal_parsed_title`]). Runs once the
+    /// batch is placed, so every file of the batch has its new guess.
+    fn heal_titles(&mut self) -> Result<()> {
+        for id in std::mem::take(&mut self.reparsed) {
+            if !self.deleted.contains(&id) && group::heal_parsed_title(self.conn, &self.r, id)? {
+                self.mark_retitled(id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `id` has a new title: it is reported as updated, and a movie or show
+    /// gets its art job again, as its frame poster carries the title.
+    fn mark_retitled(&mut self, id: Id) -> Result<()> {
         self.retitled.insert(id);
         let top_level = matches!(self.r.created_meta.get(&id), Some((_, None)))
             || self

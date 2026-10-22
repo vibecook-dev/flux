@@ -792,6 +792,122 @@ pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str,
     Ok(n > 0)
 }
 
+/// An item's files, lowest id first, with the guess stored for each and how
+/// many items its asset is linked to: a movie's or an episode's own files.
+const FILES_OF_ITEM: &str = "WITH a(id) AS (SELECT asset_id FROM asset_item WHERE item_id = ?1
+                       UNION SELECT id FROM asset WHERE item_id = ?1)
+     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id)
+       FROM a JOIN asset s ON s.id = a.id JOIN file f ON f.id = s.file_id
+       LEFT JOIN file_meta m ON m.file_id = f.id
+      ORDER BY f.id";
+
+/// [`FILES_OF_ITEM`] for a show: the files of its episodes.
+const FILES_OF_SHOW: &str = "WITH e(id) AS (SELECT ep.id FROM item se JOIN item ep ON ep.parent_id = se.id
+                       WHERE se.parent_id = ?1 AND ep.kind = 'episode'),
+          a(id) AS (SELECT asset_id FROM asset_item WHERE item_id IN (SELECT id FROM e)
+                    UNION SELECT id FROM asset WHERE item_id IN (SELECT id FROM e))
+     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id)
+       FROM a JOIN asset s ON s.id = a.id JOIN file f ON f.id = s.file_id
+       LEFT JOIN file_meta m ON m.file_id = f.id
+      ORDER BY f.id";
+
+/// A re-parsed item whose title none of its files gives any more takes
+/// the title they give, as a fresh scan would. [`retitle_parsed`] goes by
+/// the title the old parse gave, which is gone when an earlier flux stored
+/// the new guess without retitling (a build between two releases), or
+/// when the file that named the item went.
+///
+/// A movie or show takes the title of its lowest-id file that keeps its
+/// normalised title (else of its lowest-id file). An episode takes the
+/// first episode title its files give, else its "Episode 3" placeholder
+/// (or air date). A title from a provider or the user (`matched`,
+/// `locked`) stays, and so does a title any of the files gives. Returns
+/// whether the title changed.
+pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Result<bool> {
+    type Head = (String, String, String, Option<u16>, Option<String>);
+    let head: Option<Head> = conn
+        .prepare_cached(
+            "SELECT kind, title, group_key, episode_number, air_date FROM item
+              WHERE id = ?1 AND match_state NOT IN ('matched', 'locked')",
+        )?
+        .query_row([id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .optional()?;
+    let Some((kind, title, group_key, number, date)) = head else {
+        return Ok(false);
+    };
+    let sql = match kind.as_str() {
+        "movie" | "episode" => FILES_OF_ITEM,
+        "show" => FILES_OF_SHOW,
+        _ => return Ok(false),
+    };
+    let slot = match (number, date) {
+        (Some(n), _) => Some(EpisodeKey::Number(n)),
+        (None, Some(d)) => Some(EpisodeKey::Date(d)),
+        (None, None) => None,
+    };
+    // The first title a file gives, and the first preferred one: for a
+    // work, one that keeps its normalised title; for an episode, a real
+    // episode title rather than the placeholder.
+    let (mut first, mut preferred): (Option<String>, Option<String>) = (None, None);
+    let mut stmt = conn.prepare_cached(sql)?;
+    let mut rows = stmt.query([id])?;
+    while let Some(row) = rows.next()? {
+        let (file_id, rel_path, json, links): (Id, String, Option<String>, i64) =
+            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+        let Some(guess) = json.and_then(|j| match serde_json::from_str::<NameGuess>(&j) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                tracing::warn!(file_id, error = %e, "unreadable stored guess ignored");
+                None
+            }
+        }) else {
+            continue;
+        };
+        let (given, prefer) = match (kind.as_str(), place(&guess, &rel_path)) {
+            ("movie", Placement::Movie { work, .. }) | ("show", Placement::Episodes { show: work, .. }) => {
+                let same_work = normalize_title(&work.title) == group_key;
+                (work.title, same_work)
+            }
+            // A file's episode title names its episode only when the file
+            // is that one episode (`Apply::place`).
+            (
+                "episode",
+                Placement::Episodes {
+                    episodes,
+                    episode_title: Some(t),
+                    ..
+                },
+            ) if episodes.len() == 1 && links == 1 => (t, true),
+            ("episode", Placement::Episodes { .. }) => match &slot {
+                Some(k) => (episode_title(k, None), false),
+                None => continue,
+            },
+            _ => continue,
+        };
+        if given == title {
+            return Ok(false);
+        }
+        if prefer && preferred.is_none() {
+            preferred = Some(given.clone());
+        }
+        first.get_or_insert(given);
+    }
+    drop(rows);
+    drop(stmt);
+    let Some(new) = preferred.or(first).filter(|t| !t.trim().is_empty()) else {
+        return Ok(false);
+    };
+    let Some(doc) = crate::fts::doc(conn, id)? else {
+        return Ok(false);
+    };
+    conn.prepare_cached("UPDATE item SET title = ?2, sort_title = ?3, updated_at = ?4 WHERE id = ?1")?
+        .execute(params![id, new, sort_title(&new), r.now])?;
+    crate::fts::update(conn, id, &doc)?;
+    Ok(true)
+}
+
 /// The title [`place`] gives an episode item: the parsed episode title of
 /// a single-episode file, else the "Episode 3" placeholder (or the air
 /// date) a new episode gets.
