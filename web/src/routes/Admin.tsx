@@ -8,6 +8,7 @@ import { useTitle } from '../app/useTitle';
 import { api } from '../api/client';
 import { subscribeEvents, subscribeEventsState, type EventsState } from '../api/events';
 import { formatAgo, formatCount, pathLabel } from '../api/format';
+import { refreshFolders } from '../api/folder-list';
 import { refreshLibrary } from '../api/library-list';
 import { keys, useLibraries, useServer, useTailnet } from '../api/queries';
 import { invalidateQueries, setQueryData } from '../api/query';
@@ -245,6 +246,7 @@ export default function Admin() {
         invalidateQueries(keys.libraries);
         invalidateQueries(keys.home);
         refreshLibrary(libraryId);
+        refreshFolders(libraryId);
       }, 1000);
     };
     const unsub = subscribeEvents((e) => {

@@ -115,9 +115,13 @@ export function getFolderList(libraryId: Id, folder: string, sort: FolderSort): 
   return list;
 }
 
-/** Reload every cached folder of a library (after `items_changed`). */
-export function refreshFolders(libraryId: Id): void {
-  for (const list of lists.values()) if (list.libraryId === libraryId) list.load(true);
+/**
+ * Reload every cached folder of a library (after `items_changed`, a scan, a
+ * watched toggle), or of every library: kept for back-navigation, a folder
+ * would otherwise show what it held when it was first opened.
+ */
+export function refreshFolders(libraryId?: Id): void {
+  for (const list of lists.values()) if (libraryId === undefined || list.libraryId === libraryId) list.load(true);
 }
 
 export function useFolderList(libraryId: Id, folder: string, sort: FolderSort): FolderList {
