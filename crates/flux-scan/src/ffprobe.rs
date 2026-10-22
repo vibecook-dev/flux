@@ -148,10 +148,20 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(200));
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
             });
-            let err = run(&fake, &junk, Duration::from_secs(20), &|| {
-                flag.load(std::sync::atomic::Ordering::SeqCst)
-            })
-            .unwrap_err();
+            // ETXTBSY: another test spawning a process forked while the
+            // script was open for writing, and its child holds that until it
+            // execs. Retried; the run itself is what this test is about.
+            let mut err = String::new();
+            for _ in 0..50 {
+                err = run(&fake, &junk, Duration::from_secs(20), &|| {
+                    flag.load(std::sync::atomic::Ordering::SeqCst)
+                })
+                .unwrap_err();
+                if !err.contains("Text file busy") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             assert!(err.contains("cancelled"), "{err}");
         });
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
