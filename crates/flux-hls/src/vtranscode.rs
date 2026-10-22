@@ -31,8 +31,12 @@
 //!   SPS/PPS in-band in its IDR sample, so a run whose encoder session
 //!   picks different parameter sets stays decodable.
 //! - Results are cached by (asset, recipe, piece) in a byte-budgeted LRU; the
-//!   pieces after a request are prefetched by another run (bounded,
-//!   cancellable); every ffmpeg child is `kill_on_drop`.
+//!   pieces after a request are prefetched by another run (cancellable);
+//!   every ffmpeg child is `kill_on_drop`.
+//! - **Concurrency.** Request and prefetch runs share one pool of encoder
+//!   slots ([`default_max_runs`] per encoder kind, or configured). A
+//!   prefetch run only takes a spare slot, and gives it up to a request
+//!   that finds every slot busy, so first pieces never wait behind prefetch.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,15 +46,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use flux_core::{ColorInfo, VideoOp};
+use flux_core::{Codec, ColorInfo, VideoOp};
 use mp4_atom::{Decode, Encode};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::asset::Asset;
 use crate::cache::ByteCache;
-use crate::encoders::{DetectOptions, FfmpegCaps, PipelineInput, VideoEncoder};
+use crate::encoders::{Deinterlace, DetectOptions, FfmpegCaps, PipelineInput, VideoEncoder};
 use crate::error::{HlsError, Result};
 use crate::fmp4::{self, EntrySpec, Fragment, InitSpec, Sample, SampleData};
 use crate::index::{pack_language, Layout};
@@ -129,6 +133,28 @@ pub fn source_fps(asset: &Asset) -> f64 {
 /// Clockwise display rotation of the asset's video (0/90/180/270).
 fn rotation(asset: &Asset) -> u16 {
     asset.index.video_track().map_or(0, |v| v.extra.rotation)
+}
+
+/// Which frames a transcode of `v` deinterlaces (the encoder writes
+/// progressive frames):
+/// - interlaced H.264 ([`IndexTrack::interlaced`](crate::index::IndexTrack::interlaced):
+///   the container's flag, else the SPS): the frames the decoder marks
+///   interlaced, or every frame when the SPS codes only progressive frames
+///   (the decoder marks none, so the container's flag is all there is);
+/// - MPEG-2 and VC-1, the codecs of DVD and broadcast sources: the frames
+///   the decoder marks interlaced.
+///
+/// HEVC and newer codecs code fields as separate pictures, if at all.
+pub fn deinterlace(v: &crate::index::IndexTrack) -> Deinterlace {
+    match v.codec {
+        Codec::H264 => match (v.interlaced(), v.coded_interlaced()) {
+            (Some(true), Some(false)) => Deinterlace::All,
+            (Some(true), _) => Deinterlace::Marked,
+            _ => Deinterlace::Off,
+        },
+        Codec::Mpeg2Video | Codec::Vc1 => Deinterlace::Marked,
+        _ => Deinterlace::Off,
+    }
 }
 
 /// Size of the encoded pictures: the target, turned upright for a source
@@ -289,36 +315,63 @@ pub fn run_frames(asset: &Asset, run: &[Piece]) -> Result<Option<RunFrames>> {
     Ok(Some(RunFrames { all, per_piece }))
 }
 
-/// Where a piece whose frame count is only predicted (`f`, from the frame
-/// grid) ends in the encoder's output `pending` (samples, sync flag): at the
-/// sync sample forced at its boundary when one lies within [`CUT_SLACK`]
-/// frames of `f`, else at `f`. The run's last piece, once the encoder is
-/// done, takes what it produced up to `f`: a frame the source lacks made
-/// `-frames:v` read one past the run's end, which the next run starts with.
-/// `None`: wait for more output.
+/// Where the piece that starts at `pending[0]` ends in the encoder's
+/// output `pending` (samples, sync flag): at the encoder's sync sample (the
+/// IDR forced at the piece's boundary) nearest to `f`, the piece's frame
+/// count (from the index, else predicted from the frame grid), when one lies
+/// within [`CUT_SLACK`] frames; else at `f`. `None`: wait for more output.
+///
+/// `pending` holds whole fragments, and ffmpeg starts a fragment at every
+/// keyframe (`frag_keyframe`), so until the encoder is done (`eof`) the
+/// sample after the last one received is a sync sample too: a piece is cut
+/// as soon as its fragment is complete, also when that fragment ends up to
+/// [`CUT_SLACK`] frames short of `f` (the IDR came early). The run's last
+/// piece takes what the encoder produced, up to `f`: a frame the source
+/// lacks made `-frames:v` read one past the run's end, which the next run
+/// starts with.
 ///
 /// An AVI with one frame missing at 0.04 s put every forced IDR of the
 /// run's later pieces one sample before their start, so a seek into them
 /// began on a P frame.
-fn predicted_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Option<usize> {
-    if last {
-        return (eof && !pending.is_empty()).then_some(pending.len().min(f.max(1)));
-    }
-    if pending.len() < f + CUT_SLACK + 1 && !eof {
+fn piece_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Option<usize> {
+    let f = f.max(1);
+    // Short of `f` and not done: the next fragment is still to come, unless
+    // the IDR that starts it is the boundary's, early (the run's last piece
+    // has no boundary IDR: it waits for all its frames).
+    let short = pending.len() < f && (last || pending.len() + CUT_SLACK < f);
+    if pending.is_empty() || (short && !eof) {
         return None;
     }
-    let lo = f.saturating_sub(CUT_SLACK).max(1);
-    let hi = (f + CUT_SLACK).min(pending.len().saturating_sub(1));
-    let cut = (lo..=hi)
+    if last {
+        return Some(pending.len().min(f));
+    }
+    let next_fragment = (!eof).then_some(pending.len());
+    let at_sync = (1..pending.len())
         .filter(|&i| pending[i].1)
-        .min_by_key(|&i| i.abs_diff(f))
-        .unwrap_or(f);
-    (cut > 0 && cut <= pending.len()).then_some(cut)
+        .chain(next_fragment)
+        .filter(|&i| i.abs_diff(f) <= CUT_SLACK)
+        .min_by_key(|&i| (i.abs_diff(f), i));
+    match at_sync {
+        Some(c) => Some(c),
+        None => (pending.len() >= f).then_some(f),
+    }
 }
 
 /// How far (in frames) a forced IDR may be from a predicted piece boundary
 /// and still mark it.
 const CUT_SLACK: usize = 3;
+
+/// Concurrent encoder runs (sessions), requests and prefetch together, when
+/// none is configured: a hardware encoder takes several sessions at once
+/// (8 parallel 1080p sessions kept an RTX 4090's NVENC under 91% busy; a
+/// GeForce driver allows 8 per machine, shared with other apps), while
+/// libx264 runs share the CPU.
+pub fn default_max_runs(encoder: Option<VideoEncoder>) -> usize {
+    match encoder {
+        Some(e) if e.is_hardware() => 6,
+        _ => 3,
+    }
+}
 
 type VKey = (String, VideoTarget, u32);
 /// A piece being produced: `None` until done.
@@ -367,8 +420,15 @@ pub struct VideoTranscoder {
     pub detect: DetectOptions,
     /// What `ffmpeg` can do, detected on first use.
     caps: tokio::sync::OnceCell<Arc<FfmpegCaps>>,
+    /// Encoder slots, shared by request and prefetch runs; filled once the
+    /// encoder is known ([`Self::caps`]).
     permits: Arc<Semaphore>,
-    prefetch_permits: Arc<Semaphore>,
+    /// Configured slot count (0: [`default_max_runs`]).
+    max_jobs: usize,
+    /// Slots in the pool once the encoder is known.
+    max_runs: AtomicUsize,
+    /// Prefetch runs in flight, the ones a request may take a slot from.
+    prefetching: Mutex<Vec<Arc<RunCtl>>>,
     cache: Mutex<ByteCache<VKey>>,
     inflight: Mutex<HashMap<VKey, InFlight>>,
     avcc: Mutex<HashMap<(String, VideoTarget), Vec<u8>>>,
@@ -410,6 +470,10 @@ enum FragEvent {
 #[derive(Default)]
 struct FragReader {
     buf: Vec<u8>,
+    /// The H.264 track's ID. Only its samples are read: ffmpeg can add
+    /// other tracks, e.g. a QuickTime text track holding the source's
+    /// chapters, whose 24-byte samples once ended up in the video pieces.
+    video_track: Option<u32>,
     trex_size: u32,
     trex_flags: u32,
 }
@@ -445,11 +509,15 @@ impl FragReader {
                 b"moov" => {
                     let moov = mp4_atom::Moov::decode(&mut &self.buf[pos..pos + size])
                         .map_err(|e| HlsError::Ffmpeg(format!("encoder moov: {e}")))?;
-                    if let Some(mp4_atom::Codec::Avc1(a)) = moov
+                    let video = moov
                         .trak
-                        .first()
-                        .and_then(|t| t.mdia.minf.stbl.stsd.codecs.first())
-                    {
+                        .iter()
+                        .find_map(|t| match t.mdia.minf.stbl.stsd.codecs.first() {
+                            Some(mp4_atom::Codec::Avc1(a)) => Some((t.tkhd.track_id, a)),
+                            _ => None,
+                        });
+                    if let Some((id, a)) = video {
+                        self.video_track = Some(id);
                         let mut v = Vec::new();
                         a.avcc
                             .encode(&mut v)
@@ -458,7 +526,13 @@ impl FragReader {
                             events.push(FragEvent::Avcc(b.to_vec()));
                         }
                     }
-                    if let Some(t) = moov.mvex.as_ref().and_then(|x| x.trex.first()) {
+                    let trex = moov.mvex.as_ref().and_then(|x| {
+                        x.trex
+                            .iter()
+                            .find(|t| Some(t.track_id) == self.video_track)
+                            .or(x.trex.first())
+                    });
+                    if let Some(t) = trex {
                         self.trex_size = t.default_sample_size;
                         self.trex_flags = t.default_sample_flags;
                     }
@@ -492,7 +566,8 @@ impl FragReader {
         let moof = mp4_atom::Moof::decode(&mut &chunk[..moof_size])
             .map_err(|e| HlsError::Ffmpeg(format!("encoder moof: {e}")))?;
         let mut out = Vec::new();
-        for traf in &moof.traf {
+        let video = |id: u32| self.video_track.is_none_or(|v| v == id);
+        for traf in moof.traf.iter().filter(|t| video(t.tfhd.track_id)) {
             // ffmpeg writes default-base-is-moof (we ask for it).
             let base = 0usize;
             for trun in &traf.trun {
@@ -516,15 +591,17 @@ impl FragReader {
 }
 
 impl VideoTranscoder {
-    /// `max_jobs` bounds concurrent encoder runs for requests; prefetch
-    /// uses at most one more.
+    /// `max_jobs` bounds concurrent encoder runs, requests and prefetch
+    /// together (0: [`default_max_runs`] for the detected encoder).
     pub fn new(ffmpeg: PathBuf, max_jobs: usize, cache_bytes: usize, cancel: CancellationToken) -> Self {
         VideoTranscoder {
             ffmpeg,
             detect: DetectOptions::default(),
             caps: tokio::sync::OnceCell::new(),
-            permits: Arc::new(Semaphore::new(max_jobs.max(1))),
-            prefetch_permits: Arc::new(Semaphore::new(1)),
+            permits: Arc::new(Semaphore::new(0)),
+            max_jobs,
+            max_runs: AtomicUsize::new(0),
+            prefetching: Mutex::new(Vec::new()),
             cache: Mutex::new(ByteCache::new(cache_bytes)),
             inflight: Mutex::new(HashMap::new()),
             avcc: Mutex::new(HashMap::new()),
@@ -552,12 +629,19 @@ impl VideoTranscoder {
                         error: Some(format!("detection failed: {e}")),
                         ..Default::default()
                     });
+                let runs = match self.max_jobs {
+                    0 => default_max_runs(caps.chosen()),
+                    n => n,
+                };
+                self.max_runs.store(runs, Ordering::SeqCst);
+                self.permits.add_permits(runs);
                 match caps.chosen() {
                     Some(e) => tracing::info!(
                         encoder = %e,
                         hardware = e.is_hardware(),
                         forced = caps.forced.is_some(),
                         tonemap = caps.tonemap_for(e).as_deref().unwrap_or("none"),
+                        max_runs = runs,
                         "video transcode encoder"
                     ),
                     None => tracing::warn!(
@@ -575,6 +659,36 @@ impl VideoTranscoder {
     /// [`Self::caps`] if detection has run.
     pub fn caps_if_known(&self) -> Option<Arc<FfmpegCaps>> {
         self.caps.get().cloned()
+    }
+
+    /// Concurrent encoder runs, once the encoder is known.
+    pub fn max_runs(&self) -> Option<usize> {
+        Some(self.max_runs.load(Ordering::SeqCst)).filter(|&n| n > 0)
+    }
+
+    /// An encoder slot for a run a request waits on. With every slot busy,
+    /// a prefetch run nobody waits on gives up its slot (it is cancelled;
+    /// the pieces it finished stay cached), so a first piece or a seek
+    /// never queues behind pieces encoded ahead.
+    async fn request_permit(&self) -> Result<OwnedSemaphorePermit> {
+        if let Ok(p) = self.permits.clone().try_acquire_owned() {
+            return Ok(p);
+        }
+        let idle = self.prefetching.lock().ok().and_then(|runs| {
+            runs.iter()
+                .rev()
+                .find(|r| r.waiting.load(Ordering::SeqCst) == 0 && !r.cancel.is_cancelled())
+                .cloned()
+        });
+        if let Some(r) = idle {
+            tracing::debug!("every encoder slot busy: a prefetch run gives its slot to a request");
+            r.cancel.cancel();
+        }
+        self.permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HlsError::Cancelled)
     }
 
     /// Statistics so far.
@@ -642,6 +756,7 @@ impl VideoTranscoder {
                     .and_then(|h| h.dovi)
                     .is_some_and(|d| d.bl_signal_compat_id == 0),
                 keep_aspect: v.width.is_none() || v.height.is_none(),
+                deinterlace: deinterlace(v),
             },
             vaapi_device,
         );
@@ -680,7 +795,24 @@ impl VideoTranscoder {
         }
         // passthrough: never duplicate/drop frames to fake a constant rate
         // (the default CFR vsync padded the last segment by one frame).
-        a.extend(["-map", "0:v:0", "-an", "-sn", "-dn", "-fps_mode", "passthrough"].map(String::from));
+        // Video only: no chapter text track (`-map_chapters`), no metadata
+        // (a `udta` per run, a timecode track).
+        a.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-map_chapters",
+                "-1",
+                "-map_metadata",
+                "-1",
+                "-fps_mode",
+                "passthrough",
+            ]
+            .map(String::from),
+        );
         if run.iter().all(|p| p.frames.is_some()) {
             let n: u64 = match frames {
                 Some(f) => f.per_piece.iter().map(|x| x.len() as u64).sum(),
@@ -862,6 +994,8 @@ impl VideoTranscoder {
     /// stopping at the first piece already cached or in flight) and starts
     /// it. Returns the receiver for piece `from` and the run's control, or
     /// `None` if `from` itself is cached or in flight (the caller re-checks).
+    /// A prefetch run comes with its encoder slot (`prefetch`); others wait
+    /// for one ([`Self::request_permit`]).
     fn start_run(
         self: &Arc<Self>,
         key: &str,
@@ -869,7 +1003,7 @@ impl VideoTranscoder {
         target: VideoTarget,
         all: &Arc<Vec<Piece>>,
         from: usize,
-        prefetch: bool,
+        prefetch: Option<OwnedSemaphorePermit>,
     ) -> Option<InFlight> {
         let mut senders = Vec::new();
         let first_rx;
@@ -898,6 +1032,12 @@ impl VideoTranscoder {
         if senders.is_empty() {
             return None;
         }
+        let is_prefetch = prefetch.is_some();
+        if is_prefetch {
+            if let Ok(mut p) = self.prefetching.lock() {
+                p.push(ctl.clone());
+            }
+        }
         let this = self.clone();
         let key = key.to_string();
         let asset = asset.clone();
@@ -909,6 +1049,11 @@ impl VideoTranscoder {
                 r = this.run(&key, &asset, target, &all, &senders, prefetch) => r,
                 _ = cancel.cancelled() => Err(HlsError::Cancelled),
             };
+            if is_prefetch {
+                if let Ok(mut p) = this.prefetching.lock() {
+                    p.retain(|c| !Arc::ptr_eq(c, &run_ctl));
+                }
+            }
             // Anything not produced fails its waiters (they may retry).
             let msg: Arc<str> = match &res {
                 Ok(()) => Arc::from("encoder run ended early"),
@@ -942,7 +1087,7 @@ impl VideoTranscoder {
         target: VideoTarget,
         all: &[Piece],
         senders: &[(usize, watch::Sender<Slot>)],
-        prefetch: bool,
+        prefetch: Option<OwnedSemaphorePermit>,
     ) -> Result<()> {
         let run: Vec<Piece> = senders.iter().map(|(n, _)| all[*n]).collect();
         // The run's real frames, from the index (block headers / sample
@@ -954,11 +1099,6 @@ impl VideoTranscoder {
                 .await
                 .map_err(|e| HlsError::Io(std::io::Error::other(e)))??
         };
-        let permits = if prefetch {
-            self.prefetch_permits.clone()
-        } else {
-            self.permits.clone()
-        };
         let caps = self.caps().await;
         let enc = caps.chosen().ok_or_else(|| {
             HlsError::Unsupported(format!(
@@ -967,7 +1107,11 @@ impl VideoTranscoder {
                 caps.error.as_deref().unwrap_or("none passed its test encode")
             ))
         })?;
-        let _permit = permits.acquire_owned().await.map_err(|_| HlsError::Cancelled)?;
+        let is_prefetch = prefetch.is_some();
+        let _permit = match prefetch {
+            Some(p) => p,
+            None => self.request_permit().await?,
+        };
         let args = Self::args(
             asset,
             &target,
@@ -1036,21 +1180,35 @@ impl VideoTranscoder {
                     let piece = all[*pn];
                     let real = frames.as_ref().map(|f| &f.per_piece[next]);
                     let last = next + 1 == senders.len();
-                    let want = match (piece.frames, real) {
-                        (Some(_), Some(r)) => r.len(),
-                        // Counts predicted from the frame grid (sources only
-                        // ffprobe indexes, TS): a frame the source lacks
-                        // shifts them, so cut at the IDR forced at the
-                        // boundary when it is within a few frames.
-                        (Some(f), None) => match predicted_cut(&pending, f as usize, last, n == 0) {
+                    // The frame count from the index (real timestamps), else
+                    // predicted from the frame grid (sources only ffprobe
+                    // indexes, TS). Either way the piece ends at the IDR the
+                    // encoder forced at its boundary: a frame the source
+                    // lacks, or one the decoder drops, shifts the count.
+                    let count = match (piece.frames, real) {
+                        (Some(_), Some(r)) => Some(r.len()),
+                        (Some(f), None) => Some(f as usize),
+                        (None, _) => None,
+                    };
+                    let want = match count {
+                        Some(f) => match piece_cut(&pending, f, last, n == 0) {
                             Some(w) => w,
                             None => break,
                         },
-                        (None, _) if n == 0 => pending.len(),
-                        (None, _) => break,
+                        None if n == 0 => pending.len(),
+                        None => break,
                     };
                     if pending.len() < want || want == 0 {
                         break;
+                    }
+                    // (The file's last piece has no count: it takes the rest.)
+                    if let (Some(_), Some(frames)) = (real, count.filter(|&c| c != want)) {
+                        tracing::warn!(
+                            piece = *pn,
+                            frames,
+                            cut = want,
+                            "transcoded piece cut at the encoder's IDR, not at the index's frame count"
+                        );
                     }
                     let a = avcc
                         .as_deref()
@@ -1073,11 +1231,11 @@ impl VideoTranscoder {
                         if next == 0 {
                             s.first_piece_ms += ms;
                         }
-                        if prefetch {
+                        if is_prefetch {
                             s.prefetched += 1;
                         }
                     }
-                    tracing::debug!(piece = *pn, ms, prefetch, "video piece transcoded");
+                    tracing::debug!(piece = *pn, ms, prefetch = is_prefetch, "video piece transcoded");
                     let _ = tx.send(Some(Ok(bytes)));
                     next += 1;
                 }
@@ -1131,7 +1289,7 @@ impl VideoTranscoder {
             let existing = self.inflight.lock().ok().and_then(|m| m.get(&k).cloned());
             let rx = match existing {
                 Some(rx) => Some(rx),
-                None => self.start_run(key, asset, target, all, n, false),
+                None => self.start_run(key, asset, target, all, n, None),
             };
             let Some((mut rx, ctl)) = rx else { continue };
             // While this request waits it keeps the run alive; dropped
@@ -1156,7 +1314,8 @@ impl VideoTranscoder {
     }
 
     /// Starts a prefetch run for the first piece after `n` (within the
-    /// lookahead) that is neither cached nor in flight.
+    /// lookahead) that is neither cached nor in flight, in a spare encoder
+    /// slot: one slot stays free for the next request.
     fn prefetch_after(
         self: &Arc<Self>,
         key: &str,
@@ -1165,7 +1324,7 @@ impl VideoTranscoder {
         all: &Arc<Vec<Piece>>,
         n: usize,
     ) {
-        if self.prefetch_permits.available_permits() == 0 {
+        if self.permits.available_permits() < 2 {
             return;
         }
         for m in n + 1..=(n + self.lookahead as usize).min(all.len().saturating_sub(1)) {
@@ -1173,7 +1332,9 @@ impl VideoTranscoder {
             let known = self.cache.lock().map(|c| c.contains(&k)).unwrap_or(true)
                 || self.inflight.lock().map(|i| i.contains_key(&k)).unwrap_or(true);
             if !known {
-                let _ = self.start_run(key, asset, target, all, m, true);
+                if let Ok(slot) = self.permits.clone().try_acquire_owned() {
+                    let _ = self.start_run(key, asset, target, all, m, Some(slot));
+                }
                 return;
             }
         }
@@ -1187,7 +1348,7 @@ impl VideoTranscoder {
             let known = self.cache.lock().map(|c| c.contains(&k)).unwrap_or(true)
                 || self.inflight.lock().map(|i| i.contains_key(&k)).unwrap_or(true);
             if !known {
-                let _ = self.start_run(key, &asset, target, &all, n, false);
+                let _ = self.start_run(key, &asset, target, &all, n, None);
             }
         }
     }
@@ -1288,28 +1449,211 @@ mod tests {
     }
 
     #[test]
-    fn predicted_pieces_end_at_the_forced_idr_nearby() {
+    fn pieces_end_at_the_forced_idr_nearby() {
+        // `out(syncs, len)` is whole fragments: the sample after the last
+        // one (index `len`) starts the next fragment, a sync sample.
         // The source lacks a frame: the IDR forced at the boundary is one
-        // sample before the predicted count.
+        // sample before the count.
         let p = out(&[0, 51, 103], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(51));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
         // On the grid: exactly the count.
         let p = out(&[0, 52], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(52));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
         // No IDR near the boundary (an encoder that ignored the request):
         // the count, as before.
         let p = out(&[0, 40], 160);
-        assert_eq!(predicted_cut(&p, 52, false, false), Some(52));
-        // Not enough output yet to see past the boundary: wait.
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
+        // The piece's fragment is complete: its end is the next IDR, here
+        // one frame after the count; no need to wait for the next fragment.
+        let p = out(&[0], 52);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(52));
         let p = out(&[0], 53);
-        assert_eq!(predicted_cut(&p, 52, false, false), None);
-        // The run's last piece waits for the encoder to finish, and leaves
-        // out a frame read past the run's end.
-        let p = out(&[0], 53);
-        assert_eq!(predicted_cut(&p, 52, true, false), None);
-        assert_eq!(predicted_cut(&p, 52, true, true), Some(52));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(53));
+        // The piece's fragment is complete and ends early: the boundary IDR
+        // came up to CUT_SLACK frames before the count. Cut now, without
+        // waiting for the next piece's fragment.
+        let p = out(&[0], 51);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
         let p = out(&[0], 50);
-        assert_eq!(predicted_cut(&p, 52, true, true), Some(50));
+        assert_eq!(piece_cut(&p, 52, false, false), Some(50));
+        let p = out(&[0], 49);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(49));
+        // The same piece once the next fragment is there too: the same cut.
+        let p = out(&[0, 51], 103);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
+        // Further short than the slack: not all of the piece's frames yet.
+        let p = out(&[0], 48);
+        assert_eq!(piece_cut(&p, 52, false, false), None);
+        // The encoder is done: the IDRs it made are all there is.
+        let p = out(&[0, 50], 120);
+        assert_eq!(piece_cut(&p, 52, false, true), Some(50));
+        let p = out(&[0], 50);
+        assert_eq!(piece_cut(&p, 52, false, true), None);
+        // The run's last piece takes what the encoder produced up to its
+        // count, and leaves out a frame read past the run's end.
+        let p = out(&[0], 53);
+        assert_eq!(piece_cut(&p, 52, true, false), Some(52));
+        assert_eq!(piece_cut(&p, 52, true, true), Some(52));
+        let p = out(&[0], 50);
+        assert_eq!(piece_cut(&p, 52, true, false), None);
+        assert_eq!(piece_cut(&p, 52, true, true), Some(50));
+    }
+
+    /// The chapter text track ffmpeg copies from the source (a 15-chapter
+    /// film) is not video: its samples stay out of the pieces.
+    #[test]
+    fn frag_reader_reads_only_the_video_track() {
+        use mp4_atom::{Mfhd, Moof, Tfhd, Traf, Trun, TrunEntry};
+        let traf = |track_id: u32, sizes: &[u32], data_offset: i32| Traf {
+            tfhd: Tfhd {
+                track_id,
+                default_sample_flags: Some(0x0101_0000),
+                default_base_is_moof: true,
+                ..Default::default()
+            },
+            trun: vec![Trun {
+                data_offset: Some(data_offset),
+                entries: sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &size)| TrunEntry {
+                        size: Some(size),
+                        flags: (i == 0).then_some(0x0200_0000),
+                        ..Default::default()
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        };
+        let video: Vec<Vec<u8>> = vec![vec![0, 0, 0, 3, 0x65, 1, 2], vec![0, 0, 0, 2, 0x41, 3]];
+        let chapters: Vec<Vec<u8>> = (1..=2)
+            .map(|i| format!("\0\nChapter 0{i}").into_bytes())
+            .collect();
+        let sizes = |v: &[Vec<u8>]| v.iter().map(|x| x.len() as u32).collect::<Vec<_>>();
+        let moof = |off_v: i32, off_c: i32| Moof {
+            mfhd: Mfhd { sequence_number: 1 },
+            traf: vec![traf(1, &sizes(&video), off_v), traf(2, &sizes(&chapters), off_c)],
+        };
+        let mut m = Vec::new();
+        moof(0, 0).encode(&mut m).unwrap();
+        let vlen: usize = video.iter().map(|x| x.len()).sum();
+        let first = (m.len() + 8) as i32;
+        m.clear();
+        moof(first, first + vlen as i32).encode(&mut m).unwrap();
+        let body: Vec<u8> = video.iter().chain(&chapters).flatten().copied().collect();
+        m.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        m.extend_from_slice(b"mdat");
+        m.extend_from_slice(&body);
+        let mut r = FragReader {
+            video_track: Some(1),
+            ..Default::default()
+        };
+        let ev = r.push(&m).unwrap();
+        let [FragEvent::Samples(s)] = ev.as_slice() else {
+            panic!("one fragment");
+        };
+        let got: Vec<(Vec<u8>, bool)> = s.iter().map(|(b, k)| (b.to_vec(), *k)).collect();
+        assert_eq!(got, vec![(video[0].clone(), true), (video[1].clone(), false)]);
+    }
+
+    /// The encoder run maps the video alone (no chapter track, no
+    /// metadata) and deinterlaces an interlaced H.264 source before scaling.
+    /// Interlaced is the container's flag, else the SPS's, as flux-probe
+    /// has it: an SPS that allows field coding under a container flagged
+    /// progressive (x264 `fake-interlaced`) is progressive, and plans from
+    /// the probe and from the index agree on it.
+    #[test]
+    fn runs_map_video_only_and_deinterlace_interlaced_sources() {
+        use crate::encoders::Deinterlace::{All, Marked, Off};
+        use crate::test_mkv::{TestMkv, PPS, SPS_INTERLACED, SPS_PROGRESSIVE};
+        let target = VideoTarget {
+            width: 64,
+            height: 64,
+            bitrate: 1_000_000,
+            tonemap: false,
+        };
+        let caps = FfmpegCaps {
+            filters: ["bwdif", "yadif"].iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        // (SPS, FlagInterlaced, interlaced, deinterlacer)
+        let cases = [
+            (SPS_INTERLACED, None, true, Marked),
+            (SPS_PROGRESSIVE, None, false, Off),
+            // x264 fake-interlaced, as ffmpeg writes it.
+            (SPS_INTERLACED, Some(2), false, Off),
+            (SPS_INTERLACED, Some(1), true, Marked),
+            // An interlaced source encoded as progressive frames.
+            (SPS_PROGRESSIVE, Some(1), true, All),
+            (SPS_PROGRESSIVE, Some(0), false, Off),
+        ];
+        for (n, (sps, flag, interlaced, mode)) in cases.into_iter().enumerate() {
+            let (path, _) = TestMkv {
+                sps,
+                pps: PPS,
+                inband: vec![vec![]; 3],
+                flag_interlaced: flag,
+            }
+            .write(&format!("run-args-{n}.mkv"));
+            let case = format!("case {n}: {flag:?}, frame_mbs_only {}", sps == SPS_PROGRESSIVE);
+            let asset = Asset::open(&path, 1_000_000_000).unwrap();
+            let v = asset.index.video_track().unwrap();
+            assert_eq!(v.coded_interlaced(), Some(sps == SPS_INTERLACED), "{case}");
+            assert_eq!(v.interlaced(), Some(interlaced), "{case}");
+            assert_eq!(deinterlace(v), mode, "{case}");
+            let index_probe = asset.index.to_probe_result();
+            assert_eq!(
+                index_probe.main_video().unwrap().interlaced,
+                Some(interlaced),
+                "{case}"
+            );
+            let probe = flux_probe::probe_file(&path).unwrap();
+            assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced), "{case}");
+            for client in [crate::presets::chrome_desktop(), crate::presets::safari_macos()] {
+                let prefs = crate::PlanPrefs::default();
+                let from_index = crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, false);
+                let from_probe = crate::planner::plan(&probe, &client, &prefs);
+                assert_eq!(from_index.video, from_probe.video, "{case}, {}", client.client);
+                assert_eq!(
+                    from_index.reasons, from_probe.reasons,
+                    "{case}, {}",
+                    client.client
+                );
+                assert_eq!(
+                    matches!(from_index.video, VideoOp::Transcode { .. }),
+                    interlaced,
+                    "{case}, {}: {:?}",
+                    client.client,
+                    from_index.reasons
+                );
+            }
+            let all = pieces(&asset, 2_000_000_000);
+            let run = &all[..2];
+            let frames = run_frames(&asset, run).unwrap();
+            let a = VideoTranscoder::args(
+                &asset,
+                &target,
+                run,
+                frames.as_ref(),
+                &caps,
+                VideoEncoder::Libx264,
+                std::path::Path::new("/dev/dri/renderD128"),
+            )
+            .unwrap();
+            assert!(a.windows(2).any(|w| w == ["-map_chapters", "-1"]), "{a:?}");
+            assert!(a.windows(2).any(|w| w == ["-map_metadata", "-1"]), "{a:?}");
+            let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
+            let deint = match mode {
+                Off => None,
+                Marked => Some("bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=64:64"),
+                All => Some("bwdif=mode=send_frame:parity=auto:deint=all,scale=64:64"),
+            };
+            match deint {
+                Some(d) => assert!(vf.contains(d), "{case}: {vf}"),
+                None => assert!(!vf.contains("bwdif") && !vf.contains("yadif"), "{case}: {vf}"),
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]

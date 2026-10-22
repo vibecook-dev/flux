@@ -66,6 +66,7 @@ pub async fn build_state(
         ffprobe: cfg.ffprobe.clone(),
         video_encoder: cfg.video_encoder,
         vaapi_device: cfg.vaapi_device.clone(),
+        max_video_transcodes: cfg.max_video_transcodes,
         ..EngineConfig::default()
     });
     let (scanner, scan_events) = match scanner {

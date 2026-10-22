@@ -676,6 +676,40 @@ pub struct PipelineInput {
     /// The source's size is unknown, so `width`×`height` may not be its
     /// shape: fit the picture inside and pad instead of stretching it.
     pub keep_aspect: bool,
+    /// Which frames are deinterlaced (one frame out per frame in, so piece
+    /// frame counts hold).
+    pub deinterlace: Deinterlace,
+}
+
+/// Which frames a transcode deinterlaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Deinterlace {
+    /// None: progressive video.
+    #[default]
+    Off,
+    /// The frames the decoder marks interlaced (field and MBAFF pictures,
+    /// MPEG-2 frames not marked progressive); the others pass untouched.
+    Marked,
+    /// Every frame: the container says interlaced, but the stream was coded
+    /// as progressive frames with the fields woven in (H.264 with
+    /// `frame_mbs_only_flag`, as ffmpeg writes an interlaced source encoded
+    /// without `+ildct`), which the decoder never marks.
+    All,
+}
+
+impl Deinterlace {
+    fn on(self) -> bool {
+        self != Deinterlace::Off
+    }
+
+    /// The options of `yadif`, `bwdif` and their hardware variants: one
+    /// frame per frame, field order from the frame.
+    fn opts(self) -> &'static str {
+        match self {
+            Deinterlace::All => "mode=send_frame:parity=auto:deint=all",
+            _ => "mode=send_frame:parity=auto:deint=interlaced",
+        }
+    }
 }
 
 /// The ffmpeg arguments of one transcode run, around the input and the
@@ -700,14 +734,25 @@ fn hw_codec(c: Codec) -> bool {
     matches!(c, Codec::H264 | Codec::Hevc)
 }
 
-/// The software scale / tone-map / rotate chain ending in `fmt`.
+/// The software scale / tone-map / rotate chain ending in `fmt`, after the
+/// deinterlacer (at the source size).
 fn sw_chain(caps: &FfmpegCaps, inp: &PipelineInput, fmt: &str) -> String {
     let (w, h) = (inp.width, inp.height);
-    let mut v = vec![if inp.keep_aspect {
+    let mut v = Vec::new();
+    if inp.deinterlace.on() {
+        // bwdif (ffmpeg ≥ 3.1) unless only yadif is listed.
+        let f = if caps.has_filter("bwdif") || !caps.has_filter("yadif") {
+            "bwdif"
+        } else {
+            "yadif"
+        };
+        v.push(format!("{f}={}", inp.deinterlace.opts()));
+    }
+    v.push(if inp.keep_aspect {
         format!("scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:-1:-1,setsar=1")
     } else {
         format!("scale={w}:{h}")
-    }];
+    });
     // (`scale` keeps the frames' Dolby Vision metadata for `tonemapx`.)
     if inp.tonemap {
         match caps.software_tonemap() {
@@ -751,8 +796,19 @@ pub fn pipeline(
         inp.tonemap && inp.dovi_reshape && caps.software_tonemap() == Some(SoftwareTonemap::Tonemapx);
     let (input_args, filters, hw_decode) = match enc {
         VideoEncoder::VideoToolbox => {
-            if hw_codec(inp.codec) && hwaccel("videotoolbox") && caps.has_filter("scale_vt") && !dovi_sw {
-                let mut f = format!("scale_vt=w={w}:h={h}");
+            let deint = !inp.deinterlace.on() || caps.has_filter("yadif_videotoolbox");
+            if hw_codec(inp.codec)
+                && hwaccel("videotoolbox")
+                && caps.has_filter("scale_vt")
+                && !dovi_sw
+                && deint
+            {
+                let mut f = if inp.deinterlace.on() {
+                    format!("yadif_videotoolbox={},", inp.deinterlace.opts())
+                } else {
+                    String::new()
+                };
+                f.push_str(&format!("scale_vt=w={w}:h={h}"));
                 if inp.tonemap {
                     f.push_str(":color_matrix=bt709:color_primaries=bt709:color_transfer=bt709");
                 }
@@ -777,16 +833,23 @@ pub fn pipeline(
             }
         }
         VideoEncoder::Nvenc => {
+            let deint = match inp.deinterlace {
+                Deinterlace::Off => Some(String::new()),
+                d => ["bwdif_cuda", "yadif_cuda"]
+                    .into_iter()
+                    .find(|f| caps.has_filter(f))
+                    .map(|f| format!("{f}={},", d.opts())),
+            };
             let full_hw = hw_codec(inp.codec)
                 && eight_bit
                 && !inp.tonemap
                 && inp.rotation == 0
                 && hwaccel("cuda")
                 && caps.has_filter("scale_cuda");
-            if full_hw {
+            if let (true, Some(d)) = (full_hw, deint) {
                 (
                     s(&["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]),
-                    format!("scale_cuda=w={w}:h={h}"),
+                    format!("{d}scale_cuda=w={w}:h={h}"),
                     true,
                 )
             } else {
@@ -800,6 +863,7 @@ pub fn pipeline(
             };
             let full_hw = hw_codec(inp.codec)
                 && !inp.tonemap
+                && !inp.deinterlace.on()
                 && inp.rotation == 0
                 && hwaccel("qsv")
                 && caps.decoders.contains(decoder)
@@ -832,12 +896,19 @@ pub fn pipeline(
                 _ => Some(""),
             };
             let tonemap_hw = !inp.tonemap || (caps.has_filter("tonemap_vaapi") && !dovi_sw);
-            if decode && caps.has_filter("scale_vaapi") && tonemap_hw && rot_hw.is_some() {
-                let mut f = if inp.tonemap {
+            let deint_hw = !inp.deinterlace.on() || caps.has_filter("deinterlace_vaapi");
+            if decode && caps.has_filter("scale_vaapi") && tonemap_hw && deint_hw && rot_hw.is_some() {
+                let mut f = match inp.deinterlace {
+                    Deinterlace::Off => String::new(),
+                    // `auto=1`: only frames marked interlaced.
+                    Deinterlace::Marked => "deinterlace_vaapi=rate=frame:auto=1,".to_string(),
+                    Deinterlace::All => "deinterlace_vaapi=rate=frame:auto=0,".to_string(),
+                };
+                f.push_str(&if inp.tonemap {
                     format!("scale_vaapi=w={w}:h={h},tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709")
                 } else {
                     format!("scale_vaapi=w={w}:h={h}:format=nv12")
-                };
+                });
                 f.push_str(rot_hw.unwrap_or(""));
                 (vaapi_device_args(vaapi_device, true), f, true)
             } else if decode && inp.bit_depth.is_some() {
@@ -887,6 +958,7 @@ mod tests {
             level: 41,
             dovi_reshape: false,
             keep_aspect: false,
+            deinterlace: Deinterlace::Off,
         }
     }
 
@@ -1006,6 +1078,84 @@ mod tests {
         assert!(p.output_args.windows(2).any(|w| w == ["-crf", "23"]));
         assert!(p.output_args.windows(2).any(|w| w == ["-maxrate", "6000000"]));
         assert!(!p.output_args.iter().any(|a| a == "-b:v"));
+    }
+
+    /// Interlaced sources are deinterlaced before scaling, one frame per
+    /// frame, on the GPU when the decode is there and a filter exists.
+    #[test]
+    fn interlaced_sources_are_deinterlaced_first() {
+        let mut i = input(Codec::H264);
+        i.deinterlace = Deinterlace::Marked;
+        let cuda = caps(&["scale_cuda", "bwdif_cuda", "bwdif"], &["cuda"], &[]);
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(p.hw_decode);
+        assert_eq!(
+            p.filters,
+            "bwdif_cuda=mode=send_frame:parity=auto:deint=interlaced,scale_cuda=w=1280:h=720"
+        );
+        // No CUDA deinterlacer: decode and deinterlace in software.
+        let no_cuda = caps(&["scale_cuda", "bwdif"], &["cuda"], &[]);
+        let p = pipeline(&no_cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(!p.hw_decode && p.input_args.is_empty());
+        assert_eq!(
+            p.filters,
+            "bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=1280:720,format=nv12"
+        );
+        let p = pipeline(
+            &caps(&["yadif"], &[], &[]),
+            VideoEncoder::Libx264,
+            &i,
+            Path::new(DEV),
+        );
+        assert!(p.filters.starts_with("yadif=mode=send_frame:"), "{}", p.filters);
+        let vt = caps(&["scale_vt", "yadif_videotoolbox"], &["videotoolbox"], &[]);
+        let p = pipeline(&vt, VideoEncoder::VideoToolbox, &i, Path::new(DEV));
+        assert!(p.hw_decode);
+        assert!(
+            p.filters.starts_with("yadif_videotoolbox=mode=send_frame:"),
+            "{}",
+            p.filters
+        );
+        let va = caps(&["scale_vaapi", "deinterlace_vaapi"], &["vaapi"], &[]);
+        let p = pipeline(&va, VideoEncoder::Vaapi, &i, Path::new(DEV));
+        assert_eq!(
+            p.filters,
+            "deinterlace_vaapi=rate=frame:auto=1,scale_vaapi=w=1280:h=720:format=nv12"
+        );
+        let qsv = caps(&["scale_qsv", "bwdif"], &["qsv"], &["h264_qsv"]);
+        let p = pipeline(&qsv, VideoEncoder::Qsv, &i, Path::new(DEV));
+        assert!(!p.hw_decode && p.filters.starts_with("bwdif="), "{}", p.filters);
+        // Progressive sources: no deinterlacer.
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &input(Codec::H264), Path::new(DEV));
+        assert_eq!(p.filters, "scale_cuda=w=1280:h=720");
+        // Fields woven into progressive-coded frames (the decoder marks
+        // none): every frame, on each path.
+        i.deinterlace = Deinterlace::All;
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert_eq!(
+            p.filters,
+            "bwdif_cuda=mode=send_frame:parity=auto:deint=all,scale_cuda=w=1280:h=720"
+        );
+        let p = pipeline(&no_cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(
+            p.filters
+                .starts_with("bwdif=mode=send_frame:parity=auto:deint=all,"),
+            "{}",
+            p.filters
+        );
+        let p = pipeline(&vt, VideoEncoder::VideoToolbox, &i, Path::new(DEV));
+        assert!(
+            p.filters
+                .starts_with("yadif_videotoolbox=mode=send_frame:parity=auto:deint=all,"),
+            "{}",
+            p.filters
+        );
+        let p = pipeline(&va, VideoEncoder::Vaapi, &i, Path::new(DEV));
+        assert!(
+            p.filters.starts_with("deinterlace_vaapi=rate=frame:auto=0,"),
+            "{}",
+            p.filters
+        );
     }
 
     #[test]
