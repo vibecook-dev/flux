@@ -318,6 +318,16 @@ pub fn parse_hwaccel_list(out: &str) -> BTreeSet<String> {
 }
 
 impl FfmpegCaps {
+    /// The major version in [`FfmpegCaps::version`] (`ffmpeg version 6.1.1-3ubuntu5`,
+    /// `n7.1`, `8.1.3-Jellyfin`); `None` for a git build (`N-118000-g…`) or
+    /// when ffmpeg could not run.
+    pub fn major_version(&self) -> Option<u32> {
+        let v = self.version.as_deref()?.strip_prefix("ffmpeg version ")?;
+        let v = v.strip_prefix('n').unwrap_or(v);
+        let end = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
+        v[..end].parse().ok()
+    }
+
     /// Probes `ffmpeg` (blocking: run it on a blocking thread).
     pub fn detect(ffmpeg: &Path, opts: &DetectOptions) -> FfmpegCaps {
         let mut caps = FfmpegCaps {
@@ -962,6 +972,28 @@ pub fn software_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn major_versions_from_the_version_line() {
+        let caps = |v: &str| FfmpegCaps {
+            version: Some(v.to_string()),
+            ..Default::default()
+        };
+        let major = |v: &str| caps(v).major_version();
+        assert_eq!(
+            major("ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023"),
+            Some(6)
+        );
+        assert_eq!(major("ffmpeg version n7.1 Copyright (c) 2000-2024"), Some(7));
+        assert_eq!(
+            major("ffmpeg version 8.1.3-Jellyfin Copyright (c) 2000-2026"),
+            Some(8)
+        );
+        assert_eq!(major("ffmpeg version 9.0.1 Copyright (c) 2000-2026"), Some(9));
+        assert_eq!(major("ffmpeg version 7.1-full_build-www.gyan.dev"), Some(7));
+        assert_eq!(major("ffmpeg version N-118000-gabcdef0123"), None);
+        assert_eq!(FfmpegCaps::default().major_version(), None);
+    }
 
     #[test]
     fn burn_in_runs_decode_in_software() {

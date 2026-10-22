@@ -514,26 +514,120 @@ async fn a_subtitle_file_is_burned_into_an_index_less_file_on_time() {
     )
     .await;
     let (b, _) = write_segments(&engine, &asset, &plain, Rendition::Video, 0..n, &dir, "plain.mp4").await;
+    assert_box_burned_in_from_1_to_3(&ff, &a, &b);
+}
+
+/// `burned`, a 320×240 rendition with the box of [`pgs_box`] at (100, 160,
+/// 120, 40) shown from 1 s to 3 s drawn in, against `plain`, the same
+/// transcode without it: they differ inside the box exactly while it is
+/// shown, and nowhere else.
+fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
+    let what = burned.file_name().unwrap().to_string_lossy();
     let (inside, above) = ((108, 168, 212, 192), (0, 0, 320, 150));
     for (t, shown) in [(0.5, false), (1.5, true), (2.5, true), (3.5, false), (6.5, false)] {
-        let (fa, fb) = (gray_frame(&ff, &a, t), gray_frame(&ff, &b, t));
-        assert_eq!(fa.len(), 320 * 240, "t = {t}");
+        let (fa, fb) = (gray_frame(ff, burned, t), gray_frame(ff, plain, t));
+        assert_eq!(fa.len(), 320 * 240, "{what}, t = {t}");
         let (d_in, d_out) = (diff_in(&fa, &fb, 320, inside), diff_in(&fa, &fb, 320, above));
         assert!(
             d_out < 8.0,
-            "t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
+            "{what}, t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
         );
         if shown {
-            assert!(d_in > 40.0, "t = {t}: no subtitle drawn ({d_in:.1})");
+            assert!(d_in > 40.0, "{what}, t = {t}: no subtitle drawn ({d_in:.1})");
             let white = fa[180 * 320 + 160];
-            assert!(white > 200, "t = {t}: the box is not white ({white})");
+            assert!(white > 200, "{what}, t = {t}: the box is not white ({white})");
         } else {
             assert!(
                 d_in < 8.0,
-                "t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
+                "{what}, t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
             );
         }
     }
+}
+
+/// A VobSub track of a file only ffmpeg reads (MPEG-PS, a DVD's VOB) is
+/// drawn in at its own time, also in the pieces after its last subtitle:
+/// their time-based runs (`-copyts`) copy the video of their second input
+/// (the file again, read for the track) to a `null` output until past the
+/// run, whose packets move the subtitle picture on (crate::burn,
+/// "Heartbeats").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vobsub_track_of_an_index_less_file_is_burned_in_on_time() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none()
+        || !flux_test_media::has_encoder("libx264")
+        || !flux_test_media::has_encoder("dvdsub")
+    {
+        return;
+    }
+    let Some(p) = clip(Clip::Mpeg1Mp2Ps) else { return };
+    let dir = flux_test_media::scratch("hls-old-formats-burn-vobsub");
+    let sup = dir.join("box.sup");
+    std::fs::write(&sup, pgs_box((320, 240), (100, 160, 120, 40), 1.0, 3.0)).unwrap();
+    // The PGS box as a DVD subtitle track of the VOB. `-seek_timestamp 1`
+    // keeps the box at 1 s, where the video starts at 0, and
+    // `-fix_sub_duration` ends it where the PGS clears it, at 3 s.
+    let vob = dir.join("Clip.vob");
+    let st = Command::new(&ff)
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&p)
+        .args(["-seek_timestamp", "1", "-fix_sub_duration", "-i"])
+        .arg(&sup)
+        .args(["-map", "0:v", "-map", "0:a", "-map", "1"])
+        .args(["-c:v", "copy", "-c:a", "copy", "-c:s", "dvdsub", "-f", "vob"])
+        .arg(&vob)
+        .status()
+        .unwrap();
+    assert!(st.success(), "ffmpeg made no VOB");
+    let engine = HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        video_run_segments: 1,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&vob).await.unwrap();
+    assert!(
+        matches!(asset.index.layout, Layout::External(_)),
+        "not indexed by ffprobe: {:?}",
+        asset.index.warnings
+    );
+    let track = asset
+        .index
+        .tracks
+        .iter()
+        .find(|t| t.codec == Codec::VobSub)
+        .expect("a VobSub track")
+        .index;
+    let prefs = PlanPrefs {
+        subtitle_track: Some(track),
+        ..hls_only()
+    };
+    let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+    let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+        panic!("{:?}", burned.explain())
+    };
+    assert_eq!(*burn_subtitle, Some(track));
+    let mut plain = burned.clone();
+    if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+        *burn_subtitle = None;
+    }
+    plain.subtitles.clear();
+    let n = engine.segment_count(&asset, &burned, &Rendition::Video) as u32;
+    let (a, _) = write_segments(
+        &engine,
+        &asset,
+        &burned,
+        Rendition::Video,
+        0..n,
+        &dir,
+        "burned.mp4",
+    )
+    .await;
+    let (b, _) = write_segments(&engine, &asset, &plain, Rendition::Video, 0..n, &dir, "plain.mp4").await;
+    assert_box_burned_in_from_1_to_3(&ff, &a, &b);
 }
 
 /// Two recordings joined byte for byte, the clock starting over at 10 s:

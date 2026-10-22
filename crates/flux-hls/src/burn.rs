@@ -25,6 +25,29 @@
 //!   shifted on ffmpeg's clock for it, which counts from the file's start
 //!   time, and never seeked before the track's own start (`probe` asks
 //!   ffprobe for both).
+//! - **Heartbeats.** The overlay holds each video frame until it knows the
+//!   subtitle picture for it: the next subtitle picture after the frame, or
+//!   the end of the subtitle input. Between subtitles ffmpeg only moves the
+//!   picture forward on a "heartbeat", a packet of any stream that the
+//!   subtitle's own input delivers, and the subtitle stream is all flux
+//!   reads from that input. A run after a track's last subtitle therefore
+//!   waits for the input's end, which ffmpeg 7 and later drop when it
+//!   reaches the filter graph before the run's first video frame has set
+//!   the graph up. The run then hangs, every ffmpeg thread idle, until
+//!   flux's encode timeout. A demuxer thread starts before ffmpeg's
+//!   scheduler first holds it back, so on a busy machine it can read a short
+//!   input to its end that early: the 10 s test M2TS did on macOS CI with
+//!   ffmpeg 9.0.1. A run that burns in a track of the video therefore also
+//!   copies the subtitle input's video stream to a second output (`-f null`)
+//!   until a margin past the run's last piece (`companion_output`). Its
+//!   packets are heartbeats, which ffmpeg passes through the subtitle's
+//!   decoder in order with the subtitle packets and keeps even when they
+//!   come before the graph is set up, so the overlay never needs the end.
+//!   ffmpeg 6 reads the subtitle input only when the overlay asks for it, so
+//!   its end comes late enough, but it sends heartbeats from its main
+//!   thread, ahead of subtitles still in their decoder: a second output
+//!   there lost the test's subtitle. Its runs keep one output, and so does a
+//!   subtitle file, which has no other stream and still ends its input.
 //! - **Canvas.** A PGS or VobSub stream is drawn for a picture size (its
 //!   canvas) that need not be the video's: 1920×1080 subtitles over a
 //!   cropped 1920×800 encode. The canvas is read from the stream
@@ -39,6 +62,7 @@ use std::time::Duration;
 use flux_core::Codec;
 
 use crate::asset::Asset;
+use crate::encoders::FfmpegCaps;
 use crate::index::Layout;
 
 /// Names a [`BurnIn`] inside a [`crate::vtranscode::VideoTarget`] (which
@@ -235,6 +259,47 @@ pub(crate) fn stream_spec(asset: &Asset, b: &BurnIn) -> String {
         (Layout::Ts(_), Some(t)) => format!("i:{}", t.id),
         _ => b.stream.to_string(),
     }
+}
+
+/// How far past a run's last piece its companion output reads (see
+/// `companion_output`), in seconds.
+const COMPANION_MARGIN_S: f64 = 2.0;
+
+/// The second output of a run that burns in a track of the video: the
+/// subtitle input's video stream (by PID in MPEG-TS, as in `stream_spec`)
+/// copied to ffmpeg's `null` muxer until `run_s` (the run's length from its
+/// first frame, where the subtitle input's clock is 0) plus a margin. Its
+/// packets are the subtitle's heartbeats (module docs). Empty for a
+/// subtitle file, a video without a video track in the index, or ffmpeg 6
+/// and earlier.
+pub(crate) fn companion_output(asset: &Asset, b: &BurnIn, caps: &FfmpegCaps, run_s: f64) -> Vec<String> {
+    if caps.major_version().is_some_and(|m| m < 7) {
+        return Vec::new();
+    }
+    let Some(v) = asset.index.video_track().filter(|_| b.embedded) else {
+        return Vec::new();
+    };
+    let spec = match &asset.index.layout {
+        Layout::Ts(_) => format!("i:{}", v.id),
+        _ => v.index.to_string(),
+    };
+    companion_args(&spec, run_s)
+}
+
+/// `companion_output` for the video stream `spec` of the second input.
+fn companion_args(spec: &str, run_s: f64) -> Vec<String> {
+    let until = run_s.max(0.0) + COMPANION_MARGIN_S;
+    vec![
+        "-map".into(),
+        format!("1:{spec}"),
+        "-c".into(),
+        "copy".into(),
+        "-t".into(),
+        format!("{until:.6}"),
+        "-f".into(),
+        "null".into(),
+        "-".into(),
+    ]
 }
 
 /// Size and place of the subtitle picture on an `out` picture: `(w, h, x,
@@ -527,6 +592,19 @@ mod tests {
                 ..b.clone()
             }
             .key()
+        );
+    }
+
+    #[test]
+    fn a_track_burn_copies_the_subtitle_inputs_video_past_the_run() {
+        // A TS track's input: the video by PID, to 2 s past the run's 7.96 s.
+        assert_eq!(
+            companion_args("i:4113", 7.96).join(" "),
+            "-map 1:i:4113 -c copy -t 9.960000 -f null -"
+        );
+        assert_eq!(
+            companion_args("0", -1.0).join(" "),
+            "-map 1:0 -c copy -t 2.000000 -f null -"
         );
     }
 

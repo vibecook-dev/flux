@@ -832,7 +832,10 @@ fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
 /// seeked before it: the track used to land 21.4 s late, or not at all.
 /// With TrueHD audio (when this ffmpeg can make it) ffmpeg also counts the
 /// AC-3 core of the TrueHD PID as a stream of its own, so the track is
-/// picked by PID.
+/// picked by PID. The pieces after the last subtitle wait for the end of
+/// the run's subtitle input, which ffmpeg can drop: this test hung in about
+/// one macOS CI run in five (ffmpeg 9.0.1) until runs also copied that
+/// input's video to a second output (crate::burn, "Heartbeats").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
     let Some(ff) = flux_test_media::ffmpeg() else {
@@ -912,6 +915,72 @@ async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
         let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, &b_name).await;
         assert_box_burned_in_from_1_to_3(&ff, &a, &b);
     }
+}
+
+/// A PGS track of a Matroska file is drawn in at its own time, also in the
+/// pieces after its last subtitle: their runs copy the video of their
+/// second input (the file again, read for the track) to a `null` output,
+/// whose packets move the subtitle picture on (crate::burn, "Heartbeats").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pgs_track_of_an_mkv_is_burned_in_on_time() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-burn-mkv");
+    let sup = dir.join("box.sup");
+    std::fs::write(&sup, pgs_box((640, 360), (200, 260, 240, 60), 1.0, 3.0)).unwrap();
+    let mkv = dir.join("Clip.mkv");
+    let st = std::process::Command::new(&ff)
+        .args(["-v", "error", "-y", "-seek_timestamp", "1", "-i"])
+        .arg(&p)
+        .args(["-seek_timestamp", "1", "-i"])
+        .arg(&sup)
+        .args(["-map", "0:v", "-map", "0:a", "-map", "1", "-c", "copy"])
+        .arg(&mkv)
+        .status()
+        .unwrap();
+    assert!(st.success(), "ffmpeg made no MKV");
+    let engine = HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        video_run_segments: 1,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&mkv).await.unwrap();
+    assert!(
+        matches!(asset.index.layout, Layout::Matroska(_)),
+        "not indexed as Matroska: {:?}",
+        asset.index.warnings
+    );
+    let track = asset
+        .index
+        .tracks
+        .iter()
+        .find(|t| t.codec == Codec::Pgs)
+        .expect("a PGS track")
+        .index;
+    let prefs = PlanPrefs {
+        subtitle_track: Some(track),
+        ..hls_only()
+    };
+    let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+    let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+        panic!("{:?}", burned.explain())
+    };
+    assert_eq!(*burn_subtitle, Some(track));
+    let mut plain = burned.clone();
+    if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+        *burn_subtitle = None;
+    }
+    plain.subtitles.clear();
+    let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, "burned.mp4").await;
+    let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, "plain.mp4").await;
+    assert_box_burned_in_from_1_to_3(&ff, &a, &b);
 }
 
 /// Interlacing is the container's flag, else the SPS's, for the catalog's
