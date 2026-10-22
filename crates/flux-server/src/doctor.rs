@@ -3,12 +3,17 @@
 //! acceleration, tone mapping, what is missing), also served to owners and
 //! admins as `GET /api/v1/admin/media-tools`. flux runs ffmpeg/ffprobe as
 //! separate processes and never links libav*; see docs/ENCODERS.md.
+//! `--check` also prints the data dir and library folders the configuration
+//! resolves to ([`config_text`]).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use flux_core::LibraryKind;
 use flux_hls::encoders::{DetectOptions, FfmpegCaps, VideoEncoder};
 use serde::Serialize;
+
+use crate::config::Config;
 
 /// One external tool.
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +147,11 @@ impl ToolReport {
 
     /// The human-readable form `--check` prints.
     pub fn text(&self) -> String {
+        self.text_with("")
+    }
+
+    /// [`ToolReport::text`] with `extra` lines after the first.
+    pub fn text_with(&self, extra: &str) -> String {
         let mut s = String::new();
         let tool = |s: &mut String, name: &str, t: &ToolInfo| {
             let _ = match (&t.version, &t.error) {
@@ -156,6 +166,7 @@ impl ToolReport {
             env!("CARGO_PKG_VERSION"),
             self.platform
         );
+        s.push_str(extra);
         tool(&mut s, "ffmpeg", &self.ffmpeg);
         tool(&mut s, "ffprobe", &self.ffprobe);
         if self.ffmpeg.ok() {
@@ -215,9 +226,116 @@ impl ToolReport {
     }
 }
 
+/// The paths a configuration resolves to and whether they exist, one per
+/// line in `--check`'s layout. A path the TOML file mangled, or a library
+/// folder that isn't there, shows up here before the server runs.
+pub fn config_text(cfg: &Config) -> String {
+    let mut s = String::new();
+    let dir_state = |p: &Path, missing: &'static str| {
+        if p.is_dir() {
+            "found"
+        } else if p.exists() {
+            "NOT A FOLDER"
+        } else {
+            missing
+        }
+    };
+    let _ = writeln!(
+        s,
+        "data     {}  ({})",
+        cfg.data_dir.display(),
+        dir_state(&cfg.data_dir, "created at start")
+    );
+    if let Some(older) = &cfg.older_data_dir {
+        let _ = writeln!(
+            s,
+            "older    {}  (a catalog from an earlier flux: --data-dir to use it)",
+            older.display()
+        );
+    }
+    for l in &cfg.libraries {
+        let path = Path::new(&l.path);
+        let _ = writeln!(
+            s,
+            "library  {} ({}): {}  ({})",
+            l.name,
+            match l.kind {
+                LibraryKind::Movies => "movies",
+                LibraryKind::Shows => "shows",
+                LibraryKind::Mixed => "mixed",
+            },
+            path.display(),
+            dir_state(path, "NOT FOUND")
+        );
+    }
+    let _ = match &cfg.web_dir {
+        Some(d) if d.join("index.html").is_file() => writeln!(s, "web      {}  (found)", d.display()),
+        Some(d) => writeln!(s, "web      {}  (NO index.html)", d.display()),
+        None => writeln!(s, "web      none: API only (--web-dir)"),
+    };
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--check` showed only the tools: a mangled data dir or library path
+    /// (TOML escapes, a typo) went unnoticed until the server ran.
+    #[test]
+    fn check_lists_the_resolved_paths_and_whether_they_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let movies = dir.path().join("Movies");
+        std::fs::create_dir(&movies).unwrap();
+        let mut cfg = Config::for_tests(dir.path().join("data"));
+        cfg.libraries = vec![
+            crate::config::LibrarySpec {
+                name: "Movies".into(),
+                kind: LibraryKind::Movies,
+                path: movies.to_string_lossy().into_owned(),
+            },
+            crate::config::LibrarySpec {
+                name: "TV".into(),
+                kind: LibraryKind::Shows,
+                path: dir.path().join("TV").to_string_lossy().into_owned(),
+            },
+        ];
+        let t = config_text(&cfg);
+        let data = cfg.data_dir.display().to_string();
+        assert!(t.contains(&format!("data     {data}  (created at start)")), "{t}");
+        assert!(
+            t.contains(&format!(
+                "library  Movies (movies): {}  (found)",
+                movies.display()
+            )),
+            "{t}"
+        );
+        assert!(
+            t.contains("library  TV (shows): ") && t.contains("TV  (NOT FOUND)"),
+            "{t}"
+        );
+        assert!(t.contains("web      none"), "{t}");
+        assert!(!t.lines().any(|l| l.starts_with("older ")), "{t}");
+        let older = dir.path().join("flux-data");
+        cfg.older_data_dir = Some(older.clone());
+        assert!(
+            config_text(&cfg).contains(&format!(
+                "older    {}  (a catalog from an earlier flux",
+                older.display()
+            )),
+            "{t}"
+        );
+        let report = ToolReport::detect(
+            Path::new("/nonexistent/ffmpeg"),
+            Path::new("/nonexistent/ffprobe"),
+            None,
+            Path::new("/nonexistent/renderD128"),
+        );
+        let full = report.text_with(&t);
+        let mut lines = full.lines();
+        assert!(lines.next().unwrap().starts_with("flux-server "), "{full}");
+        assert!(lines.next().unwrap().starts_with("data     "), "{full}");
+    }
 
     #[test]
     fn missing_tools_fail_the_check() {

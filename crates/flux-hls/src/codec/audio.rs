@@ -129,10 +129,29 @@ const AC3_FRAME_WORDS_48K: [u16; 19] = [
     64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280,
 ];
 
+/// Channels of an AC-3 (or E-AC-3 independent substream) audio coding mode
+/// plus the LFE channel (A/52 Table 5.8: acmod 0 is 1+1 dual mono).
+pub fn ac3_channels(acmod: u8, lfeon: bool) -> u8 {
+    const CH: [u8; 8] = [2, 1, 2, 3, 3, 4, 4, 5];
+    CH[acmod as usize & 7] + lfeon as u8
+}
+
+/// Channels a `dec3` `chan_loc` adds through dependent substreams (ETSI TS
+/// 102 366 Table F.6.1, bit 0 first): Lc/Rc, Lrs/Rrs, Cs, Ts, Lsd/Rsd,
+/// Lw/Rw, Lvh/Rvh, Cvh, LFE2.
+pub fn eac3_chan_loc_channels(chan_loc: u16) -> u8 {
+    const PER_BIT: [u8; 9] = [2, 2, 1, 1, 2, 2, 2, 1, 1];
+    PER_BIT
+        .iter()
+        .enumerate()
+        .filter(|(bit, _)| chan_loc & (1 << bit) != 0)
+        .map(|(_, n)| n)
+        .sum()
+}
+
 impl Ac3Frame {
     pub fn channels(&self) -> u8 {
-        const CH: [u8; 8] = [2, 1, 2, 3, 3, 4, 4, 5];
-        CH[self.acmod as usize & 7] + self.lfeon as u8
+        ac3_channels(self.acmod, self.lfeon)
     }
 
     pub fn parse(b: &[u8]) -> Option<Self> {

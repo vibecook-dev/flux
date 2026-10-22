@@ -9,7 +9,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use flux_core::ProbeResult;
@@ -24,7 +24,7 @@ pub(crate) fn run(
     timeout: Duration,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<ProbeResult, String> {
-    let mut child = Command::new(bin)
+    let mut child = flux_core::tool::command(bin)
         .args(flux_probe::ffprobe::DEFAULT_ARGS)
         .arg(path)
         .stdin(Stdio::null())

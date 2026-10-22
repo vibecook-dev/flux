@@ -18,6 +18,13 @@
 //! HDR (PQ/HLG) sources are read as 16-bit RGB and tone-mapped to SDR in Rust
 //! (see [`super::tonemap`]); the Homebrew ffmpeg on the dev box has neither
 //! `zscale` nor `libplacebo`, and a server cannot assume them.
+//!
+//! Dolby Vision without a cross-compatible base layer (profile 5) is the
+//! exception: its decoded picture is in Dolby's IPT colour space until the
+//! RPU reshapes it, so read as PQ it comes out purple and green. Only
+//! jellyfin-ffmpeg's `tonemapx` (`apply_dovi`) reshapes it here, so those
+//! frames are tone-mapped by ffmpeg; an ffmpeg without `tonemapx` fails
+//! them, and the title gets no frame art rather than a discoloured one.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -76,14 +83,38 @@ pub struct MediaFacts {
     pub transfer: Transfer,
     /// Content peak luminance in nits (MaxCLL or mastering max), for tone mapping.
     pub peak_nits: Option<f32>,
+    /// Dolby Vision without a cross-compatible base layer (profile 5): the
+    /// frames need the RPU reshaping (see the module docs).
+    #[serde(default)]
+    pub dovi_reshape: bool,
+}
+
+/// The base layer of a Dolby Vision stream by its `bl_signal_compatibility_id`:
+/// 1 and 6 are HDR10, 2 SDR, 4 HLG; 0 has none (profile 5: `None`).
+fn dovi_base(compat_id: u8) -> Option<Transfer> {
+    match compat_id {
+        0 => None,
+        2 => Some(Transfer::Sdr),
+        4 => Some(Transfer::Hlg),
+        _ => Some(Transfer::Pq),
+    }
 }
 
 impl MediaFacts {
     /// From a `flux-probe` result (no subprocess). `None` without a duration or video size.
     pub fn from_probe(p: &ProbeResult) -> Option<Self> {
         let v = p.main_video()?;
-        let transfer = match v.hdr.as_ref().map(|h| h.format) {
-            Some(HdrFormat::Hdr10 | HdrFormat::Hdr10Plus | HdrFormat::DolbyVision) => Transfer::Pq,
+        let format = v.hdr.as_ref().map(|h| h.format);
+        let dovi = v
+            .hdr
+            .as_ref()
+            .and_then(|h| h.dovi)
+            .filter(|_| format == Some(HdrFormat::DolbyVision));
+        let transfer = match format {
+            Some(HdrFormat::DolbyVision) => dovi
+                .and_then(|d| dovi_base(d.bl_signal_compat_id))
+                .unwrap_or(Transfer::Pq),
+            Some(HdrFormat::Hdr10 | HdrFormat::Hdr10Plus) => Transfer::Pq,
             Some(HdrFormat::Hlg) => Transfer::Hlg,
             _ => match v.color.and_then(|c| c.transfer) {
                 Some(16) => Transfer::Pq,
@@ -103,6 +134,7 @@ impl MediaFacts {
             height: v.height?,
             transfer,
             peak_nits,
+            dovi_reshape: dovi.is_some_and(|d| dovi_base(d.bl_signal_compat_id).is_none()),
         })
     }
 
@@ -117,7 +149,8 @@ impl MediaFacts {
             "-read_intervals",
             "%+#1",
             "-show_entries",
-            "stream=width,height,sample_aspect_ratio,color_transfer:stream_side_data=rotation:format=duration:frame=color_transfer",
+            "stream=width,height,sample_aspect_ratio,color_transfer\
+             :stream_side_data=rotation,dv_bl_signal_compatibility_id:format=duration:frame=color_transfer",
             "-of",
             "json",
         ]
@@ -152,6 +185,8 @@ struct ProbeStream {
 #[derive(Deserialize)]
 struct SideData {
     rotation: Option<f64>,
+    /// "DOVI configuration record" side data.
+    dv_bl_signal_compatibility_id: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -204,10 +239,15 @@ fn parse_ffprobe(out: &[u8], path: &Path) -> Result<MediaFacts, ArtError> {
         .as_deref()
         .filter(|t| *t != "unknown")
         .or_else(|| j.frames.first().and_then(|f| f.color_transfer.as_deref()));
+    // A Dolby Vision base layer may not signal its transfer at all.
+    let dovi = s
+        .side_data_list
+        .iter()
+        .find_map(|d| d.dv_bl_signal_compatibility_id);
     let transfer = match trc {
         Some("smpte2084") => Transfer::Pq,
         Some("arib-std-b67") => Transfer::Hlg,
-        _ => Transfer::Sdr,
+        _ => dovi.map_or(Transfer::Sdr, |c| dovi_base(c).unwrap_or(Transfer::Pq)),
     };
     Ok(MediaFacts {
         duration_s,
@@ -215,6 +255,7 @@ fn parse_ffprobe(out: &[u8], path: &Path) -> Result<MediaFacts, ArtError> {
         height: dh,
         transfer,
         peak_nits: None,
+        dovi_reshape: dovi.is_some_and(|c| dovi_base(c).is_none()),
     })
 }
 
@@ -282,13 +323,8 @@ pub(crate) async fn extract_frame(
     keyframes_only: bool,
 ) -> Result<Option<Frame>, ArtError> {
     let (w, h) = scaled_size(facts, width);
-    let hdr = facts.transfer != Transfer::Sdr;
-    // HDR: keep 16 bits and the BT.2020 matrix so the PQ/HLG signal survives to Rust.
-    let vf = if hdr {
-        format!("scale={w}:{h}:flags=bicubic:in_color_matrix=bt2020:out_range=full,format=rgb48le")
-    } else {
-        format!("scale={w}:{h}:flags=bicubic,format=rgb24")
-    };
+    let vf = frame_filter(facts, w, h);
+    let hdr = facts.transfer != Transfer::Sdr && !facts.dovi_reshape;
     let out = match run(
         &tools.ffmpeg,
         &keyframe_args(tools.hwaccel, keyframes_only, path, t, &vf),
@@ -314,6 +350,24 @@ pub(crate) async fn extract_frame(
         Err(e) => return Err(e),
     };
     decode_raw(out, w, h, hdr, facts, t, path, tools.hwaccel, keyframes_only)
+}
+
+/// The `-vf` chain that turns a decoded frame into raw RGB at `w`×`h`:
+/// 8-bit sRGB for SDR, 16-bit with the PQ/HLG signal intact for HDR (tone-
+/// mapped in Rust), and SDR from `tonemapx` for Dolby Vision profile 5.
+fn frame_filter(facts: &MediaFacts, w: u32, h: u32) -> String {
+    if facts.dovi_reshape {
+        // `scale` keeps the frame's Dolby Vision metadata for `tonemapx`.
+        format!(
+            "scale={w}:{h}:flags=bicubic,\
+             tonemapx=tonemap=bt2390:desat=0:peak=100:t=bt709:m=bt709:p=bt709:format=yuv420p,format=rgb24"
+        )
+    } else if facts.transfer != Transfer::Sdr {
+        // Keep 16 bits and the BT.2020 matrix so the PQ/HLG signal survives to Rust.
+        format!("scale={w}:{h}:flags=bicubic:in_color_matrix=bt2020:out_range=full,format=rgb48le")
+    } else {
+        format!("scale={w}:{h}:flags=bicubic,format=rgb24")
+    }
 }
 
 fn keyframe_args(hwaccel: bool, keyframes_only: bool, path: &Path, t: f64, vf: &str) -> Vec<OsString> {
@@ -390,7 +444,7 @@ fn decode_raw(
 }
 
 async fn run(tool: &Path, args: &[OsString], timeout: Duration, path: &Path) -> Result<Vec<u8>, ArtError> {
-    let child = tokio::process::Command::new(tool)
+    let child = tokio::process::Command::from(flux_core::tool::background_command(tool))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -442,6 +496,80 @@ mod tests {
         assert_eq!((f.width, f.height), (1080, 1920));
     }
 
+    /// Dolby Vision: profile 5 (no compatible base layer) needs the RPU
+    /// reshaping; profile 8 plays as its HDR10 or HLG base layer.
+    #[test]
+    fn dolby_vision_base_layers() {
+        let p5 = br#"{"streams":[{"width":3840,"height":1600,"side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":5,"dv_bl_signal_compatibility_id":0}]}],"format":{"duration":"10"}}"#;
+        let f = parse_ffprobe(p5, Path::new("x")).unwrap();
+        assert!(f.dovi_reshape);
+        let vf = frame_filter(&f, 480, 200);
+        assert!(vf.contains(",tonemapx=") && vf.ends_with(",format=rgb24"), "{vf}");
+        let p84 = br#"{"streams":[{"width":3840,"height":2160,"side_data_list":[{"dv_bl_signal_compatibility_id":4}]}],"format":{"duration":"10"}}"#;
+        let f = parse_ffprobe(p84, Path::new("x")).unwrap();
+        assert_eq!((f.transfer, f.dovi_reshape), (Transfer::Hlg, false));
+        assert!(frame_filter(&f, 480, 270).ends_with("format=rgb48le"));
+
+        let probe = |compat: u8| ProbeResult {
+            container: flux_core::Container::Mp4,
+            duration_ms: Some(10_000),
+            bitrate: None,
+            title: None,
+            tracks: vec![flux_core::Track {
+                index: 0,
+                id: 1,
+                kind: flux_core::TrackKind::Video,
+                codec: flux_core::Codec::Hevc,
+                codec_tag: "dvh1".into(),
+                profile: None,
+                level: None,
+                bit_depth: Some(10),
+                width: Some(3840),
+                height: Some(1600),
+                sample_aspect_ratio: None,
+                frame_rate: None,
+                interlaced: None,
+                color: None,
+                hdr: Some(flux_core::HdrInfo {
+                    format: HdrFormat::DolbyVision,
+                    mastering: None,
+                    cll: None,
+                    dovi: Some(flux_core::DoviConfig {
+                        profile: if compat == 0 { 5 } else { 8 },
+                        level: 6,
+                        rpu_present: true,
+                        el_present: false,
+                        bl_present: true,
+                        bl_signal_compat_id: compat,
+                    }),
+                }),
+                channels: None,
+                sample_rate: None,
+                language: None,
+                title: None,
+                default: true,
+                forced: false,
+                hearing_impaired: false,
+                bitrate: None,
+            }],
+            chapters: vec![],
+            attachments: vec![],
+            has_index: true,
+            faststart: None,
+            needs_frame_sei: false,
+            warnings: vec![],
+            probe_version: 0,
+            bytes_read: 0,
+            reads: 0,
+        };
+        let f = MediaFacts::from_probe(&probe(0)).unwrap();
+        assert!(f.dovi_reshape);
+        let f = MediaFacts::from_probe(&probe(1)).unwrap();
+        assert_eq!((f.transfer, f.dovi_reshape), (Transfer::Pq, false));
+        let f = MediaFacts::from_probe(&probe(4)).unwrap();
+        assert_eq!(f.transfer, Transfer::Hlg);
+    }
+
     #[test]
     fn sizes_are_even_and_capped() {
         let f = MediaFacts {
@@ -450,6 +578,7 @@ mod tests {
             height: 360,
             transfer: Transfer::Sdr,
             peak_nits: None,
+            dovi_reshape: false,
         };
         assert_eq!(scaled_size(&f, 480), (480, 270));
         assert_eq!(scaled_size(&f, 4000), (640, 360));

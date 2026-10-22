@@ -773,7 +773,7 @@ impl AudioTranscoder {
     }
 
     async fn run(&self, job: &Job) -> Result<Vec<u8>> {
-        let mut child = tokio::process::Command::new(&self.ffmpeg)
+        let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
             .args(&job.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
