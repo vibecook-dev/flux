@@ -20,6 +20,8 @@ fn art(source: ArtSource, url: &str) -> NewArt {
         blurhash: None,
         attribution: (source == ArtSource::Provider).then(|| "TMDB".to_string()),
         generator: (source == ArtSource::Generated).then(|| "openai/gpt-image-1".to_string()),
+        gen_version: None,
+        gen_title: None,
     }
 }
 

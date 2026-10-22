@@ -767,6 +767,42 @@ fn fill_original_title(conn: &Connection, r: &Resolver, id: Id, original: &str) 
     crate::fts::update(conn, id, &old)
 }
 
+/// A re-parse changed the title a file's name gives its item (`old` →
+/// `new`: a dotted name read with spaces, release tags no longer taken for
+/// an episode title). The item takes the new title when its title is the
+/// one the old parse gave, so it came from the file name: a title from a
+/// provider match or the user (`matched`, `locked`) is never replaced.
+/// Returns whether the title changed.
+pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str, new: &str) -> Result<bool> {
+    if old == new || new.trim().is_empty() {
+        return Ok(false);
+    }
+    let Some(doc) = crate::fts::doc(conn, id)? else {
+        return Ok(false);
+    };
+    let n = conn
+        .prepare_cached(
+            "UPDATE item SET title = ?3, sort_title = ?4, updated_at = ?5
+              WHERE id = ?1 AND title = ?2 AND match_state NOT IN ('matched', 'locked')",
+        )?
+        .execute(params![id, old, new, sort_title(new), r.now])?;
+    if n > 0 {
+        crate::fts::update(conn, id, &doc)?;
+    }
+    Ok(n > 0)
+}
+
+/// The title [`place`] gives an episode item: the parsed episode title of
+/// a single-episode file, else the "Episode 3" placeholder (or the air
+/// date) a new episode gets.
+pub(crate) fn episode_title(ep: &EpisodeKey, parsed: Option<&str>) -> String {
+    match (parsed, ep) {
+        (Some(t), _) => t.to_string(),
+        (None, EpisodeKey::Number(n)) => format!("Episode {n}"),
+        (None, EpisodeKey::Date(d)) => d.clone(),
+    }
+}
+
 /// A same-titled top-level candidate: `(id, year, ids)`.
 type Candidate = (Id, Option<u16>, ProviderIds);
 
@@ -952,7 +988,27 @@ fn find_work(
                 .filter(|c| owners.contains(&c.0))
                 .collect();
             if !owned.is_empty() {
-                pick_by_year(conn, r, w, &owned)?
+                // A same-titled show that owns a folder around this one and
+                // that the nesting rules make the same show takes the file:
+                // a catalog from before those rules (or one scanned in an
+                // order they now settle) kept `Show/alt versions/` as a
+                // show of its own. Once its last file has moved, that show
+                // is carried into this one (`merge::carry_emptied`).
+                let others: Vec<&Candidate> = compatible
+                    .iter()
+                    .copied()
+                    .filter(|c| !owners.contains(&c.0))
+                    .collect();
+                let around: Vec<Nested<'_>> = nested_owners(conn, &others, folder)?
+                    .into_iter()
+                    .filter(|n| n.around)
+                    .collect();
+                let nested = pick_nested(conn, r, w, &around)?;
+                if nested.is_some() {
+                    nested
+                } else {
+                    pick_by_year(conn, r, w, &owned)?
+                }
             } else if let Some(p) = prefer.and_then(|p| compatible.iter().find(|c| c.0 == p)) {
                 // The file's current show follows it into the new folder
                 // (folder renamed) unless the years contradict; a yearless
@@ -1037,10 +1093,7 @@ pub(crate) fn resolve_episode(
             EpisodeKey::Date(d) => (None, Some(d.clone())),
         };
         NewChild {
-            title: title.map(str::to_string).unwrap_or_else(|| match ep {
-                EpisodeKey::Number(n) => format!("Episode {n}"),
-                EpisodeKey::Date(d) => d.clone(),
-            }),
+            title: episode_title(ep, title),
             season_number: Some(season),
             episode_number: number,
             air_date: date,

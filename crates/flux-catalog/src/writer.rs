@@ -700,7 +700,8 @@ impl Writer {
     /// claims and every user's state move over, `from` is deleted. For works
     /// whose provider ids agree ([`crate::merge::works_sharing_ids`]).
     pub fn merge_items(&self, from: Id, into: Id) -> Request<RekeyOutcome> {
-        self.exec(move |c| crate::merge::merge_items(c, from, into, now_ms()))
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::merge::merge_items(c, from, into, now_ms(), jobs))
     }
 
     /// Re-place episode assets (anime absolute numbering mapped by
@@ -714,14 +715,19 @@ impl Writer {
     // ---- metadata -----------------------------------------------------------
 
     /// Apply provider/matcher metadata to an item. Items the user `locked`
-    /// are left alone (returns `false`).
+    /// are left alone (returns `false`). A movie or show whose title or
+    /// year changes gets its art job again: its frame poster carries them.
     pub fn update_item_metadata(&self, item_id: Id, m: ItemMetadata) -> Request<bool> {
+        let jobs = self.apply_jobs;
         self.exec_quiet(move |c| {
-            let state: Option<String> = c
-                .prepare_cached("SELECT match_state FROM item WHERE id = ?1")?
-                .query_row([item_id], |r| r.get(0))
-                .optional()?;
-            match state.as_deref() {
+            type Head = (String, String, Option<i64>, Option<Id>);
+            let head = |c: &Connection| -> Result<Option<Head>> {
+                Ok(c.prepare_cached("SELECT match_state, title, year, parent_id FROM item WHERE id = ?1")?
+                    .query_row([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                    .optional()?)
+            };
+            let before = head(c)?;
+            match before.as_ref().map(|h| h.0.as_str()) {
                 None => return Err(CatalogError::NotFound(format!("item {item_id}"))),
                 Some("locked") => return Ok(false),
                 _ => {}
@@ -767,6 +773,12 @@ impl Writer {
             if let Some(old) = old_doc {
                 crate::fts::update(c, item_id, &old)?;
             }
+            if let (Some(b), Some(a)) = (before, head(c)?) {
+                let renamed = (&b.1, b.2) != (&a.1, a.2);
+                if renamed && a.3.is_none() && jobs > 0 {
+                    crate::jobs::rearm_art(c, item_id, now_ms(), jobs)?;
+                }
+            }
             Ok(true)
         })
     }
@@ -790,17 +802,28 @@ impl Writer {
                 .optional()?;
             if let Some(id) = existing {
                 c.prepare_cached(
-                    "UPDATE art SET width = ?2, height = ?3, blurhash = ?4, attribution = ?5, generator = ?6
+                    "UPDATE art SET width = ?2, height = ?3, blurhash = ?4, attribution = ?5, generator = ?6,
+                                    gen_version = ?7, gen_title = ?8
                      WHERE id = ?1 AND (width IS NOT ?2 OR height IS NOT ?3 OR blurhash IS NOT ?4
-                                        OR attribution IS NOT ?5 OR generator IS NOT ?6)",
+                                        OR attribution IS NOT ?5 OR generator IS NOT ?6
+                                        OR gen_version IS NOT ?7 OR gen_title IS NOT ?8)",
                 )?
-                .execute(params![id, art.width, art.height, art.blurhash, art.attribution, art.generator])?;
+                .execute(params![
+                    id,
+                    art.width,
+                    art.height,
+                    art.blurhash,
+                    art.attribution,
+                    art.generator,
+                    art.gen_version,
+                    art.gen_title
+                ])?;
                 return Ok(id);
             }
             c.prepare_cached(
                 "INSERT INTO art(item_id, kind, source, path, url, width, height, blurhash, generated, created_at,
-                                 attribution, generator)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                 attribution, generator, gen_version, gen_title)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?
             .execute(params![
                 item_id,
@@ -815,6 +838,8 @@ impl Writer {
                 now_ms(),
                 art.attribution,
                 art.generator,
+                art.gen_version,
+                art.gen_title,
             ])?;
             Ok(c.last_insert_rowid())
         })
@@ -851,6 +876,51 @@ impl Writer {
             Ok(c.prepare_cached("DELETE FROM art WHERE id = ?1")?
                 .execute([art_id])?
                 > 0)
+        })
+    }
+
+    /// Delete image rows (stale images an art job replaced). Returns the
+    /// stored paths of the rows that existed, for the caller to delete the
+    /// files it owns.
+    pub fn remove_arts(&self, art_ids: Vec<Id>) -> Request<Vec<String>> {
+        self.exec_quiet(move |c| {
+            let mut paths = Vec::new();
+            for id in art_ids {
+                let path: Option<Option<String>> = c
+                    .prepare_cached("DELETE FROM art WHERE id = ?1 RETURNING path")?
+                    .query_row([id], |r| r.get(0))
+                    .optional()?;
+                paths.extend(path.flatten());
+            }
+            Ok(paths)
+        })
+    }
+
+    /// Queue an art job for every movie or show whose own images are stale
+    /// for art `version` (see [`crate::read::stale_art`]); the jobs make them
+    /// again. Returns how many works got a job.
+    pub fn refresh_stale_art(&self, version: u32) -> Request<u64> {
+        let max = self.backoff.max_attempts;
+        self.exec_quiet(move |c| crate::jobs::refresh_stale_art(c, version, now_ms(), max))
+    }
+
+    /// Delete the items no file is linked to anywhere below them, and the
+    /// containers they leave empty: what an upgrade by an earlier build
+    /// left when a re-parse moved every file of a work elsewhere (hidden as
+    /// `missing` since). Their images, jobs and user state go with them
+    /// (the state was copied to where the files went). Returns the deleted
+    /// ids.
+    pub fn purge_empty_items(&self) -> Request<Vec<Id>> {
+        self.exec(move |c| {
+            let (deleted, survivors) = crate::merge::purge_empty_items(c)?;
+            if !survivors.is_empty() {
+                let t = scan_support::Touched {
+                    parents: survivors,
+                    ..Default::default()
+                };
+                scan_support::recompute(c, now_ms(), &t, &Default::default())?;
+            }
+            Ok(deleted.into_iter().collect())
         })
     }
 

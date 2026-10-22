@@ -39,6 +39,10 @@ struct Merge<'c> {
     t: Touched,
     removed: BTreeSet<Id>,
     states: u64,
+    /// Items that received flux's own images (frame or generated art) of
+    /// the item merged into them: a poster typeset with the other work's
+    /// title, which the work's art job makes again.
+    art_to: BTreeSet<Id>,
 }
 
 impl Merge<'_> {
@@ -84,6 +88,14 @@ impl Merge<'_> {
             self.t.linked.insert(into);
         }
         self.states += merge_user_state(c, from, into)?;
+        let own_art: i64 = c
+            .prepare_cached(
+                "SELECT count(*) FROM art WHERE item_id = ?1 AND source IN ('frame', 'generated')",
+            )?
+            .query_row([from], |r| r.get(0))?;
+        if own_art > 0 {
+            self.art_to.insert(into);
+        }
         // Images, folders, absolute maps. A pin survives unless the target
         // has its own pin of that kind (the target's wins; at most one pin
         // per item and kind, as `pin_art` keeps it).
@@ -159,9 +171,16 @@ pub(crate) struct Carried {
 ///   automatic match is not (the rename may be fixing it), `to`'s own match
 ///   job decides. When `from`'s top-level work (an episode's show, an
 ///   extra's movie) has no file left either, it follows into `to`'s.
-/// - Another library or kind: every user's state is copied onto `to`;
-///   `from` stays (hidden), as it would before.
-pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64) -> Result<Carried> {
+/// - Another library or kind (a film whose file is now an extra of another
+///   film, an episode now a film): every user's state is copied onto `to`,
+///   then `from` is deleted with its images, unless a file is still
+///   linked below it (a film keeps the extras that still have files), and
+///   so is each container it leaves empty (season, show).
+///
+/// `jobs`: attempts for the art jobs this queues (0 = queue none): a work
+/// that received another's frame poster gets one, so its own title is
+/// typeset again.
+pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64, jobs: u32) -> Result<Carried> {
     let mut out = Carried::default();
     if from == to {
         return Ok(out);
@@ -171,6 +190,11 @@ pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64) -> Resul
     };
     if lib_f != lib_t || kind_f != kind_t {
         merge_user_state(c, from, to)?;
+        let (deleted, survivor) = delete_empty_subtree(c, from)?;
+        if let Some(p) = survivor {
+            out.touched.parents.insert(p);
+        }
+        out.deleted = deleted;
         return Ok(out);
     }
     let top_f = top_of(c, from)?;
@@ -182,6 +206,7 @@ pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64) -> Resul
         t: Touched::default(),
         removed: BTreeSet::new(),
         states: 0,
+        art_to: BTreeSet::new(),
     };
     carry_locked_match(c, from, to, now)?;
     m.item(from, to)?;
@@ -200,9 +225,115 @@ pub(crate) fn carry_emptied(c: &Connection, from: Id, to: Id, now: i64) -> Resul
             }
         }
     }
+    m.rearm_art(jobs)?;
     out.touched = m.t;
     out.deleted = m.removed;
     Ok(out)
+}
+
+impl Merge<'_> {
+    /// Queue the art job of every work that received another's images.
+    fn rearm_art(&self, jobs: u32) -> Result<()> {
+        if jobs == 0 {
+            return Ok(());
+        }
+        let works: BTreeSet<Id> = self
+            .art_to
+            .iter()
+            .filter(|id| !self.removed.contains(id))
+            .map(|&id| top_of(self.c, id))
+            .collect::<Result<_>>()?;
+        for w in works {
+            crate::jobs::rearm_art(self.c, w, self.now, jobs)?;
+        }
+        Ok(())
+    }
+}
+
+/// Delete `id` and everything below it when no file is linked anywhere in
+/// that subtree, then each ancestor left with no file and no children (an
+/// emptied season, then its show). Images, user state and jobs go with
+/// them (cascades); search entries are removed. Returns the deleted ids
+/// and the nearest surviving ancestor, whose state needs a recompute.
+pub(crate) fn delete_empty_subtree(c: &Connection, id: Id) -> Result<(BTreeSet<Id>, Option<Id>)> {
+    let mut deleted = BTreeSet::new();
+    if !subtree_is_empty(c, id)? {
+        return Ok((deleted, None));
+    }
+    let mut parent = head(c, id)?.and_then(|h| h.2);
+    delete_subtree(c, id, &mut deleted)?;
+    while let Some(p) = parent {
+        let up: Option<Option<Id>> = c
+            .prepare_cached(
+                "SELECT parent_id FROM item it WHERE id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM asset_item WHERE item_id = it.id)
+                   AND NOT EXISTS (SELECT 1 FROM asset WHERE item_id = it.id)
+                   AND NOT EXISTS (SELECT 1 FROM item ch WHERE ch.parent_id = it.id)",
+            )?
+            .query_row([p], |r| r.get(0))
+            .optional()?;
+        let Some(up) = up else {
+            return Ok((deleted, Some(p)));
+        };
+        delete_subtree(c, p, &mut deleted)?;
+        parent = up;
+    }
+    Ok((deleted, None))
+}
+
+/// Delete an item and its descendants (the foreign keys cascade), removing
+/// each one's search entry first.
+fn delete_subtree(c: &Connection, id: Id, deleted: &mut BTreeSet<Id>) -> Result<()> {
+    let ids: Vec<Id> = {
+        let mut stmt = c.prepare_cached(
+            "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT i.id FROM item i JOIN sub ON i.parent_id = sub.id)
+             SELECT id FROM sub",
+        )?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for &i in &ids {
+        if let Some(doc) = crate::fts::doc(c, i)? {
+            crate::fts::remove(c, i, &doc)?;
+        }
+    }
+    c.prepare_cached("DELETE FROM item WHERE id = ?1")?
+        .execute([id])?;
+    deleted.extend(ids);
+    Ok(())
+}
+
+/// Items no file is linked to, anywhere below them: what an upgrade by an
+/// earlier build left when a re-parse moved every file of a work elsewhere
+/// (a film's files became another film's extras), hidden as `missing`
+/// ever since. They are deleted with their images (user state was copied
+/// to where the files went), and so is each container they leave empty.
+/// Returns the deleted ids and the surviving containers to recompute.
+pub(crate) fn purge_empty_items(c: &Connection) -> Result<(BTreeSet<Id>, BTreeSet<Id>)> {
+    // Items with a file somewhere below them: the linked items and their
+    // ancestors. Everything else is empty.
+    let empty: Vec<Id> = {
+        let mut stmt = c.prepare_cached(
+            "WITH RECURSIVE live(id) AS (
+                 SELECT item_id FROM asset_item UNION SELECT item_id FROM asset
+                 UNION SELECT i.parent_id FROM item i JOIN live ON i.id = live.id WHERE i.parent_id IS NOT NULL)
+             SELECT id FROM item WHERE id NOT IN (SELECT id FROM live) ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut deleted = BTreeSet::new();
+    let mut survivors = BTreeSet::new();
+    for id in empty {
+        if deleted.contains(&id) {
+            continue;
+        }
+        let (gone, survivor) = delete_empty_subtree(c, id)?;
+        deleted.extend(gone);
+        survivors.extend(survivor);
+    }
+    survivors.retain(|id| !deleted.contains(id));
+    Ok((deleted, survivors))
 }
 
 /// `(library_id, kind, parent_id)` of an item.
@@ -231,7 +362,8 @@ fn subtree_is_empty(c: &Connection, id: Id) -> Result<bool> {
     Ok(c
         .prepare_cached(
             "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT i.id FROM item i JOIN sub ON i.parent_id = sub.id)
-             SELECT 1 FROM sub JOIN asset_item ai ON ai.item_id = sub.id LIMIT 1",
+             SELECT 1 FROM sub WHERE EXISTS (SELECT 1 FROM asset_item ai WHERE ai.item_id = sub.id)
+                                  OR EXISTS (SELECT 1 FROM asset a WHERE a.item_id = sub.id) LIMIT 1",
         )?
         .query_row([id], |_| Ok(()))
         .optional()?
@@ -261,8 +393,9 @@ fn carry_locked_match(c: &Connection, from: Id, to: Id, now: i64) -> Result<()> 
     Ok(())
 }
 
-/// Merge top-level work `from` into `into` (writer thread).
-pub(crate) fn merge_items(c: &Connection, from: Id, into: Id, now: i64) -> Result<RekeyOutcome> {
+/// Merge top-level work `from` into `into` (writer thread). `jobs`: as in
+/// [`carry_emptied`].
+pub(crate) fn merge_items(c: &Connection, from: Id, into: Id, now: i64, jobs: u32) -> Result<RekeyOutcome> {
     let head = |id: Id| -> Result<(Id, String, Option<Id>)> {
         c.prepare_cached("SELECT library_id, kind, parent_id FROM item WHERE id = ?1")?
             .query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -282,8 +415,10 @@ pub(crate) fn merge_items(c: &Connection, from: Id, into: Id, now: i64) -> Resul
         t: Touched::default(),
         removed: BTreeSet::new(),
         states: 0,
+        art_to: BTreeSet::new(),
     };
     m.item(from, into)?;
+    m.rearm_art(jobs)?;
     // `into` as a container (show) is recomputed from its seasons; as a
     // leaf (movie) from its assets.
     if kind_b == "movie" {

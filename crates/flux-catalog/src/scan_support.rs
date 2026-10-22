@@ -268,6 +268,8 @@ struct Apply<'c> {
     /// Items this job deleted: works merged into the work their last file
     /// moved to (see [`crate::merge::carry_emptied`]).
     deleted: BTreeSet<Id>,
+    /// Items a re-parse retitled ([`group::retitle_parsed`]).
+    retitled: BTreeSet<Id>,
 }
 
 /// Backoff before a failed probe is retried: 1 min, doubling per failed
@@ -303,6 +305,7 @@ impl<'c> Apply<'c> {
                 movie_dirs: BTreeSet::new(),
                 expect: HashMap::new(),
                 deleted: BTreeSet::new(),
+                retitled: BTreeSet::new(),
             },
             state == RootState::Unavailable.as_str(),
         ))
@@ -322,6 +325,13 @@ impl<'c> Apply<'c> {
             .copied()
             .filter(|id| !deleted.contains(id))
             .collect();
+        let mut updated: BTreeSet<Id> = updated.into_iter().collect();
+        updated.extend(
+            self.retitled
+                .iter()
+                .copied()
+                .filter(|id| !self.r.created.contains(id)),
+        );
         self.out.items_updated = updated.into_iter().filter(|id| !deleted.contains(id)).collect();
         for id in deleted {
             if !removed.contains(&id) && !self.r.created.contains(&id) {
@@ -497,7 +507,7 @@ impl Apply<'_> {
         }
         self.t.file(self.conn, m.file_id)?;
         if let Some(g) = &m.guess {
-            self.place(m.file_id, &m.to.rel_path, asset_id, g, ProbeSrc::Keep)?;
+            self.place(m.file_id, &m.to.rel_path, asset_id, g, None, ProbeSrc::Keep)?;
         }
         Ok(())
     }
@@ -689,6 +699,12 @@ impl Apply<'_> {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?;
+        // What the file's name said before a re-parse: a title taken from it
+        // follows the new parse (see `place`).
+        let old_guess = match (&existing, &u.guess) {
+            (Some((id, Some(_), _)), Some(_)) => self.load_guess(*id)?,
+            _ => None,
+        };
         let (file_id, asset_id, placement) = match existing {
             Some((id, asset, placement)) => {
                 self.update_file(id, f, probe, probe_error, u.guess.as_ref())?;
@@ -717,12 +733,12 @@ impl Apply<'_> {
         };
 
         match (&u.guess, asset_id) {
-            (Some(g), _) => self.place(file_id, &f.rel_path, asset_id, g, probe),
+            (Some(g), _) => self.place(file_id, &f.rel_path, asset_id, g, old_guess.as_ref(), probe),
             // A new file the parser said nothing about: unmatched item.
             (None, None) if placement == "pending" => {
                 let stored = self.load_guess(file_id)?;
                 let g = stored.unwrap_or_else(NameGuess::unknown);
-                self.place(file_id, &f.rel_path, None, &g, probe)
+                self.place(file_id, &f.rel_path, None, &g, None, probe)
             }
             (None, Some(a)) => match probe {
                 // Re-probed in place: refresh the asset's playback facts.
@@ -766,15 +782,23 @@ impl Apply<'_> {
         Ok(json.and_then(|j| parse_stored(file_id, "probe", &j)))
     }
 
+    /// Place a file by its guess. `old`: the guess the file had before a
+    /// re-parse of the same path; a title its name gave an item follows
+    /// the new parse ([`Apply::retitle`]).
     fn place(
         &mut self,
         file_id: Id,
         rel_path: &str,
         current: Option<Id>,
         guess: &NameGuess,
+        old: Option<&NameGuess>,
         probe: ProbeSrc<'_>,
     ) -> Result<()> {
         let conn = self.conn;
+        let was = match (old, current) {
+            (Some(g), Some(_)) => Some(group::place(g, rel_path)),
+            _ => None,
+        };
         match group::place(guess, rel_path) {
             Placement::Ignore { .. } => {
                 if let Some(a) = current {
@@ -793,6 +817,9 @@ impl Apply<'_> {
                     return Ok(());
                 }
                 let item = group::resolve_work(conn, &mut self.r, "movie", &work, None)?;
+                if let Some(Placement::Movie { work: was, .. }) = &was {
+                    self.retitle(item, &was.title, &work.title)?;
+                }
                 self.placed_parent = true;
                 if let Some((dir, _)) = rel_path.rsplit_once('/') {
                     self.movie_dirs.insert(dir.to_string());
@@ -811,6 +838,23 @@ impl Apply<'_> {
                     None => None,
                 };
                 let show_id = group::resolve_work(conn, &mut self.r, "show", &show, prefer)?;
+                // The episode the old parse put this file in, and the title
+                // it gave it (single-episode files name their episode).
+                let mut was_episode: Option<String> = None;
+                if let Some(Placement::Episodes {
+                    show: was_show,
+                    season: was_season,
+                    episodes: was_eps,
+                    episode_title: was_title,
+                    ..
+                }) = &was
+                {
+                    self.retitle(show_id, &was_show.title, &show.title)?;
+                    if let ([ep], true) = (was_eps.as_slice(), (*was_season, was_eps) == (season, &episodes))
+                    {
+                        was_episode = Some(group::episode_title(ep, was_title.as_deref()));
+                    }
+                }
                 // Anime absolute numbering the show's map already places.
                 let (season, episodes) = match absolute {
                     Some(abs) => match crate::rekey::mapped_episode(conn, show_id, abs)? {
@@ -836,6 +880,9 @@ impl Apply<'_> {
                         ep,
                         title,
                     )?);
+                }
+                if let (Some(was), [ep], [item]) = (was_episode, episodes.as_slice(), items.as_slice()) {
+                    self.retitle(*item, &was, &group::episode_title(ep, title))?;
                 }
                 self.placed_parent = true;
                 self.link(file_id, current, &items, None, None, guess, probe)?;
@@ -993,13 +1040,34 @@ impl Apply<'_> {
         if self.deleted.contains(&from) || self.deleted.contains(&to) {
             return Ok(());
         }
-        let c = crate::merge::carry_emptied(self.conn, from, to, self.r.now)?;
+        let c = crate::merge::carry_emptied(self.conn, from, to, self.r.now, self.r.job_max_attempts)?;
         self.t.leaves.extend(c.touched.leaves);
         self.t.linked.extend(c.touched.linked);
         self.t.parents.extend(c.touched.parents);
         if !c.deleted.is_empty() {
             self.r.forget(&c.deleted);
             self.deleted.extend(c.deleted);
+        }
+        Ok(())
+    }
+
+    /// A re-parse changed the title the file's name gives `id` (`old` →
+    /// `new`): see [`group::retitle_parsed`]. A retitled movie or show gets
+    /// its art job again, as its frame poster carries the title.
+    fn retitle(&mut self, id: Id, old: &str, new: &str) -> Result<()> {
+        if self.deleted.contains(&id) || !group::retitle_parsed(self.conn, &self.r, id, old, new)? {
+            return Ok(());
+        }
+        self.retitled.insert(id);
+        let top_level = matches!(self.r.created_meta.get(&id), Some((_, None)))
+            || self
+                .conn
+                .prepare_cached("SELECT 1 FROM item WHERE id = ?1 AND parent_id IS NULL")?
+                .query_row([id], |_| Ok(()))
+                .optional()?
+                .is_some();
+        if top_level && self.r.job_max_attempts > 0 {
+            crate::jobs::rearm_art(self.conn, id, self.r.now, self.r.job_max_attempts)?;
         }
         Ok(())
     }
@@ -1070,7 +1138,7 @@ impl Apply<'_> {
                     continue;
                 };
                 if word_extra_candidate(&guess, &rel_path) {
-                    self.place(id, &rel_path, Some(asset), &guess, ProbeSrc::Keep)?;
+                    self.place(id, &rel_path, Some(asset), &guess, None, ProbeSrc::Keep)?;
                 }
             }
         }
@@ -1253,7 +1321,7 @@ impl Apply<'_> {
             None => ProbeSrc::Keep,
         };
         if let Some(g) = &guess {
-            self.place(tomb, &rel_path, tomb_asset, g, src)?;
+            self.place(tomb, &rel_path, tomb_asset, g, None, src)?;
         }
         // The fresh file's work lost its only file: it carries into the
         // work the tombstone's asset now belongs to.
