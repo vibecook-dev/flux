@@ -400,6 +400,16 @@ struct Fetched {
 }
 
 async fn match_item(st: &AppState, ctx: &mut Ctx, item_id: Id) -> Result<(), String> {
+    // A videos library is never matched (its items get no match job; this
+    // holds for any job that reaches one anyway).
+    let library_kind = st
+        .catalog
+        .read(move |c| read::item_library_kind(c, item_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    if library_kind.is_some_and(|k| !k.matches_metadata()) {
+        return Ok(());
+    }
     let detail = st
         .catalog
         .read(move |c| read::item_detail(c, item_id, None))

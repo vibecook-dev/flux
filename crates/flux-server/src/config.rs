@@ -12,7 +12,7 @@
 //! watch = true
 //! [[library]]
 //! name = "Movies"
-//! kind = "movies"            # movies | shows | mixed
+//! kind = "movies"            # movies | shows | mixed | videos
 //! path = "/srv/media/Movies"
 //! video_encoder = "auto"     # auto | videotoolbox | nvenc | qsv | vaapi | libx264
 //! max_video_transcodes = 0   # concurrent video transcodes; 0 = by encoder
@@ -49,7 +49,11 @@ fn parse_kind(s: &str) -> Result<LibraryKind, String> {
         "movies" | "movie" | "films" => Ok(LibraryKind::Movies),
         "shows" | "show" | "tv" | "series" => Ok(LibraryKind::Shows),
         "mixed" => Ok(LibraryKind::Mixed),
-        other => Err(format!("unknown library kind {other:?} (movies, shows or mixed)")),
+        // Home videos and clips: one item per file, browsed by folder.
+        "videos" | "video" | "home" | "home-videos" | "personal" | "other" => Ok(LibraryKind::Videos),
+        other => Err(format!(
+            "unknown library kind {other:?} (movies, shows, mixed or videos)"
+        )),
     }
 }
 
@@ -162,7 +166,8 @@ pub struct Cli {
     #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
     /// A library to create on first run (repeatable; ';'-separated in the
-    /// variable). KIND is movies, shows or mixed.
+    /// variable). KIND is movies, shows, mixed or videos (home videos and
+    /// clips: one item per file, browsed by folder, never matched).
     #[arg(
         long = "library",
         env = "FLUX_LIBRARIES",
@@ -719,6 +724,13 @@ mod tests {
         assert_eq!((l.kind, l.path.as_str()), (LibraryKind::Shows, "/a:b/c"));
         assert!("Movies:/x".parse::<LibrarySpec>().is_err());
         assert!("Movies:films2:/x".parse::<LibrarySpec>().is_err());
+        for kind in ["videos", "Home", "personal", "other"] {
+            let l: LibrarySpec = format!("Clips:{kind}:D:\\Home Videos").parse().unwrap();
+            assert_eq!(
+                (l.kind, l.path.as_str()),
+                (LibraryKind::Videos, "D:\\Home Videos")
+            );
+        }
     }
 
     #[test]

@@ -174,7 +174,7 @@ lan = "0.0.0.0:8097"                    # leave out to listen on 127.0.0.1 only
 
 [[library]]
 name = "Movies"
-kind = "movies"                         # movies | shows | mixed
+kind = "movies"                         # movies | shows | mixed | videos
 path = "/srv/media/movies"
 
 [[library]]

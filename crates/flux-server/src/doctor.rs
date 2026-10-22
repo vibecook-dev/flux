@@ -9,7 +9,6 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use flux_core::LibraryKind;
 use flux_hls::encoders::{DetectOptions, FfmpegCaps, VideoEncoder};
 use serde::Serialize;
 
@@ -259,11 +258,7 @@ pub fn config_text(cfg: &Config) -> String {
             s,
             "library  {} ({}): {}  ({})",
             l.name,
-            match l.kind {
-                LibraryKind::Movies => "movies",
-                LibraryKind::Shows => "shows",
-                LibraryKind::Mixed => "mixed",
-            },
+            l.kind.as_str(),
             path.display(),
             dir_state(path, "NOT FOUND")
         );
@@ -278,6 +273,8 @@ pub fn config_text(cfg: &Config) -> String {
 
 #[cfg(test)]
 mod tests {
+    use flux_core::LibraryKind;
+
     use super::*;
 
     /// `--check` showed only the tools: a mangled data dir or library path
