@@ -635,6 +635,77 @@ fn assert_tone(pcm: &[i16], rate: f64, secs: f64, hz: f64, what: &str) {
     }
 }
 
+/// A recording that starts mid-stream (cut before a sequence header, as a
+/// capture that started late), joined after another. Its audio starts
+/// 0.63 s before its video, and ffmpeg, reading the part alone as every
+/// run does, starts its clock at that audio; the video runs count from the
+/// same point. A piece shows the part's pictures at its time (the runs
+/// took the first packet's time, the video's, for the part's start: the
+/// pictures came 0.63 s early, min PSNR 21.9 dB), and the first audio
+/// segment is the part's tone throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_part_that_starts_mid_stream_keeps_its_time() {
+    let Some(engine) = x264_engine() else { return };
+    let (Some(p), Some(cut)) = (clip(Clip::JoinedCutPs), clip(Clip::CutMpeg1Mp2PsB)) else {
+        return;
+    };
+    let asset = engine.prepare(&p).await.unwrap();
+    let Layout::External(l) = &asset.index.layout else {
+        panic!("{:?}", asset.index.layout)
+    };
+    assert_eq!(l.parts.len(), 2, "{:?}", l.parts);
+    let start = l.parts[1].start_ns as f64 / 1e9;
+    assert!((start - 10.0).abs() < 0.1, "{:?}", l.parts);
+    let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+    let playlist =
+        String::from_utf8(bytes(&engine, &asset, &plan, HlsResource::Playlist(Rendition::Video)).await)
+            .unwrap();
+    // The second part's second piece (~2.3 s into it), asked for cold.
+    let durs = extinfs(&playlist);
+    let starts: Vec<f64> = durs
+        .iter()
+        .scan(0.0, |t, d| {
+            *t += d;
+            Some(*t - d)
+        })
+        .collect();
+    let n = starts
+        .iter()
+        .position(|&t| t > start + 1.0)
+        .unwrap_or_else(|| panic!("no second piece in the second part ({start} s): {durs:?}"));
+    let at = starts[n] - start;
+    let n = n as u32;
+    let seg = bytes(&engine, &asset, &plan, HlsResource::Segment(Rendition::Video, n)).await;
+    assert_eq!(first_vcl(&seg), Some(5));
+    let mut all = bytes(&engine, &asset, &plan, HlsResource::Init(Rendition::Video)).await;
+    all.extend_from_slice(&seg);
+    let dir = flux_test_media::scratch("hls-old-formats-cut-join");
+    let file = dir.join("cut_join.piece.mp4");
+    std::fs::write(&file, all).unwrap();
+    let psnr = min_psnr(&file, &cut, at, 50, (320, 240));
+    assert!(
+        psnr > 28.0,
+        "piece {n} is not the part at {at:.2} s (min PSNR {psnr:.1} dB)"
+    );
+    let after = first_segment_of(&asset, l.parts[1].start_ns);
+    for a in &plan.audio {
+        let r = Rendition::Audio(AudioKey::from_plan(a));
+        let init = bytes(&engine, &asset, &plan, HlsResource::Init(r)).await;
+        let seg = bytes(&engine, &asset, &plan, HlsResource::Segment(r, after)).await;
+        let pcm = decode_s16(&init, &seg, &dir, "cut_join.a.mp4");
+        assert_tone(
+            &pcm,
+            48_000.0,
+            4.0,
+            660.0,
+            "the first audio segment after the join",
+        );
+    }
+    let probed = flux_probe::ffprobe::probe(&p).unwrap();
+    let ms = probed.duration_ms.unwrap();
+    assert!((14_000..15_200).contains(&ms), "{ms} ms");
+}
+
 /// A download that stopped at 40 %: the FLV's header still says 10 s, but
 /// the playlist ends where the tags do, so every segment (the last one
 /// too) is produced. Likewise for an FLV written without `onMetaData`,

@@ -377,9 +377,17 @@ pub enum Clip {
     /// 15 s: a seek past 15 s lands where no frame decodes (any packet,
     /// then nothing to start from).
     SparseKeysPs,
+    /// [`Clip::Mpeg1Mp2PsB`] from the pack before its first sequence header
+    /// past 40 % of its bytes (a recording that starts mid-stream): its
+    /// first packet is video, but its audio starts 0.63 s earlier, and
+    /// ffmpeg starts its clock there.
+    CutMpeg1Mp2PsB,
+    /// [`Clip::Mpeg1Mp2Ps`] then [`Clip::CutMpeg1Mp2PsB`], joined byte for
+    /// byte.
+    JoinedCutPs,
 }
 
-const CLIP_COUNT: usize = 36;
+const CLIP_COUNT: usize = 38;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -403,6 +411,9 @@ enum Recipe {
     Truncate(Clip, u64),
     /// Two clips' bytes, one after the other.
     Join(Clip, Clip),
+    /// An MPEG-PS clip from the pack header before its first sequence
+    /// header past this percent of its bytes.
+    CutAtSequence(Clip, u64),
 }
 
 impl Clip {
@@ -444,6 +455,8 @@ impl Clip {
         Clip::BareFlv,
         Clip::CutBareFlv,
         Clip::SparseKeysPs,
+        Clip::CutMpeg1Mp2PsB,
+        Clip::JoinedCutPs,
     ];
 
     /// File name of the cached clip.
@@ -485,6 +498,8 @@ impl Clip {
             Clip::BareFlv => "bare_flv1_aac.flv",
             Clip::CutBareFlv => "cut_bare_flv1_aac.flv",
             Clip::SparseKeysPs => "sparse_keys_mpeg1_mp2.mpg",
+            Clip::CutMpeg1Mp2PsB => "cut_mpeg1_mp2_b.mpg",
+            Clip::JoinedCutPs => "joined_cut_mpeg1_mp2.mpg",
         }
     }
 
@@ -515,9 +530,12 @@ impl Clip {
                 &["flv", "aac"]
             }
             Clip::MsClockWmv1Asf => &["wmv1", "wmav2"],
-            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::JoinedPs | Clip::SparseKeysPs => {
-                &["mpeg1video", "mp2"]
-            }
+            Clip::Mpeg1Mp2Ps
+            | Clip::Mpeg1Mp2PsB
+            | Clip::JoinedPs
+            | Clip::SparseKeysPs
+            | Clip::CutMpeg1Mp2PsB
+            | Clip::JoinedCutPs => &["mpeg1video", "mp2"],
             Clip::Rv20Ac3Rm => &["rv20", "ac3"],
             Clip::HevcAacTs
             | Clip::VfrHevcShortMkv
@@ -964,6 +982,8 @@ impl Clip {
                 ]));
             }
             Clip::JoinedPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::Mpeg1Mp2PsB)),
+            Clip::CutMpeg1Mp2PsB => return Some(Recipe::CutAtSequence(Clip::Mpeg1Mp2PsB, 40)),
+            Clip::JoinedCutPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::CutMpeg1Mp2PsB)),
         }
         Some(Recipe::Ffmpeg(a))
     }
@@ -1049,6 +1069,23 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
             std::fs::read(&src).map_err(|e| e.to_string()).and_then(|mut b| {
                 b.truncate((b.len() as u64 * percent / 100) as usize);
                 std::fs::write(&tmp, &b).map_err(|e| e.to_string())
+            })
+        }
+        Recipe::CutAtSequence(from, percent) => {
+            let src = clip(from)?;
+            std::fs::read(&src).map_err(|e| e.to_string()).and_then(|b| {
+                let find = |at: usize, code: u8| {
+                    b[at..]
+                        .windows(4)
+                        .position(|w| w == [0, 0, 1, code])
+                        .map(|k| at + k)
+                };
+                let header = find((b.len() as u64 * percent / 100) as usize, 0xB3);
+                let pack = header.and_then(|h| b[..h].windows(4).rposition(|w| w == [0, 0, 1, 0xBA]));
+                match pack {
+                    Some(p) => std::fs::write(&tmp, &b[p..]).map_err(|e| e.to_string()),
+                    None => Err("no sequence header after the cut".into()),
+                }
             })
         }
     };

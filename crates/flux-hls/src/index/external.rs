@@ -52,8 +52,8 @@ pub struct ExternalPart {
     pub offset: u64,
     /// Where it starts on the asset's timeline, ns.
     pub start_ns: i64,
-    /// Its own clock where it starts (its earliest timestamp, the start
-    /// time ffmpeg reads for it), ns.
+    /// Its own clock where it starts, ns: the start time ffmpeg reads for
+    /// the part alone (`subfile_start`), which audio runs count from.
     #[serde(default)]
     pub clock_ns: i64,
 }
@@ -77,15 +77,48 @@ impl ExternalLayout {
             Some(i) if self.parts.len() > 1 => {
                 let p = self.parts[i];
                 let end = self.parts.get(i + 1).map_or(0, |n| n.offset);
-                (
-                    format!("subfile,,start,{},end,{end},,:{}", p.offset, path.display()),
-                    p.start_ns,
-                    p.clock_ns,
-                )
+                (subfile(path, p.offset, end), p.start_ns, p.clock_ns)
             }
             _ => (path.display().to_string(), 0, self.start_time_ns),
         }
     }
+}
+
+/// The bytes `[start, end)` of the file at `path` as ffmpeg's `subfile`
+/// protocol opens them (`end` 0: to the end of the file).
+fn subfile(path: &Path, start: u64, end: u64) -> String {
+    format!("subfile,,start,{start},end,{end},,:{}", path.display())
+}
+
+/// ffmpeg's start time (90 kHz) of the bytes `[start, end)` of `path` read
+/// alone: the time 0 of a run that opens a part of a joined file
+/// ([`ExternalLayout::input_at`]). Audio runs count from it, so the video
+/// runs' clock ([`ExternalPart::clock_ns`]) must be the same value.
+fn subfile_start(
+    ffprobe: &Path,
+    path: &Path,
+    (start, end): (u64, u64),
+    limits: &ScanLimits,
+    file_len: u64,
+) -> Option<u64> {
+    let url = subfile(path, start, end);
+    let out = run(
+        ffprobe,
+        &[
+            "-v",
+            "error",
+            "-show_entries",
+            "format=start_time",
+            "-of",
+            "csv=p=0",
+        ],
+        Path::new(&url),
+        limits,
+        file_len,
+    )
+    .ok()?;
+    let s: f64 = out.trim().parse().ok()?;
+    (s.is_finite() && s >= 0.0).then(|| (s * 90_000.0).round() as u64)
 }
 
 /// Packets read at the start of the file: enough for the frame rate and a
@@ -655,9 +688,10 @@ pub fn build_with_limits(
         }
     }
     // Joined recordings: each part from where the one before it ends (on
-    // the frame grid); the first one's clock starts at the file's start
-    // time, the others' at their earliest timestamp (what ffmpeg reads a
-    // part's start as).
+    // the frame grid). A part's clock starts where ffmpeg starts it when it
+    // reads the part alone, as every run does: the file's start time for
+    // the first, ffprobe's for the others (else where flux-probe found the
+    // earliest of each stream's first timestamp, the same rule).
     let mut parts = Vec::new();
     if !ps_parts.is_empty() {
         let on_grid = |ns: i64| (ns as f64 / frame_ns).round() as i64 * frame_ns.round() as i64;
@@ -666,7 +700,8 @@ pub fn build_with_limits(
             let origin = if k == 0 {
                 (start * 90_000.0).round() as u64
             } else {
-                p.first_pts
+                let end = ps_parts.get(k + 1).map_or(0, |n| n.offset);
+                subfile_start(ffprobe, path, (p.offset, end), limits, file_len).unwrap_or(p.first_pts)
             };
             let start_ns = match &video {
                 Some(vi) => {

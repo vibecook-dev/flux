@@ -18,7 +18,7 @@
 //!
 //! [`fix_duration`] folds the result into an ffprobe [`ProbeResult`]: the
 //! catalog's duration and the playlist's length then cover what can be
-//! decoded. Two or three small reads per FLV or ASF file, ~32 per MPEG-PS.
+//! decoded. Two or three small reads per FLV or ASF file, ~45 per MPEG-PS.
 
 use std::path::Path;
 
@@ -304,9 +304,11 @@ pub fn asf_end<R: RangeRead>(src: &mut R) -> Option<PacketEnd> {
 pub struct PsPart {
     /// Where the part starts in the file (a pack header).
     pub offset: u64,
-    /// Its earliest and latest timestamps, 90 kHz (the latest unwrapped
-    /// past a 33-bit wrap).
+    /// Where ffmpeg starts its clock, 90 kHz: the earliest of each
+    /// stream's first timestamp (`ps_start`), so `first_pts` of a part read
+    /// alone is its start time.
     pub first_pts: u64,
+    /// Its latest video timestamp, 90 kHz (unwrapped past a 33-bit wrap).
     pub last_pts: u64,
 }
 
@@ -319,8 +321,13 @@ impl PsPart {
 
 /// Bytes read at each place sampled in an MPEG-PS file.
 const PS_WINDOW: u64 = 128 << 10;
+/// Bytes read in one go where a part starts (the file's start, a join): a
+/// part shorter than this shows its clock going back inside them.
+const PS_HEAD: u64 = 1 << 20;
 /// Places sampled for a clock that goes back.
 const PS_SAMPLES: u64 = 32;
+/// Parts looked for at most (each costs ~25 reads).
+const PS_MAX_PARTS: usize = 256;
 const WRAP_33: u64 = 1 << 33;
 
 /// A PES timestamp field (PTS or DTS, 5 bytes with marker bits).
@@ -360,9 +367,16 @@ fn pes_pts(p: &[u8]) -> Option<u64> {
         .flatten()
 }
 
-/// (offset, PTS, is video) of the PES packets with a timestamp in `b`, a
-/// window of the file at `at`.
-fn ps_timestamps(b: &[u8], at: u64) -> Vec<(u64, u64, bool)> {
+/// A PES packet with a timestamp: (offset in the file, PTS, stream id).
+type PsTs = (u64, u64, u8);
+
+fn is_video(sid: u8) -> bool {
+    (0xE0..=0xEF).contains(&sid)
+}
+
+/// The PES packets with a timestamp in `b`, a window of the file at `at`:
+/// video, MPEG audio and private stream 1 (AC-3, DTS, LPCM on DVDs).
+fn ps_timestamps(b: &[u8], at: u64) -> Vec<PsTs> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 14 <= b.len() {
@@ -372,10 +386,9 @@ fn ps_timestamps(b: &[u8], at: u64) -> Vec<(u64, u64, bool)> {
         }
         if b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 {
             let sid = b[i + 3];
-            let video = (0xE0..=0xEF).contains(&sid);
-            if video || (0xC0..=0xDF).contains(&sid) || sid == 0xBD {
+            if is_video(sid) || (0xC0..=0xDF).contains(&sid) || sid == 0xBD {
                 if let Some(pts) = pes_pts(&b[i..]) {
-                    out.push((at + i as u64, pts, video));
+                    out.push((at + i as u64, pts, sid));
                 }
             }
             i += 4;
@@ -384,6 +397,21 @@ fn ps_timestamps(b: &[u8], at: u64) -> Vec<(u64, u64, bool)> {
         }
     }
     out
+}
+
+/// Where ffmpeg starts the clock of packets that begin a stretch (in file
+/// order): the earliest of each stream's *first* timestamp, as it takes a
+/// stream's start time from its first packet that has one. (Not the
+/// smallest timestamp: B-frames after the first I-frame come before it.)
+fn ps_start<'a>(ts: impl IntoIterator<Item = &'a PsTs>) -> Option<u64> {
+    let mut seen = [false; 256];
+    let mut start = None::<u64>;
+    for &(_, p, sid) in ts {
+        if !std::mem::replace(&mut seen[usize::from(sid)], true) {
+            start = Some(start.map_or(p, |s| s.min(p)));
+        }
+    }
+    start
 }
 
 /// The clock went back from `a` to `b` by more than a second (not a 33-bit
@@ -397,14 +425,19 @@ fn video_pts_at<R: RangeRead>(src: &mut R, off: u64) -> Option<(u64, u64)> {
     let b = read(src, off, PS_WINDOW)?;
     ps_timestamps(&b, off)
         .into_iter()
-        .find(|t| t.2)
+        .find(|t| is_video(t.2))
         .map(|t| (t.0, t.1))
 }
 
-/// Where between `a` and `b` (offset, video PTS; `b`'s clock is behind
-/// `a`'s) the clock goes back: the pack header before the first packet of
-/// the new clock, the last video PTS before it and the earliest PTS after
-/// it (any stream: where ffmpeg starts that part's clock).
+/// Where between `a` and `b` (offset, video PTS: `a`'s the latest of its
+/// clock so far, `b`'s behind it) the clock goes back: the pack header
+/// before the first packet of the new clock, the last video PTS of the old
+/// one, and where ffmpeg starts the new one ([`ps_start`]).
+///
+/// The new clock is found by its video: audio is multiplexed up to about a
+/// second behind its video, so the last audio of the old clock can follow
+/// the last video. Between the two clocks' video, a packet belongs to the
+/// clock its timestamp is nearer.
 fn ps_join<R: RangeRead>(src: &mut R, a: (u64, u64), b: (u64, u64)) -> Option<(u64, u64, u64)> {
     let (mut lo, mut lo_pts, mut hi) = (a.0, a.1, b.0);
     while hi - lo > PS_WINDOW {
@@ -415,82 +448,137 @@ fn ps_join<R: RangeRead>(src: &mut R, a: (u64, u64), b: (u64, u64)) -> Option<(u
             _ => hi = mid.max(lo + 1),
         }
     }
-    let b = read(src, lo, hi - lo + 2 * PS_WINDOW)?;
-    let ts = ps_timestamps(&b, lo);
-    let mut last = lo_pts;
-    let i = ts.iter().position(|&(_, p, video)| {
-        let back = went_back(last, p);
-        if video && !back {
-            last = last.max(p);
+    let buf = read(src, lo, hi - lo + 2 * PS_WINDOW)?;
+    let ts = ps_timestamps(&buf, lo);
+    // The first video packet of the new clock, and where the old clock's
+    // video ends.
+    let (mut last, mut old_end, mut first_video) = (lo_pts, 0, None);
+    for (k, &(_, p, sid)) in ts.iter().enumerate() {
+        if !is_video(sid) {
+            continue;
         }
-        back
-    })?;
+        if went_back(last, p) {
+            first_video = Some(k);
+            break;
+        }
+        last = last.max(p);
+        old_end = k + 1;
+    }
+    let iv = first_video?;
+    let new = ts[iv].1;
+    let on_new = |p: u64| p.abs_diff(new) < p.abs_diff(last);
+    let i = (old_end..=iv).find(|&k| on_new(ts[k].1)).unwrap_or(iv);
     let at = ts[i].0;
     let rel = (at - lo) as usize;
-    let pack = b[..rel]
+    let pack = buf[..rel]
         .windows(4)
         .rposition(|w| w == [0, 0, 1, 0xBA])
         .map_or(at, |k| lo + k as u64);
-    // The new clock's earliest time: the smallest PTS in the window after
-    // the join (B-frames and audio start a little before the first one).
-    let first = ts[i..]
-        .iter()
-        .take(64)
-        .map(|t| t.1)
-        .filter(|&p| !went_back(ts[i].1 + 90_000 * 5, p))
-        .min()
-        .unwrap_or(ts[i].1);
-    Some((pack, last, first))
+    let start = ps_start(ts[i..].iter().filter(|t| on_new(t.1))).unwrap_or(new);
+    Some((pack, last, start))
 }
 
 /// The parts of an MPEG-PS file whose clock restarts (see [`PsPart`]), in
 /// file order; one part for a file whose clock runs on. `None` if no
-/// timestamps are found. About 32 reads of 128 KiB, plus ~10 per restart.
+/// timestamps are found.
+///
+/// The clock is read at 32 places through the file and at the end. A part
+/// shorter than that step could hide between two places (the next one's
+/// clock has already passed it), so where each part starts the first MiB
+/// is read whole, then places half again as far each time, up to the next
+/// regular place: about 45 reads of 128 KiB for a 2 GB file, plus ~25 per
+/// restart.
 pub fn ps_parts<R: RangeRead>(src: &mut R) -> Option<Vec<PsPart>> {
     let size = src.size();
-    let head = read(src, 0, PS_WINDOW)?;
-    let first = ps_timestamps(&head, 0).iter().map(|t| t.1).min()?;
-    let mut samples: Vec<(u64, u64)> = (0..PS_SAMPLES)
-        .filter_map(|k| video_pts_at(src, size * k / PS_SAMPLES))
-        .collect();
-    samples.dedup_by_key(|s| s.0);
-    let tail_from = size.saturating_sub(2 * PS_WINDOW);
-    let tail = read(src, tail_from, size - tail_from)?;
-    if let Some(end) = ps_timestamps(&tail, tail_from).iter().rfind(|t| t.2) {
-        samples.push((end.0, end.1));
-    }
-    let mut parts = vec![PsPart {
-        offset: 0,
-        first_pts: first,
-        last_pts: first,
-    }];
-    // Each part's clock, unwrapped past 33-bit wraps (`epoch`).
-    let (mut prev, mut epoch) = (None::<(u64, u64)>, 0u64);
-    for s in samples {
-        match prev {
-            Some(a) if went_back(a.1, s.1) => {
-                let Some((at, last, start)) = ps_join(src, a, s) else {
-                    continue;
-                };
-                if let Some(p) = parts.last_mut() {
-                    p.last_pts = p.last_pts.max(last + epoch * WRAP_33);
-                }
-                parts.push(PsPart {
-                    offset: at,
-                    first_pts: start,
-                    last_pts: start,
-                });
-                epoch = 0;
+    let regular: Vec<u64> = (1..PS_SAMPLES).map(|k| size * k / PS_SAMPLES).collect();
+    let mut parts: Vec<PsPart> = Vec::new();
+    let mut start = 0u64;
+    'part: while parts.len() < PS_MAX_PARTS {
+        let next = regular.iter().copied().find(|&o| o > start).unwrap_or(size);
+        let mut windows = vec![(start, PS_HEAD)];
+        let mut d = PS_HEAD;
+        while start + d < next {
+            windows.push((start + d, PS_WINDOW));
+            d += d / 2;
+        }
+        windows.extend(regular.iter().filter(|&&o| o >= next).map(|&o| (o, PS_WINDOW)));
+        windows.push((size.saturating_sub(2 * PS_WINDOW), 2 * PS_WINDOW));
+        // This part's latest video timestamp (where, and the clock's
+        // highest so far), and its 33-bit wraps.
+        let (mut run, mut epoch) = (None::<(u64, u64)>, 0u64);
+        let mut covered = start;
+        for (off, len) in windows {
+            let (off, end) = (off.max(covered), (off + len).min(size));
+            if end <= off {
+                continue;
             }
-            Some(a) if s.1 + WRAP_33 / 2 < a.1 => epoch += 1,
-            _ => {}
+            covered = end;
+            let Some(b) = read(src, off, end - off) else {
+                continue;
+            };
+            let ts = ps_timestamps(&b, off);
+            if parts.is_empty() {
+                // The file's start: its first clock, up to a restart in
+                // this first MiB.
+                let mut top = None::<u64>;
+                let upto = ts
+                    .iter()
+                    .position(|t| {
+                        let back = is_video(t.2) && top.is_some_and(|m| went_back(m, t.1));
+                        if is_video(t.2) && !back {
+                            top = Some(top.map_or(t.1, |m| m.max(t.1)));
+                        }
+                        back
+                    })
+                    .unwrap_or(ts.len());
+                let first = ps_start(&ts[..upto])?;
+                parts.push(PsPart {
+                    offset: 0,
+                    first_pts: first,
+                    last_pts: first,
+                });
+            }
+            for &(at, p, sid) in &ts {
+                if !is_video(sid) {
+                    continue;
+                }
+                match run {
+                    Some((ra, m)) if went_back(m, p) => {
+                        match ps_join(src, (ra, m), (at, p)) {
+                            Some((pack, last, first)) if pack > start => {
+                                if let Some(cur) = parts.last_mut() {
+                                    cur.last_pts = cur.last_pts.max(last + epoch * WRAP_33);
+                                }
+                                parts.push(PsPart {
+                                    offset: pack,
+                                    first_pts: first,
+                                    last_pts: first,
+                                });
+                                start = pack;
+                                continue 'part;
+                            }
+                            // No new clock starts there after all (a stray
+                            // timestamp): the clock runs on from it.
+                            _ => run = Some((at, p)),
+                        }
+                        continue;
+                    }
+                    // A 33-bit wrap, and a frame from before it.
+                    Some((_, m)) if p + WRAP_33 / 2 < m => {
+                        epoch += 1;
+                        run = Some((at, p));
+                    }
+                    Some((_, m)) if p > m + WRAP_33 / 2 => continue,
+                    _ => run = Some((at, run.map_or(p, |r| r.1.max(p)))),
+                }
+                if let Some(cur) = parts.last_mut() {
+                    cur.last_pts = cur.last_pts.max(p + epoch * WRAP_33);
+                }
+            }
         }
-        if let Some(p) = parts.last_mut() {
-            p.last_pts = p.last_pts.max(s.1 + epoch * WRAP_33);
-        }
-        prev = Some(s);
+        break;
     }
-    Some(parts)
+    (!parts.is_empty()).then_some(parts)
 }
 
 /// Where the packets of a file of `container` end, for the containers whose
@@ -842,6 +930,69 @@ mod tests {
         let parts = ps_parts(&mut Mem(wrapped)).unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].span_ms(), 299_960);
+    }
+
+    /// The offsets and spans of a file's parts.
+    fn layout(b: Vec<u8>) -> (Vec<u64>, Vec<u64>) {
+        let parts = ps_parts(&mut Mem(b)).unwrap();
+        (
+            parts.iter().map(|p| p.offset).collect(),
+            parts.iter().map(PsPart::span_ms).collect(),
+        )
+    }
+
+    /// A part shorter than the step between the places sampled (1/32 of
+    /// the file): the next place's clock has already passed it, so it was
+    /// taken for the start of the next part (2 s + 300 s read as one 300 s
+    /// part).
+    #[test]
+    fn a_part_shorter_than_the_sampling_step_is_found() {
+        // 2 s, then 300 s: both inside the first MiB read.
+        let mut b = ps(90_000, 2);
+        let join = b.len() as u64;
+        b.extend(ps(45_000, 300));
+        assert_eq!(layout(b), (vec![0, join], vec![1_960, 299_960]));
+        // 3 s between two long ones.
+        let mut b = ps(90_000, 400);
+        let j1 = b.len() as u64;
+        b.extend(ps(45_000, 3));
+        let j2 = b.len() as u64;
+        b.extend(ps(45_000, 300));
+        assert_eq!(layout(b), (vec![0, j1, j2], vec![399_960, 2_960, 299_960]));
+        // 25 s (1.5 MB: past the first MiB, short of the 1.7 MB step), then
+        // 900 s: a place between the two finds it.
+        let mut b = ps(90_000, 25);
+        let join = b.len() as u64;
+        b.extend(ps(45_000, 900));
+        assert!(join > PS_HEAD && join < b.len() as u64 / PS_SAMPLES);
+        assert_eq!(layout(b), (vec![0, join], vec![24_960, 899_960]));
+    }
+
+    /// Where a part's clock starts is where ffmpeg starts it when it reads
+    /// the part alone: the earliest of each stream's first timestamp. Here
+    /// the I-frame comes first at 0.58 s, its audio and B-frames from
+    /// 0.5 s: 0.5 s, not 0.58 s. And audio multiplexed 1.2 s behind its
+    /// video, after the last video of the first part, still belongs to
+    /// that part: the join is where the second part's packets start.
+    #[test]
+    fn a_part_starts_where_ffmpeg_starts_its_clock() {
+        let mut b = ps(90_000, 400);
+        let end = 90_000 + 9_999 * 3_600;
+        for k in 0..30 {
+            b.extend(pes(0xC0, end - 108_000 + k * 3_600, 300));
+        }
+        let join = b.len() as u64;
+        b.extend(pes(0xE0, 52_200, 2000)); // the I-frame
+        b.extend(pes(0xC0, 45_000, 300));
+        b.extend(pes(0xE0, 45_000, 2000)); // B-frames
+        b.extend(pes(0xE0, 48_600, 2000));
+        b.extend(ps(55_800, 300));
+        let parts = ps_parts(&mut Mem(b)).unwrap();
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[1].offset, join);
+        assert_eq!(parts[1].first_pts, 45_000);
+        assert_eq!(parts[0].span_ms(), 399_960);
+        assert_eq!(parts[1].span_ms(), (55_800 + 7_499 * 3_600 - 45_000) / 90);
     }
 
     #[test]
