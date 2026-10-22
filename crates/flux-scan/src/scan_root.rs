@@ -940,6 +940,16 @@ impl Walk<'_> {
         }
         let p = &self.ctx.job.progress;
         let fingerprints = self.ctx.inner.cfg.fingerprint;
+        // A new part of a multi-part movie ("示例B.mp4" next to "示例A.mp4"):
+        // the parts already cataloged under its stack key are re-parsed (no
+        // I/O), since a part only stacks once a sibling exists and the first
+        // one copied in was parsed alone.
+        let new_parts: HashSet<String> = g
+            .media
+            .iter()
+            .filter(|(_, f, _)| !self.snapshot.contains_key(&f.rel_path))
+            .filter_map(|(name, _, _)| flux_names::stack_key(name))
+            .collect();
         let siblings = Arc::new(g.names);
         for (name, facts, external) in g.media {
             if !self.seen.insert(facts.rel_path.clone()) {
@@ -972,6 +982,20 @@ impl Walk<'_> {
                 self.now,
                 self.retry_all,
             ) {
+                Class::Unchanged(need_fp)
+                    if !new_parts.is_empty()
+                        && flux_names::stack_key(&name).is_some_and(|k| new_parts.contains(&k)) =>
+                {
+                    if need_fp && fingerprints {
+                        self.ctx.fingerprint_later(&facts, &abs);
+                    }
+                    let guess = parse(&facts.rel_path, &name, &siblings, self.ctx.kind);
+                    self.ctx.send(FileUpsert {
+                        facts,
+                        probe: ProbeUpdate::Keep,
+                        guess: Some(guess),
+                    });
+                }
                 Class::Unchanged(need_fp) => {
                     Progress::add(&p.unchanged, 1);
                     Progress::add(&p.files_done, 1);

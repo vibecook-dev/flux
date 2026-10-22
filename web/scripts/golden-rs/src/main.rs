@@ -500,6 +500,7 @@ fn main() {
     let name_guess = NameGuess {
         kind: GuessKind::Episode,
         title: Some("Breaking Bad".into()),
+        original_title: None,
         year: Some(2008),
         season: Some(1),
         episodes: vec![1, 2],

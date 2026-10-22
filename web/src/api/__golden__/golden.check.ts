@@ -742,6 +742,7 @@ export const goldenNameGuess = {
     "tvdb": null
   },
   "kind": "episode",
+  "original_title": null,
   "part": null,
   "release_group": "NTb",
   "resolution": "1080p",
