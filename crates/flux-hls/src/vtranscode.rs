@@ -54,7 +54,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::asset::Asset;
 use crate::cache::ByteCache;
-use crate::encoders::{DetectOptions, FfmpegCaps, PipelineInput, VideoEncoder};
+use crate::encoders::{Deinterlace, DetectOptions, FfmpegCaps, PipelineInput, VideoEncoder};
 use crate::error::{HlsError, Result};
 use crate::fmp4::{self, EntrySpec, Fragment, InitSpec, Sample, SampleData};
 use crate::index::{pack_language, Layout};
@@ -135,15 +135,25 @@ fn rotation(asset: &Asset) -> u16 {
     asset.index.video_track().map_or(0, |v| v.extra.rotation)
 }
 
-/// Whether a transcode of `v` deinterlaces it (frames the decoder marks
-/// interlaced; the encoder writes progressive frames): H.264 whose SPS
-/// allows field coding, and the codecs of DVD and broadcast sources.
+/// Which frames a transcode of `v` deinterlaces (the encoder writes
+/// progressive frames):
+/// - interlaced H.264 ([`IndexTrack::interlaced`](crate::index::IndexTrack::interlaced):
+///   the container's flag, else the SPS): the frames the decoder marks
+///   interlaced, or every frame when the SPS codes only progressive frames
+///   (the decoder marks none, so the container's flag is all there is);
+/// - MPEG-2 and VC-1, the codecs of DVD and broadcast sources: the frames
+///   the decoder marks interlaced.
+///
 /// HEVC and newer codecs code fields as separate pictures, if at all.
-pub fn deinterlace(v: &crate::index::IndexTrack) -> bool {
+pub fn deinterlace(v: &crate::index::IndexTrack) -> Deinterlace {
     match v.codec {
-        Codec::H264 => v.coded_interlaced() == Some(true),
-        Codec::Mpeg2Video | Codec::Vc1 => true,
-        _ => false,
+        Codec::H264 => match (v.interlaced(), v.coded_interlaced()) {
+            (Some(true), Some(false)) => Deinterlace::All,
+            (Some(true), _) => Deinterlace::Marked,
+            _ => Deinterlace::Off,
+        },
+        Codec::Mpeg2Video | Codec::Vc1 => Deinterlace::Marked,
+        _ => Deinterlace::Off,
     }
 }
 
@@ -1542,8 +1552,13 @@ mod tests {
 
     /// The encoder run maps the video alone (no chapter track, no
     /// metadata) and deinterlaces an interlaced H.264 source before scaling.
+    /// Interlaced is the container's flag, else the SPS's, as flux-probe
+    /// has it: an SPS that allows field coding under a container flagged
+    /// progressive (x264 `fake-interlaced`) is progressive, and plans from
+    /// the probe and from the index agree on it.
     #[test]
     fn runs_map_video_only_and_deinterlace_interlaced_sources() {
+        use crate::encoders::Deinterlace::{All, Marked, Off};
         use crate::test_mkv::{TestMkv, PPS, SPS_INTERLACED, SPS_PROGRESSIVE};
         let target = VideoTarget {
             width: 64,
@@ -1555,19 +1570,57 @@ mod tests {
             filters: ["bwdif", "yadif"].iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         };
-        for (sps, interlaced) in [(SPS_INTERLACED, true), (SPS_PROGRESSIVE, false)] {
+        // (SPS, FlagInterlaced, interlaced, deinterlacer)
+        let cases = [
+            (SPS_INTERLACED, None, true, Marked),
+            (SPS_PROGRESSIVE, None, false, Off),
+            // x264 fake-interlaced, as ffmpeg writes it.
+            (SPS_INTERLACED, Some(2), false, Off),
+            (SPS_INTERLACED, Some(1), true, Marked),
+            // An interlaced source encoded as progressive frames.
+            (SPS_PROGRESSIVE, Some(1), true, All),
+            (SPS_PROGRESSIVE, Some(0), false, Off),
+        ];
+        for (n, (sps, flag, interlaced, mode)) in cases.into_iter().enumerate() {
             let (path, _) = TestMkv {
                 sps,
                 pps: PPS,
                 inband: vec![vec![]; 3],
+                flag_interlaced: flag,
             }
-            .write(&format!("run-args-{interlaced}.mkv"));
+            .write(&format!("run-args-{n}.mkv"));
+            let case = format!("case {n}: {flag:?}, frame_mbs_only {}", sps == SPS_PROGRESSIVE);
             let asset = Asset::open(&path, 1_000_000_000).unwrap();
             let v = asset.index.video_track().unwrap();
-            assert_eq!(v.coded_interlaced(), Some(interlaced));
-            assert_eq!(deinterlace(v), interlaced);
-            let probe = asset.index.to_probe_result();
-            assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced));
+            assert_eq!(v.coded_interlaced(), Some(sps == SPS_INTERLACED), "{case}");
+            assert_eq!(v.interlaced(), Some(interlaced), "{case}");
+            assert_eq!(deinterlace(v), mode, "{case}");
+            let index_probe = asset.index.to_probe_result();
+            assert_eq!(
+                index_probe.main_video().unwrap().interlaced,
+                Some(interlaced),
+                "{case}"
+            );
+            let probe = flux_probe::probe_file(&path).unwrap();
+            assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced), "{case}");
+            for client in [crate::presets::chrome_desktop(), crate::presets::safari_macos()] {
+                let prefs = crate::PlanPrefs::default();
+                let from_index = crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, false);
+                let from_probe = crate::planner::plan(&probe, &client, &prefs);
+                assert_eq!(from_index.video, from_probe.video, "{case}, {}", client.client);
+                assert_eq!(
+                    from_index.reasons, from_probe.reasons,
+                    "{case}, {}",
+                    client.client
+                );
+                assert_eq!(
+                    matches!(from_index.video, VideoOp::Transcode { .. }),
+                    interlaced,
+                    "{case}, {}: {:?}",
+                    client.client,
+                    from_index.reasons
+                );
+            }
             let all = pieces(&asset, 2_000_000_000);
             let run = &all[..2];
             let frames = run_frames(&asset, run).unwrap();
@@ -1584,11 +1637,15 @@ mod tests {
             assert!(a.windows(2).any(|w| w == ["-map_chapters", "-1"]), "{a:?}");
             assert!(a.windows(2).any(|w| w == ["-map_metadata", "-1"]), "{a:?}");
             let vf = &a[a.iter().position(|x| x == "-vf").unwrap() + 1];
-            assert_eq!(
-                vf.contains("bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=64:64"),
-                interlaced,
-                "{vf}"
-            );
+            let deint = match mode {
+                Off => None,
+                Marked => Some("bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=64:64"),
+                All => Some("bwdif=mode=send_frame:parity=auto:deint=all,scale=64:64"),
+            };
+            match deint {
+                Some(d) => assert!(vf.contains(d), "{case}: {vf}"),
+                None => assert!(!vf.contains("bwdif") && !vf.contains("yadif"), "{case}: {vf}"),
+            }
             let _ = std::fs::remove_file(&path);
         }
     }

@@ -57,6 +57,8 @@ pub(crate) struct TestMkv<'a> {
     /// Per GOP (1 s, 25 frames, a cluster each): the parameter sets its
     /// keyframe carries in-band (none when empty).
     pub inband: Vec<Vec<&'a [u8]>>,
+    /// The video's FlagInterlaced (1 interlaced, 2 progressive), if any.
+    pub flag_interlaced: Option<u64>,
 }
 
 impl TestMkv<'_> {
@@ -100,6 +102,9 @@ impl TestMkv<'_> {
         }
         let mut video = uint(0xB0, 64);
         video.extend(uint(0xBA, 64));
+        if let Some(f) = self.flag_interlaced {
+            video.extend(uint(0x9A, f));
+        }
         let mut entry = uint(0xD7, 1);
         entry.extend(uint(0x73C5, 1));
         entry.extend(uint(0x83, 1));

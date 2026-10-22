@@ -125,6 +125,7 @@ pub(crate) const PIXEL_HEIGHT: u32 = 0xBA;
 pub(crate) const DISPLAY_WIDTH: u32 = 0x54B0;
 pub(crate) const DISPLAY_HEIGHT: u32 = 0x54BA;
 pub(crate) const DISPLAY_UNIT: u32 = 0x54B2;
+pub(crate) const FLAG_INTERLACED: u32 = 0x9A;
 pub(crate) const COLOUR: u32 = 0x55B0;
 pub(crate) const MATRIX_COEFFICIENTS: u32 = 0x55B1;
 pub(crate) const RANGE: u32 = 0x55B9;

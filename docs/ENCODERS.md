@@ -97,13 +97,19 @@ decode, scale, tone-map and rotate chain, then the encoder:
 | VAAPI | `-hwaccel vaapi` on the render node (H.264/HEVC) | `scale_vaapi` | `tonemap_vaapi` when present, else download → software → upload | `transpose_vaapi` when present, else download → software → upload |
 | libx264 | software | `scale` | software chain | `transpose` / `hflip,vflip` |
 
-Interlaced sources (H.264 whose SPS allows field coding, MPEG-2, VC-1) are
+Interlaced sources (MPEG-2, VC-1, and H.264 that the container flags
+interlaced or, without a flag, whose SPS allows field coding) are
 deinterlaced first, at the source size: `bwdif_cuda` on the NVENC GPU path,
 `yadif_videotoolbox` on VideoToolbox, `deinterlace_vaapi` on VAAPI, else
 `bwdif` (or `yadif`) in the software chain. One frame comes out per frame
-(`mode=send_frame`) and only frames the decoder marks interlaced are
-touched (`deint=interlaced`), so piece frame counts hold. Browsers can't
-deinterlace, so the planner transcodes interlaced H.264 for web clients.
+(`mode=send_frame`), so piece frame counts hold, and only frames the
+decoder marks interlaced are touched (`deint=interlaced`). The exception is
+H.264 flagged interlaced but coded as progressive frames, with the fields
+woven in: the decoder marks none, so every frame is deinterlaced
+(`deint=all`). H.264 flagged progressive is left alone even when its SPS
+allows field coding (x264's `fake-interlaced`, used for 25p/30p Blu-ray
+encodes). Browsers can't deinterlace, so the planner transcodes interlaced
+H.264 for web clients.
 
 The **software chain** scales first, then tone-maps with jellyfin-ffmpeg's
 `tonemapx` (BT.2390) when the build has it, else with `zscale` (zimg) to

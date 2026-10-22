@@ -232,7 +232,11 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
     }
 
     let mut video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
-    if video.is_some_and(|v| v.interlaced == Some(true)) && quirks(&caps.client).no_deinterlacer {
+    // H.264 only: the codecs browsers decode whose transcode deinterlaces
+    // (MPEG-2 and VC-1 are transcoded for browsers anyway; an HEVC, AV1 or
+    // VP9 transcode would come out as interlaced as it went in).
+    let interlaced_h264 = video.is_some_and(|v| v.codec == Codec::H264 && v.interlaced == Some(true));
+    if interlaced_h264 && quirks(&caps.client).no_deinterlacer {
         // Transcoded, so the transcoder's deinterlacer turns it progressive.
         video_issues.push(Reason::ClientQuirk {
             note: "this browser shows interlaced video combed, so it is deinterlaced".into(),
@@ -569,8 +573,8 @@ pub struct Quirks {
     pub idr_random_access_only: bool,
     /// Interlaced video plays combed: browsers show the two fields of a
     /// frame woven together (no deinterlacer for MSE or progressive video;
-    /// a 576i DVD clip looked so in Chrome). It is transcoded, and the
-    /// transcode deinterlaces it.
+    /// a 576i DVD clip looked so in Chrome). Interlaced H.264 is
+    /// transcoded, and the transcode deinterlaces it.
     pub no_deinterlacer: bool,
 }
 
@@ -1139,6 +1143,24 @@ mod tests {
             );
             assert!(plan(&q, &presets::chrome_desktop(), &PlanPrefs::default()).is_direct());
         }
+        // Only H.264: an HEVC transcode wouldn't deinterlace (HEVC codes
+        // fields as separate pictures), so interlaced HEVC stays a copy.
+        let hevc = probe(
+            Container::Matroska,
+            vec![
+                Track {
+                    codec: Codec::Hevc,
+                    profile: Some("Main".into()),
+                    ..sd.clone()
+                },
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        let p = plan(&hevc, &presets::safari_macos(), &PlanPrefs::default());
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
     }
 
     #[test]

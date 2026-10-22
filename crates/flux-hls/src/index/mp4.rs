@@ -627,9 +627,13 @@ fn track_from_trak(
     // `pasp` (h_spacing, v_spacing) of a visual sample entry.
     let mut pasp: Option<(u32, u32)> = None;
     let pasp_of = |p: &Option<mp4_atom::Pasp>| p.as_ref().map(|p| (p.h_spacing, p.v_spacing));
+    // `fiel` (field count 1 = progressive, 2 = interlaced), as flux-probe reads it.
+    let mut fiel: Option<bool> = None;
+    let fiel_of = |f: &Option<mp4_atom::Fiel>| f.as_ref().map(|f| f.field_count == 2);
     match entry {
         SampleEntry::Avc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc1".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -639,6 +643,7 @@ fn track_from_trak(
         }
         SampleEntry::Avc3(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc3".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -649,6 +654,7 @@ fn track_from_trak(
         }
         SampleEntry::Hvc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hvc1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -658,6 +664,7 @@ fn track_from_trak(
         }
         SampleEntry::Hev1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hev1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -930,6 +937,7 @@ fn track_from_trak(
             Some((h, v)) if h > 0 && v > 0 => t.extra.sar = super::mkv::reduce_ratio(h as u64, v as u64),
             _ => t.extra.sar = vui_sar,
         }
+        t.extra.interlaced = fiel;
         if let Some(&(count, delta)) = tables.stts.first() {
             if delta > 0 && (tables.stts.len() == 1 || count as usize * 10 > sample_count as usize * 9) {
                 t.frame_duration = Some(delta);

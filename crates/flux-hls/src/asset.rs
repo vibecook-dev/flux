@@ -1107,6 +1107,7 @@ mod inband_parameter_set_tests {
             sps: SPS,
             pps: PPS,
             inband: vec![vec![SPS, PPS], vec![SPS, PPS_B], vec![SPS, PPS]],
+            flag_interlaced: None,
         }
         .write("inband-pps.mkv");
         let a = Asset::open(&path, 1_000_000_000).unwrap();
