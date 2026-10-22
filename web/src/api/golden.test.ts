@@ -19,6 +19,7 @@ import {
   ITEM_KINDS,
   LIBRARY_KINDS,
   LIBRARY_SORTS,
+  METADATA_SOURCES,
   ROLES,
   SCAN_STATES,
   TAILNET_MODES,
@@ -45,6 +46,7 @@ describe('enum strings match serde', () => {
     ['ItemFilter', ITEM_FILTERS],
     ['TailnetMode', TAILNET_MODES],
     ['TailnetState', TAILNET_STATES],
+    ['MetadataSource', METADATA_SOURCES],
   ];
   for (const [name, values] of cases) {
     it(name, () => {
