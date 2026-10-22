@@ -281,6 +281,47 @@ pub(crate) fn is_cjk_group_name(w: &str) -> bool {
             .any(|sfx| w.ends_with(sfx) && chars > sfx.chars().count() && chars <= 12)
 }
 
+/// Notes that fansub releases put in a bracket group of their own:
+/// subtitle script (`[GB]`, `[BIG5]`, `[CHS]`, `[JPTC]`), container
+/// (`[MP4]`), broadcast and status (`[TV]`, `[END]`, `[V2]`). They are tags
+/// only as a whole bracket group (`[GB_MP4]`, `[CHS&JPN]` too), never in
+/// running text, where they can be title words ("The End", "TV").
+pub(crate) fn is_bracket_tag(word: &str) -> bool {
+    let lw = word.to_ascii_lowercase();
+    let known = matches!(
+        lw.as_str(),
+        "gb" | "gbk"
+            | "big5"
+            | "chs"
+            | "cht"
+            | "sc"
+            | "tc"
+            | "jp"
+            | "jpn"
+            | "jpsc"
+            | "jptc"
+            | "cn"
+            | "chn"
+            | "en"
+            | "eng"
+            | "mp4"
+            | "mkv"
+            | "avi"
+            | "rmvb"
+            | "tv"
+            | "ova"
+            | "oad"
+            | "ona"
+            | "sp"
+            | "end"
+            | "fin"
+            | "raw"
+            | "rev"
+    );
+    // "v2": a fixed re-release.
+    known || (lw.len() == 2 && lw.starts_with('v') && lw.as_bytes()[1].is_ascii_digit())
+}
+
 /// Canonical edition for a CJK edition word (`导演剪辑版` → "Director's Cut").
 pub(crate) fn cjk_edition(w: &str) -> Option<&'static str> {
     Some(match w {
@@ -550,6 +591,18 @@ mod tests {
         assert_eq!(canonical_resolution("BD720P").as_deref(), Some("720p"));
         assert_eq!(canonical_resolution("WEB2160P").as_deref(), Some("2160p"));
         assert!(classify("HDTV").is_some_and(|t| t.kind == TagKind::Source));
+    }
+
+    #[test]
+    fn bracket_tags_are_not_running_text_tags() {
+        for w in ["GB", "BIG5", "CHT", "JPSC", "MP4", "TV", "END", "v2"] {
+            assert!(is_bracket_tag(w), "{w}");
+        }
+        for w in ["Some", "Movie", "v", "v22", "Film"] {
+            assert!(!is_bracket_tag(w), "{w}");
+        }
+        // "The End", "TV" in a title: not tags in running text.
+        assert!(classify("End").is_none() && classify("TV").is_none());
     }
 
     #[test]

@@ -94,7 +94,7 @@ fn refine_cjk(s: &str, toks: Vec<Tok>) -> Vec<Tok> {
             continue;
         }
         let mut pos = 0;
-        for m in CJK_MARKER_RE.find_iter(w) {
+        for m in CJK_MARKER_RE.find_iter(w).filter(|m| cuts_marker(w, m.end())) {
             split_scripts(w, t.start, pos, m.start(), &mut out);
             out.push(Tok {
                 kind: TokKind::Word,
@@ -106,6 +106,27 @@ fn refine_cjk(s: &str, toks: Vec<Tok>) -> Vec<Tok> {
         split_scripts(w, t.start, pos, w.len(), &mut out);
     }
     out
+}
+
+/// Whether a marker ending at byte `end` of `w` is cut out of the word.
+/// When a CJK character follows inside the word, the marker is usually the
+/// start of a longer word: `第一回合` ("round one"), `第三集团` ("third
+/// group"), `第一季度` ("first quarter"). It is still cut before another
+/// marker (`第2季第3话`), and after an episode unit (集/话/話) that the next
+/// character does not turn into such a word (`第36集大结局`, `第3话标题`).
+fn cuts_marker(w: &str, end: usize) -> bool {
+    let unit = w[..end].chars().next_back();
+    let Some(next) = w[end..].chars().next() else {
+        return true;
+    };
+    if !is_cjk(next) || next == '第' {
+        return true;
+    }
+    match unit {
+        Some('集') => !matches!(next, '团' | '團' | '合' | '结' | '結' | '中' | '锦' | '錦'),
+        Some('话' | '話') => !matches!(next, '剧' | '劇' | '题' | '題' | '语' | '語'),
+        _ => false,
+    }
 }
 
 /// Pushes `w[lo..hi]` (at byte offset `base`), split where a CJK character
@@ -259,6 +280,13 @@ mod tests {
             words("示例剧第2季第3话标题"),
             ["示例剧", "第2季", "第3话", "标题"]
         );
+        assert_eq!(words("示例剧第36集大结局"), ["示例剧", "第36集", "大结局"]);
+        // A marker that starts a longer word stays in it.
+        assert_eq!(words("示例第一回合"), ["示例第一回合"]);
+        assert_eq!(words("示例第三集团"), ["示例第三集团"]);
+        assert_eq!(words("示例第一季度"), ["示例第一季度"]);
+        assert_eq!(words("示例第三期间"), ["示例第三期间"]);
+        assert_eq!(words("示例第一季.第二期"), ["示例", "第一季", "第二期"]);
     }
 
     #[test]

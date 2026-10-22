@@ -203,6 +203,7 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         folder: false,
         season_hint,
         movie_lib: lib == LibraryKind::Movies,
+        period_season: false,
     };
     let mut sp = stem::parse_stem(stem_core, opts);
     if let Some((_, part)) = letter {
@@ -352,6 +353,8 @@ fn folder_opts(tv: bool) -> StemOpts {
         folder: true,
         season_hint: None,
         movie_lib: false,
+        // A show folder "示例动画 第二期" names the season, not an episode.
+        period_season: tv,
     }
 }
 

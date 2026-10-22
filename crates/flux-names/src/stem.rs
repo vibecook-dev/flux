@@ -103,6 +103,11 @@ pub(crate) struct StemOpts {
     /// A movie library: a trailing number is never an episode
     /// ("Movies/Fahrenheit.451.HDTV.mkv").
     pub movie_lib: bool,
+    /// `第N期` names a season even with no episode after it: a show or
+    /// season-pack folder (`示例动画 第二期/`), or a bracket name whose
+    /// episode number has a group of its own. Otherwise `第N期` alone is an
+    /// episode (variety shows: `示例综艺 第12期`).
+    pub period_season: bool,
 }
 
 /// The result of parsing one name.
@@ -323,6 +328,8 @@ fn parse_core(s: &str, opts: StemOpts, group: Option<String>) -> Stem {
         tv: opts.tv,
         group: out.release_group.is_some(),
         movie_lib: opts.movie_lib,
+        folder: opts.folder,
+        period_season: opts.period_season,
     };
     let mut anchor = (0..n).find_map(|i| anchor_at(s, &toks, i, actx));
     // "Star Wars Episode 4 1977": a spelled-out episode number followed by a
@@ -583,6 +590,10 @@ struct AnchorCtx {
     group: bool,
     /// A movie library.
     movie_lib: bool,
+    /// Parsing a folder name (no bare episode numbers).
+    folder: bool,
+    /// See [`StemOpts::period_season`].
+    period_season: bool,
 }
 
 /// When token `i` opens a `[…]` group whose words are all tags, the index of
@@ -606,8 +617,11 @@ fn anchor_at(s: &str, toks: &[Tok], i: usize, actx: AnchorCtx) -> Option<Anchor>
         return absolute_at(s, toks, i, actx);
     }
     let w = word_at(s, toks, i)?;
-    if let Some(a) = cjk_anchor(s, toks, i, w) {
-        return Some(a);
+    // A CJK marker anchors only as cjk_anchor decides (in a movie library
+    // `第三期` is a title word, not an episode for the rules below).
+    let cjk = cjk_anchor(s, toks, i, w, actx);
+    if cjk.is_some() || cjk_marker_unit(w).is_some() {
+        return cjk;
     }
     // Fansub "[Group] Monster 34 - At the End of Darkness": a bare number
     // followed by a dash and a word (not "Title 2 - 09", where 09 is the episode).
@@ -690,37 +704,100 @@ fn anchor_at(s: &str, toks: &[Tok], i: usize, actx: AnchorCtx) -> Option<Anchor>
 }
 
 /// `第12集` / `第十二话` (an episode), `第2季` (a season, maybe followed by its
-/// episode: `第2季第3集`, `第2季 E03`), and the spaced `第 12 集`. Unlike
-/// Latin markers these are unambiguous, so they count at the start of a
-/// name too.
-fn cjk_anchor(s: &str, toks: &[Tok], i: usize, w: &str) -> Option<Anchor> {
-    let (season, n, end) = match cjk_marker(w) {
-        Some((season, n)) => (season, n, i + 1),
+/// episode: `第2季第3集`, `第2季 E03`, `第二季 05`), and the spaced `第 12 集`.
+/// Unlike Latin markers these count at the start of a name too.
+///
+/// `第N期` is a season when an episode follows it (`示例动画 第二期 05`,
+/// anime's "second cour"), and an episode otherwise (`示例综艺 第12期`, a
+/// variety show's issue). In a movie library only an episode unit
+/// (集/话/話) anchors: 回 ("round"), 期 ("phase") and 季 alone stay title
+/// words, as a bare number would.
+fn cjk_anchor(s: &str, toks: &[Tok], i: usize, w: &str, actx: AnchorCtx) -> Option<Anchor> {
+    let (unit, n, end) = match cjk_marker_unit(w) {
+        Some((unit, n)) => (unit, n, i + 1),
         None if w == "第" => {
             let n = word_at(s, toks, i + 1).and_then(cjk_number)?;
-            let unit = word_at(s, toks, i + 2)?;
-            let season = match unit {
-                "集" | "话" | "話" | "回" | "期" => false,
-                "季" => true,
+            let unit = match word_at(s, toks, i + 2)? {
+                u @ ("集" | "话" | "話" | "回" | "期" | "季") => u.chars().next()?,
                 _ => return None,
             };
-            (season, u16::try_from(n).ok()?, i + 3)
+            (unit, u16::try_from(n).ok()?, i + 3)
         }
         None => return None,
     };
-    if season {
-        return Some(season_then_episode(s, toks, i, end, n));
+    let movie = actx.movie_lib && !actx.tv;
+    let episode = || {
+        let mut a = Anchor::new(i, end, Marker::CjkEpisode);
+        a.episodes = vec![n];
+        a
+    };
+    match unit {
+        '集' | '话' | '話' => Some(episode()),
+        '回' => (!movie).then(episode),
+        _ => {
+            // 季 or 期: a season when something numbers the episode after it.
+            if let Some(a) = season_episode(s, toks, i, end, n, !movie && !actx.folder) {
+                return Some(a);
+            }
+            if movie {
+                None
+            } else if unit == '季' || actx.period_season {
+                let mut a = Anchor::new(i, end, Marker::SeasonOnly);
+                a.season = Some(n);
+                Some(a)
+            } else {
+                Some(episode())
+            }
+        }
     }
-    let mut a = Anchor::new(i, end, Marker::CjkEpisode);
-    a.episodes = vec![n];
+}
+
+/// After a season marker ending at `season_end`: its episode, as an episode
+/// part a few tokens on (`第2季第3集`, `第2季 E03`) or, with `bare`, a 1–3
+/// digit number right after it (`第二季 05`, `第2季 - 05`, `第二期 01-02`).
+fn season_episode(
+    s: &str,
+    toks: &[Tok],
+    start: usize,
+    season_end: usize,
+    season: u16,
+    bare: bool,
+) -> Option<Anchor> {
+    let a = season_then_episode(s, toks, start, season_end, season);
+    if a.marker != Marker::SeasonOnly {
+        return Some(a);
+    }
+    if !bare {
+        return None;
+    }
+    let mut j = season_end;
+    while j < toks.len() && toks[j].kind == TokKind::Dash {
+        j += 1;
+    }
+    let c = word_at(s, toks, j).and_then(|w| NUM_RANGE_RE.captures(w))?;
+    if c[1].len() > 3 {
+        return None;
+    }
+    let mut a = Anchor::new(start, j + 1, Marker::Words);
+    fill_absolute(&mut a, &c)?;
+    a.absolute = None;
+    if a.episodes.is_empty() {
+        a.episodes = vec![c[1].parse().ok()?];
+    }
+    a.season = Some(season);
     Some(a)
 }
 
 /// `第12集` → `(false, 12)`, `第二季` → `(true, 2)`.
 pub(crate) fn cjk_marker(w: &str) -> Option<(bool, u16)> {
+    cjk_marker_unit(w).map(|(unit, n)| (unit == '季', n))
+}
+
+/// `第12集` → `('集', 12)`, `第二期` → `('期', 2)`.
+pub(crate) fn cjk_marker_unit(w: &str) -> Option<(char, u16)> {
     let c = CJK_MARKER_RE.captures(w)?;
     let n = u16::try_from(cjk_number(&c[1])?).ok()?;
-    Some((&c[2] == "季", n))
+    Some((c[2].chars().next()?, n))
 }
 
 /// Arabic (also full-width) or Chinese numerals: `12`, `１２`, `十二`,
@@ -1352,8 +1429,17 @@ fn choose_year(s: &str, toks: &[Tok], zone_end: usize, anchor_start: usize) -> O
         }
     }
     let mut pick = None;
+    // "示例1900": a number glued to a CJK word is part of the title, like
+    // the sequel number in "示例2".
+    let glued_cjk = |i: usize| {
+        let glued = |a: &Tok, b: &Tok| a.end == b.start && a.is_word() && b.is_word();
+        (glued(&toks[i - 1], &toks[i]) && has_cjk(toks[i - 1].text(s)))
+            || toks
+                .get(i + 1)
+                .is_some_and(|n| glued(&toks[i], n) && has_cjk(n.text(s)))
+    };
     for (i, t) in toks.iter().enumerate().take(zone_end).skip(1) {
-        if let Some(year) = year_of(t.text(s)).filter(|_| t.is_word()) {
+        if let Some(year) = year_of(t.text(s)).filter(|_| t.is_word() && !glued_cjk(i)) {
             pick = Some(YearPick {
                 idx: i,
                 end: i + 1,
@@ -1465,9 +1551,12 @@ fn assemble(s: &str, toks: &[Tok]) -> String {
     title_case_if_lower(&text).unwrap_or(text)
 }
 
-/// In a name that uses spaces, a part that still joins words with dots
-/// ("示例2.Some.Film") gets spaces instead. Kept: abbreviations ("S.W.A.T.",
-/// "E.T"), decimals ("Tron 2.0") and a dot that ends a word ("Mr. Robot").
+/// In a name that uses spaces, a part that still joins words with dots the
+/// way scene names do ("示例2.Some.Film", "Some.Film.Name") gets spaces
+/// instead: a part with CJK in it, or with two joining dots or more. Kept:
+/// a single dot after a short word ("Vol.1", "Mr.Smith", "No.7"),
+/// abbreviations ("S.W.A.T.", "E.T"), decimals ("Tron 2.0") and a dot that
+/// ends a word ("Mr. Robot").
 fn undot_mixed(text: &str) -> String {
     if !text.contains('.') {
         return text.to_string();
@@ -1480,21 +1569,21 @@ fn undot_mixed(text: &str) -> String {
             return chunk.to_string();
         }
         let cs: Vec<char> = chunk.chars().collect();
+        let joins: Vec<usize> = (1..cs.len().saturating_sub(1))
+            .filter(|&k| {
+                let (a, b) = (cs[k - 1], cs[k + 1]);
+                cs[k] == '.'
+                    && a.is_alphanumeric()
+                    && b.is_alphanumeric()
+                    && !(a.is_ascii_digit() && b.is_ascii_digit())
+            })
+            .collect();
+        if !(has_cjk(chunk) || joins.len() >= 2) {
+            return chunk.to_string();
+        }
         cs.iter()
             .enumerate()
-            .map(|(k, &c)| {
-                let between = c == '.' && k > 0 && k + 1 < cs.len();
-                if between {
-                    let (a, b) = (cs[k - 1], cs[k + 1]);
-                    if a.is_alphanumeric()
-                        && b.is_alphanumeric()
-                        && !(a.is_ascii_digit() && b.is_ascii_digit())
-                    {
-                        return ' ';
-                    }
-                }
-                c
-            })
+            .map(|(k, &c)| if joins.contains(&k) { ' ' } else { c })
             .collect()
     };
     text.split(' ').map(undot).collect::<Vec<_>>().join(" ")
@@ -1520,15 +1609,24 @@ fn unwrap_bracket(toks: &[Tok], lo: usize, hi: usize) -> (usize, usize) {
     }
 }
 
-/// A title in two scripts, `示例剧.Some.Show` or `Some Show 示例剧`: returns
-/// the token ranges of the Latin half (the title, which providers know) and
-/// the CJK half (the original title). Only a clean two-part name splits:
-/// numbers ride along with their neighbour ("007 示例 Name"), and a word
-/// mixing both scripts ("示ing例"), brackets, or a third part ("XY-01 示例2
-/// Some Film") leave the title whole. The Latin half needs a real word (two
-/// or more letters).
+/// A title in two scripts as release groups write it, `示例剧.Some.Show`:
+/// returns the token ranges of the Latin half (the title, which providers
+/// know) and the CJK half (the original title).
+///
+/// Only that layout splits: a dotted name, CJK first, then a Latin half of
+/// two words or more that are not all generic. Otherwise the Latin part is
+/// as likely a subtitle of the CJK title ("示例动画 THE MOVIE", "示例 Final
+/// Season", "示例动画 III") or the CJK part an arc name ("SOMEANIME 千年篇"),
+/// and splitting would name, and group, different works after it. Numbers
+/// ride along with their neighbour ("示例.Some.Film.3000"), and a word mixing
+/// both scripts ("示ing例"), brackets, or a third part ("XY-01 示例2 Some
+/// Film") leave the title whole too.
 fn split_bilingual(s: &str, toks: &[Tok], lo: usize, hi: usize) -> Option<((usize, usize), (usize, usize))> {
-    if hi <= lo || !has_cjk(&s[toks[lo].start..toks[hi - 1].end]) {
+    if hi <= lo {
+        return None;
+    }
+    let raw = &s[toks[lo].start..toks[hi - 1].end];
+    if !has_cjk(raw) || raw.contains(' ') {
         return None;
     }
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1568,17 +1666,37 @@ fn split_bilingual(s: &str, toks: &[Tok], lo: usize, hi: usize) -> Option<((usiz
         }
         i = j;
     }
-    let [a, b] = parts.as_slice() else {
+    let [cjk, latin] = parts.as_slice() else {
         return None;
     };
-    let (latin, cjk) = match (a.0, b.0) {
-        (Script::Latin, Script::Cjk) => (a, b),
-        (Script::Cjk, Script::Latin) => (b, a),
-        _ => return None,
-    };
-    let real_word = (latin.1..latin.2)
-        .any(|k| toks[k].is_word() && toks[k].text(s).bytes().filter(u8::is_ascii_alphabetic).count() >= 2);
-    real_word.then_some(((latin.1, latin.2), (cjk.1, cjk.2)))
+    if (cjk.0, latin.0) != (Script::Cjk, Script::Latin) {
+        return None;
+    }
+    let words: Vec<&str> = (latin.1..latin.2)
+        .filter(|&k| toks[k].is_word())
+        .map(|k| toks[k].text(s))
+        .collect();
+    let real_word = words
+        .iter()
+        .any(|w| w.bytes().filter(u8::is_ascii_alphabetic).count() >= 2);
+    (words.len() >= 2 && real_word && !all_generic(&words)).then_some(((latin.1, latin.2), (cjk.1, cjk.2)))
+}
+
+/// Words that name what a work is rather than which one: a Latin "title"
+/// made only of them ("THE MOVIE", "Final Season", "III", "Part 2") is a
+/// subtitle of the other-script title, never a title of its own.
+fn all_generic(words: &[&str]) -> bool {
+    const GENERIC: &str = "the a an of movie film final season series part chapter special specials \
+        ova oad ona tv edition cut version complete collection arc saga vol volume episode ep sp new \
+        end fin gekijouban theatrical i ii iii iv v vi vii viii ix x";
+    words.iter().all(|w| {
+        let w = w
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
+        w.is_empty()
+            || w.bytes().all(|b| b.is_ascii_digit())
+            || GENERIC.split_ascii_whitespace().any(|g| g == w)
+    })
 }
 
 /// A title that is itself a bracket group or nothing but release tags
@@ -1642,7 +1760,17 @@ fn group_kind(g: &str) -> Group {
     let words: Vec<&str> = toks.iter().filter(|t| t.is_word()).map(|t| t.text(g)).collect();
     let tags: Vec<_> = words.iter().map(|w| vocab::classify(w)).collect();
     let strong = tags.iter().filter(|t| t.is_some_and(|t| t.strong)).count();
-    if words.is_empty() || tags.iter().all(Option::is_some) || strong * 2 >= words.len() {
+    // "[GB]", "[BIG5]", "[CHS&JPN]", "[GB_MP4]": fansub notes, as a whole group.
+    let bracket_tag = |w: &str| {
+        w.split(|c: char| !c.is_alphanumeric())
+            .filter(|p| !p.is_empty())
+            .all(|p| vocab::classify(p).is_some() || vocab::is_bracket_tag(p))
+    };
+    if words.is_empty()
+        || tags.iter().all(Option::is_some)
+        || strong * 2 >= words.len()
+        || words.iter().all(|w| bracket_tag(w))
+    {
         return Group::Tags;
     }
     let last = words.last().map(|w| w.to_ascii_lowercase()).unwrap_or_default();
@@ -1708,50 +1836,65 @@ fn bracket_groups(s: &str) -> Option<Vec<&str>> {
 
 /// Reads a name made only of bracket groups, the usual form of Chinese
 /// fansub releases: `[Group][Title][01][1080P]`, `[中文名][Group][English
-/// Name][BDRip]`. Each group is classified ([`group_kind`]); the title is
-/// the Latin title group when a CJK one comes before it (bilingual), else
-/// the first title group, after the fansub group (the first group when no
-/// group says "Sub"/"字幕组"/…). The title, year and tag groups are then
-/// parsed as one ordinary name (`Title (Year) [tags]`, as a folder name, so
-/// a number in the title stays a title word) and the first episode group
-/// supplies the episode.
+/// Name][BDRip]`. Each group is classified ([`group_kind`]).
+///
+/// - The fansub group is the group that says so ("Sub", "字幕组", …), else,
+///   by convention, the first group when another title group follows
+///   (`[某组][示例动画][Some Anime]`, `[Group][Some Anime][01]`). The
+///   exception is `[中文名][Group][English Name]`: a CJK title first, then
+///   two Latin groups; the middle one is the group.
+/// - The title is the Latin title group right after a CJK one (only the
+///   fansub group or a site may sit between them, and no episode, year or
+///   tag group), with the CJK one as the original title (bilingual), else
+///   the first title group. A Latin group of generic words ("Movie",
+///   "Final Season") is a subtitle, never the title.
+///
+/// The title, year and tag groups are then parsed as one ordinary name
+/// (`Title (Year) [tags]`, as a folder name, so a number in the title stays
+/// a title word) and the first episode group supplies the episode
+/// (`[第二期][05]`: a 期/季 group is the season when another group numbers
+/// the episode).
 fn bracket_name(s: &str, opts: StemOpts) -> Option<Stem> {
     let groups = bracket_groups(s)?;
     let kinds: Vec<Group> = groups.iter().map(|g| group_kind(g)).collect();
-    let mut titles: Vec<usize> = (0..groups.len()).filter(|&i| kinds[i] == Group::Title).collect();
+    let titles: Vec<usize> = (0..groups.len()).filter(|&i| kinds[i] == Group::Title).collect();
     if titles.is_empty() {
         return None;
     }
-    let mut fansub = kinds.iter().position(|k| *k == Group::Fansub);
+    let cjk = |i: usize| has_cjk(groups[i]);
     let latin = |i: usize| {
-        !has_cjk(groups[i])
-            && groups[i]
-                .split(|c: char| !c.is_ascii_alphabetic())
-                .any(|w| w.len() >= 2)
+        let words: Vec<&str> = groups[i]
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        !cjk(i)
+            && words
+                .iter()
+                .any(|w| w.bytes().filter(u8::is_ascii_alphabetic).count() >= 2)
+            && !all_generic(&words)
     };
-    let cjk_first = titles.iter().copied().find(|&i| has_cjk(groups[i]));
-    let pair = cjk_first.and_then(|c| {
-        titles
-            .iter()
-            .copied()
-            .find(|&i| i > c && latin(i))
-            .map(|l| (c, l))
+    let mut fansub = kinds.iter().position(|k| *k == Group::Fansub);
+    if fansub.is_none() && titles.len() >= 2 && titles[0] == 0 {
+        let cjk_group_latin = cjk(0) && titles.len() >= 3 && !cjk(titles[1]) && latin(titles[2]);
+        fansub = Some(if cjk_group_latin { titles[1] } else { 0 });
+    }
+    let titles: Vec<usize> = titles.into_iter().filter(|&i| Some(i) != fansub).collect();
+    let structural = |i: usize| matches!(kinds[i], Group::Episode | Group::Year | Group::Tags);
+    let pair = titles.iter().copied().find(|&c| cjk(c)).and_then(|c| {
+        let l = (c + 1..groups.len())
+            .take_while(|&i| !structural(i))
+            .find(|&i| kinds[i] == Group::Title && Some(i) != fansub)?;
+        latin(l).then_some((c, l))
     });
     let (title_i, original_i) = match pair {
-        Some((c, l)) => {
-            // "[中文名][Group][English]": the group sits between the two.
-            if fansub.is_none() {
-                fansub = titles.iter().copied().find(|&i| i > c && i < l);
-            }
-            (l, Some(c))
-        }
-        None => {
-            if fansub.is_none() && titles.len() >= 2 {
-                fansub = Some(titles.remove(0));
-            }
-            (titles[0], None)
-        }
+        Some((c, l)) => (l, Some(c)),
+        None => (*titles.first()?, None),
     };
+    let eps: Vec<usize> = (0..groups.len())
+        .filter(|&i| kinds[i] == Group::Episode)
+        .collect();
+    let season_group = |i: usize| matches!(cjk_marker_unit(groups[i]), Some(('季' | '期', _)));
+    let episode_i = eps.iter().copied().find(|&i| !season_group(i));
     let mut text = groups[title_i].to_string();
     for (i, k) in kinds.iter().enumerate() {
         match k {
@@ -1760,13 +1903,36 @@ fn bracket_name(s: &str, opts: StemOpts) -> Option<Stem> {
             _ => {}
         }
     }
-    let folder = StemOpts { folder: true, ..opts };
+    let folder = StemOpts {
+        folder: true,
+        period_season: opts.period_season || episode_i.is_some(),
+        ..opts
+    };
     let mut out = parse_core(&text, folder, None);
     if let Some(i) = fansub {
         out.release_group = Some(groups[i].to_string());
     }
-    if let Some(i) = (0..groups.len()).find(|&i| kinds[i] == Group::Episode) {
+    if let Some(i) = episode_i.or(eps.first().copied()) {
         episode_group(&mut out, groups[i]);
+    }
+    if episode_i.is_some() {
+        if let Some(n) = eps
+            .iter()
+            .filter(|&&i| season_group(i))
+            .find_map(|&i| cjk_marker_unit(groups[i]).map(|(_, n)| n))
+        {
+            out.season.get_or_insert(n);
+        }
+    }
+    if out.season.is_some() && out.marker == Some(Marker::Absolute) {
+        // "[示例动画 第二季][05]": a number after a season marker counts
+        // within that season.
+        if let Some(abs) = out.absolute.take() {
+            if out.episodes.is_empty() {
+                out.episodes = u16::try_from(abs).ok().into_iter().collect();
+            }
+        }
+        out.marker = Some(Marker::Words);
     }
     if let Some(i) = original_i {
         let original = parse_core(groups[i], folder, None).title;
