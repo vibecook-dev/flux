@@ -1,7 +1,7 @@
 /** The Libraries & scanning screen's words and event bookkeeping. */
 import { describe, expect, it } from 'vitest';
 import type { Library, ScanStatus } from '../api/types';
-import { applyScanProgress, isFirstScan, lastScanLine, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
+import { applyScanProgress, isFirstScan, lastScanLine, metadataNote, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
 
 const status = (o: Partial<ScanStatus> = {}): ScanStatus => ({
   state: 'watching',
@@ -116,5 +116,13 @@ describe('scan counters count files and titles separately (e2e P2 #6)', () => {
       ['Files found', '169'],
       ['Files read', '169'],
     ]);
+  });
+});
+
+describe('metadataNote', () => {
+  it('explains file-name titles only when nothing can match them', () => {
+    expect(metadataNote('none')).toMatch(/file names.*TMDB_READ_TOKEN/);
+    expect(metadataNote('tmdb')).toBeNull();
+    expect(metadataNote('exports')).toBeNull();
   });
 });

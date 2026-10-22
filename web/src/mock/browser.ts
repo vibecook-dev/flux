@@ -4,9 +4,11 @@
  * Scenario switches, read once from the URL and remembered for the tab:
  *   ?mock_tailnet=running   skip onboarding (server already on a tailnet)
  *   ?mock_path=tailnet-direct  how the "server" says you reached it
+ *   ?mock_metadata=none      no TMDB key or exports (the Libraries notice)
  *   ?mock_latency=0          simulated JSON latency in ms (default 25)
  */
 import { setupWorker } from 'msw/browser';
+import { METADATA_SOURCES } from '../api/types';
 import { createMockDb, type Fixtures } from './db';
 import fixturesUrl from './fixtures.json?url';
 import { createHandlers } from './handlers';
@@ -29,12 +31,14 @@ export async function startMock(): Promise<void> {
   ]);
   const db = createMockDb(fixtures);
   const latency = Number(scenario('mock_latency') ?? 25);
+  const metadata = scenario('mock_metadata');
   const worker = setupWorker(
     ...createHandlers(db, {
       media,
       latencyMs: Number.isFinite(latency) ? latency : 25,
       tailnet: scenario('mock_tailnet') === 'running' ? 'running' : 'off',
       path: scenario('mock_path') ?? 'localhost',
+      metadata: METADATA_SOURCES.find((s) => s === metadata) ?? 'tmdb',
     }),
   );
   await worker.start({ onUnhandledRequest: 'bypass', quiet: true });

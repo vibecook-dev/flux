@@ -38,6 +38,7 @@ describe('flux client against the mock server', () => {
     const s = await client.server();
     expect(s.tailnet_name).toBeNull();
     expect(s.path).toBe('localhost');
+    expect(s.metadata.source).toBe('tmdb');
   });
 
   it('GET /libraries', async () => {

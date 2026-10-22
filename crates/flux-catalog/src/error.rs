@@ -25,10 +25,21 @@ pub enum CatalogError {
 
     /// Two roots of one library would overlap: the same folder, or one
     /// inside the other. Every file below the inner root would be cataloged
-    /// twice (one row per root, two assets on one movie). Roots of
-    /// *different* libraries may overlap; that is supported.
+    /// twice (one row per root, two assets on one movie). Across libraries
+    /// see [`CatalogError::RootInOtherLibrary`].
     #[error("root {root:?} overlaps root {other:?} of the same library (one contains the other)")]
     OverlappingRoots { root: String, other: String },
+
+    /// A new root is a folder another library already has (`other`, of
+    /// `library`), or one inside or around it: every file below would be
+    /// listed in both libraries. The message is a sentence for people.
+    #[error("{}", root_in_other_library(.root, .other, .library, .how))]
+    RootInOtherLibrary {
+        root: String,
+        other: String,
+        library: String,
+        how: RootOverlap,
+    },
 
     /// A value stored in the database is not one this build understands
     /// (e.g. an unknown enum string). Indicates corruption or a downgrade.
@@ -56,6 +67,40 @@ pub enum CatalogError {
     /// A blocking read task could not be joined (runtime shutting down).
     #[error("read task failed: {0}")]
     ReadTask(String),
+}
+
+/// How one root folder relates to another (see
+/// [`crate::writer::root_overlap`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootOverlap {
+    /// The same folder (perhaps spelled differently).
+    Same,
+    /// Inside the other folder.
+    Inside,
+    /// Around the other folder.
+    Contains,
+}
+
+fn root_in_other_library(root: &str, other: &str, library: &str, how: &RootOverlap) -> String {
+    let what = match how {
+        RootOverlap::Same if root == other => {
+            format!("The folder \"{root}\" is already in the library \"{library}\".")
+        }
+        RootOverlap::Same => {
+            format!("The folder \"{root}\" is already in the library \"{library}\" (as \"{other}\").")
+        }
+        RootOverlap::Inside => {
+            format!(
+                "The folder \"{root}\" is inside \"{other}\", which is already in the library \"{library}\"."
+            )
+        }
+        RootOverlap::Contains => {
+            format!(
+                "The folder \"{root}\" contains \"{other}\", which is already in the library \"{library}\"."
+            )
+        }
+    };
+    format!("{what} A folder can be in only one library, or its files would be listed twice.")
 }
 
 /// Result alias used across the crate.

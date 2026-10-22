@@ -476,3 +476,229 @@ fn shows_from_two_folders_merge_once_provider_ids_agree() {
         "a season is not a top-level work"
     );
 }
+
+/// A show folder with a subfolder of alternate versions (not a season
+/// folder): `Show/Show.S01E01.mp4` beside `Show/Raw MKV/Show.S01E01.mkv`.
+/// One show, one season, each episode with both files as versions, in
+/// either scan order and within one batch.
+#[test]
+fn a_subfolder_of_alternate_versions_joins_the_show() {
+    let top = |n: u16| {
+        upsert(
+            &format!("Some.Show/Some.Show.S01E{n:02}.1080p.中英字幕.mp4"),
+            episode("Some Show", None, 1, &[n]),
+            None,
+        )
+    };
+    let sub = |n: u16| {
+        upsert(
+            &format!("Some.Show/原版MKV外挂字幕/Some.Show.S01E{n:02}.1080p.WEB.h264-GRP.mkv"),
+            episode("Some Show", None, 1, &[n]),
+            None,
+        )
+    };
+    for order in ["top first", "subfolder first", "one batch"] {
+        let e = env(LibraryKind::Shows);
+        match order {
+            "top first" => {
+                e.apply((1..=3).map(top).collect());
+                e.apply((1..=3).map(sub).collect());
+            }
+            "subfolder first" => {
+                e.apply((1..=3).map(sub).collect());
+                e.apply((1..=3).map(top).collect());
+            }
+            _ => {
+                e.apply((1..=3).flat_map(|n| [sub(n), top(n)]).collect());
+            }
+        }
+        let s = shows(&e);
+        assert_eq!(s.len(), 1, "{order}: {s:#?}");
+        let seasons = e.children(s[0].id);
+        assert_eq!(seasons.len(), 1, "{order}");
+        let eps = e.children(seasons[0].id);
+        assert_eq!(eps.len(), 3, "{order}");
+        for ep in &eps {
+            assert_eq!(
+                e.detail(ep.id).assets.len(),
+                2,
+                "{order}: {} has both files",
+                ep.title
+            );
+        }
+        // Later files in either folder keep landing on the same show.
+        e.apply(vec![top(4), sub(4)]);
+        assert_eq!(shows(&e).len(), 1, "{order}");
+        assert_eq!(episode_count(&e, s[0].id), 4, "{order}");
+    }
+}
+
+/// Nesting joins only same-titled shows whose years agree: a dated show in
+/// a subfolder of a differently dated one stays apart, and so does a
+/// differently titled show below a show folder.
+#[test]
+fn nested_folders_still_respect_titles_and_years() {
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Doctor Who/Doctor.Who.2005.S01E01.mkv",
+            episode("Doctor Who", Some(2005), 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Doctor Who/Classic/Doctor.Who.1963.S01E01.mkv",
+            episode("Doctor Who", Some(1963), 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Doctor Who/Torchwood/Torchwood.S01E01.mkv",
+            episode("Torchwood", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    let s = shows(&e);
+    assert_eq!(s.len(), 3, "{s:#?}");
+    // Sibling folders (neither inside the other) are still two shows.
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert("A/Lost/Lost.S01E01.mkv", episode("Lost", None, 1, &[1]), None),
+        upsert("B/Lost/Lost.S01E01.mkv", episode("Lost", None, 1, &[1]), None),
+    ]);
+    assert_eq!(shows(&e).len(), 2);
+}
+
+/// A dated series kept in a subfolder of an undated same-titled show folder
+/// (`Starhold/` beside `Starhold/Starhold (1978)/`, an original inside the
+/// franchise folder) is another series: a subfolder takes its parent
+/// folder's year, but a parent folder never takes a subfolder's. In either
+/// scan order the two stay apart, and the undated show keeps no year.
+#[test]
+fn a_dated_series_in_a_subfolder_of_an_undated_show_stays_apart() {
+    let parent = |n: u16| {
+        upsert(
+            &format!("Starhold/Season 1/Starhold.S01E{n:02}.mkv"),
+            episode("Starhold", None, 1, &[n]),
+            None,
+        )
+    };
+    let child = |n: u16| {
+        upsert(
+            &format!("Starhold/Starhold (1978)/Season 1/Starhold.1978.S01E{n:02}.mkv"),
+            episode("Starhold", Some(1978), 1, &[n]),
+            None,
+        )
+    };
+    for order in ["parent first", "subfolder first", "one batch"] {
+        let e = env(LibraryKind::Shows);
+        match order {
+            "parent first" => {
+                e.apply((1..=2).map(parent).collect());
+                e.apply((1..=2).map(child).collect());
+            }
+            "subfolder first" => {
+                e.apply((1..=2).map(child).collect());
+                e.apply((1..=2).map(parent).collect());
+            }
+            _ => {
+                e.apply((1..=2).flat_map(|n| [parent(n), child(n)]).collect());
+            }
+        }
+        let mut s = shows(&e);
+        s.sort_by_key(|i| i.year);
+        assert_eq!(s.len(), 2, "{order}: {s:#?}");
+        assert_eq!(
+            s.iter().map(|i| i.year).collect::<Vec<_>>(),
+            [None, Some(1978)],
+            "{order}: the undated show takes no year from its subfolder"
+        );
+        for show in &s {
+            let seasons = e.children(show.id);
+            assert_eq!(seasons.len(), 1, "{order}");
+            for ep in e.children(seasons[0].id) {
+                assert_eq!(e.detail(ep.id).assets.len(), 1, "{order}: one file per episode");
+            }
+        }
+        // Later files keep landing on their own show.
+        e.apply(vec![parent(3), child(3)]);
+        assert_eq!(shows(&e).len(), 2, "{order}");
+        assert_eq!(episode_count(&e, s[0].id), 3, "{order}");
+        assert_eq!(episode_count(&e, s[1].id), 3, "{order}");
+    }
+}
+
+/// An undated subfolder of a dated show folder (`Starhold (2004)/WEB/`)
+/// takes the folder's year: one show, in either scan order, with both
+/// files as versions of each episode.
+#[test]
+fn an_undated_subfolder_of_a_dated_show_joins_it() {
+    let parent = |n: u16| {
+        upsert(
+            &format!("Starhold (2004)/Starhold.2004.S01E{n:02}.mkv"),
+            episode("Starhold", Some(2004), 1, &[n]),
+            None,
+        )
+    };
+    let child = |n: u16| {
+        upsert(
+            &format!("Starhold (2004)/WEB/Starhold.S01E{n:02}.mkv"),
+            episode("Starhold", None, 1, &[n]),
+            None,
+        )
+    };
+    for order in ["parent first", "subfolder first"] {
+        let e = env(LibraryKind::Shows);
+        if order == "parent first" {
+            e.apply((1..=2).map(parent).collect());
+            e.apply((1..=2).map(child).collect());
+        } else {
+            e.apply((1..=2).map(child).collect());
+            e.apply((1..=2).map(parent).collect());
+        }
+        let s = shows(&e);
+        assert_eq!(s.len(), 1, "{order}: {s:#?}");
+        assert_eq!(s[0].year, Some(2004), "{order}");
+        let seasons = e.children(s[0].id);
+        assert_eq!(seasons.len(), 1, "{order}");
+        for ep in e.children(seasons[0].id) {
+            assert_eq!(e.detail(ep.id).assets.len(), 2, "{order}: both files");
+        }
+    }
+}
+
+/// Two undated same-titled shows, one in a subfolder of the other
+/// (`Workplace/` and `Workplace/US/`), are one show: nothing tells them
+/// apart from a folder of alternate versions. This is deliberate; a year
+/// or another title in the names, or sibling folders, keeps two series
+/// apart.
+#[test]
+fn undated_same_titled_nested_folders_are_one_show() {
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Workplace/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Workplace/US/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    assert_eq!(shows(&e).len(), 1);
+    // Sibling folders stay apart.
+    let e = env(LibraryKind::Shows);
+    e.apply(vec![
+        upsert(
+            "Workplace/UK/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+        upsert(
+            "Workplace/US/Season 1/Workplace.S01E01.mkv",
+            episode("Workplace", None, 1, &[1]),
+            None,
+        ),
+    ]);
+    assert_eq!(shows(&e).len(), 2);
+}
