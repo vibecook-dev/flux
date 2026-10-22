@@ -77,9 +77,24 @@ fn year_sanity(g: &mut NameGuess) {
     }
 }
 
-/// `Show.2024.03.15` is an air date, never "year 2024, episode 15".
+/// An explicit episode marker (`S01E02`, `1x02`) anywhere in `stem`.
+pub(crate) fn has_explicit_marker(stem: &str) -> bool {
+    EXPLICIT_EP_RE.is_match(stem)
+}
+
+/// `Show.2024.03.15` is an air date, never "year 2024, episode 15". In a
+/// mixed library without a TV or season folder this only corrects a parser
+/// that read an episode: a date alone doesn't make one there, and a
+/// recording's date (with a time of day, or nothing before it) is no air
+/// date at all.
 fn date_is_air_date(g: &mut NameGuess, ctx: &Context) {
     if g.air_date.is_some() || EXPLICIT_EP_RE.is_match(&ctx.stem) {
+        return;
+    }
+    if ctx.lib == LibraryKind::Mixed
+        && !ctx.tv
+        && (g.kind != GuessKind::Episode || crate::resolve::recording_stamp(&ctx.stem))
+    {
         return;
     }
     let Some(c) = DATE_RE.captures(&ctx.stem) else {
@@ -237,6 +252,7 @@ mod tests {
             stem: stem.into(),
             season_folder: None,
             lib: LibraryKind::Mixed,
+            tv: true,
         }
     }
 
@@ -275,6 +291,61 @@ mod tests {
         );
         assert_eq!(g.air_date.as_deref(), Some("2024-03-15"));
         assert_eq!((g.year, g.episodes.len()), (None, 0));
+    }
+
+    #[test]
+    fn a_recordings_date_is_no_air_date_in_a_mixed_library() {
+        for stem in [
+            "2019-05-01 12-34-56",
+            "VID_2019_05_01_12_34_56",
+            "2019.05.01 Beach",
+        ] {
+            let mut g = guess(stem);
+            g.kind = GuessKind::Movie;
+            let loose = Context {
+                tv: false,
+                ..ctx(stem)
+            };
+            apply(&mut g, &loose, Origin::Fast);
+            assert_eq!(
+                (g.kind, g.air_date.as_deref()),
+                (GuessKind::Movie, None),
+                "{stem}"
+            );
+            // Inside a TV or season folder it still is one.
+            let mut g = guess(stem);
+            apply(&mut g, &ctx(stem), Origin::Fast);
+            assert_eq!(g.air_date.as_deref(), Some("2019-05-01"), "{stem}");
+        }
+        // A movie with a date in its name stays a movie there…
+        let stem = "Some_Trip_2019-05-01_part_of_it";
+        let mut g = guess("Some Trip");
+        g.kind = GuessKind::Movie;
+        apply(
+            &mut g,
+            &Context {
+                tv: false,
+                ..ctx(stem)
+            },
+            Origin::Fast,
+        );
+        assert_eq!((g.kind, g.air_date.as_deref()), (GuessKind::Movie, None));
+        // …while a show's dated episode (no time of day, a title first) that
+        // a parser read as "year, episode" gets its air date.
+        let mut g = guess("The Daily Show");
+        g.kind = GuessKind::Episode;
+        g.year = Some(2024);
+        g.episodes = vec![15];
+        let stem = "The.Daily.Show.2024.03.15.Guest.Name";
+        apply(
+            &mut g,
+            &Context {
+                tv: false,
+                ..ctx(stem)
+            },
+            Origin::Fast,
+        );
+        assert_eq!(g.air_date.as_deref(), Some("2024-03-15"));
     }
 
     #[test]

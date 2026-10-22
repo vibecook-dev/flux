@@ -90,6 +90,12 @@ pub(crate) fn classify(name: &str) -> FolderRole {
     FolderRole::Plain
 }
 
+/// `Other` or `Others`: an extras folder by Plex's and Jellyfin's rules, and
+/// a common name for a folder of miscellaneous files.
+pub(crate) fn is_other_folder(name: &str) -> bool {
+    matches!(name.trim().to_lowercase().as_str(), "other" | "others")
+}
+
 /// Jellyfin's and Plex's extras folder names (`NamingOptions.VideoExtraRules`,
 /// Plex "Local Media Assets – Movies").
 fn extras_folder(lower: &str) -> Option<ExtraKind> {
@@ -166,5 +172,8 @@ mod tests {
         assert_eq!(classify("CD2"), FolderRole::Part(2));
         assert_eq!(classify("Movies"), FolderRole::Generic(GenericHint::Movies));
         assert_eq!(classify("TV"), FolderRole::Generic(GenericHint::Shows));
+        assert_eq!(classify("Others"), FolderRole::Extras(ExtraKind::Other));
+        assert!(is_other_folder("others") && is_other_folder(" Other "));
+        assert!(!is_other_folder("Extras") && !is_other_folder("Otherwise"));
     }
 }

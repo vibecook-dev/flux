@@ -28,7 +28,7 @@ use regex::Regex;
 use crate::folders::{self, FolderRole, GenericHint};
 use crate::ids;
 use crate::stem::{self, Marker, Stem, StemOpts};
-use crate::text::{is_cjk, nfc, norm_key, trim_seps};
+use crate::text::{collapse_ws, is_cjk, nfc, norm_key, trim_seps};
 use crate::vocab;
 
 /// Fast-path confidence below which the fallback parser is consulted.
@@ -48,6 +48,9 @@ pub(crate) struct Context {
     /// Season number from a season folder (`Season 02`, `Specials` = 0).
     pub season_folder: Option<u16>,
     pub lib: LibraryKind,
+    /// Show evidence around the file: a shows library, a TV folder of a
+    /// mixed library (`TV/`, `Anime/`), a season or specials folder.
+    pub tv: bool,
 }
 
 /// The fast-path result plus its context.
@@ -117,6 +120,155 @@ static JUNK_STEM_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid junk regex")
 });
 
+/// A date followed by a time of day: a recording's timestamp
+/// (`VID_20190501_123456789`, `2019-05-01 12-34-56`, `Screen Recording
+/// 2019-05-01 at 12.34.56`, `DJI_20190501123456`), never a daily show's
+/// air date. Separators are optional, so `1080p` or `720p` after a date
+/// is no time (80 and 20p are no minutes).
+static DATE_TIME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)(?:^|[^0-9])
+          (?:19|20)\d{2} [\s._-]? (?:0[1-9]|1[0-2]) [\s._-]? (?:0[1-9]|[12]\d|3[01])
+          [\s._-]* (?:(?i:at|t)[\s._-]*)?
+          (?:[01]\d|2[0-3]) [\s._-]? [0-5]\d (?:[\s._-]? [0-5]\d)? \d{0,3}
+          (?:$|[^0-9])",
+    )
+    .expect("valid date-time regex")
+});
+
+/// A name that starts with its date (`2019-05-01.mp4`, `2019.05.01 Beach`):
+/// no show title before it.
+static DATE_LED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^[^\p{L}\p{N}]*(?:19|20)\d{2}[\s._-]?(?:0[1-9]|1[0-2])[\s._-]?(?:0[1-9]|[12]\d|3[01])(?:$|[^0-9])",
+    )
+    .expect("valid date-led regex")
+});
+
+/// A recording's name rather than a daily show's (`Show.2024.03.15`): its
+/// date has a time of day after it, or nothing before it. In a mixed
+/// library without a TV or season folder such a file is its own video, so
+/// a year never becomes a season for it.
+pub(crate) fn recording_stamp(stem: &str) -> bool {
+    DATE_TIME_RE.is_match(stem) || DATE_LED_RE.is_match(stem)
+}
+
+/// An explicit episode marker in `stem`: `S01E02`, `1x02`, `第02集`.
+pub(crate) fn explicit_episode(stem: &str) -> bool {
+    crate::rules::has_explicit_marker(stem) || SIBLING_EPISODE_RE.is_match(stem)
+}
+
+/// A name's words and numbers, lower case: runs of letters and runs of
+/// digits, split at anything else (`Clip_03 (1)` → `clip`, `3`, `1`),
+/// numbers without leading zeros.
+fn key_runs(stem: &str) -> Vec<(bool, String)> {
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    let mut split = true;
+    for c in stem.chars() {
+        if !c.is_alphanumeric() {
+            split = true;
+            continue;
+        }
+        let digit = c.is_ascii_digit();
+        match runs.last_mut() {
+            Some((d, s)) if !split && *d == digit => s.extend(c.to_lowercase()),
+            _ => runs.push((digit, c.to_lowercase().collect())),
+        }
+        split = false;
+    }
+    for (digit, s) in &mut runs {
+        if *digit {
+            let n = s.trim_start_matches('0');
+            *s = if n.is_empty() { "0".into() } else { n.into() };
+        }
+    }
+    runs
+}
+
+/// Where two names of one numbered series part ways: `a`'s number at the
+/// first place they differ, when both have a number there and a name comes
+/// before it (`Clip 01` and `Clip 02` → 1, `Show E12` and `Show E13` → 12,
+/// `Trip 2019-05-01` and `Trip 2019-05-02` → 1; what follows the number
+/// may differ). Bare numbers (`001`, `002`) are no series, and neither are
+/// two copies of one name.
+fn series_number(a: &[(bool, String)], b: &[(bool, String)]) -> Option<u32> {
+    let i = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    match (a.get(i), b.get(i)) {
+        (Some((true, n)), Some((true, _))) if a[..i].iter().any(|(digit, _)| !digit) => n.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The numbers a parse read as a file's place in a series: its episode
+/// numbers, its absolute number, and its air date's year, month and day
+/// (and the three as one `YYYYMMDD` number).
+pub(crate) fn episode_numbers(episodes: &[u16], absolute: Option<u32>, air_date: Option<&str>) -> Vec<u32> {
+    let mut out: Vec<u32> = episodes.iter().map(|&e| u32::from(e)).chain(absolute).collect();
+    if let Some(date) = air_date {
+        out.extend(date.split('-').filter_map(|p| p.parse::<u32>().ok()));
+        out.extend(date.replace('-', "").parse::<u32>().ok());
+    }
+    out
+}
+
+/// Another video file in the folder is of one numbered series with this
+/// one, and the two part ways at the number the parse read as this file's
+/// episode (one of `numbers`, see [`episode_numbers`]), with the show
+/// `title` the parse read in its name too: a show's episodes side by side,
+/// the evidence a mixed library asks of an episode without an explicit
+/// marker. Names that differ only in some other number (a running id after
+/// a constant `ep1`), or a title that is this file's own, are no series.
+pub(crate) fn numbered_series(stem: &str, siblings: &[&str], numbers: &[u32], title: Option<&str>) -> bool {
+    let own = key_runs(stem);
+    let title = title.map(norm_key).unwrap_or_default();
+    !numbers.is_empty()
+        && own.iter().any(|(digit, _)| *digit)
+        && siblings.iter().any(|s| {
+            let (sib, ext) = split_ext(s);
+            ext.is_some_and(crate::is_video_ext)
+                && series_number(&own, &key_runs(sib)).is_some_and(|n| numbers.contains(&n))
+                && norm_key(sib).contains(title.as_str())
+        })
+}
+
+/// A key that every name [`numbered_series`] pairs with this one shares
+/// (its first run), or `None` when the name can't be in a series (no name
+/// followed by a number). See [`crate::series_key`].
+pub(crate) fn series_key(stem: &str) -> Option<String> {
+    let runs = key_runs(stem);
+    let first_name = runs.iter().position(|(digit, _)| !digit)?;
+    runs[first_name + 1..]
+        .iter()
+        .any(|(digit, _)| *digit)
+        .then(|| runs[0].1.clone())
+}
+
+/// A file stem as a title: `_` read as a space, and `.` too in a name
+/// without spaces (the release style; a `.` between digits stays),
+/// whitespace collapsed, separators trimmed. `IMG_1234` → "IMG 1234",
+/// `My.Trip.v1.5` → "My Trip v1.5".
+pub(crate) fn display_stem(stem: &str) -> String {
+    let dots = !stem.contains(' ');
+    let chars: Vec<char> = stem.chars().collect();
+    let mut out = String::with_capacity(stem.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let between_digits =
+            i > 0 && chars[i - 1].is_ascii_digit() && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit());
+        if c == '_' || (c == '.' && dots && !between_digits) {
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    let collapsed = collapse_ws(&out);
+    let trimmed = collapsed.trim_matches(|c: char| c == '-' || c.is_whitespace());
+    if trimmed.is_empty() {
+        stem.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Splits a filename into stem and extension. An extension is 1–5 ASCII
 /// alphanumerics with at least one letter that is not a release tag, so
 /// `Show.Season.1` and `Name.BDMux.720p` keep their last word.
@@ -137,11 +289,11 @@ pub(crate) fn split_ext(file: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Runs the fast path over a whole relative path.
-pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> Resolved {
-    // Backslash-separated paths (from Windows clients or NAS exports) split
-    // like native ones; drive letters ("C:") are dropped.
-    let comps: Vec<String> = rel_path
+/// The path's components, NFC. Backslash-separated paths (from Windows
+/// clients or NAS exports) split like native ones; drive letters ("C:")
+/// are dropped.
+fn components(rel_path: &Path) -> Vec<String> {
+    rel_path
         .components()
         .filter_map(|c| match c {
             Component::Normal(os) => Some(nfc(&os.to_string_lossy()).into_owned()),
@@ -149,7 +301,56 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         })
         .flat_map(|c| c.split('\\').map(str::to_string).collect::<Vec<_>>())
         .filter(|c| !c.is_empty() && !(c.len() == 2 && c.ends_with(':')))
+        .collect()
+}
+
+/// A file of a videos library ([`LibraryKind::Videos`]: home videos,
+/// clips): its own item, titled after the file ([`display_stem`]). Only a
+/// true multi-part stack (`Clip part1` + `Clip part2`, `ClipA` + `ClipB`
+/// side by side) reads as parts of one item; nothing else in the path means
+/// anything: no movie or show structure, no extras or sample folders, no
+/// years or ids, and no fallback parser.
+pub(crate) fn video(rel_path: &Path, siblings: &[&str]) -> NameGuess {
+    let mut g = NameGuess::unknown();
+    let comps = components(rel_path);
+    let Some(file) = comps.last() else {
+        g.evidence.push("empty path".into());
+        return g;
+    };
+    let stem = split_ext(file).0.trim();
+    let videos: Vec<&str> = siblings
+        .iter()
+        .copied()
+        .filter(|s| split_ext(s).1.is_some_and(crate::is_video_ext))
         .collect();
+    let (title_of, part) = match letter_stack(stem, &videos) {
+        Some((core, part)) => (core, Some(part)),
+        None => match STACK_RE.captures(stem).filter(|_| stack_evidence(stem, &videos)) {
+            Some(c) => match (c.get(1), c[2].parse::<u8>()) {
+                (Some(prefix), Ok(n)) if n > 0 && !norm_key(prefix.as_str()).is_empty() => {
+                    (prefix.as_str(), Some(n))
+                }
+                _ => (stem, None),
+            },
+            None => (stem, None),
+        },
+    };
+    g.kind = GuessKind::Movie;
+    g.title = Some(display_stem(title_of));
+    g.part = part;
+    g.confidence = 1.0;
+    g.evidence
+        .push("videos library: its own item, titled after the file".into());
+    if let Some(p) = part {
+        g.evidence
+            .push(format!("multi-part: part {p}, another part is beside it"));
+    }
+    g
+}
+
+/// Runs the fast path over a whole relative path.
+pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> Resolved {
+    let comps = components(rel_path);
     let mut g = NameGuess::unknown();
     let Some((file, dirs)) = comps.split_last() else {
         g.evidence.push("empty path".into());
@@ -159,6 +360,7 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
             stem: String::new(),
             season_folder: None,
             lib,
+            tv: lib == LibraryKind::Shows,
         };
         return Resolved { guess: g, ctx };
     };
@@ -173,7 +375,7 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         let name = ids::extract(d, &mut g.ids, &mut ev);
         let (edition, name) = ids::extract_edition(&name);
         let name = name.trim().to_string();
-        let role = folders::classify(&name);
+        let role = folder_role(&name, lib);
         dir_list.push(Dir { name, role, edition });
     }
     dir_list.reverse();
@@ -236,6 +438,7 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         stem: stem_core.to_string(),
         season_folder: l.season.map(|(_, n)| n),
         lib,
+        tv: tv_ctx || l.specials.is_some(),
     };
 
     let specials_as_season =
@@ -264,6 +467,34 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         bare_episode(stem_core, &mut sp, show_parse.as_ref(), &mut ev);
     }
 
+    // A mixed library without a TV or season folder asks an episode for
+    // show evidence. A dated recording (`2019-05-01 12-34-56.mkv`,
+    // `2019-05-01.mp4`) is never one. A weaker marker than `S01E02`, `1x02`
+    // or `第2集` (a date after a title, `E12`, a number after a dash) in a
+    // name with nothing of a release about it (no technical tags, no
+    // release group: `Beach_Day_2019-05-01`, `Clip E05`, not
+    // `Show.2024.03.15.720p.WEB` or `[Group] Show - 12`) needs another file
+    // of its numbered series beside it. Otherwise the file is a video of its
+    // own, titled after its name, and no year becomes a season.
+    let loose = lib == LibraryKind::Mixed && !ctx.tv;
+    let recording =
+        loose && sp.marker == Some(Marker::Date) && (sp.title.is_none() || recording_stamp(stem_core));
+    let lone = loose
+        && !recording
+        && sp.has_episode_info()
+        && !matches!(
+            sp.marker,
+            Some(Marker::SxxEyy | Marker::NxNN | Marker::Words | Marker::CjkEpisode)
+        )
+        && sp.tags == 0
+        && sp.release_group.is_none()
+        && !numbered_series(
+            stem_core,
+            siblings,
+            &episode_numbers(&sp.episodes, sp.absolute, sp.air_date.as_deref()),
+            sp.title.as_deref(),
+        );
+
     if is_sample {
         sample_guess(&mut g, &sp, &dir_list, &l, &mut ev);
     } else if let Some(kind) = extra_kind {
@@ -278,6 +509,20 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
             season_folder,
             &mut ev,
         );
+    } else if recording || lone {
+        g.kind = GuessKind::Movie;
+        g.title = Some(display_stem(stem_core));
+        // Sure enough that the fallback (which reads dates and numbers as
+        // episodes) is not asked.
+        g.confidence = FALLBACK_THRESHOLD;
+        ev.push(if recording {
+            "a dated recording, not an episode (mixed library, no TV or season folder)".into()
+        } else {
+            format!(
+                "{} but no other file of its series here: not an episode (mixed library, no TV or season folder)",
+                sp.marker.map_or("an episode number", Marker::label)
+            )
+        });
     } else if sp.has_episode_info() || sp.marker == Some(Marker::SeasonOnly) {
         let show = ShowFolder {
             parse: show_parse.as_ref(),
@@ -344,6 +589,19 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
     }
     g.evidence.append(&mut ev);
     Resolved { guess: g, ctx }
+}
+
+/// [`folders::classify`] in a library of `lib`. Plex and Jellyfin read
+/// `Other`/`Others` as an extras folder of the film or show above it; in a
+/// mixed library, a personal collection as often as not, it is an ordinary
+/// folder, and its files are titles of their own.
+fn folder_role(name: &str, lib: LibraryKind) -> FolderRole {
+    match folders::classify(name) {
+        FolderRole::Extras(_) if lib == LibraryKind::Mixed && folders::is_other_folder(name) => {
+            FolderRole::Plain
+        }
+        role => role,
+    }
 }
 
 fn folder_opts(tv: bool) -> StemOpts {
@@ -890,5 +1148,121 @@ fn copy_tags(g: &mut NameGuess, sp: &Stem) {
     }
     if sp.release_group.is_some() {
         g.release_group = sp.release_group.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_stamps() {
+        for stem in [
+            "VID_20190501_123456789",
+            "IMG_20190501_1234",
+            "DJI_20190501123456_0001",
+            "2019-05-01 12-34-56",
+            "Screen Recording 2019-05-01 at 12.34.56",
+            "Party.2019.05.01.20.15.30",
+            "2019-05-01",
+            "2019.05.01 Beach",
+            "[2019-05-01] Beach",
+        ] {
+            assert!(recording_stamp(stem), "{stem}");
+        }
+        for stem in [
+            "The.Daily.Show.2024.03.15.Guest.Name.720p.WEB.h264",
+            "Show 2019-05-01 1080p",
+            "Show.2019.05.01.2160p",
+            "Clip 20190501",
+            "Movie 2019",
+            "1920x1080 test",
+        ] {
+            assert!(!recording_stamp(stem), "{stem}");
+        }
+    }
+
+    #[test]
+    fn display_stems() {
+        assert_eq!(display_stem("IMG_1234"), "IMG 1234");
+        assert_eq!(display_stem("My.Trip.v1.5"), "My Trip v1.5");
+        assert_eq!(display_stem("Dr. Who at the beach"), "Dr. Who at the beach");
+        assert_eq!(display_stem("  __clip__  "), "clip");
+        assert_eq!(display_stem("___"), "___");
+        assert_eq!(display_stem("示例_视频"), "示例 视频");
+    }
+
+    #[test]
+    fn numbered_series_need_a_name_and_another_number() {
+        let date = episode_numbers(&[], None, Some("2019-05-01"));
+        assert_eq!(date, [2019, 5, 1, 20190501]);
+        for (stem, sib, numbers) in [
+            ("Clip 01", "Clip 02.mp4", vec![1]),
+            ("Clip_1", "clip.02.MKV", vec![1]),
+            ("示例剧 03", "示例剧 04.mkv", vec![3]),
+            ("Show E12 - Pilot", "Show E13 - The Return.mkv", vec![12]),
+            ("Trip_2019-05-01", "Trip_2019-05-02.mp4", date.clone()),
+            ("Trip_20190501", "Trip_20190502.mp4", date.clone()),
+            (
+                "[Group] Title - 01 [1080p]",
+                "[Group] Title - 02 [1080p].mkv",
+                vec![1],
+            ),
+            ("2019 Trip 01", "2019 Trip 02.mp4", vec![1]),
+        ] {
+            assert!(numbered_series(stem, &[sib], &numbers, None), "{stem} / {sib}");
+            assert_eq!(
+                series_key(stem),
+                series_key(sib.rsplit_once('.').unwrap().0),
+                "{stem}"
+            );
+            assert!(series_key(stem).is_some(), "{stem}");
+        }
+        for (stem, sib) in [
+            // Not a video, another name, the same number, a copy, bare numbers.
+            ("Clip 01", "Clip 02.srt"),
+            ("Clip 01", "Clipboard 02.mp4"),
+            ("Clip 01", "Other 01.mp4"),
+            ("Clip 01", "Clip 1.mov"),
+            ("Clip 01", "Clip 01 (1).mp4"),
+            ("001", "002.mp4"),
+            ("Clip", "Clip 02.mp4"),
+            // A name that differs before the number.
+            ("Holiday A 01", "Holiday B 02.mp4"),
+        ] {
+            assert!(!numbered_series(stem, &[sib], &[1, 2], None), "{stem} / {sib}");
+        }
+        // Names that part ways at another number than the episode read: a
+        // running id after a constant `ep1` is no series of episodes.
+        assert!(!numbered_series(
+            "Site_ep1_clip_4711",
+            &["Site_ep1_clip_4712.mp4"],
+            &[1],
+            None
+        ));
+        assert!(numbered_series(
+            "Site_ep1_clip_4711",
+            &["Site_ep2_clip_4712.mp4"],
+            &[1],
+            None
+        ));
+        assert!(!numbered_series("Clip 01", &["Clip 02.mp4"], &[], None));
+        // The show's title is in the sibling's name too, unless the parse
+        // took text that is this file's own for it.
+        assert!(numbered_series(
+            "Clip 01 Beach",
+            &["Clip 02 Party.mp4"],
+            &[1],
+            Some("Clip")
+        ));
+        assert!(!numbered_series(
+            "Clip 01 Beach",
+            &["Clip 02 Party.mp4"],
+            &[1],
+            Some("Clip Beach")
+        ));
+        assert_eq!(series_key("001"), None);
+        assert_eq!(series_key("Clip"), None);
+        assert_eq!(series_key("Clip 01").as_deref(), Some("clip"));
     }
 }
