@@ -10,7 +10,8 @@
 //!
 //! - **Same name.** `Film.mkv` takes `Film.srt`, `Film.en.srt`,
 //!   `Film.chs.forced.ass`, in its folder or a subtitle folder in it
-//!   (`Subs/`, `Subtitles/`, `字幕/`, any case).
+//!   (`Subs/`, `Subtitles/`, `字幕/`, any case). The longest name wins:
+//!   with `Film 2.mkv` beside it, `Film 2.en.srt` is only `Film 2`'s.
 //! - **Same episode.** An episode (`S01E02`, `1x02`, `第2集`) takes the files
 //!   of that episode in its folder, a subtitle folder in it, its parent
 //!   folder (a season folder's show folder; never the library root), or a
@@ -225,6 +226,13 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     Some(it.next().map_or("", |(i, _)| &s[i..]))
 }
 
+/// What subtitle file name `sub_stem` adds to video name `stem` when it is
+/// named after it: the same name, then nothing or a separator.
+fn named_after<'a>(sub_stem: &'a str, stem: &str) -> Option<&'a str> {
+    let rest = strip_prefix_ci(sub_stem, stem)?;
+    (rest.is_empty() || rest.starts_with(is_separator)).then(|| rest.trim_start_matches(is_separator))
+}
+
 /// What `sub` adds to `video`: after their common start, cut back to a
 /// separator (`Show.S01E02.1080p.WEB` / `Show.S01E02.1080p.chs` → `chs`).
 fn added_part<'a>(sub: &'a str, video: &str) -> &'a str {
@@ -240,8 +248,13 @@ fn added_part<'a>(sub: &'a str, video: &str) -> &'a str {
         || sub[..end].ends_with(is_separator)
         || sub[end..].starts_with(is_separator);
     if !boundary {
-        // The shared part ends inside a word: back to its last separator.
-        end = sub[..end].rfind(is_separator).map_or(0, |i| i + 1);
+        // The shared part ends inside a word: back to just after its last
+        // separator (`【` and `《` are 3 bytes in UTF-8).
+        end = sub[..end]
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| is_separator(c))
+            .map_or(0, |(i, c)| i + c.len_utf8());
     }
     sub[end..].trim_start_matches(is_separator)
 }
@@ -441,6 +454,10 @@ pub struct VideoName<'a> {
     pub stem: &'a str,
     /// The only video directly in its folder (and not at the root).
     pub alone: bool,
+    /// The names (without extension) of the other videos in its folder
+    /// that start with its own (`Film 2` beside `Film`): a subtitle file
+    /// named after one of them is that video's.
+    pub longer: &'a [String],
 }
 
 /// The folders whose subtitle files may belong to `v`, with their place
@@ -477,11 +494,13 @@ fn belongs<'a>(v: &VideoName<'_>, place: Place, sub_stem: &'a str) -> Option<&'a
     if place == Place::PerVideo {
         return Some(sub_stem);
     }
-    // Same name, with tags after it.
-    if let Some(rest) = strip_prefix_ci(sub_stem, v.stem) {
-        if rest.is_empty() || rest.starts_with(is_separator) {
-            return Some(rest.trim_start_matches(is_separator));
+    // Same name, with tags after it, unless it is the name of a longer
+    // video beside it (`Film 2.en` is `Film 2`'s, not `Film`'s).
+    if let Some(rest) = named_after(sub_stem, v.stem) {
+        if v.longer.iter().any(|w| named_after(sub_stem, w).is_some()) {
+            return None;
         }
+        return Some(rest);
     }
     // Same episode, under the same show name (or none).
     if let (Some((vs, ve, vat)), Some((ss, se, sat))) = (episode_of(v.stem), episode_of(sub_stem)) {
@@ -519,7 +538,17 @@ pub fn asset_subtitle_files(conn: &Connection, asset_id: Id) -> Result<Vec<Subti
     let dir = dir_of(&rel);
     let stem = stem_of(name_of(&rel));
     let alone = !dir.is_empty() && videos_in(conn, root_id, dir)? == 1;
-    let video = VideoName { dir, stem, alone };
+    let longer = if alone {
+        Vec::new()
+    } else {
+        longer_names(conn, root_id, &rel, stem)?
+    };
+    let video = VideoName {
+        dir,
+        stem,
+        alone,
+        longer: &longer,
+    };
     let mut stmt = conn.prepare_cached(
         "SELECT id, rel_path, size, mtime_ns FROM subtitle_file WHERE root_id = ?1 AND dir = ?2",
     )?;
@@ -548,10 +577,16 @@ pub fn asset_subtitle_files(conn: &Connection, asset_id: Id) -> Result<Vec<Subti
             else {
                 continue;
             };
-            let Some(added) = belongs(&video, place, sub_stem) else {
-                continue;
+            // Names come from the disk: a name the matcher trips on costs
+            // that file, never the item (whose page and /play read this).
+            let tags = match std::panic::catch_unwind(|| belongs(&video, place, sub_stem).map(name_tags)) {
+                Ok(Some(tags)) => tags,
+                Ok(None) => continue,
+                Err(_) => {
+                    tracing::warn!(path = %rel_path, "subtitle file name not understood; skipped");
+                    continue;
+                }
             };
-            let tags = name_tags(added);
             out.push((
                 place,
                 SubtitleFile {
@@ -570,6 +605,41 @@ pub fn asset_subtitle_files(conn: &Connection, asset_id: Id) -> Result<Vec<Subti
     }
     out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)));
     Ok(out.into_iter().map(|(_, f)| f).collect())
+}
+
+/// Video name `other` starts with video name `stem` and goes on.
+fn is_longer_name(other: &str, stem: &str) -> bool {
+    strip_prefix_ci(other, stem).is_some_and(|rest| !rest.is_empty())
+}
+
+/// [`VideoName::longer`] of the video at `rel`: the names of the other
+/// videos directly in its folder that start with its name `stem` (as
+/// written; one lookup in the `(root_id, rel_path)` index).
+fn longer_names(conn: &Connection, root_id: Id, rel: &str, stem: &str) -> Result<Vec<String>> {
+    let dir = dir_of(rel);
+    let prefix = if dir.is_empty() {
+        stem.to_string()
+    } else {
+        format!("{dir}/{stem}")
+    };
+    // `prefix` ≤ rel_path < `prefix` + U+10FFFF: the paths starting with it.
+    let mut stmt = conn.prepare_cached(
+        "SELECT rel_path FROM file WHERE root_id = ?1 AND state <> 'missing'
+           AND rel_path >= ?2 AND rel_path < ?2 || char(1114111)",
+    )?;
+    let mut rows = stmt.query(params![root_id, prefix])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let path: String = r.get(0)?;
+        if path == rel || dir_of(&path) != dir {
+            continue;
+        }
+        let other = stem_of(name_of(&path));
+        if is_longer_name(other, stem) {
+            out.push(other.to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// Video files directly in folder `dir` of a root (not below it).
@@ -596,17 +666,27 @@ fn videos_in(conn: &Connection, root_id: Id, dir: &str) -> Result<usize> {
 mod tests {
     use super::*;
 
-    fn video<'a>(rel: &'a str, alone: bool) -> VideoName<'a> {
-        VideoName {
-            dir: dir_of(rel),
-            stem: stem_of(name_of(rel)),
-            alone,
-        }
-    }
-
     /// The matcher over plain paths: which of `subs` belong to `video_rel`.
     fn matched(video_rel: &str, alone: bool, subs: &[&str]) -> Vec<String> {
-        let v = video(video_rel, alone);
+        matched_beside(video_rel, alone, &[], subs)
+    }
+
+    /// The same, with the file names of the other videos in its folder.
+    fn matched_beside(video_rel: &str, alone: bool, others: &[&str], subs: &[&str]) -> Vec<String> {
+        let stem = stem_of(name_of(video_rel));
+        let longer: Vec<String> = others
+            .iter()
+            .copied()
+            .map(stem_of)
+            .filter(|o| is_longer_name(o, stem))
+            .map(str::to_string)
+            .collect();
+        let v = VideoName {
+            dir: dir_of(video_rel),
+            stem,
+            alone,
+            longer: &longer,
+        };
         let dirs = candidate_dirs(&v);
         let mut out = Vec::new();
         for s in subs {
@@ -651,6 +731,114 @@ mod tests {
         assert_eq!(matched("Films/Film (2010)/Film (2010).mkv", true, &subs).len(), 5);
         // Never across folders that aren't subtitle folders.
         assert!(matched("Films/Other/Other.mkv", true, &subs).is_empty());
+    }
+
+    #[test]
+    fn the_longest_video_name_wins() {
+        // A flat folder of films whose names start alike: `Film 2.en.srt`
+        // is `Film 2`'s only, in the folder or a subtitle folder.
+        let others = ["Film.mkv", "Film 2.mkv", "Film Returns.mkv", "Filmography.mkv"];
+        let subs = [
+            "Films/Film.en.srt",
+            "Films/Film 2.en.srt",
+            "Films/Subs/Film 2.chs.ass",
+            "Films/Film Returns.srt",
+            "Films/Film.Commentary.srt",
+            "Films/Filmography.srt",
+        ];
+        let film = matched_beside("Films/Film.mkv", false, &others, &subs);
+        assert_eq!(film, vec![subs[0], subs[4]]);
+        let two = matched_beside("Films/Film 2.mkv", false, &others, &subs);
+        assert_eq!(two, vec![subs[1], subs[2]]);
+        let returns = matched_beside("Films/Film Returns.mkv", false, &others, &subs);
+        assert_eq!(returns, vec![subs[3]]);
+        // An episode's longer sibling keeps its file from the episode rule
+        // too.
+        let others = ["Show.S01E01.mkv", "Show.S01E01 Extended.mkv"];
+        let subs = ["Show/Show.S01E01 Extended.en.srt", "Show/Show.S01E01.en.srt"];
+        let short = matched_beside("Show/Show.S01E01.mkv", false, &others, &subs);
+        assert_eq!(short, vec![subs[1]]);
+    }
+
+    #[test]
+    fn names_with_multi_byte_separators() {
+        // The shared start ends inside a word after `【`, `》`, `「` (3 bytes
+        // each in UTF-8): what the name adds starts after that separator.
+        assert_eq!(
+            added_part("Show.S01E01【中英字幕】", "Show.S01E01【中英双字】"),
+            "中英字幕】"
+        );
+        assert_eq!(added_part("《示例片》国语英字", "《示例片》国语中字"), "国语英字");
+        assert_eq!(added_part("示例「中字」", "示例「中文」"), "中字」");
+        // The episode rule with such names.
+        let ep = "示例剧/Season 1/示例剧.S01E01【中英双字】.mkv";
+        let subs = [
+            "示例剧/Season 1/示例剧.S01E01【中英字幕】.ass",
+            "示例剧/Season 1/示例剧.S01E02【中英字幕】.ass",
+        ];
+        assert_eq!(matched(ep, false, &subs), vec![subs[0]]);
+        // A film alone in its folder.
+        let film = "Films/Film (2010)/Film (2010)【中英双字】.mkv";
+        let subs = ["Films/Film (2010)/Film (2010)【中英字幕】.srt"];
+        assert_eq!(matched(film, true, &subs), subs.to_vec());
+        let t = name_tags(added_part(stem_of(name_of(subs[0])), stem_of(name_of(film))));
+        assert_eq!(
+            (t.language.as_deref(), t.title.as_deref()),
+            (Some("chi"), Some("中英字幕"))
+        );
+    }
+
+    #[test]
+    fn no_pair_of_names_trips_the_matcher() {
+        let names = [
+            "",
+            "a",
+            "【",
+            "】【",
+            "Film",
+            "film 2",
+            "Film【中英】",
+            "Film【中英双字】",
+            "Film【中英字幕】",
+            "Film《中英》字幕",
+            "Film「中」.en",
+            "S01E01",
+            "示例剧.S01E01【中英字幕】",
+            "示例剧.S01E01【简体】",
+            "第1集【简体】",
+            "第01集「繁體」",
+            "《示例》.zh-CN【中】",
+            "x【y",
+            "【x",
+            "İstanbul.ß",
+            "istanbul.ss",
+        ];
+        let places = [
+            Place::Same,
+            Place::SubsFolder,
+            Place::PerVideo,
+            Place::Parent,
+            Place::SiblingSubs,
+        ];
+        let longer: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        for v in names {
+            for s in names {
+                let _ = added_part(s, v);
+                for (alone, longer) in [(true, &[][..]), (false, &longer[..])] {
+                    let video = VideoName {
+                        dir: "d",
+                        stem: v,
+                        alone,
+                        longer,
+                    };
+                    for p in places {
+                        if let Some(added) = belongs(&video, p, s) {
+                            let _ = name_tags(added);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

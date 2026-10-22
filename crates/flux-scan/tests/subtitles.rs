@@ -140,3 +140,40 @@ fn subtitle_files_are_cataloged_kept_current_and_matched_by_name() {
     scan(&s, lib);
     assert!(rows(&cat, root_id).is_empty());
 }
+
+/// Names the matcher has to get right through the catalog: a film alone in
+/// its folder whose name and subtitle's part inside `【…】` (a 3-byte
+/// separator: reading this asset's files used to panic, failing the item
+/// page and `/play`), and a flat folder of films whose names start alike,
+/// where a subtitle file is only the longest-named film's.
+#[test]
+fn subtitle_files_match_bracketed_and_similar_names() {
+    let Some(src) = clip(Clip::H264AacMp4) else {
+        return;
+    };
+    let scratch = Scratch::new("subtitle-file-names");
+    let root = scratch.path("Movies");
+    let srt = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n";
+    put_video(&root, "Film (2010)/Film (2010)【中英双字】.mp4", &src);
+    put(&root, "Film (2010)/Film (2010)【中英字幕】.srt", srt);
+    put_video(&root, "Some Film.mp4", &src);
+    put_video(&root, "Some Film 2.mp4", &src);
+    put(&root, "Some Film.en.srt", srt);
+    put(&root, "Some Film 2.en.srt", srt);
+    let cat = open_catalog(&scratch.dir);
+    let s = scanner(&cat);
+    let (lib, _) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
+    scan(&s, lib);
+
+    let film = files_of(&cat, "Film (2010)/Film (2010)【中英双字】.mp4");
+    assert_eq!(names(&film), vec!["Film (2010)【中英字幕】.srt"]);
+    assert_eq!(
+        (film[0].language.as_deref(), film[0].title.as_deref()),
+        (Some("chi"), Some("中英字幕"))
+    );
+    assert_eq!(names(&files_of(&cat, "Some Film.mp4")), vec!["Some Film.en.srt"]);
+    assert_eq!(
+        names(&files_of(&cat, "Some Film 2.mp4")),
+        vec!["Some Film 2.en.srt"]
+    );
+}
