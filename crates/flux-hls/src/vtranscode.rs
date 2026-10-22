@@ -1241,6 +1241,15 @@ impl VideoTranscoder {
             "+frag_keyframe+empty_moov+default_base_moof".into(),
             "pipe:1".into(),
         ]);
+        // On ffmpeg 7 and later, a burned-in track's input also feeds a
+        // second output (an audio stream whose sample rate ffmpeg knows), so
+        // that the overlay never waits for that input's end (crate::burn,
+        // "Heartbeats").
+        if let Some((b, probe)) = burn {
+            let end = run.last().map_or(first.end_ticks, |p| p.end_ticks);
+            let run_s = (end - first_ticks) as f64 / ts;
+            a.extend(burn::companion_output(b, probe, caps, run_s));
+        }
         Ok(a)
     }
 
@@ -2056,6 +2065,96 @@ mod tests {
             }
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    /// A run that burns in a track of the video also copies an audio stream
+    /// of the subtitle input to a `null` output until 2 s past the run, so
+    /// the overlay never waits for that input's end (crate::burn,
+    /// "Heartbeats"). A run that burns in a subtitle file, or a track of a
+    /// file without audio ffmpeg knows the rate of, or runs an ffmpeg before
+    /// 7 or of an unknown release, has one output.
+    #[test]
+    fn track_burns_copy_the_subtitle_inputs_audio_past_the_run() {
+        use crate::test_mkv::{TestMkv, PPS, SPS_PROGRESSIVE};
+        let (path, _) = TestMkv {
+            sps: SPS_PROGRESSIVE,
+            pps: PPS,
+            inband: vec![vec![]; 3],
+            flag_interlaced: None,
+            idr: vec![],
+        }
+        .write("burn-run-args.mkv");
+        let asset = Asset::open(&path, 1_000_000_000).unwrap();
+        let target = VideoTarget {
+            width: 64,
+            height: 64,
+            bitrate: 1_000_000,
+            tonemap: false,
+            burn: None,
+        };
+        let all = pieces(&asset, 2_000_000_000);
+        let run = &all[..2];
+        let frames = run_frames(&asset, run).unwrap();
+        let track = BurnIn {
+            path: path.clone(),
+            stream: 1,
+            codec: Codec::Pgs,
+            embedded: true,
+            size: 0,
+            mtime_ns: 0,
+        };
+        let file = BurnIn {
+            path: path.with_extension("sup"),
+            stream: 0,
+            embedded: false,
+            size: 1,
+            ..track.clone()
+        };
+        // An ffmpeg by its libavutil major version (58 = 6.x, 59 = 7.x); the
+        // probe found the audio stream to copy (ffmpeg's stream 1).
+        let ffmpeg = |avutil: u32| FfmpegCaps {
+            avutil_major: Some(avutil),
+            ..Default::default()
+        };
+        let known = BurnProbe {
+            heartbeat_stream: Some(1),
+            ..Default::default()
+        };
+        let args_with = |b: &BurnIn, caps: &FfmpegCaps, probe: &BurnProbe| {
+            VideoTranscoder::args(
+                &asset,
+                &target,
+                run,
+                frames.as_ref(),
+                caps,
+                VideoEncoder::Libx264,
+                std::path::Path::new("/dev/dri/renderD128"),
+                Some((b, probe)),
+                0,
+            )
+            .unwrap()
+        };
+        let args = |b: &BurnIn| args_with(b, &ffmpeg(59), &known);
+        let a = args(&track);
+        let tail = &a[a.iter().position(|x| x == "pipe:1").unwrap() + 1..];
+        assert_eq!(tail.len(), 9, "{a:?}");
+        assert_eq!(tail[..5], ["-map", "1:1", "-c", "copy", "-t"], "{a:?}");
+        assert_eq!(tail[6..], ["-f", "null", "-"], "{a:?}");
+        let ts = asset.segments.timescale as f64;
+        let first = frames.as_ref().map_or(run[0].start_ticks, |f| f.per_piece[0][0]);
+        let want = (run[1].end_ticks - first) as f64 / ts + 2.0;
+        let until: f64 = tail[5].parse().unwrap();
+        assert!(
+            (until - want).abs() < 1e-5 && want > 2.5,
+            "{until} vs {want}: {a:?}"
+        );
+        let one_output = |a: Vec<String>| assert_eq!(a.last().map(String::as_str), Some("pipe:1"), "{a:?}");
+        one_output(args(&file));
+        one_output(args_with(&track, &ffmpeg(59), &BurnProbe::default()));
+        for caps in [ffmpeg(58), FfmpegCaps::default()] {
+            one_output(args_with(&track, &caps, &known));
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A segment plan on a 90 kHz clock with keyframes at these ticks,
