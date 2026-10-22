@@ -1,6 +1,6 @@
 /** Human labels for probed tracks: pickers, the files panel and the stats overlay. */
 import { channelLayout, codecName, codecShort, containerName, hdrName } from './explain';
-import type { AssetInfo, ProbeResult, Track } from './types';
+import type { AssetInfo, Codec, ProbeResult, SubtitleFile, Track } from './types';
 
 // ISO 639-2 (as found in Matroska/MP4) → BCP 47 for Intl.DisplayNames.
 const ISO639_2: Record<string, string> = {
@@ -41,6 +41,39 @@ export function subtitleLabel(t: Track): string {
   const lang = languageName(t.language) ?? `Track ${t.index + 1}`;
   const title = t.title && t.title !== lang ? t.title : lang;
   return `${title} · ${codecShort(t.codec)}${t.forced ? ' · forced' : ''}${t.hearing_impaired ? ' · SDH' : ''}`;
+}
+
+/** Picture subtitle formats: shown by drawing them into the video (a transcode). */
+export function isImageSubtitle(codec: Codec): boolean {
+  return codec === 'pgs' || codec === 'vob_sub' || codec === 'dvb_sub';
+}
+
+/** "中英双语字幕 · Chinese · PGS", "English · SRT · forced": a subtitle file beside the video. */
+export function subtitleFileLabel(f: SubtitleFile): string {
+  const lang = languageName(f.language);
+  const parts = [f.title ?? lang ?? 'Subtitles'];
+  if (f.title && lang) parts.push(lang);
+  parts.push(codecShort(f.codec));
+  if (f.forced) parts.push('forced');
+  if (f.hearing_impaired) parts.push('SDH');
+  return parts.join(' · ');
+}
+
+/** A subtitle choice for the pickers: a track of the file or a subtitle file beside it. */
+export interface SubtitleChoice {
+  track: number;
+  label: string;
+  /** Drawn into the video (a picture format): picking it restarts playback as a transcode. */
+  burnIn: boolean;
+}
+
+/** Every subtitle of a version: its tracks, then the subtitle files beside it. */
+export function subtitleChoices(a: AssetInfo | undefined): SubtitleChoice[] {
+  const tracks = (a?.probe?.tracks ?? []).filter((t) => t.kind === 'subtitle');
+  return [
+    ...tracks.map((t) => ({ track: t.index, label: subtitleLabel(t), burnIn: isImageSubtitle(t.codec) })),
+    ...(a?.subtitle_files ?? []).map((f) => ({ track: f.track, label: subtitleFileLabel(f), burnIn: isImageSubtitle(f.codec) })),
+  ];
 }
 
 /** "3840×2160 · HEVC Main 10 · HDR10" */

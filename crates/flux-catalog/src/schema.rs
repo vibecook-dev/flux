@@ -13,6 +13,7 @@
 //! | `item` | a *Work*: movie / show / season / episode / extra |
 //! | `art`, `user`, `user_state`, `job` | artwork, tailnet users, per-user progress, background work queue |
 //! | `item_fts` | FTS5 index over item titles, kept in sync by the writer in the same transaction (`fts.rs`) |
+//! | `subtitle_file` | subtitle files (`.srt`, `.ass`, `.sup`…) the scan saw, per directory; matched to videos when read (`sidecar.rs`) |
 //!
 //! Timestamps are Unix **milliseconds** (`i64`) everywhere. `dev`/`ino` are
 //! stored as the bit pattern of the `u64` in an `i64` column (SQLite integers
@@ -27,7 +28,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -369,6 +370,26 @@ CREATE INDEX file_fp_missing ON file(fp128, size) WHERE state = 'missing';
 CREATE INDEX job_ready_art ON job(priority, id DESC) WHERE state = 'queued' AND kind = 'art';
 "#;
 
+/// v5: subtitle files beside the videos (sidecars).
+const V5: &str = r#"
+-- Every subtitle file the scan sees (srt, ass, ssa, vtt, sup, idx), by
+-- directory. Which videos a file belongs to (same name, same episode in the
+-- folder or a Subs folder…) and its language are decided when an asset is
+-- read (sidecar.rs), so a rescan of one directory keeps every video's list
+-- current. Rows go when the scan proves the file gone.
+CREATE TABLE subtitle_file(
+    id        INTEGER PRIMARY KEY,
+    root_id   INTEGER NOT NULL REFERENCES root(id) ON DELETE CASCADE,
+    rel_path  TEXT NOT NULL,
+    -- the directory part of rel_path ('' = the root), matched without case
+    dir       TEXT NOT NULL COLLATE NOCASE,
+    size      INTEGER NOT NULL,
+    mtime_ns  INTEGER NOT NULL,
+    UNIQUE(root_id, rel_path)
+);
+CREATE INDEX subtitle_file_dir ON subtitle_file(root_id, dir);
+"#;
+
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
 ///
 /// Idempotent: a database already at the current version is left untouched
@@ -476,6 +497,7 @@ mod tests {
             "user_state",
             "job",
             "item_fts",
+            "subtitle_file",
         ] {
             let n: i64 = c
                 .query_row("SELECT count(*) FROM sqlite_master WHERE name = ?1", [t], |r| {

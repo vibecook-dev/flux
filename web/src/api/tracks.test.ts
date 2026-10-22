@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createMockDb, type Fixtures } from '../mock/db';
-import { versionNames } from './tracks';
+import { languageName, subtitleChoices, subtitleFileLabel, versionNames } from './tracks';
 import type { AssetInfo } from './types';
 
 const fx = JSON.parse(readFileSync(new URL('../mock/fixtures.json', import.meta.url), 'utf8')) as Fixtures;
@@ -21,6 +21,7 @@ const asset = (file: string, path: string, edition: string | null = null): Asset
     hdr: null,
     available: true,
     probe,
+    subtitle_files: [],
   };
 };
 
@@ -78,5 +79,38 @@ describe('version picker names', () => {
       expect(new Set(versionNames(assets)).size, db.get(id)?.title).toBe(assets.length);
     }
     expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe('subtitle files', () => {
+  const file = (track: number, codec: 'subrip' | 'pgs', language: string | null, title: string | null) => ({
+    track,
+    path: `/m/Show/Show.S01E01.${track}`,
+    codec,
+    language,
+    title,
+    forced: false,
+    hearing_impaired: false,
+    size: 1,
+    mtime_ns: 1,
+  });
+
+  it('labels a file by its title, language and format', () => {
+    // Language names follow the runtime's locale.
+    expect(subtitleFileLabel(file(1048577, 'pgs', 'chi', '中英字幕 某字幕组'))).toBe(`中英字幕 某字幕组 · ${languageName('chi')} · PGS`);
+    expect(subtitleFileLabel({ ...file(1048578, 'subrip', 'eng', null), forced: true })).toBe(`${languageName('eng')} · SRT · forced`);
+    expect(subtitleFileLabel(file(1048579, 'subrip', null, null))).toBe('Subtitles · SRT');
+  });
+
+  it('lists tracks, then files; picture formats are burned in', () => {
+    const a = asset('h264_aac_faststart.mp4', '/m/Show/Show.S01E01.mkv');
+    a.subtitle_files = [file(1048577, 'pgs', 'chi', null), file(1048578, 'subrip', 'eng', null)];
+    const choices = subtitleChoices(a);
+    const files = choices.slice(-2);
+    expect(files.map((c) => [c.track, c.burnIn])).toEqual([
+      [1048577, true],
+      [1048578, false],
+    ]);
+    expect(subtitleChoices(undefined)).toEqual([]);
   });
 });

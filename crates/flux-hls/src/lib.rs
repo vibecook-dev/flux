@@ -26,6 +26,7 @@
 pub mod asset;
 mod bits;
 pub mod body;
+pub mod burn;
 mod cache;
 pub mod codec;
 mod ebml;

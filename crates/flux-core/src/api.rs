@@ -27,7 +27,7 @@
 //! | GET  | `/media/{plan_id}/master.m3u8` | HLS multivariant playlist |
 //! | GET  | `/media/{plan_id}/v/index.m3u8`, `/v/init.mp4`, `/v/{n}.m4s` | video rendition |
 //! | GET  | `/media/{plan_id}/a/{rendition}/index.m3u8`, `/init.mp4`, `/{n}.m4s` | audio renditions (below) |
-//! | GET  | `/media/{plan_id}/s/{track}.m3u8` → `/s/{track}.vtt` | WebVTT subtitles: a one-segment playlist (HLS) and the file itself (`<track>` sidecar, [`SubtitleRef::url`]) |
+//! | GET  | `/media/{plan_id}/s/{track}.m3u8` → `/s/{track}.vtt` | WebVTT subtitles: a one-segment playlist (HLS) and the file itself (`<track>` sidecar, [`SubtitleRef::url`]); `{track}` is a text track of the file or a text subtitle file beside it ([`AssetInfo::subtitle_files`]) |
 //!
 //! Audio rendition keys (`{rendition}`, as `flux_hls::AudioKey` parses them):
 //! `{track}` is the source track copied as-is; `{track}-aac2` (stereo AAC) and
@@ -61,7 +61,7 @@ pub const REQUEST_HEADER: &str = "x-flux-request";
 
 use crate::media::{Codec, Container, HdrFormat, ProbeResult};
 use crate::names::LibraryKind;
-use crate::plan::{ClientCaps, PlaybackPlan};
+use crate::plan::{ClientCaps, PlaybackPlan, SubtitleFile};
 
 pub type Id = i64;
 
@@ -365,6 +365,12 @@ pub struct AssetInfo {
     /// `false` when the source root is offline.
     pub available: bool,
     pub probe: Option<ProbeResult>,
+    /// Subtitle files beside the video (`Film.en.srt`, an episode's `.sup`),
+    /// offered like its subtitle tracks: pass a file's `track` as
+    /// [`PlayRequest::subtitle_track`]. Text files play as WebVTT, picture
+    /// files (PGS, VobSub) are drawn into the video.
+    #[serde(default)]
+    pub subtitle_files: Vec<SubtitleFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -408,6 +414,8 @@ pub struct PlayRequest {
     pub caps: ClientCaps,
     /// Preferred audio track index (source file order).
     pub audio_track: Option<u32>,
+    /// A subtitle track of the file, or a file's [`SubtitleFile::track`]. A
+    /// picture subtitle the client can't render is drawn into the video.
     pub subtitle_track: Option<u32>,
     /// Start position; `None` = resume point (or 0).
     pub start_ms: Option<u64>,

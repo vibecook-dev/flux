@@ -30,6 +30,15 @@ pub const DEFAULT_INLINE_LIMIT: usize = 16 << 20;
 /// (typically 8 frames, ≤ 0.4 s) before the first frame wanted.
 const MKV_LACE_REACH_NS: i64 = 1_000_000_000;
 
+/// Where [`Asset::for_each_subtitle_block`] found a track's cues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubtitleRead {
+    /// Matroska blocks, through the Cues or a cluster walk.
+    Matroska(mkv::SubtitleSource),
+    /// MP4 samples, through the track's sample table.
+    SampleTable,
+}
+
 /// One source audio frame, for the transcoder.
 #[derive(Debug, Clone)]
 pub struct SourceFrame {
@@ -969,31 +978,130 @@ impl Asset {
         Ok(Some(t))
     }
 
-    /// Text subtitle cues of `track` as (start ns, end ns, payload)
-    /// (Matroska only; see [`Asset::for_each_subtitle_block`]).
-    pub fn subtitle_blocks(&self, track: u32) -> Result<Vec<(i64, i64, Bytes)>> {
+    /// `track` is a text subtitle track whose cues flux reads itself, so it
+    /// can be served as WebVTT: any text track of a Matroska file, `tx3g`
+    /// (mov_text) and `wvtt` tracks of an MP4. MPEG-TS and the containers
+    /// only ffmpeg reads have none. Plans offer only these
+    /// ([`crate::HlsEngine::finalize_plan`]), and a WebVTT request is checked
+    /// against it before any response starts.
+    pub fn text_subtitle_readable(&self, track: u32) -> bool {
+        let Ok((_, t)) = self.track(track) else {
+            return false;
+        };
+        if t.kind != TrackKind::Subtitle || !t.codec.is_text_subtitle() {
+            return false;
+        }
+        match &self.index.layout {
+            Layout::Matroska(_) => true,
+            Layout::Mp4(_) => matches!(t.codec, Codec::MovText | Codec::WebVtt),
+            Layout::Ts(_) | Layout::External(_) => false,
+        }
+    }
+
+    fn check_text_subtitle(&self, track: u32) -> Result<()> {
+        if self.text_subtitle_readable(track) {
+            Ok(())
+        } else {
+            Err(HlsError::Unsupported(format!(
+                "track {track} is not a text subtitle track flux can read"
+            )))
+        }
+    }
+
+    /// The first block of a subtitle track of a Matroska file (a picture
+    /// format too), for what a burn-in reads up front (the PGS canvas).
+    /// `None` for other containers and for a track without blocks.
+    pub fn first_subtitle_block(&self, track: u32) -> Result<Option<Bytes>> {
         let (_, t) = self.track(track)?;
-        let l = self
-            .mkv_layout()
-            .ok_or_else(|| HlsError::Unsupported("subtitles: Matroska only".into()))?;
-        mkv::read_subtitles(&self.source, l, t.id)
+        let Some(l) = self.mkv_layout() else {
+            return Ok(None);
+        };
+        let mut first = None;
+        mkv::read_subtitles_each(&self.source, l, t.id, &mut |(_, _, b)| {
+            first = Some(b);
+            false
+        })?;
+        Ok(first)
+    }
+
+    /// Text subtitle cues of `track` as (start ns, end ns, payload); see
+    /// [`Asset::for_each_subtitle_block`].
+    pub fn subtitle_blocks(&self, track: u32) -> Result<Vec<(i64, i64, Bytes)>> {
+        self.check_text_subtitle(track)?;
+        let (_, t) = self.track(track)?;
+        match self.mkv_layout() {
+            Some(l) => mkv::read_subtitles(&self.source, l, t.id),
+            None => {
+                let mut out = Vec::new();
+                self.for_each_subtitle_block(track, &mut |c| {
+                    out.push(c);
+                    true
+                })?;
+                Ok(out)
+            }
+        }
     }
 
     /// Hands the text subtitle cues of `track` to `f` as they are read, in
     /// time order, so a response can stream them (the first cue needs a
-    /// few reads, not the whole file); `f` returns `false` to stop. Reads
-    /// only the track's cue points when the Cues index it, otherwise walks
-    /// block headers without reading other tracks' payloads (PB-7).
+    /// few reads, not the whole file); `f` returns `false` to stop.
+    ///
+    /// - Matroska: reads only the track's cue points when the Cues index
+    ///   it, otherwise walks block headers without reading other tracks'
+    ///   payloads (PB-7). Payloads are the blocks as stored.
+    /// - MP4: the samples of the track's sample table. A `tx3g` payload is
+    ///   the cue's plain text (the length prefix and style boxes removed),
+    ///   a `wvtt` payload the text of one cue box; empty samples (the gaps
+    ///   between cues) are skipped.
+    ///
+    /// Fails before calling `f` for a track that isn't a readable text
+    /// subtitle track ([`Asset::text_subtitle_readable`]).
     pub fn for_each_subtitle_block(
         &self,
         track: u32,
         f: &mut dyn FnMut((i64, i64, Bytes)) -> bool,
-    ) -> Result<mkv::SubtitleSource> {
-        let (_, t) = self.track(track)?;
-        let l = self
-            .mkv_layout()
-            .ok_or_else(|| HlsError::Unsupported("subtitles: Matroska only".into()))?;
-        mkv::read_subtitles_each(&self.source, l, t.id, f)
+    ) -> Result<SubtitleRead> {
+        self.check_text_subtitle(track)?;
+        let (ti, t) = self.track(track)?;
+        match &self.index.layout {
+            Layout::Matroska(l) => {
+                mkv::read_subtitles_each(&self.source, l, t.id, f).map(SubtitleRead::Matroska)
+            }
+            Layout::Mp4(l) => {
+                let tab = l
+                    .tracks
+                    .get(ti)
+                    .ok_or_else(|| HlsError::NotFound(format!("sample table of track {track}")))?;
+                let s = self
+                    .mp4
+                    .get(ti)
+                    .ok_or_else(|| HlsError::NotFound(format!("samples of track {track}")))?;
+                for (i, (_, _, duration)) in tab.timing().enumerate().take(s.len()) {
+                    if s.size[i] == 0 {
+                        continue;
+                    }
+                    let start = ticks_to_ns(s.pts(i, tab), tab.timescale);
+                    let end = ticks_to_ns(s.pts(i, tab) + duration as i64, tab.timescale);
+                    // A cue sample is a few dozen bytes; anything past 64 KiB
+                    // is not text.
+                    let len = (s.size[i] as usize).min(64 << 10);
+                    let data = self.source.read_at(s.offset[i], len)?;
+                    let texts = match t.codec {
+                        Codec::MovText => crate::subtitle::mov_text_sample(&data).into_iter().collect(),
+                        _ => crate::subtitle::wvtt_sample(&data),
+                    };
+                    for text in texts {
+                        if !f((start, end, Bytes::from(text))) {
+                            return Ok(SubtitleRead::SampleTable);
+                        }
+                    }
+                }
+                Ok(SubtitleRead::SampleTable)
+            }
+            Layout::Ts(_) | Layout::External(_) => Err(HlsError::Unsupported(
+                "subtitles of this container can't be read".into(),
+            )),
+        }
     }
 }
 

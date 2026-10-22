@@ -82,12 +82,23 @@ async fn serve_hls(st: &AppState, plan_id: &str, rest: &str, headers: &HeaderMap
     let asset = st.play.asset_for_plan(st, &entry).await?;
     let t0 = Instant::now();
     if let HlsResource::WebVtt(t) = res {
+        // A subtitle file is read only from inside the asset's library (a
+        // file replaced by a link since the scan is refused, review SEC-2).
+        let file = entry
+            .plan
+            .subtitles
+            .iter()
+            .find(|s| s.track == t)
+            .and_then(|s| s.file.as_ref());
+        if let Some(f) = file {
+            let (_, roots) = play::locate(st, entry.asset_id).await?;
+            let path = PathBuf::from(&f.path);
+            tokio::task::spawn_blocking(move || play::contained(&path, &roots))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))??;
+        }
         // Direct play still gets WebVTT sidecars.
-        let body = if entry.is_direct() {
-            st.engine.webvtt_body(&asset, t).await?
-        } else {
-            st.engine.plan_webvtt_body(&asset, &entry.plan, t).await?
-        };
+        let body = st.engine.plan_webvtt_body(&asset, &entry.plan, t).await?;
         return webvtt_response(body, &etag, t0);
     }
     if entry.is_direct() {
