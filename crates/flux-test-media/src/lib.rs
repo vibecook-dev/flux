@@ -367,9 +367,15 @@ pub enum Clip {
     /// [`Clip::Mpeg1Mp2Ps`] then [`Clip::Mpeg1Mp2PsB`], joined byte for
     /// byte (concatenated VOBs, `copy /b`): the clock starts over at 10 s.
     JoinedPs,
+    /// [`Clip::Flv1AacFlv`] written without `onMetaData` (`-flvflags
+    /// no_metadata`): no duration in the header.
+    BareFlv,
+    /// The first 40 % of [`Clip::BareFlv`]'s bytes: no duration anywhere but
+    /// its tags (ffmpeg's look at the last tag finds a cut one).
+    CutBareFlv,
 }
 
-const CLIP_COUNT: usize = 33;
+const CLIP_COUNT: usize = 35;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -431,6 +437,8 @@ impl Clip {
         Clip::MsClockWmv1Asf,
         Clip::Mpeg1Mp2PsB,
         Clip::JoinedPs,
+        Clip::BareFlv,
+        Clip::CutBareFlv,
     ];
 
     /// File name of the cached clip.
@@ -469,6 +477,8 @@ impl Clip {
             Clip::MsClockWmv1Asf => "ms_clock_wmv1_wma.wmv",
             Clip::Mpeg1Mp2PsB => "synth_mpeg1_mp2_b.mpg",
             Clip::JoinedPs => "joined_mpeg1_mp2.mpg",
+            Clip::BareFlv => "bare_flv1_aac.flv",
+            Clip::CutBareFlv => "cut_bare_flv1_aac.flv",
         }
     }
 
@@ -495,7 +505,9 @@ impl Clip {
             Clip::Hdr10HevcMkv | Clip::Hevc1080p60Mkv => &["libx265"],
             Clip::Ac3Eac3BurstsMkv | Clip::LacedAc3Eac3Mkv => &["libx264", "ac3", "eac3"],
             Clip::Wmv2WmaAsf => &["wmv2", "wmav2"],
-            Clip::Flv1AacFlv | Clip::CutFlv | Clip::GapAudioFlv => &["flv", "aac"],
+            Clip::Flv1AacFlv | Clip::CutFlv | Clip::GapAudioFlv | Clip::BareFlv | Clip::CutBareFlv => {
+                &["flv", "aac"]
+            }
             Clip::MsClockWmv1Asf => &["wmv1", "wmav2"],
             Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::JoinedPs => &["mpeg1video", "mp2"],
             Clip::Rv20Ac3Rm => &["rv20", "ac3"],
@@ -521,6 +533,7 @@ impl Clip {
             | Clip::LacedAc3Eac3Mkv
             | Clip::Wmv2WmaAsf
             | Clip::Flv1AacFlv
+            | Clip::BareFlv
             | Clip::Mpeg1Mp2Ps
             | Clip::Rv20Ac3Rm => Some(250),
             Clip::GapAudioFlv => Some(500),
@@ -812,11 +825,14 @@ impl Clip {
                     "44100", "-ac", "2", "-f", "asf",
                 ]));
             }
-            Clip::Flv1AacFlv => {
+            Clip::Flv1AacFlv | Clip::BareFlv => {
                 a.extend(video("320x240", "25", 10));
                 a.extend(tone(10));
                 a.extend(s(&["-c:v", "flv", "-b:v", "1M", "-g", "125", "-ar", "44100"]));
                 a.extend(aac);
+                if self == Clip::BareFlv {
+                    a.extend(s(&["-flvflags", "no_metadata"]));
+                }
                 a.extend(s(&["-f", "flv"]));
             }
             Clip::GapAudioFlv => {
@@ -910,6 +926,7 @@ impl Clip {
                 ]));
             }
             Clip::CutFlv => return Some(Recipe::Truncate(Clip::Flv1AacFlv, 40)),
+            Clip::CutBareFlv => return Some(Recipe::Truncate(Clip::BareFlv, 40)),
             Clip::JoinedPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::Mpeg1Mp2PsB)),
         }
         Some(Recipe::Ffmpeg(a))

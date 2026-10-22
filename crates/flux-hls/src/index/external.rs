@@ -514,10 +514,12 @@ pub fn build_with_limits(
         if let Some(end) = flux_probe::tail::packet_end(&mut src, container) {
             let header_ms = (duration_ns > 0).then_some((duration_ns / 1_000_000) as u64);
             let (ms, w) = flux_probe::tail::corrected_ms(header_ms, &end, container);
-            if let (Some(ms), Some(w)) = (ms, w) {
+            // Also when the header gives none (an FLV written without
+            // `onMetaData`, cut so ffmpeg finds no last tag): the tags'.
+            if let Some(ms) = ms.filter(|&ms| Some(ms) != header_ms) {
                 duration_ns = ms as i64 * 1_000_000;
-                warnings.push(w);
             }
+            warnings.extend(w);
         }
     }
     if duration_ns <= 0 {

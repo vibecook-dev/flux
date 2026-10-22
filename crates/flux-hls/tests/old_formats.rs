@@ -400,33 +400,50 @@ async fn joined_program_streams_play_both_parts() {
 
 /// A download that stopped at 40 %: the FLV's header still says 10 s, but
 /// the playlist ends where the tags do, so every segment (the last one
-/// too) is produced.
+/// too) is produced. Likewise for an FLV written without `onMetaData`,
+/// whose header says nothing (it was refused: "the file's duration is
+/// unknown").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cut_flv_ends_where_its_tags_do() {
     let Some(engine) = x264_engine() else { return };
-    let Some(p) = clip(Clip::CutFlv) else { return };
-    let asset = engine.prepare(&p).await.unwrap();
-    let secs = asset.index.duration_secs();
-    assert!((3.4..4.4).contains(&secs), "{secs} s");
-    assert!(
-        asset.index.warnings.iter().any(|w| w.contains("FLV header says")),
-        "{:?}",
-        asset.index.warnings
-    );
-    let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
-    let dir = flux_test_media::scratch("hls-old-formats-cut");
-    let n = engine.segment_count(&asset, &plan, &Rendition::Video) as u32;
-    let (file, _) = write_segments(&engine, &asset, &plan, Rendition::Video, 0..n, &dir, "cut.mp4").await;
-    assert!(ffprobe_video_frames(&file).expect("ffprobe").len() as f64 >= secs * 25.0 - 1.0);
-    for a in &plan.audio {
-        let r = Rendition::Audio(AudioKey::from_plan(a));
-        let n = engine.segment_count(&asset, &plan, &r) as u32;
-        write_segments(&engine, &asset, &plan, r, 0..n, &dir, "cut.a.mp4").await;
+    for c in [Clip::CutFlv, Clip::CutBareFlv] {
+        let Some(p) = clip(c) else { continue };
+        let name = c.file_name();
+        let asset = engine.prepare(&p).await.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let secs = asset.index.duration_secs();
+        assert!((3.4..4.4).contains(&secs), "{name}: {secs} s");
+        if c == Clip::CutFlv {
+            assert!(
+                asset.index.warnings.iter().any(|w| w.contains("FLV header says")),
+                "{:?}",
+                asset.index.warnings
+            );
+        }
+        let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
+        let dir = flux_test_media::scratch("hls-old-formats-cut");
+        let n = engine.segment_count(&asset, &plan, &Rendition::Video) as u32;
+        let (file, _) = write_segments(
+            &engine,
+            &asset,
+            &plan,
+            Rendition::Video,
+            0..n,
+            &dir,
+            &format!("{name}.mp4"),
+        )
+        .await;
+        let frames = ffprobe_video_frames(&file).expect("ffprobe").len() as f64;
+        assert!(frames >= secs * 25.0 - 1.0, "{name}: {frames} frames");
+        for a in &plan.audio {
+            let r = Rendition::Audio(AudioKey::from_plan(a));
+            let n = engine.segment_count(&asset, &plan, &r) as u32;
+            write_segments(&engine, &asset, &plan, r, 0..n, &dir, &format!("{name}.a.mp4")).await;
+        }
+        // The catalog's probe agrees (flux-probe's ffprobe fallback).
+        let probed = flux_probe::ffprobe::probe(&p).unwrap();
+        let ms = probed.duration_ms.unwrap();
+        assert!((3400..4400).contains(&ms), "{name}: {ms} ms");
     }
-    // The catalog's probe agrees (flux-probe's ffprobe fallback).
-    let probed = flux_probe::ffprobe::probe(&p).unwrap();
-    let ms = probed.duration_ms.unwrap();
-    assert!((3400..4400).contains(&ms), "{ms} ms");
 }
 
 /// Decoded 16-bit stereo samples of an audio rendition's init + segment.
