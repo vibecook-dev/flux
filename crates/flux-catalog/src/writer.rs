@@ -879,20 +879,44 @@ impl Writer {
         })
     }
 
-    /// Delete image rows (stale images an art job replaced). Returns the
-    /// stored paths of the rows that existed, for the caller to delete the
-    /// files it owns.
-    pub fn remove_arts(&self, art_ids: Vec<Id>) -> Request<Vec<String>> {
+    /// Delete work `work`'s stale images that have a fresh replacement now
+    /// ([`crate::read::replaced_stale_art`] for art `version`): what its art
+    /// job leaves behind once it made new ones. The rows are found and
+    /// deleted in one write, so an image the user pins meanwhile
+    /// ([`Writer::pin_art`]) is kept; a pinned image, and provider or local
+    /// art, is never deleted.
+    ///
+    /// Returns each deleted row's id with its stored path, for the caller
+    /// to delete the file it owns. The path is `None` when the row had none,
+    /// or when another row still refers to the same file (two legacy rows
+    /// of different data dirs can share one `art/<file>` after v6).
+    pub fn remove_replaced_art(&self, work: Id, version: u32) -> Request<Vec<(Id, Option<String>)>> {
         self.exec_quiet(move |c| {
-            let mut paths = Vec::new();
-            for id in art_ids {
+            let mut gone = Vec::new();
+            for s in crate::read::replaced_stale_art(c, version, work)? {
                 let path: Option<Option<String>> = c
-                    .prepare_cached("DELETE FROM art WHERE id = ?1 RETURNING path")?
-                    .query_row([id], |r| r.get(0))
+                    .prepare_cached(
+                        "DELETE FROM art WHERE id = ?1 AND pinned = 0 AND source IN ('frame', 'generated')
+                         RETURNING path",
+                    )?
+                    .query_row([s.art_id], |r| r.get(0))
                     .optional()?;
-                paths.extend(path.flatten());
+                if let Some(path) = path {
+                    gone.push((s.art_id, path));
+                }
             }
-            Ok(paths)
+            for (_, path) in &mut gone {
+                let shared: bool = match path.as_deref() {
+                    Some(p) => c
+                        .prepare_cached("SELECT EXISTS (SELECT 1 FROM art WHERE path = ?1)")?
+                        .query_row([p], |r| r.get(0))?,
+                    None => false,
+                };
+                if shared {
+                    *path = None;
+                }
+            }
+            Ok(gone)
         })
     }
 

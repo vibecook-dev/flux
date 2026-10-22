@@ -900,32 +900,34 @@ async fn store_art(
 }
 
 /// Deletes a work's stale images that have a fresh replacement now
-/// (`read::replaced_stale_art`), and their files. Returns how many went.
+/// (`read::replaced_stale_art`), and their files. The writer finds and
+/// deletes the rows in one write (`Writer::remove_replaced_art`), so an
+/// image pinned since the read below is kept. Returns how many went.
 async fn drop_replaced(st: &AppState, work: Id) -> usize {
-    let stale = match st
+    // Most art jobs replace nothing: a read spares them a write.
+    match st
         .catalog
         .read(move |c| read::replaced_stale_art(c, ART_VERSION, work))
         .await
     {
-        Ok(s) => s,
+        Ok(s) if s.is_empty() => return 0,
+        Ok(_) => {}
         Err(e) => {
             tracing::debug!(work, error = %e, "replaced_stale_art");
             return 0;
         }
-    };
-    if stale.is_empty() {
-        return 0;
     }
-    let ids: Vec<Id> = stale.iter().map(|s| s.art_id).collect();
-    match st.catalog.writer().remove_arts(ids.clone()).await {
-        Ok(paths) => {
+    match st.catalog.writer().remove_replaced_art(work, ART_VERSION).await {
+        Ok(gone) => {
+            let n = gone.len();
+            let (ids, paths): (Vec<Id>, Vec<Option<String>>) = gone.into_iter().unzip();
+            let paths: Vec<String> = paths.into_iter().flatten().collect();
             let art = st.art.clone();
-            let n = ids.len();
             let _ = tokio::task::spawn_blocking(move || art.remove(&paths, &ids)).await;
             n
         }
         Err(e) => {
-            tracing::debug!(work, error = %e, "remove_arts");
+            tracing::debug!(work, error = %e, "remove_replaced_art");
             0
         }
     }

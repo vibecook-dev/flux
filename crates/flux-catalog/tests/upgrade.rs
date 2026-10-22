@@ -788,8 +788,16 @@ fn stale_art_is_flux_art_of_an_older_version_or_another_title() {
     .unwrap();
     assert_eq!(stale(None), [unversioned, current, old_backdrop]);
     assert_eq!(queued_art_jobs(&e, m), 1);
-    let gone = w.remove_arts(vec![unversioned, current, 999_999]).wait().unwrap();
-    assert_eq!(gone, ["art/1-poster-00000001.jpg", "art/1-poster-00000002.jpg"]);
+    // The provider and local posters replace both stale ones; the old
+    // backdrop has no replacement, and the pinned thumb isn't stale.
+    let gone = w.remove_replaced_art(m, 1).wait().unwrap();
+    assert_eq!(
+        gone,
+        [
+            (unversioned, Some("art/1-poster-00000001.jpg".to_string())),
+            (current, Some("art/1-poster-00000002.jpg".to_string())),
+        ]
+    );
     let left: Vec<Id> = e
         .cat
         .read_blocking(move |c| read::item_art(c, m))
@@ -800,6 +808,92 @@ fn stale_art_is_flux_art_of_an_older_version_or_another_title() {
     for id in [provider, local, old_backdrop, pinned] {
         assert!(left.contains(&id), "{id} kept: {left:?}");
     }
+}
+
+/// An art job reads which stale images it replaced, then deletes them. A
+/// user who pins one of them in between keeps it: the rows are found
+/// again and deleted in one write, and a pinned image is never stale. A
+/// file another row still refers to isn't handed out for deletion.
+#[test]
+fn an_image_pinned_while_its_art_job_runs_is_never_deleted() {
+    let e = env(LibraryKind::Movies);
+    e.apply(vec![
+        upsert(
+            "Copper Sky (2019)/Copper Sky (2019).mkv",
+            movie("Copper Sky", Some(2019)),
+            None,
+        ),
+        upsert(
+            "Tide Line (2001)/Tide Line (2001).mkv",
+            movie("Tide Line", Some(2001)),
+            None,
+        ),
+    ]);
+    let m = e.find_top("Copper Sky").id;
+    let other = e.find_top("Tide Line").id;
+    let w = e.cat.writer();
+    let old = w
+        .add_art(m, frame(ArtKind::Poster, "art/1-poster-0000000a.jpg", None, None))
+        .wait()
+        .unwrap();
+    w.add_art(
+        m,
+        frame(
+            ArtKind::Poster,
+            "art/1-poster-0000000b.jpg",
+            Some(1),
+            Some(&read::art_caption("Copper Sky", Some(2019))),
+        ),
+    )
+    .wait()
+    .unwrap();
+    let replaced = |e: &Env| -> Vec<Id> {
+        e.cat
+            .read_blocking(move |c| read::replaced_stale_art(c, 1, m))
+            .unwrap()
+            .into_iter()
+            .map(|s| s.art_id)
+            .collect()
+    };
+    let art_of = |e: &Env, id: Id| e.cat.read_blocking(move |c| read::item_art(c, id)).unwrap();
+
+    // The job's read finds the old poster; the user pins it before the
+    // job deletes it.
+    assert_eq!(replaced(&e), [old]);
+    assert!(w.pin_art(old).wait().unwrap());
+    assert!(w.remove_replaced_art(m, 1).wait().unwrap().is_empty());
+    let kept = art_of(&e, m)
+        .into_iter()
+        .find(|a| a.id == old)
+        .expect("pinned poster kept");
+    assert!(kept.pinned);
+
+    // Unpinned, it is replaced like any stale image.
+    w.unpin_art(m, ArtKind::Poster).wait().unwrap();
+    assert_eq!(
+        w.remove_replaced_art(m, 1).wait().unwrap(),
+        [(old, Some("art/1-poster-0000000a.jpg".to_string()))]
+    );
+    assert!(art_of(&e, m).iter().all(|a| a.id != old));
+
+    // Two rows on one file (legacy paths of two data dirs): the stale row
+    // goes, but the file stays for the pinned one.
+    let shared = w
+        .add_art(m, frame(ArtKind::Poster, "art/9-poster-0000000c.jpg", None, None))
+        .wait()
+        .unwrap();
+    let pinned_elsewhere = w
+        .add_art(
+            other,
+            frame(ArtKind::Poster, "art/9-poster-0000000c.jpg", None, None),
+        )
+        .wait()
+        .unwrap();
+    assert!(w.pin_art(pinned_elsewhere).wait().unwrap());
+    assert_eq!(w.remove_replaced_art(m, 1).wait().unwrap(), [(shared, None)]);
+    assert!(art_of(&e, other)
+        .iter()
+        .any(|a| a.id == pinned_elsewhere && a.pinned));
 }
 
 /// An episode whose only thumbnail is stale counts as having none.
