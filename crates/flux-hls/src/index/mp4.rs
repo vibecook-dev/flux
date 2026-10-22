@@ -1592,13 +1592,27 @@ fn gcd(a: u32, b: u32) -> u32 {
     }
 }
 
+/// How far a sample's duration may be from a frame of `frame_ticks` and
+/// still be one such frame: 5 %, or what the clocks that timed it round
+/// to, one tick or one millisecond. A remux keeps Matroska's millisecond
+/// timestamps, so 59.94 fps alternates 16 and 17 ms: 256 and 272 ticks at
+/// 16 kHz (6 % apart), 16 and 17 at 1 kHz, 10 and 11 at 600 Hz.
+pub(crate) fn frame_slack(frame_ticks: f64, timescale: u32) -> f64 {
+    (frame_ticks / 20.0)
+        .max(f64::from(timescale) * super::GRID_TOLERANCE_NS as f64 / 1e9)
+        .max(1.0)
+}
+
 /// The frame rate of the sample durations most of a video's frames have:
-/// the mean of the `stts` deltas within 5 % of the most common one, when
-/// those hold a majority of the samples. A stream cut without re-encoding
-/// holds the frame before each cut for seconds, and six such frames of
-/// 2–20 s among 34 000 of 3753/3754 ticks at 90 kHz pulled the plain
-/// average of a 23.976 fps video down to 22.75 fps.
+/// the mean of the `stts` deltas near the most common one
+/// ([`frame_slack`]), when those hold a majority of the samples. A stream
+/// cut without re-encoding holds the frame before each cut for seconds,
+/// and six such frames of 2–20 s among 34 000 of 3753/3754 ticks at 90 kHz
+/// pulled the plain average of a 23.976 fps video down to 22.75 fps.
 fn dominant_rate(stts: &[(u32, u32)], timescale: u32) -> Option<Rational> {
+    if timescale == 0 {
+        return None;
+    }
     let mut by_delta = std::collections::BTreeMap::<u32, u64>::new();
     for &(count, delta) in stts.iter().filter(|e| e.1 > 0) {
         *by_delta.entry(delta).or_default() += u64::from(count);
@@ -1608,13 +1622,14 @@ fn dominant_rate(stts: &[(u32, u32)], timescale: u32) -> Option<Rational> {
     let (&mode, _) = by_delta
         .iter()
         .max_by_key(|&(&d, &c)| (c, std::cmp::Reverse(d)))?;
+    let slack = frame_slack(f64::from(mode), timescale);
     let (n, sum) = by_delta
         .iter()
-        .filter(|&(&d, _)| u64::from(d.abs_diff(mode)) * 20 <= u64::from(mode))
+        .filter(|&(&d, _)| f64::from(d.abs_diff(mode)) <= slack)
         .fold((0u64, 0u128), |(n, s), (&d, &c)| {
             (n + c, s + u128::from(d) * u128::from(c))
         });
-    if n * 2 <= total || timescale == 0 {
+    if n * 2 <= total {
         return None;
     }
     super::average_rate(sum as f64 / n as f64 * 1e9 / f64::from(timescale))
@@ -2150,5 +2165,65 @@ mod tests {
         // No majority within 5 %: no dominant rate.
         assert_eq!(dominant_rate(&[(40, 3000), (30, 1500), (30, 4500)], 90_000), None);
         assert_eq!(dominant_rate(&[], 90_000), None);
+    }
+
+    /// The `stts` of samples at these decode times (the last one ends the
+    /// track).
+    fn stts_at(times: &[i64]) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for w in times.windows(2) {
+            let d = (w[1] - w[0]) as u32;
+            match out.last_mut() {
+                Some(e) if e.1 == d => e.0 += 1,
+                _ => out.push((1, d)),
+            }
+        }
+        out
+    }
+
+    /// 59.94 fps on a coarse clock alternates deltas a whole tick (or a
+    /// millisecond) apart, more than 5 % of a frame: 17/16 at 1 kHz,
+    /// 272/256 at 16 kHz (a remux of Matroska's millisecond timestamps),
+    /// 10/11 at 600 Hz. All of them are its frames, also with held frames
+    /// among them; the most common delta alone made 58.824 or 60 fps, and a
+    /// transcode converted to that rate dropped or repeated frames.
+    #[test]
+    fn coarse_clocks_rate_high_frame_rates_by_all_their_deltas() {
+        let ntsc60 = Rational {
+            num: 60000,
+            den: 1001,
+        };
+        // Frame i at i × 1001/60 ms, rounded to the clock (720 frames).
+        let ms = |i: i64| (i as f64 * 1001.0 / 60.0).round() as i64;
+        for ts in [1000u32, 16_000, 600] {
+            let at = |i: i64| match ts {
+                16_000 => 16 * ms(i),
+                600 => (i as f64 * 10.01).round() as i64,
+                _ => ms(i),
+            };
+            let times: Vec<i64> = (0..=720).map(at).collect();
+            let stts = stts_at(&times);
+            assert!(stts.len() > 1, "{ts}: {stts:?}");
+            assert_eq!(dominant_rate(&stts, ts), Some(ntsc60), "{ts} Hz: {stts:?}");
+            // Two frames held 3 s and 5 s (cut without re-encoding).
+            let mut held = times.clone();
+            for (k, t) in held.iter_mut().enumerate() {
+                *t += i64::from(ts) * (3 * i64::from(k > 200) + 5 * i64::from(k > 500));
+            }
+            assert_eq!(dominant_rate(&stts_at(&held), ts), Some(ntsc60), "{ts} Hz held");
+        }
+        // 60 fps at 1 kHz alternates 17/17/16: 60.
+        let times: Vec<i64> = (0..=600)
+            .map(|i| (i as f64 * 1000.0 / 60.0).round() as i64)
+            .collect();
+        assert_eq!(
+            dominant_rate(&stts_at(&times), 1000),
+            Some(Rational { num: 60, den: 1 })
+        );
+        // 30 and 60 fps stay apart on a fine clock.
+        assert_eq!(
+            dominant_rate(&[(60, 1500), (40, 3000)], 90_000),
+            Some(Rational { num: 60, den: 1 })
+        );
     }
 }

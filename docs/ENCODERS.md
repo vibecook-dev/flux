@@ -146,11 +146,11 @@ encoder: pieces of about 2 s on the source's frame grid, a run of up to four
 pieces per ffmpeg process, exact frame counts from the index's real frame
 times, an IDR forced at every piece start, SPS/PPS in band in each piece's
 first sample. An MP4 video without a constant sample duration, or with
-frames held longer, is converted to its nominal rate (`fps`) instead: its
-pieces lie on that rate's grid, so
-their counts hold even where the source holds a frame for seconds or the
-decoder drops frames whose references were cut out
-(`vtranscode::converted_rate`). Frame counts, timing and IDR positions are
+frames held longer, is converted to its nominal rate (`fps`) instead,
+unless a stretch of its frames comes faster than that rate: its pieces lie
+on that rate's grid, so their counts hold even where the source holds a
+frame for seconds or the decoder drops frames whose references were cut
+out (`vtranscode::converted_rate`). Frame counts, timing and IDR positions are
 therefore the same for every encoder. A piece's bytes depend on the run
 that produced it (rate control carries over between a run's pieces) and,
 for hardware encoders, on the session, so transcoded video is served with
