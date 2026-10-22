@@ -706,6 +706,42 @@ async fn a_part_that_starts_mid_stream_keeps_its_time() {
     assert!((14_000..15_200).contains(&ms), "{ms} ms");
 }
 
+/// An MP4 whose first box flux's own reader doesn't know (QuickTime's
+/// `pnot` here; `uuid`, `sidx` … likewise) is read by ffmpeg, and so
+/// converted, not copied: a copy had no segment flux could cut (each one
+/// failed, "this container has no index").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mp4_flux_cannot_read_is_converted() {
+    let Some(engine) = x264_engine() else { return };
+    let Some(src) = clip(Clip::H264AacMp4) else { return };
+    let mut b = std::fs::read(&src).unwrap();
+    assert_eq!(&b[4..8], b"ftyp");
+    b[4..8].copy_from_slice(b"pnot");
+    let dir = flux_test_media::scratch("hls-old-formats-pnot");
+    let p = dir.join("pnot_first.mp4");
+    std::fs::write(&p, &b).unwrap();
+    let asset = engine.prepare(&p).await.unwrap();
+    assert_eq!(asset.index.method, IndexMethod::HeaderProbe);
+    assert_eq!(asset.index.container, Container::Unknown);
+    for caps in [presets::chrome_desktop(), presets::safari_macos()] {
+        let plan = engine.plan(&asset, &caps, &hls_only());
+        assert!(
+            matches!(plan.video, VideoOp::Transcode { .. }),
+            "{:?}",
+            plan.video
+        );
+        assert!(
+            plan.reasons.contains(&Reason::NoIndex {
+                container: Container::Unknown
+            }),
+            "{:?}",
+            plan.reasons
+        );
+        let seg = bytes(&engine, &asset, &plan, HlsResource::Segment(Rendition::Video, 0)).await;
+        assert_eq!(first_vcl(&seg), Some(5));
+    }
+}
+
 /// A download that stopped at 40 %: the FLV's header still says 10 s, but
 /// the playlist ends where the tags do, so every segment (the last one
 /// too) is produced. Likewise for an FLV written without `onMetaData`,

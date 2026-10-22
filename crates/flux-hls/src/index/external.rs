@@ -6,12 +6,14 @@
 //! at once (a full scan took ~6 s/GB from a USB disk, 21 s for 3.75 GB).
 //!
 //! Only the ffmpeg-backed renditions (video and audio transcode) are made
-//! from such an index; the planner never copies these containers because
-//! `to_probe_result()` reports `has_index = false`. Segments lie on a fixed
-//! time grid ([`crate::segment::SegmentPlan`]), and each video run seeks
-//! ffmpeg by time and converts to a constant frame rate, so every piece has
-//! a known frame count whatever the source's timestamps
-//! ([`crate::vtranscode`]).
+//! from such an index; the planner never copies these containers, as it
+//! repackages only Matroska, MP4 and the MPEG-TS the in-process remux takes.
+//! (An MP4 or Matroska file flux's own readers refused comes here too, and
+//! is reported as `Unknown`: by its name the planner would copy it.)
+//! Segments lie on a fixed time grid ([`crate::segment::SegmentPlan`]), and
+//! each video run seeks ffmpeg by time and converts to a constant frame
+//! rate, so every piece has a known frame count whatever the source's
+//! timestamps ([`crate::vtranscode`]).
 
 use std::io::Read;
 use std::path::Path;
@@ -538,7 +540,17 @@ pub fn build_with_limits(
     let mut duration_ns = (secs(&format["duration"]).unwrap_or(0.0) * 1e9).round() as i64;
     let name = format["format_name"].as_str().unwrap_or("");
     let ext = source.path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let container = flux_probe::ffprobe::container_of(name, ext);
+    // Matroska and MP4 are only here when flux's own reader refused them
+    // (an MP4 whose first box it doesn't know, `pnot` or `uuid`): named so,
+    // the planner would take them for files it can repackage, and copy
+    // video no segment can then be cut from.
+    let container = match flux_probe::ffprobe::container_of(name, ext) {
+        flux_core::Container::Matroska
+        | flux_core::Container::WebM
+        | flux_core::Container::Mp4
+        | flux_core::Container::Mov => flux_core::Container::Unknown,
+        c => c,
+    };
     let mut warnings =
         vec!["no container index flux reads: ffmpeg seeks by time; transcode paths only".to_string()];
     let mut ps_parts = Vec::new();
