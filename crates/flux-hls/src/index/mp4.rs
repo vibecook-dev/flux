@@ -920,8 +920,8 @@ fn track_from_trak(
 
     // A `hev1`/`dvhe` entry may hold no parameter sets at all (they are only
     // in-band): complete its record from the first sync sample, so the SPS
-    // facts below are known and a remux to `hvc1`/`dvh1`, which strips the
-    // in-band sets, still decodes.
+    // facts below are known and a remux to `hvc1`/`dvh1` has them in its
+    // record, where those entries (and Apple's players) need them.
     if t.codec == Codec::Hevc && t.inband_parameter_sets {
         let empty = hevc::HevcConfig::parse(&t.codec_private).filter(|c| c.nalus(33).next().is_none());
         if let (Some(c), Some((off, size))) = (empty, first_sync_sample(&tables)) {
@@ -1302,7 +1302,7 @@ fn first_sync_sample(t: &Mp4Tables) -> Option<(u64, u32)> {
 }
 
 /// An `hvcC` record with no SPS, completed with the VPS/SPS/PPS found
-/// in-band in `sample` (marked complete: the remux strips in-band sets).
+/// in-band in `sample` (marked complete, as an `hvc1`/`dvh1` entry requires).
 /// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS,
 /// or sets an `hvcC` can't hold (a unit of 64 KiB or more).
 ///
@@ -1741,7 +1741,7 @@ mod tests {
 
             // The remux writes `dvh1` with the record, and CODECS says so.
             // A `dvhe` record without parameter sets is completed from the
-            // first keyframe (the remux strips the in-band ones).
+            // first keyframe (the samples keep their in-band copies too).
             let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
             let EntrySpec::Video {
                 fourcc, dovi, config, ..
@@ -1787,7 +1787,7 @@ mod tests {
         }
     }
 
-    /// A `hev1` entry remuxes to `hvc1` (parameter sets stripped), and the
+    /// A `hev1` entry remuxes to `hvc1` (parameter sets in the record), and the
     /// `CODECS` entry names the entry written, not the source's.
     #[test]
     fn hev1_codec_string_follows_the_written_entry() {
