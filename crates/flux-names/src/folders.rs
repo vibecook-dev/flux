@@ -9,7 +9,8 @@ use regex::Regex;
 /// What a directory name tells us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FolderRole {
-    /// `Season 02`, `Season 2`, `S02`, `Series 2`, `Staffel 2`, `Season 00`.
+    /// `Season 02`, `Season 2`, `S02`, `Series 2`, `Staffel 2`, `Season 00`,
+    /// `第2季`, `第二季`.
     Season(u16),
     /// `Specials`: season 0 for shows, bonus material for movies.
     Specials,
@@ -64,6 +65,9 @@ pub(crate) fn classify(name: &str) -> FolderRole {
     }
     if let Some(hint) = generic_folder(&lower) {
         return FolderRole::Generic(hint);
+    }
+    if let Some((true, n)) = crate::stem::cjk_marker(name.trim()) {
+        return FolderRole::Season(n);
     }
     if let Some(c) = SEASON_RE.captures(name.trim()) {
         if let Some(n) = c
@@ -143,6 +147,9 @@ mod tests {
         assert_eq!(classify("Season 00"), FolderRole::Season(0));
         assert_eq!(classify("Season 2 (2019)"), FolderRole::Season(2));
         assert_eq!(classify("Specials"), FolderRole::Specials);
+        assert_eq!(classify("第二季"), FolderRole::Season(2));
+        assert_eq!(classify("第3季"), FolderRole::Season(3));
+        assert_eq!(classify("第3集"), FolderRole::Plain);
         assert_eq!(classify("Seasons of Love"), FolderRole::Plain);
         assert_eq!(classify("Severance (2022)"), FolderRole::Plain);
     }
