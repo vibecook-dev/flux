@@ -264,8 +264,9 @@ pub fn video_codec_string(asset: &Asset) -> Option<String> {
     let fourcc = String::from_utf8_lossy(&fourcc).to_string();
     let base = v.codec_string.clone()?;
     Some(match fourcc.as_str() {
-        // Same profile/level part, different sample entry.
-        "hev1" | "avc3" => format!("{fourcc}{}", base.get(4..).unwrap_or_default()),
+        // Same profile/level part, named after the entry written (the
+        // source's may differ: a `hev1` file remuxes to `hvc1`).
+        "hvc1" | "hev1" | "avc1" | "avc3" => format!("{fourcc}{}", base.get(4..).unwrap_or_default()),
         "dvh1" | "dvhe" => {
             let d = v.hdr.as_ref().and_then(|h| h.dovi)?;
             format!("{fourcc}.{:02}.{:02}", d.profile, d.level)
@@ -527,11 +528,23 @@ pub fn master_playlist(asset: &Asset, plan: &PlaybackPlan) -> String {
         Some(t) => Some(t.codec_string(crate::vtranscode::source_fps(asset))),
         None => video_codec_string(asset),
     };
-    let video_range = v.and_then(|t| t.color).and_then(|c| match c.transfer {
-        _ if vt.is_some_and(|t| t.tonemap) => None,
-        Some(16) => Some("PQ"),
-        Some(18) => Some("HLG"),
-        _ => None,
+    // A copied Dolby Vision stream's range is its base layer's (profile 5,
+    // with no compatible base layer, is PQ): its colour fields may be unset.
+    let dovi_range = v
+        .filter(|_| vt.is_none())
+        .and_then(|t| t.hdr.as_ref()?.dovi)
+        .and_then(|d| match d.bl_signal_compat_id {
+            0 | 1 | 6 => Some("PQ"),
+            4 => Some("HLG"),
+            _ => None,
+        });
+    let video_range = dovi_range.or_else(|| {
+        v.and_then(|t| t.color).and_then(|c| match c.transfer {
+            _ if vt.is_some_and(|t| t.tonemap) => None,
+            Some(16) => Some("PQ"),
+            Some(18) => Some("HLG"),
+            _ => None,
+        })
     });
     let resolution = match &vt {
         // The encoded size: upright for a rotated source (PB-9).

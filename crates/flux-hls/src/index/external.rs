@@ -8,7 +8,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -109,7 +109,7 @@ fn kill_group(pgid: i32) {
 #[cfg(not(unix))]
 fn kill_group(pid: i32) {
     if pid > 0 {
-        let _ = Command::new("taskkill")
+        let _ = flux_core::tool::command("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -128,7 +128,7 @@ pub(crate) fn run(
     limits: &ScanLimits,
     file_len: u64,
 ) -> Result<String> {
-    let mut cmd = Command::new(ffprobe);
+    let mut cmd = flux_core::tool::command(ffprobe);
     cmd.args(args)
         .arg(path)
         .stdin(Stdio::null())
