@@ -346,7 +346,13 @@ pub fn interface_ips() -> Vec<IpAddr> {
     out
 }
 
-#[cfg(not(unix))]
+/// The addresses of this machine's adapters (`GetAdaptersAddresses`).
+#[cfg(windows)]
+pub fn interface_ips() -> Vec<IpAddr> {
+    crate::win32::interface_ips()
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn interface_ips() -> Vec<IpAddr> {
     Vec::new()
 }
@@ -408,7 +414,13 @@ mod tests {
             assert!(!hosts.allows(bad), "{bad} should be refused");
         }
 
-        // Interface addresses are ours.
+        // Interface addresses are ours. Windows listed none, so the
+        // machine's own LAN address got 421.
+        assert!(
+            interface_ips().iter().any(|ip| ip.is_loopback()),
+            "loopback is an interface: {:?}",
+            interface_ips()
+        );
         let iface = interface_ips().into_iter().find(|ip| !ip.is_loopback());
         if let Some(ip) = iface {
             let lit = match ip {

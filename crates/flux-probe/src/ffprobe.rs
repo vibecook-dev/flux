@@ -3,7 +3,6 @@
 //! differential testing (`probe-diff`).
 
 use std::path::Path;
-use std::process::Command;
 
 use flux_core::{
     Attachment, Chapter, Codec, ColorInfo, Container, ContentLightLevel, DoviConfig, HdrFormat, HdrInfo,
@@ -49,7 +48,7 @@ pub const JELLYFIN_ARGS: &[&str] = &[
 
 /// Run ffprobe with `args` + `path` and parse its JSON output.
 pub fn run_json(path: &Path, args: &[&str]) -> Result<Value, ProbeError> {
-    let out = Command::new(ffprobe_bin())
+    let out = flux_core::tool::command(ffprobe_bin())
         .args(args)
         .arg(path)
         .output()
