@@ -443,7 +443,8 @@ pub struct AssetLocation {
     pub item_id: Id,
     pub file_id: Id,
     pub root_id: Id,
-    /// Absolute path: root path + `/` + rel_path.
+    /// Absolute path: the root path and rel_path, joined with the root's
+    /// separator (`\` for a Windows root, `/` otherwise).
     pub path: String,
     pub size: u64,
     pub available: bool,

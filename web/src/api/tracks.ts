@@ -114,7 +114,8 @@ const SEPARATOR = /[\s._()[\]-]/;
 
 /** The token of each file name that differs ("cd1" / "cd2"), or null when there is none worth showing. */
 function nameDifferences(paths: string[]): (string | null)[] {
-  const names = paths.map((p) => (p.split('/').pop() ?? p).replace(/\.[^.]+$/, ''));
+  // File names: Windows paths are `\`-separated.
+  const names = paths.map((p) => (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, ''));
   const first = names[0];
   let pre = 0;
   while (names.every((n) => pre < n.length && n[pre] === first[pre])) pre++;
