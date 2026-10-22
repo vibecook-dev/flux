@@ -30,6 +30,7 @@ mod mp4;
 mod prober;
 mod sniff;
 mod store;
+pub mod tail;
 mod ts;
 
 pub use driver::{

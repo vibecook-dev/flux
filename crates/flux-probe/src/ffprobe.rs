@@ -69,6 +69,7 @@ pub fn probe(path: &Path) -> Result<ProbeResult, ProbeError> {
     let v = run_json(path, DEFAULT_ARGS)?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mut r = from_json(&v, ext);
+    crate::tail::fix_duration(path, &mut r);
     r.warnings.push("probed by ffprobe".into());
     Ok(r)
 }
