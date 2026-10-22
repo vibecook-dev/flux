@@ -1475,3 +1475,89 @@ async fn vp9_webm_is_copied_into_fmp4() {
         plan.explain()
     );
 }
+
+/// VP9 in MP4 (a `vp09` entry), faststart or fragmented, is copied into
+/// fMP4 with the source's `vpcC`. A level VP9 doesn't define (0, which
+/// fails `isTypeSupported`) is replaced by the picture's, and without a
+/// `colr` box the colour comes from the `vpcC`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vp9_mp4_is_copied_into_fmp4() {
+    let (Some(faststart), Some(fragmented)) = (clip(Clip::Vp9AacMp4), clip(Clip::Vp9Level0FragMp4)) else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let engine = HlsEngine::new(EngineConfig {
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    });
+    let dir = flux_test_media::scratch("hls-vp9-mp4");
+    for (p, level0) in [(faststart, false), (fragmented, true)] {
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let src = std::fs::read(&p).unwrap();
+        let at = src
+            .windows(4)
+            .position(|w| w == b"vpcC")
+            .expect("the source's vpcC");
+        let mut want = src[at + 4..at + 16].to_vec();
+        let has_colr = src.windows(4).any(|w| w == b"colr");
+        assert_eq!(want[5] == 0, level0, "{name}: the source's level {}", want[5]);
+        // 640×360 at 25 fps is VP9 level 2.1.
+        if level0 {
+            assert!(!has_colr, "{name}: no colr box");
+            want[5] = 21;
+        }
+
+        let asset = engine.prepare(&p).await.unwrap();
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.codec_tag, "vp09", "{name}");
+        assert_eq!(v.codec_string.as_deref(), Some("vp09.00.21.08"), "{name}");
+        assert_eq!(
+            (v.profile.as_deref(), v.bit_depth, v.level),
+            (Some("Profile 0"), Some(8), Some(21)),
+            "{name}"
+        );
+        let vpcc = v.synth_config.clone().expect("vpcC");
+        assert_eq!(vpcc, want, "{name}: the source's vpcC");
+        // Without a `colr` box, the `vpcC`'s colour (2 is unspecified): the
+        // fragmented file's is BT.709 limited range.
+        let c = v.color.expect("colour");
+        let got = (c.primaries, c.transfer, c.matrix, c.full_range);
+        if level0 {
+            assert_eq!(got, (Some(1), Some(1), Some(1), Some(false)), "{name}");
+        } else if !has_colr {
+            let f = |x: u8| Some(x).filter(|&x| x != 2);
+            let range = Some(want[6] & 1 == 1);
+            assert_eq!(got, (f(want[7]), f(want[8]), f(want[9]), range), "{name}");
+        }
+
+        let plan = engine.plan(&asset, &chrome_web(), &hls_only());
+        assert!(
+            matches!(plan.video, VideoOp::Copy { .. }),
+            "{name}: {:?}",
+            plan.explain()
+        );
+        assert_eq!(plan.audio[0].op, AudioOp::Copy, "{name}");
+        let master = engine.master_playlist(&asset, &plan).unwrap();
+        assert!(master.contains("vp09.00.21.08"), "{name}: {master}");
+        let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, &name).await;
+        assert_eq!(segs.len(), 2, "{name}: 6 s segments of a 10 s clip");
+        let init = std::fs::read(&file).unwrap();
+        let at = init.windows(4).position(|w| w == b"vpcC").expect("a vpcC box");
+        assert_eq!(&init[at + 4..at + 4 + vpcc.len()], &vpcc[..], "{name}");
+        assert!(
+            init[..at].windows(4).any(|w| w == b"vp09"),
+            "{name}: a vp09 entry"
+        );
+        let frames = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(frames.len(), 250, "{name}: every shown frame");
+        let (ok, errs) = decode_errors(&file);
+        assert!(ok && errs.is_empty(), "{name}: {errs:?}");
+        for (n, s) in segs.iter().enumerate() {
+            let (_, samples) = trun(s);
+            assert!(samples[0].2, "{name}: segment {n} starts on a key frame");
+        }
+    }
+}

@@ -350,9 +350,17 @@ pub enum Clip {
     /// 10 s, 640×360 25 fps VP9 (libvpx, 2 s GOP, hidden alt-ref frames in
     /// superframes) + stereo Vorbis, WebM.
     Vp9VorbisWebm,
+    /// 10 s, 640×360 25 fps VP9 (libvpx, 2 s GOP, alt-ref superframes) +
+    /// stereo AAC, MP4 (faststart): a `vp09` entry with the `vpcC` ffmpeg
+    /// writes.
+    Vp9AacMp4,
+    /// [`Clip::Vp9AacMp4`] remuxed to fragmented MP4, with level 0 in its
+    /// `vpcC` (a level VP9 doesn't define, as some muxers write) and BT.709
+    /// limited range as the `vpcC`'s colour, and no `colr` box.
+    Vp9Level0FragMp4,
 }
 
-const CLIP_COUNT: usize = 26;
+const CLIP_COUNT: usize = 28;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -405,6 +413,8 @@ impl Clip {
         Clip::HeldLateMp4,
         Clip::BaselineH264Mp4,
         Clip::Vp9VorbisWebm,
+        Clip::Vp9AacMp4,
+        Clip::Vp9Level0FragMp4,
     ];
 
     /// File name of the cached clip.
@@ -436,6 +446,8 @@ impl Clip {
             Clip::HeldLateMp4 => "held_late.mp4",
             Clip::BaselineH264Mp4 => "baseline_h264_aac.mp4",
             Clip::Vp9VorbisWebm => "vp9_vorbis.webm",
+            Clip::Vp9AacMp4 => "vp9_aac.mp4",
+            Clip::Vp9Level0FragMp4 => "vp9_aac_level0_frag.mp4",
         }
     }
 
@@ -454,6 +466,7 @@ impl Clip {
             | Clip::BaselineH264Mp4 => &["libx264", "aac"],
             // ffmpeg's own Vorbis encoder (experimental, in every build).
             Clip::Vp9VorbisWebm => &["libvpx-vp9", "vorbis"],
+            Clip::Vp9AacMp4 | Clip::Vp9Level0FragMp4 => &["libvpx-vp9", "aac"],
             Clip::AnamorphicMkv
             | Clip::AnamorphicMp4
             | Clip::FakeInterlacedMkv
@@ -486,7 +499,9 @@ impl Clip {
             | Clip::Ac3Eac3BurstsMkv
             | Clip::LacedAc3Eac3Mkv
             | Clip::BaselineH264Mp4
-            | Clip::Vp9VorbisWebm => Some(250),
+            | Clip::Vp9VorbisWebm
+            | Clip::Vp9AacMp4
+            | Clip::Vp9Level0FragMp4 => Some(250),
             Clip::Hdr10HevcMkv => Some(144),
             Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
@@ -818,6 +833,43 @@ impl Clip {
                     "webm",
                 ]));
             }
+            Clip::Vp9AacMp4 => {
+                a.extend(video("640x360", "25", 10));
+                a.extend(tone(10));
+                a.extend(s(&[
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-deadline",
+                    "good",
+                    "-cpu-used",
+                    "8",
+                    "-b:v",
+                    "400k",
+                    "-g",
+                    "50",
+                    "-auto-alt-ref",
+                    "1",
+                    "-lag-in-frames",
+                    "16",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]));
+                a.extend(aac);
+                a.extend(s(&["-movflags", "+faststart", "-f", "mp4"]));
+            }
+            Clip::Vp9Level0FragMp4 => {
+                a.extend(s(&[
+                    "-i",
+                    &src(Clip::Vp9AacMp4)?,
+                    "-c",
+                    "copy",
+                    "-movflags",
+                    "frag_keyframe+empty_moov+default_base_moof",
+                    "-f",
+                    "mp4",
+                ]));
+                return Some(Recipe::FfmpegPatched(a, level0_bt709_vpcc));
+            }
         }
         Some(Recipe::Ffmpeg(a))
     }
@@ -990,6 +1042,28 @@ fn clear_constraint_set1(b: &mut [u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Sets the level in an MP4's `vpcC` to 0, which VP9 doesn't define, and
+/// its colour to BT.709 limited range, and renames a `colr` box `free` (a
+/// box every reader skips), so the colour is only in the `vpcC`. (ffmpeg's
+/// libvpx-vp9 doesn't pass `-color_primaries`/`-color_trc` on to the
+/// `vpcC` in every version.)
+fn level0_bt709_vpcc(b: &mut [u8]) -> Result<(), String> {
+    let i = b.windows(4).position(|w| w == b"vpcC").ok_or("no vpcC box")?;
+    // version 1, flags, profile, level, bit depth | subsampling | range,
+    // primaries, transfer, matrix.
+    let rec = b.get(i + 4..i + 14).ok_or("vpcC too short")?;
+    if rec[..4] != [1, 0, 0, 0] || rec[5] == 0 {
+        return Err(format!("not a version-1 vpcC with a level: {rec:02x?}"));
+    }
+    b[i + 9] = 0;
+    b[i + 10] &= !1;
+    b[i + 11..i + 14].copy_from_slice(&[1, 1, 1]);
+    if let Some(c) = b.windows(4).position(|w| w == b"colr") {
+        b[c..c + 4].copy_from_slice(b"free");
+    }
+    Ok(())
+}
+
 /// Overwrites the first Matroska DefaultDuration element (ID 23 E3 83, in
 /// the first 64 KiB) with a Void element of the same length.
 fn void_default_duration(b: &mut [u8]) -> bool {
@@ -1096,6 +1170,30 @@ mod tests {
         high.extend_from_slice(&[1, 100, 0, 30, 0xFF, 0xE1, 0, 4, 0x67, 100, 0, 30]);
         assert!(clear_constraint_set1(&mut high).is_err());
         assert!(clear_constraint_set1(&mut [0u8; 8]).is_err());
+    }
+
+    #[test]
+    fn sets_level_0_and_bt709_in_the_vpcc() {
+        // A vpcC (profile 0, level 2.1, 8-bit 4:2:0, full range, colour
+        // unspecified) and an nclx colr in a vp09 entry.
+        let mut b = b"....vpcC".to_vec();
+        b.extend_from_slice(&[1, 0, 0, 0, 0, 21, 0x83, 2, 2, 2, 0, 0]);
+        b.extend_from_slice(b"\0\0\0\x13colrnclx\0\x02\0\x02\0\x02\x80");
+        let mut want = b.clone();
+        want[13..17].copy_from_slice(&[0, 0x82, 1, 1]);
+        want[17] = 1;
+        want[24..28].copy_from_slice(b"free");
+        level0_bt709_vpcc(&mut b).unwrap();
+        assert_eq!(b, want);
+        // Without a colr box; then already level 0; a version-0 record.
+        let mut c = b"vpcC".to_vec();
+        c.extend_from_slice(&[1, 0, 0, 0, 2, 30, 0xA2, 9, 16, 9, 0, 0]);
+        level0_bt709_vpcc(&mut c).unwrap();
+        assert_eq!(&c[4..], &[1, 0, 0, 0, 2, 0, 0xA2, 1, 1, 1, 0, 0]);
+        assert!(level0_bt709_vpcc(&mut c).is_err());
+        let mut v0 = b"vpcC".to_vec();
+        v0.extend_from_slice(&[0, 0, 0, 0, 0, 21, 0x82, 1, 1, 1, 0, 0]);
+        assert!(level0_bt709_vpcc(&mut v0).is_err());
     }
 
     #[test]

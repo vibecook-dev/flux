@@ -24,6 +24,14 @@ use crate::error::{HlsError, Result};
 use crate::source::{Source, SourceId};
 
 /// Bump when the index format or its derivation changes.
+///
+/// Branches that bump it side by side all change it to the same number, and
+/// git merges that line without a conflict. The branch that lands second
+/// takes the next number, with its own line below: a build made between the
+/// merges caches indexes under the first one's number, which the second
+/// change must not accept as current. `version_history_names_each_version_once`
+/// checks that the list runs 3, 4, … up to `INDEX_VERSION`, one line each.
+///
 /// 3: H.264 Constrained Baseline is named as such (was "Baseline").
 /// 4: [`IndexTrack::extra`] (rotation, pixel aspect, video end), measured
 ///    frame rates and audio bitrates for Matroska, `MkvLayout::cues_pos`
@@ -742,6 +750,34 @@ pub(crate) fn classify_hdr(color: Option<&ColorInfo>, dovi: bool) -> HdrFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// When two branches each bump `INDEX_VERSION` from the same number, git
+    /// merges the constant cleanly and only the history lines conflict.
+    /// Keeping both lines leaves two changes under one number, and indexes
+    /// that a build with only the first change cached pass as current for
+    /// the second. The history must run 3, 4, … without gaps or repeats and
+    /// end at the constant.
+    #[test]
+    fn version_history_names_each_version_once() {
+        let src = include_str!("mod.rs");
+        let start = src.find("/// Bump when the index format").expect("the history");
+        let end = start + src[start..].find("pub const INDEX_VERSION").expect("the constant");
+        let listed: Vec<u16> = src[start..end]
+            .lines()
+            .filter_map(|l| {
+                let (n, _) = l.strip_prefix("/// ")?.split_once(": ")?;
+                n.parse().ok()
+            })
+            .collect();
+        assert_eq!(listed.first(), Some(&3), "the history starts at 3: {listed:?}");
+        let want: Vec<u16> = (3..=INDEX_VERSION).collect();
+        assert_eq!(
+            listed, want,
+            "each INDEX_VERSION needs exactly one history line, in order, ending at \
+             INDEX_VERSION ({INDEX_VERSION}); a branch merged after another that bumped \
+             to the same number takes the next one"
+        );
+    }
 
     #[test]
     fn rates() {
