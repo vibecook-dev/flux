@@ -263,7 +263,7 @@ impl SystemTailscale {
     }
 
     async fn run(&self, args: &[&str]) -> Result<std::process::Output, NetError> {
-        let child = Command::new(&self.cli)
+        let child = Command::from(flux_core::tool::command(&self.cli))
             .args(args)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)

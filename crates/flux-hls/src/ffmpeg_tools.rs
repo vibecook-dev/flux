@@ -63,7 +63,7 @@ pub fn default_ffprobe(ffmpeg: &Path) -> PathBuf {
 
 /// The first line of `<tool> -version`, or why it could not run.
 pub fn version(tool: &Path) -> Result<String, String> {
-    let out = std::process::Command::new(tool)
+    let out = flux_core::tool::command(tool)
         .args(["-hide_banner", "-version"])
         .stdin(std::process::Stdio::null())
         .output()
