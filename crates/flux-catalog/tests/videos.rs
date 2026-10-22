@@ -383,6 +383,30 @@ fn files_that_are_not_media_never_become_items() {
     assert_eq!(l.scan.files_seen, 0);
 }
 
+/// Only a videos library has a folder view: elsewhere a show's episodes and
+/// a film's extras are no top-level items, and a folder page would leave
+/// them out.
+#[test]
+fn other_kinds_have_no_folder_view() {
+    for kind in [LibraryKind::Mixed, LibraryKind::Shows, LibraryKind::Movies] {
+        let e = env(kind);
+        e.apply(vec![upsert(
+            "Some Film (2010)/Some Film (2010).mkv",
+            movie("Some Film", Some(2010)),
+            None,
+        )]);
+        let q = FolderQuery {
+            library_id: e.lib.id,
+            ..Default::default()
+        };
+        let r = e.cat.read_blocking(move |c| read::folder_page(c, &q));
+        assert!(
+            matches!(r, Err(flux_catalog::CatalogError::Invalid(_))),
+            "{kind:?}: {r:?}"
+        );
+    }
+}
+
 /// The scanner re-parses every file of a folder that shares a new file's
 /// stack or series key, and a camera's files all share one: a re-parse
 /// whose guess is the stored one writes nothing, so adding a file to a big

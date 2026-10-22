@@ -130,4 +130,21 @@ async fn a_videos_library_is_browsed_by_folder() {
     .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     assert_eq!(r.json::<Library>().kind, LibraryKind::Videos);
+
+    // Other kinds have no folder view (their episodes and extras are no
+    // top-level items of a folder): 400, not a page that leaves them out.
+    for kind in ["mixed", "shows", "movies"] {
+        let other = dir.path().join(kind);
+        std::fs::create_dir_all(&other).unwrap();
+        let r = post(
+            &app,
+            "/api/v1/libraries",
+            json!({"name": kind, "kind": kind, "roots": [other]}),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+        let id = r.json::<Library>().id;
+        let r = get(&app, &format!("/api/v1/libraries/{id}/folders")).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{kind}: {}", r.text());
+    }
 }

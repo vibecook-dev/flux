@@ -282,6 +282,8 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
       await wait();
       const lib = db.libraries.find((l) => l.id === Number(params.id));
       if (!lib) return notFound('Library');
+      // As the server: only a videos library has a folder view.
+      if (lib.kind !== 'videos') return new HttpResponse(`a ${lib.kind} library has no folder view: folders are browsed in a videos library`, { status: 400 });
       const url = new URL(request.url);
       const sort = url.searchParams.get('sort') ?? 'title';
       if (!(FOLDER_SORTS as readonly string[]).includes(sort)) return new HttpResponse(`Unknown sort ${sort}`, { status: 400 });

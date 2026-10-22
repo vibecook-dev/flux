@@ -226,7 +226,7 @@ async fn library_items(
 }
 
 /// `GET /api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=`: one
-/// folder of a library (a videos library's folder view).
+/// folder of a videos library; 400 for a library of another kind.
 async fn library_folders(
     State(st): State<Arc<AppState>>,
     caller: Caller,

@@ -10,7 +10,7 @@
 //! | POST | `/api/v1/libraries` | [`CreateLibrary`] → [`Library`] |
 //! | POST | `/api/v1/libraries/{id}/scan` | → [`ScanStatus`] |
 //! | GET  | `/api/v1/libraries/{id}/items?cursor=&limit=&sort=&filter=` | [`ItemsParams`] → [`Page`]`<`[`ItemSummary`]`>` |
-//! | GET  | `/api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=` | [`FolderParams`] → [`FolderPage`] (browse by folder: a videos library's subfolders and the videos directly in one) |
+//! | GET  | `/api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=` | [`FolderParams`] → [`FolderPage`] (a videos library by folder: a folder's subfolders and the videos directly in it; 400 for other kinds) |
 //! | GET  | `/api/v1/home` | → [`Home`] (continue watching, recently added, per-library rows) |
 //! | GET  | `/api/v1/items/{id}` | → [`ItemDetail`] |
 //! | GET  | `/api/v1/items/{id}/children` | → `Vec<`[`ItemSummary`]`>` (seasons of a show, episodes of a season) |
@@ -272,8 +272,10 @@ pub enum ItemSort {
 }
 
 /// Query parameters of `GET /api/v1/libraries/{id}/folders`, the folder
-/// view of a videos library ([`LibraryKind::Videos`]). Any library's
-/// top-level items can be browsed this way, by the folder of their files.
+/// view of a videos library ([`LibraryKind::Videos`]), where every file is
+/// a video of its own. A library of another kind answers 400: there a
+/// show's episodes and a film's extras are no top-level items, so its
+/// folders would list few of their files.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FolderParams {

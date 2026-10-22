@@ -1237,20 +1237,31 @@ fn folder_cursor_tag(sort: FolderSort) -> char {
     }
 }
 
-/// One folder of a library (`GET /libraries/{id}/folders`): where it is,
-/// its subfolders, and a page of the top-level items with a file directly
-/// in it. Folders come from the files' paths, so a folder is listed while
-/// it holds a visible item somewhere below it. `None` when the library or
-/// the folder isn't there (the folder of another library, a folder that
-/// holds nothing).
+/// One folder of a videos library (`GET /libraries/{id}/folders`): where
+/// it is, its subfolders, and a page of the videos with a file directly in
+/// it. Folders come from the files' paths, so a folder is listed while it
+/// holds a visible video somewhere below it. `None` when the library or the
+/// folder isn't there (the folder of another library, a folder that holds
+/// nothing). [`CatalogError::Invalid`] for a library of another kind: only
+/// in a videos library is every file a top-level item of its own (in a
+/// shows library every file is an episode, and a movie library's extras
+/// belong to their films), so elsewhere a folder page would leave most of
+/// its files out.
 pub fn folder_page(c: &Connection, q: &FolderQuery) -> Result<Option<FolderPage>> {
-    let Some(name) = c
-        .prepare_cached("SELECT name FROM library WHERE id = ?1")?
-        .query_row([q.library_id], |r| r.get::<_, String>(0))
+    let Some((name, kind)) = c
+        .prepare_cached("SELECT name, kind FROM library WHERE id = ?1")?
+        .query_row([q.library_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .optional()?
     else {
         return Ok(None);
     };
+    if kind != flux_core::LibraryKind::Videos.as_str() {
+        return Err(CatalogError::Invalid(format!(
+            "a {kind} library has no folder view: folders are browsed in a videos library"
+        )));
+    }
     let roots: Vec<(Id, String)> = {
         let mut stmt = c.prepare_cached("SELECT id, path FROM root WHERE library_id = ?1 ORDER BY id")?;
         let rows = stmt.query_map([q.library_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
