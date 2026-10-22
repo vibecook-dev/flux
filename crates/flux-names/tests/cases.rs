@@ -1022,26 +1022,112 @@ fn a_videos_library_keeps_every_file_its_own_video() {
         (Some("Wedding part1"), None),
         "{g:#?}"
     );
-    let g = videos("示例A.mp4", &["示例B.mp4"]);
-    assert_eq!((g.title.as_deref(), g.part), (Some("示例"), Some(1)), "{g:#?}");
     let g = videos("part1.mp4", &["part2.mp4"]);
     assert_eq!((g.title.as_deref(), g.part), (Some("part1"), None), "{g:#?}");
 }
 
 #[test]
+fn a_videos_library_keeps_lettered_takes_and_angles_apart() {
+    // A last letter is a camera angle or a take in a home video folder, not
+    // a part: every file stays a video of its own, titled after itself.
+    for (path, sibs) in [
+        ("shoot/Interview_A.mp4", &["Interview_B.mp4"][..]),
+        ("shoot/Interview_B.mp4", &["Interview_A.mp4"][..]),
+        ("shoot/Take-a.mp4", &["Take-b.mp4", "Take-c.mp4"][..]),
+        ("shoot/Take-c.mp4", &["Take-a.mp4", "Take-b.mp4"][..]),
+        ("示例A.mp4", &["示例B.mp4"][..]),
+    ] {
+        let g = videos(path, sibs);
+        let stem = path.rsplit('/').next().unwrap().rsplit_once('.').unwrap().0;
+        let want = stem.replace('_', " ");
+        assert_eq!(
+            (g.kind, g.title.as_deref(), g.part),
+            (GuessKind::Movie, Some(want.as_str()), None),
+            "{path}: {g:#?}"
+        );
+    }
+    // Plex's stacking words with a number still make one video of parts.
+    for (path, sib, title) in [
+        ("Party cd1.mp4", "Party cd2.mp4", "Party"),
+        ("Party - disc 2.mp4", "Party - disc 1.mp4", "Party"),
+        ("Party.pt1.mp4", "Party.pt2.mp4", "Party"),
+    ] {
+        let g = videos(path, &[sib]);
+        assert_eq!(g.title.as_deref(), Some(title), "{path}: {g:#?}");
+        assert!(g.part.is_some(), "{path}: {g:#?}");
+    }
+    // A movie library keeps letter stacking for films.
+    let g = parse(Path::new("示例片A.mp4"), &["示例片B.mp4"], LibraryKind::Movies);
+    assert_eq!((g.title.as_deref(), g.part), (Some("示例片"), Some(1)), "{g:#?}");
+}
+
+#[test]
+fn decomposed_names_count_as_a_numbered_series_and_stack() {
+    use unicode_normalization::UnicodeNormalization;
+    let nfd = |s: &str| s.nfd().collect::<String>();
+    // Hangul and accents as macOS writes them: decomposed (NFD), alone or
+    // beside a composed (NFC) sibling.
+    for (a, b, show) in [
+        ("예시 E01.mp4", "예시 E02.mp4", "예시"),
+        ("Café Walk E01.mp4", "Café Walk E02.mp4", "Café Walk"),
+    ] {
+        for (path, sib) in [(nfd(a), nfd(b)), (a.to_string(), nfd(b)), (nfd(a), b.to_string())] {
+            let g = mixed(&path, &[sib.as_str()]);
+            assert_eq!(
+                (g.kind, g.title.as_deref(), g.episodes.as_slice()),
+                (GuessKind::Episode, Some(show), &[1][..]),
+                "{path:?} / {sib:?}: {g:#?}"
+            );
+        }
+        // The scanner's regroup key is the same for both forms.
+        assert_eq!(flux_names::series_key(&nfd(a)), flux_names::series_key(b));
+        assert!(flux_names::series_key(b).is_some());
+    }
+    // A multi-part stack, too.
+    let g = videos(&nfd("Café part1.mp4"), &[nfd("Café part2.mp4").as_str()]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("Café"), Some(1)), "{g:#?}");
+    let g = videos("Café part1.mp4", &[nfd("Café part2.mp4").as_str()]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("Café"), Some(1)), "{g:#?}");
+    assert_eq!(
+        flux_names::stack_key(&nfd("Café part2.mp4")),
+        flux_names::stack_key("Café part1.mp4")
+    );
+}
+
+#[test]
 fn others_folders_hold_extras_only_outside_mixed_libraries() {
-    let g = mixed("2019/others/Beach1234.mp4", &[]);
-    assert_eq!(
-        (g.kind, g.title.as_deref()),
-        (GuessKind::Movie, Some("Beach1234")),
-        "{g:#?}"
-    );
-    let g = mixed("Some Film (2010)/Other/Making Of.mkv", &[]);
-    assert_eq!(
-        (g.kind, g.title.as_deref()),
-        (GuessKind::Movie, Some("Making Of")),
-        "{g:#?}"
-    );
+    // A loose folder of miscellaneous files, even beside other videos: its
+    // files are titles of their own in a mixed library.
+    for path in [
+        "2019/others/Beach1234.mp4",
+        "Trip/Others/Beach1234.mp4",
+        "Trip 2019/Other/Beach1234.mp4",
+        "Others/Beach1234.mp4",
+    ] {
+        let g = mixed(path, &[]);
+        assert_eq!(
+            (g.kind, g.title.as_deref()),
+            (GuessKind::Movie, Some("Beach1234")),
+            "{path}: {g:#?}"
+        );
+    }
+    // Right under a folder named as a film or show (a title and a year in
+    // brackets, an id), or in a Movies or TV folder, it holds that work's
+    // extras, as Plex and Jellyfin name them.
+    for (path, work) in [
+        ("film/Some Film (2010)/Other/Making Of.mkv", "Some Film"),
+        ("Some Film (2010)/Other/Making Of.mkv", "Some Film"),
+        ("Some Film [tmdbid-603]/Others/Making Of.mkv", "Some Film"),
+        ("Movies/Some Film/Other/Making Of.mkv", "Some Film"),
+        ("TV/Some Show/Others/Bloopers.mkv", "Some Show"),
+    ] {
+        let g = mixed(path, &[]);
+        assert_eq!(
+            (g.kind, g.extra, g.title.as_deref()),
+            (GuessKind::Extra, Some(ExtraKind::Other), Some(work)),
+            "{path}: {g:#?}"
+        );
+    }
     // Plex's and Jellyfin's convention still holds in movie and show libraries.
     let g = movies("Some Film (2010)/Other/Making Of.mkv");
     assert_eq!(

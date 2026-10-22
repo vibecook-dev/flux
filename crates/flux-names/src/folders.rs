@@ -96,6 +96,18 @@ pub(crate) fn is_other_folder(name: &str) -> bool {
     matches!(name.trim().to_lowercase().as_str(), "other" | "others")
 }
 
+/// A title, then a year in brackets: `Some Film (2010)`, `示例片 [2010]`.
+static TITLED_YEAR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[\p{L}\p{N}].*[(\[]\s*(?:19|20)\d{2}\s*[)\]]").expect("valid titled-year regex")
+});
+
+/// A folder (its name as on disk) named the way Plex and Jellyfin name a
+/// film's or show's folder: a title and a year in brackets (`Some Film
+/// (2010)`), or a provider id tag (`[tmdbid-603]`).
+pub(crate) fn names_a_work(raw: &str) -> bool {
+    crate::ids::has_id(raw) || TITLED_YEAR_RE.is_match(raw)
+}
+
 /// Jellyfin's and Plex's extras folder names (`NamingOptions.VideoExtraRules`,
 /// Plex "Local Media Assets – Movies").
 fn extras_folder(lower: &str) -> Option<ExtraKind> {
@@ -175,5 +187,23 @@ mod tests {
         assert_eq!(classify("Others"), FolderRole::Extras(ExtraKind::Other));
         assert!(is_other_folder("others") && is_other_folder(" Other "));
         assert!(!is_other_folder("Extras") && !is_other_folder("Otherwise"));
+        for work in [
+            "Some Film (2010)",
+            "示例片 [2010]",
+            "Some Show [tvdbid-81189]",
+            "Film {tmdb-603}",
+        ] {
+            assert!(names_a_work(work), "{work}");
+        }
+        for plain in [
+            "2019",
+            "(2019)",
+            "Trip 2019",
+            "Holiday",
+            "Clips (old)",
+            "Film (1080p)",
+        ] {
+            assert!(!names_a_work(plain), "{plain}");
+        }
     }
 }

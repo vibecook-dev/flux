@@ -65,6 +65,9 @@ struct Dir {
     name: String,
     role: FolderRole,
     edition: Option<String>,
+    /// Named as a film's or show's folder: a title and a year in brackets
+    /// (`Some Film (2010)`), or a provider id tag.
+    work: bool,
 }
 
 /// Special folders found between the file and the library root.
@@ -160,11 +163,12 @@ pub(crate) fn explicit_episode(stem: &str) -> bool {
 
 /// A name's words and numbers, lower case: runs of letters and runs of
 /// digits, split at anything else (`Clip_03 (1)` → `clip`, `3`, `1`),
-/// numbers without leading zeros.
+/// numbers without leading zeros. Read in NFC, so a decomposed name (as
+/// macOS writes Hangul and accents) has the runs of its composed form.
 fn key_runs(stem: &str) -> Vec<(bool, String)> {
     let mut runs: Vec<(bool, String)> = Vec::new();
     let mut split = true;
-    for c in stem.chars() {
+    for c in nfc(stem).chars() {
         if !c.is_alphanumeric() {
             split = true;
             continue;
@@ -218,16 +222,17 @@ pub(crate) fn episode_numbers(episodes: &[u16], absolute: Option<u32>, air_date:
 /// the evidence a mixed library asks of an episode without an explicit
 /// marker. Names that differ only in some other number (a running id after
 /// a constant `ep1`), or a title that is this file's own, are no series.
+/// Names compare in NFC, whichever form each file name is in.
 pub(crate) fn numbered_series(stem: &str, siblings: &[&str], numbers: &[u32], title: Option<&str>) -> bool {
     let own = key_runs(stem);
-    let title = title.map(norm_key).unwrap_or_default();
+    let title = title.map(|t| norm_key(&nfc(t))).unwrap_or_default();
     !numbers.is_empty()
         && own.iter().any(|(digit, _)| *digit)
         && siblings.iter().any(|s| {
             let (sib, ext) = split_ext(s);
             ext.is_some_and(crate::is_video_ext)
                 && series_number(&own, &key_runs(sib)).is_some_and(|n| numbers.contains(&n))
-                && norm_key(sib).contains(title.as_str())
+                && norm_key(&nfc(sib)).contains(title.as_str())
         })
 }
 
@@ -306,10 +311,14 @@ fn components(rel_path: &Path) -> Vec<String> {
 
 /// A file of a videos library ([`LibraryKind::Videos`]: home videos,
 /// clips): its own item, titled after the file ([`display_stem`]). Only a
-/// true multi-part stack (`Clip part1` + `Clip part2`, `ClipA` + `ClipB`
-/// side by side) reads as parts of one item; nothing else in the path means
-/// anything: no movie or show structure, no extras or sample folders, no
-/// years or ids, and no fallback parser.
+/// true multi-part stack, a part number after `cd`, `disc`, `disk`, `dvd`,
+/// `part` or `pt` (`Clip part1` + `Clip part2` side by side, Plex's
+/// stacking words), reads as parts of one item. A last letter does not:
+/// `Interview_A` and `Interview_B`, or `Take-a` and `Take-b`, are camera
+/// angles and takes of a home video as often as not, each a video to find
+/// on its own. Nothing else in the path means anything: no movie or show
+/// structure, no extras or sample folders, no years or ids, and no fallback
+/// parser.
 pub(crate) fn video(rel_path: &Path, siblings: &[&str]) -> NameGuess {
     let mut g = NameGuess::unknown();
     let comps = components(rel_path);
@@ -323,17 +332,14 @@ pub(crate) fn video(rel_path: &Path, siblings: &[&str]) -> NameGuess {
         .copied()
         .filter(|s| split_ext(s).1.is_some_and(crate::is_video_ext))
         .collect();
-    let (title_of, part) = match letter_stack(stem, &videos) {
-        Some((core, part)) => (core, Some(part)),
-        None => match STACK_RE.captures(stem).filter(|_| stack_evidence(stem, &videos)) {
-            Some(c) => match (c.get(1), c[2].parse::<u8>()) {
-                (Some(prefix), Ok(n)) if n > 0 && !norm_key(prefix.as_str()).is_empty() => {
-                    (prefix.as_str(), Some(n))
-                }
-                _ => (stem, None),
-            },
-            None => (stem, None),
+    let (title_of, part) = match STACK_RE.captures(stem).filter(|_| stack_evidence(stem, &videos)) {
+        Some(c) => match (c.get(1), c[2].parse::<u8>()) {
+            (Some(prefix), Ok(n)) if n > 0 && !norm_key(prefix.as_str()).is_empty() => {
+                (prefix.as_str(), Some(n))
+            }
+            _ => (stem, None),
         },
+        None => (stem, None),
     };
     g.kind = GuessKind::Movie;
     g.title = Some(display_stem(title_of));
@@ -375,10 +381,19 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
         let name = ids::extract(d, &mut g.ids, &mut ev);
         let (edition, name) = ids::extract_edition(&name);
         let name = name.trim().to_string();
-        let role = folder_role(&name, lib);
-        dir_list.push(Dir { name, role, edition });
+        let role = folders::classify(&name);
+        let work = folders::names_a_work(d);
+        dir_list.push(Dir {
+            name,
+            role,
+            edition,
+            work,
+        });
     }
     dir_list.reverse();
+    if lib == LibraryKind::Mixed {
+        loose_other_folders(&mut dir_list);
+    }
     let l = layout(&dir_list);
 
     // 2. Library prior, refined by generic folders in a mixed library and by
@@ -591,16 +606,28 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
     Resolved { guess: g, ctx }
 }
 
-/// [`folders::classify`] in a library of `lib`. Plex and Jellyfin read
-/// `Other`/`Others` as an extras folder of the film or show above it; in a
-/// mixed library, a personal collection as often as not, it is an ordinary
-/// folder, and its files are titles of their own.
-fn folder_role(name: &str, lib: LibraryKind) -> FolderRole {
-    match folders::classify(name) {
-        FolderRole::Extras(_) if lib == LibraryKind::Mixed && folders::is_other_folder(name) => {
-            FolderRole::Plain
+/// Plex and Jellyfin read `Other`/`Others` as an extras folder of the film
+/// or show above it. In a mixed library, a personal collection as often as
+/// not, it is also a common name for a folder of miscellaneous files, often
+/// beside other videos, so there it holds extras only where the convention
+/// is clearly followed: right under a folder named as a film or show
+/// (`Some Film (2010)/Other`, an id tag), or in a Movies or TV folder.
+/// Anywhere else it is an ordinary folder, and its files are titles of
+/// their own.
+fn loose_other_folders(dirs: &mut [Dir]) {
+    // Walking down from the root: a Movies or TV folder above, and whether
+    // the folder just above names a work.
+    let (mut sorted, mut in_work) = (false, false);
+    for d in dirs.iter_mut() {
+        let other = matches!(d.role, FolderRole::Extras(_)) && folders::is_other_folder(&d.name);
+        if other && !(sorted || in_work) {
+            d.role = FolderRole::Plain;
         }
-        role => role,
+        sorted |= matches!(
+            d.role,
+            FolderRole::Generic(GenericHint::Movies | GenericHint::Shows)
+        );
+        in_work = d.work;
     }
 }
 
@@ -698,18 +725,19 @@ fn split_suffix(stem: &str) -> (Option<Suffix>, &str) {
     (Some(kind), &stem[..whole.start()])
 }
 
-/// `true` when a sibling differs from this stem only in its part number.
+/// `true` when a sibling differs from this stem only in its part number
+/// (names compared in NFC).
 fn stack_evidence(stem: &str, siblings: &[&str]) -> bool {
     let Some(c) = STACK_RE.captures(stem) else {
         return false;
     };
-    let prefix = c[1].to_lowercase();
+    let prefix = nfc(&c[1]).to_lowercase();
     let num = &c[2];
     siblings.iter().any(|sib| {
         let (s, _) = split_ext(sib);
         STACK_RE
             .captures(s)
-            .is_some_and(|c2| c2[1].to_lowercase() == prefix && &c2[2] != num)
+            .is_some_and(|c2| nfc(&c2[1]).to_lowercase() == prefix && &c2[2] != num)
     })
 }
 
@@ -723,7 +751,7 @@ fn stack_evidence(stem: &str, siblings: &[&str]) -> bool {
 /// usually sequels.
 fn letter_stack<'a>(stem: &'a str, siblings: &[&str]) -> Option<(&'a str, u8)> {
     let (core, part) = letter_part(stem)?;
-    let key = norm_key(core);
+    let key = norm_key(&nfc(core));
     let mut parts = vec![part];
     for sib in siblings {
         let (s, ext) = split_ext(sib);
@@ -731,7 +759,7 @@ fn letter_stack<'a>(stem: &'a str, siblings: &[&str]) -> Option<(&'a str, u8)> {
             continue;
         }
         if let Some((c, p)) = letter_part(s) {
-            if norm_key(c) == key {
+            if norm_key(&nfc(c)) == key {
                 parts.push(p);
             }
         }
@@ -743,13 +771,13 @@ fn letter_stack<'a>(stem: &'a str, siblings: &[&str]) -> Option<(&'a str, u8)> {
 }
 
 /// The stacking key of a stem: [`letter_part`]'s or [`STACK_RE`]'s prefix,
-/// normalised (see [`crate::stack_key`]).
+/// normalised, NFC (see [`crate::stack_key`]).
 pub(crate) fn stack_key(stem: &str) -> Option<String> {
     let prefix = match letter_part(stem) {
         Some((core, _)) => core.to_string(),
         None => STACK_RE.captures(stem)?[1].to_string(),
     };
-    let key = norm_key(&prefix);
+    let key = norm_key(&nfc(&prefix));
     (!key.is_empty()).then_some(key)
 }
 
