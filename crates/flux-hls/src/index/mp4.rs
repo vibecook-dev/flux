@@ -417,8 +417,26 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
     }
     // Dolby Vision entries (`dvhe`, `dvh1`, …) decode as the standard entry
     // they extend; their DV record is read here (mp4-atom skips it).
-    let extras = take_dolby_vision_entries(&mut buf);
-    let moov = Moov::decode(&mut buf.as_slice()).map_err(|e| HlsError::mp4(format!("moov: {e}")))?;
+    let mut extras = take_dolby_vision_entries(&mut buf);
+    let moov = match Moov::decode(&mut buf.as_slice()) {
+        Ok(moov) => moov,
+        // A Dolby Vision entry without the box its standard entry requires
+        // (or with one mp4-atom rejects) fails the whole `moov` once
+        // renamed: decode it as an unknown entry again (a transcode), as
+        // before DV entries were recognised, instead of losing every track.
+        Err(e) if extras.iter().any(|x| x.renamed_at.is_some()) => {
+            for x in &mut extras {
+                if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
+                    buf[at..at + 4].copy_from_slice(&dv);
+                }
+            }
+            warnings.push(format!(
+                "Dolby Vision sample entry not decodable as its standard entry ({e}): indexed as unknown"
+            ));
+            Moov::decode(&mut buf.as_slice()).map_err(|e| HlsError::mp4(format!("moov: {e}")))?
+        }
+        Err(e) => return Err(HlsError::mp4(format!("moov: {e}"))),
+    };
     // Fragmented MP4 (empty `moov` + `moof`/`mdat` pairs): sample tables come
     // from the fragments' `traf`/`trun` boxes.
     let fragmented = moov.mvex.is_some()
@@ -1108,7 +1126,7 @@ fn child_boxes(b: &[u8], from: usize) -> Vec<([u8; 4], usize, usize)> {
         let mut size = u32::from_be_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]) as usize;
         let kind = [b[p + 4], b[p + 5], b[p + 6], b[p + 7]];
         if size == 1 && p + 16 <= b.len() {
-            size = u64::from_be_bytes([
+            let large = u64::from_be_bytes([
                 b[p + 8],
                 b[p + 9],
                 b[p + 10],
@@ -1117,11 +1135,14 @@ fn child_boxes(b: &[u8], from: usize) -> Vec<([u8; 4], usize, usize)> {
                 b[p + 13],
                 b[p + 14],
                 b[p + 15],
-            ]) as usize;
+            ]);
+            size = usize::try_from(large).unwrap_or(usize::MAX);
         } else if size == 0 {
             size = b.len() - p;
         }
-        if size < 8 || p + size > b.len() {
+        // A 64-bit size near 2^64 must not wrap `p` back to an earlier box
+        // (an endless loop that grows `out`).
+        if size < 8 || p.checked_add(size).is_none_or(|end| end > b.len()) {
             break;
         }
         out.push((kind, p, p + size));
@@ -1174,6 +1195,9 @@ struct EntryExtras {
     /// Its Dolby Vision configuration record, if any (also found in plain
     /// `hvc1` entries of profile 8 files).
     dovi: Option<DoviRecord>,
+    /// Where the entry's type was renamed to the standard entry's (the
+    /// offset of its four bytes in the `moov` buffer).
+    renamed_at: Option<usize>,
 }
 
 /// Reads the Dolby Vision record of each track's first sample entry and
@@ -1207,6 +1231,7 @@ fn take_dolby_vision_entries(moov: &mut [u8]) -> Vec<EntryExtras> {
             if let Some(std) = standard {
                 moov[es + 4..es + 8].copy_from_slice(&std);
                 x.dovi_fourcc = Some(kind);
+                x.renamed_at = Some(es + 4);
             }
             x
         })
@@ -1270,26 +1295,38 @@ fn first_sync_sample(t: &Mp4Tables) -> Option<(u64, u32)> {
 
 /// An `hvcC` record with no SPS, completed with the VPS/SPS/PPS found
 /// in-band in `sample` (marked complete: the remux strips in-band sets).
-/// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS.
+/// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS,
+/// or sets an `hvcC` can't hold (a unit of 64 KiB or more).
+///
+/// A stream has at most 16 VPS, 16 SPS and 64 PPS ids (H.265 §7.4.3), so
+/// each array keeps that many distinct units and skips the rest: a hostile
+/// sample of millions of units costs one linear pass, and every count and
+/// length written fits its 16-bit field.
 fn complete_hvcc(rec: &[u8], sample: &[u8], length_size: usize) -> Option<Vec<u8>> {
     let c = hevc::HevcConfig::parse(rec)?;
-    let mut sets: [(u8, Vec<&[u8]>); 3] = [(32, Vec::new()), (33, Vec::new()), (34, Vec::new())];
+    // (NAL type, most kept, the distinct units in order of appearance)
+    let mut sets: [(u8, usize, Vec<&[u8]>); 3] =
+        [(32, 16, Vec::new()), (33, 16, Vec::new()), (34, 64, Vec::new())];
     for (_, nal) in crate::bits::length_prefixed_nals(sample, length_size) {
         let Some(&h) = nal.first() else { continue };
-        if let Some(s) = sets.iter_mut().find(|s| s.0 == ((h >> 1) & 0x3F)) {
-            if !s.1.contains(&nal) {
-                s.1.push(nal);
+        if let Some((_, max, units)) = sets.iter_mut().find(|s| s.0 == ((h >> 1) & 0x3F)) {
+            if units.len() < *max && !units.contains(&nal) {
+                if nal.len() > u16::MAX as usize {
+                    return None;
+                }
+                units.push(nal);
             }
         }
     }
-    if sets[1].1.is_empty() || sets[2].1.is_empty() {
+    if sets[1].2.is_empty() || sets[2].2.is_empty() {
         return None;
     }
     let mut arrays: Vec<(u8, bool, Vec<&[u8]>)> = sets
         .iter()
-        .filter(|s| !s.1.is_empty())
-        .map(|s| (s.0, true, s.1.clone()))
+        .filter(|s| !s.2.is_empty())
+        .map(|s| (s.0, true, s.2.clone()))
         .collect();
+    // (Parsed from 16-bit fields, so these fit.)
     for a in c.arrays.iter().filter(|a| !(32..=34).contains(&a.nal_type)) {
         arrays.push((
             a.nal_type,
@@ -1299,7 +1336,7 @@ fn complete_hvcc(rec: &[u8], sample: &[u8], length_size: usize) -> Option<Vec<u8
     }
     // The 22 header bytes, then numOfArrays and the arrays (ISO/IEC 14496-15 §8.3.3.1).
     let mut out = rec.get(..22)?.to_vec();
-    out.push(arrays.len() as u8);
+    out.push(u8::try_from(arrays.len()).ok()?);
     for (ty, complete, nalus) in arrays {
         out.push(ty | if complete { 0x80 } else { 0 });
         out.extend_from_slice(&(nalus.len() as u16).to_be_bytes());
@@ -1850,6 +1887,89 @@ mod tests {
             assert!(m.contains("CODECS=\"hvc1.2.4.L150.B0,"), "{m}");
             assert!(m.contains("VIDEO-RANGE=PQ"), "{m}");
         }
+    }
+
+    /// A Dolby Vision entry without the `hvcC` its standard entry requires:
+    /// once renamed, the whole `moov` failed to decode and every track was
+    /// lost. It indexes as an unknown entry (a transcode) again, with its
+    /// record, and the audio is kept.
+    #[test]
+    fn dolby_vision_entry_without_its_config_box_still_indexes() {
+        let path = synthetic_mp4(b"dvhe", Some(&DVCC_P5[..]), ac3_51());
+        let mut b = std::fs::read(&path).unwrap();
+        let at = b.windows(4).position(|w| w == b"hvcC").unwrap();
+        b[at..at + 4].copy_from_slice(b"hvcX");
+        std::fs::write(&path, &b).unwrap();
+        let idx = crate::index::PlaybackIndex::build(&path).unwrap();
+        let v = &idx.tracks[0];
+        assert_eq!((v.codec, v.codec_tag.as_str()), (Codec::Other, "dvhe"));
+        assert_eq!((v.width, v.height), (Some(3832), Some(1592)));
+        assert_eq!(v.hdr.as_ref().and_then(|h| h.dovi).map(|d| d.profile), Some(5));
+        assert_eq!(
+            (idx.tracks[1].codec, idx.tracks[1].channels),
+            (Codec::Ac3, Some(6))
+        );
+        assert!(
+            idx.warnings.iter().any(|w| w.contains("not decodable")),
+            "{:?}",
+            idx.warnings
+        );
+        let plan = crate::planner::plan(
+            &idx.to_probe_result(),
+            &crate::presets::chrome_desktop(),
+            &Default::default(),
+        );
+        assert!(
+            matches!(plan.video, flux_core::VideoOp::Transcode { tonemap: true, .. }),
+            "{plan:?}"
+        );
+    }
+
+    /// A first keyframe of 100 000 distinct VPS units (a hostile file): the
+    /// completion kept them all, in quadratic time, and wrote counts that
+    /// wrapped at 65 536 (an unparseable record). Each array now keeps at
+    /// most as many units as a stream has ids.
+    #[test]
+    fn hvcc_completion_is_bounded() {
+        let nal = |t: u8, i: u32| {
+            let mut v = vec![0, 0, 0, 5, t << 1, 1];
+            v.extend_from_slice(&i.to_be_bytes()[1..]);
+            v
+        };
+        let mut sample = Vec::new();
+        for i in 0..100_000 {
+            sample.extend(nal(32, i));
+        }
+        for i in 0..100 {
+            sample.extend(nal(34, i));
+        }
+        sample.extend(nal(33, 0));
+        sample.extend(nal(34, 0)); // a repeat
+        let rec = complete_hvcc(&HVCC_MAIN10, &sample, 4).unwrap();
+        let c = hevc::HevcConfig::parse(&rec).unwrap();
+        let counts = (c.nalus(32).count(), c.nalus(33).count(), c.nalus(34).count());
+        assert_eq!(counts, (16, 1, 64));
+        assert_eq!(c.nalus(32).next(), Some(&nal(32, 0)[4..]));
+        // A unit an hvcC can't hold (over 65 535 bytes) keeps the record as is.
+        let mut s2 = nal(33, 0);
+        let mut big = vec![0, 1, 0, 2, 34 << 1, 1];
+        big.resize(4 + 65_538, 0x55);
+        s2.extend(big);
+        assert_eq!(complete_hvcc(&HVCC_MAIN10, &s2, 4), None);
+    }
+
+    /// A 64-bit box size near 2^64 wrapped the walk back to an earlier box:
+    /// an endless loop growing the list (overflow checks are off in release).
+    #[test]
+    fn child_boxes_stop_at_a_wrapping_large_size() {
+        let mut b = vec![0, 0, 0, 16];
+        b.extend_from_slice(b"free");
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&[0, 0, 0, 1]);
+        b.extend_from_slice(b"wrap");
+        b.extend_from_slice(&(u64::MAX - 15).to_be_bytes());
+        b.extend_from_slice(&[0; 8]);
+        assert_eq!(child_boxes(&b, 0), vec![(*b"free", 0, 16)]);
     }
 
     #[test]
