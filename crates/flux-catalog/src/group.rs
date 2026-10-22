@@ -10,6 +10,15 @@
 //!   (S01E01-E02) is one asset linked to several episode items.
 //! - **Extras** attach to the movie/show that owns their folder
 //!   (`Movie (2010)/Featurettes/x.mkv`), or to the item named by the guess.
+//!   A folder named for extras by one of its words (`Film/Bonus Clips)/`,
+//!   [`extras_folder_by_word`]) holds extras of the one film beside it.
+//! - **Show folders**: a show owns the folders its episodes are in; a
+//!   subfolder that isn't a season (`Show/alt versions/`) is the same show,
+//!   so its files become more versions of the same episodes. A subfolder
+//!   takes the year of the folder around it, never the other way round:
+//!   `Show/Show (1978)/` is another series. Two undated same-titled shows
+//!   in nested folders (`Show/` and `Show/US/`) are one show, as nothing
+//!   tells them apart from alternate versions.
 //! - **Samples** are ignored: the file row is kept (so it is never
 //!   re-probed) but it maps to no item.
 //! - **Unknown** files become an "unmatched" movie titled after the cleaned
@@ -266,6 +275,54 @@ pub fn extras_parent_dir(rel_path: &str) -> Option<String> {
     }
 }
 
+/// Words that mark a folder as a film's extras when they are among the
+/// folder name's words, though the name isn't exactly an extras folder
+/// (`Bonus Clips)`, `Bonus Trailers`). Plural forms only: "Extra",
+/// "Short" or "Trailer" alone are likelier to be part of a title.
+const EXTRA_FOLDER_WORDS: &[(&[&str], ExtraKind)] = &[
+    (&["behind", "the", "scenes"], ExtraKind::BehindTheScenes),
+    (&["deleted", "scenes"], ExtraKind::DeletedScene),
+    (&["featurettes"], ExtraKind::Featurette),
+    (&["trailers"], ExtraKind::Trailer),
+    (&["interviews"], ExtraKind::Interview),
+    (&["shorts"], ExtraKind::Short),
+    (&["clips"], ExtraKind::Other),
+    (&["extras"], ExtraKind::Other),
+];
+
+/// A file in a folder named for extras by one of its words, below another
+/// folder: `Film/1080p/Bonus Clips)/Song.mkv` → `(Other, "Film/1080p")`.
+/// Returns the extra kind and the folder that should hold the film.
+///
+/// Conservative, because a miss only leaves the file as a film of its own:
+/// never at the root (there is no film folder above), never for a folder
+/// with a year in its name (`Shorts (2009)/` is a film's own folder).
+/// [`crate::Writer::apply`] also requires that the file's own name has no
+/// year or provider id, and that the folder above holds the files of
+/// exactly one film directly; otherwise the file stays a film.
+pub fn extras_folder_by_word(rel_path: &str) -> Option<(ExtraKind, &str)> {
+    let (dir, _) = rel_path.rsplit_once('/')?;
+    let (parent, name) = dir.rsplit_once('/')?;
+    if parent.is_empty() {
+        return None;
+    }
+    let lower = name.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_year = |w: &&str| {
+        w.len() == 4 && w.chars().all(|c| c.is_ascii_digit()) && (w.starts_with("19") || w.starts_with("20"))
+    };
+    if words.iter().any(is_year) {
+        return None;
+    }
+    EXTRA_FOLDER_WORDS
+        .iter()
+        .find(|(seq, _)| words.windows(seq.len()).any(|w| w == *seq))
+        .map(|&(_, kind)| (kind, parent))
+}
+
 // ---- placement (pure) -------------------------------------------------------
 
 /// A top-level work (movie or show) as identified by the parser.
@@ -282,7 +339,8 @@ pub struct WorkTarget {
     pub unmatched: bool,
     /// Shows only: the file's [`show_folder`]. A show owns the folders its
     /// episodes live in; another folder means another show unless provider
-    /// ids agree.
+    /// ids agree, or one folder is inside the other (`Show/` and
+    /// `Show/alt versions/` are one show).
     pub folder: Option<String>,
     /// The other-script half of a bilingual name ([`NameGuess::original_title`]),
     /// stored as the item's `original_title` and indexed for search.
@@ -756,6 +814,74 @@ fn owns_any_folder(conn: &Connection, show: Id) -> Result<bool> {
         .is_some())
 }
 
+/// A same-titled show that owns a folder around a file's show folder
+/// (`around`: `show` for `show/alt versions`) or inside it (`inside`).
+struct Nested<'a> {
+    cand: &'a Candidate,
+    around: bool,
+    inside: bool,
+}
+
+/// The candidates that own a folder around `folder` or inside it. Lengths
+/// are in characters, as SQLite's `substr` counts them.
+fn nested_owners<'a>(conn: &Connection, cands: &[&'a Candidate], folder: &str) -> Result<Vec<Nested<'a>>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT COALESCE(MAX(substr(?2, 1, length(folder) + 1) = folder || '/'), 0),
+                COALESCE(MAX(substr(folder, 1, ?3 + 1) = ?2 || '/'), 0)
+           FROM item_folder WHERE item_id = ?1",
+    )?;
+    let mut nested = Vec::new();
+    for &c in cands {
+        let (around, inside): (bool, bool) = stmt
+            .query_row(params![c.0, folder, folder.chars().count() as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+        if around || inside {
+            nested.push(Nested {
+                cand: c,
+                around,
+                inside,
+            });
+        }
+    }
+    Ok(nested)
+}
+
+/// The year rules between shows in nested folders (`Show/` and
+/// `Show/alt versions/`): the same year, or none on either side, is the
+/// same show. A subfolder takes the year of the folder around it, but a
+/// folder never takes a subfolder's year, so a dated series kept inside an
+/// undated same-titled folder (`Show/Show (1978)/`) stays another show.
+/// The rules give the same result in either scan order. `None`: no show.
+fn pick_nested(
+    conn: &Connection,
+    r: &Resolver,
+    w: &WorkTarget,
+    nested: &[Nested<'_>],
+) -> Result<Option<Candidate>> {
+    if let Some(n) = nested.iter().find(|n| n.cand.1 == w.year) {
+        return Ok(Some(n.cand.clone()));
+    }
+    if w.year.is_none() {
+        // An undated subfolder of a dated show's folder: that show.
+        let around: Vec<&Nested<'_>> = nested.iter().filter(|n| n.around).collect();
+        return Ok(match around.as_slice() {
+            [only] => Some(only.cand.clone()),
+            _ => None,
+        });
+    }
+    // A dated folder around an undated show's subfolder: that show, which
+    // takes the folder's year.
+    let inside: Vec<&Nested<'_>> = nested.iter().filter(|n| n.inside && n.cand.1.is_none()).collect();
+    if let [only] = inside.as_slice() {
+        conn.prepare_cached("UPDATE item SET year = ?2, updated_at = ?3 WHERE id = ?1")?
+            .execute(params![only.cand.0, w.year, r.now])?;
+        requeue_match(conn, r, only.cand.0)?;
+        return Ok(Some(only.cand.clone()));
+    }
+    Ok(None)
+}
+
 fn find_work(
     conn: &Connection,
     r: &Resolver,
@@ -816,7 +942,8 @@ fn find_work(
         .collect();
     let picked: Option<Candidate> = match (kind, &w.folder) {
         // Shows: a different show folder is a different show (ids agreeing
-        // was handled above). Within one folder, the year rules apply.
+        // was handled above), unless one folder holds the other. Within one
+        // folder, the year rules apply.
         ("show", Some(folder)) => {
             let owners = folder_owners(conn, folder)?;
             let owned: Vec<&Candidate> = compatible
@@ -831,6 +958,11 @@ fn find_work(
                 // (folder renamed) unless the years contradict; a yearless
                 // show adopts the new folder's year.
                 pick_by_year(conn, r, w, &[*p])?
+            } else if let Some(c) = pick_nested(conn, r, w, &nested_owners(conn, &compatible, folder)?)? {
+                // A subfolder of a show's folder (`Show/alt versions/`), or
+                // the folder around one: the same show, so its files become
+                // more versions of the same episodes, in either scan order.
+                Some(c)
             } else {
                 // Shows that don't know their folders yet (files at the
                 // root, or catalogs from before v3) still join by year rules.
@@ -1044,7 +1176,8 @@ pub(crate) fn find_extra_parent(
                   ORDER BY instr(substr(f.rel_path, ?4), '/') = 0 DESC, f.rel_path
                   LIMIT 1",
             )?
-            .query_row(params![root_id, lo, hi, lo.len() as i64 + 1], |row| {
+            // `substr` counts characters, not bytes (non-ASCII folder names).
+            .query_row(params![root_id, lo, hi, lo.chars().count() as i64 + 1], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .optional()?;
@@ -1079,6 +1212,35 @@ pub(crate) fn find_extra_parent(
         return Ok(found);
     }
     Ok(None)
+}
+
+/// The one film whose files sit directly in `dir` (not in its subfolders);
+/// `None` when there is none, or more than one (a flat folder of films
+/// gives no single owner for extras).
+pub(crate) fn sole_movie_in_dir(conn: &Connection, root_id: Id, dir: &str) -> Result<Option<Id>> {
+    if dir.is_empty() {
+        return Ok(None);
+    }
+    let lo = format!("{dir}/");
+    let hi = format!("{dir}0");
+    let ids: Vec<Id> = conn
+        .prepare_cached(
+            "SELECT DISTINCT i.id FROM file f
+               JOIN asset a ON a.file_id = f.id
+               JOIN item i ON i.id = a.item_id
+              WHERE f.root_id = ?1 AND f.rel_path >= ?2 AND f.rel_path < ?3
+                AND instr(substr(f.rel_path, ?4), '/') = 0
+                AND f.state <> 'missing' AND i.kind = 'movie' AND i.parent_id IS NULL
+              LIMIT 2",
+        )?
+        .query_map(params![root_id, lo, hi, lo.chars().count() as i64 + 1], |row| {
+            row.get(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(match ids.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

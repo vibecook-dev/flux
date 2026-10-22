@@ -15,6 +15,7 @@
 //! kind = "movies"            # movies | shows | mixed
 //! path = "/srv/media/Movies"
 //! video_encoder = "auto"     # auto | videotoolbox | nvenc | qsv | vaapi | libx264
+//! max_video_transcodes = 0   # concurrent video transcodes; 0 = by encoder
 //! ```
 //!
 //! Windows paths go in 'single quotes' (TOML literal strings) or use forward
@@ -231,6 +232,11 @@ pub struct Cli {
     /// VAAPI render node [default: /dev/dri/renderD128].
     #[arg(long, env = "FLUX_VAAPI_DEVICE", value_name = "PATH")]
     pub vaapi_device: Option<PathBuf>,
+    /// Video transcodes encoding at once (ffmpeg runs, pieces encoded ahead
+    /// included); 0 picks by encoder: 6 on hardware, 3 for libx264
+    /// [default: 0].
+    #[arg(long, env = "FLUX_MAX_VIDEO_TRANSCODES", value_name = "N")]
+    pub max_video_transcodes: Option<usize>,
     /// Print what ffmpeg and ffprobe can do for flux (paths, versions, the
     /// encoder per codec, hardware acceleration, tone mapping, what is
     /// missing) and exit: non-zero when ffmpeg or ffprobe is missing.
@@ -269,6 +275,7 @@ struct FileConfig {
     #[serde(default, deserialize_with = "de_encoder")]
     video_encoder: Option<EncoderChoice>,
     vaapi_device: Option<PathBuf>,
+    max_video_transcodes: Option<usize>,
     tmdb_exports: Option<PathBuf>,
     log: Option<String>,
 }
@@ -371,6 +378,8 @@ pub struct Config {
     pub video_encoder: Option<VideoEncoder>,
     /// The VAAPI render node.
     pub vaapi_device: PathBuf,
+    /// Concurrent video transcode runs (0: by encoder).
+    pub max_video_transcodes: usize,
     /// Detect the video encoder in the background at startup (else on the
     /// first transcode).
     pub detect_encoder_at_start: bool,
@@ -480,6 +489,10 @@ impl Config {
             ffprobe,
             video_encoder,
             vaapi_device,
+            max_video_transcodes: cli
+                .max_video_transcodes
+                .or(file.max_video_transcodes)
+                .unwrap_or(0),
             detect_encoder_at_start: true,
             tmdb_exports,
             log: cli
@@ -516,6 +529,7 @@ impl Config {
             ffprobe: find_tool("ffprobe"),
             video_encoder: VideoEncoder::from_env(),
             vaapi_device: flux_hls::encoders::vaapi_device_from_env(),
+            max_video_transcodes: 0,
             detect_encoder_at_start: false,
             tmdb_exports: data_dir.join("tmdb-exports"),
             log: "warn".into(),
@@ -970,5 +984,28 @@ path = '{}'
         }
         assert!(!cfg(&["--tailnet", "off"]).probe_system_tailscale);
         assert!(cfg(&["--tailnet", "system"]).probe_system_tailscale);
+    }
+
+    #[test]
+    fn video_transcode_concurrency_from_flag_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        std::fs::write(&file, "max_video_transcodes = 4\n").unwrap();
+        let d = dir.path().to_str().unwrap();
+        let f = file.to_str().unwrap();
+        let resolve = |args: &[&str]| {
+            let mut a = vec!["flux-server", "--data-dir", d];
+            a.extend_from_slice(args);
+            Config::resolve(Cli::try_parse_from(a).unwrap()).unwrap()
+        };
+        if std::env::var_os("FLUX_MAX_VIDEO_TRANSCODES").is_none() {
+            assert_eq!(resolve(&[]).max_video_transcodes, 0, "by encoder");
+            assert_eq!(resolve(&["--config", f]).max_video_transcodes, 4);
+        }
+        assert_eq!(
+            resolve(&["--config", f, "--max-video-transcodes", "8"]).max_video_transcodes,
+            8
+        );
+        assert!(Cli::try_parse_from(["flux-server", "--max-video-transcodes", "many"]).is_err());
     }
 }

@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use flux_core::api::{CreateLibrary, Id, Identity, Library, Progress};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::error::{CatalogError, Result};
+use crate::error::{CatalogError, Result, RootOverlap};
 use crate::jobs::{Backoff, ClaimJobs, Enqueued, Finished, JobLease, JobResult, JobSpec};
 use crate::model::{
     art_source_str, clamp_i64, library_kind_str, now_ms, role_str, ApplyOutcome, ArtKind, AvailabilityChange,
@@ -387,6 +387,12 @@ impl Writer {
                     });
                 }
             }
+            let existing = all_roots(c)?;
+            for a in &paths {
+                if let Some(e) = in_other_library(a, &existing, None) {
+                    return Err(e);
+                }
+            }
             let now = now_ms();
             c.prepare_cached("INSERT INTO library(name, kind, created_at) VALUES (?1, ?2, ?3)")?
                 .execute(params![req.name, library_kind_str(req.kind), now])?;
@@ -420,16 +426,18 @@ impl Writer {
     pub fn add_root(&self, library_id: Id, path: String, volume_uuid: Option<String>) -> Request<Id> {
         self.exec(move |c| {
             let path = normalize_root_path(&path);
-            let existing: Vec<String> = {
-                let mut stmt = c.prepare_cached("SELECT path FROM root WHERE library_id = ?1 ORDER BY id")?;
-                let rows = stmt.query_map([library_id], |r| r.get(0))?;
-                rows.collect::<rusqlite::Result<_>>()?
-            };
-            if let Some(other) = existing.iter().find(|o| roots_overlap(&path, o)) {
+            let existing = all_roots(c)?;
+            if let Some((other, ..)) = existing
+                .iter()
+                .find(|(o, lib, _)| *lib == library_id && roots_overlap(&path, o))
+            {
                 return Err(CatalogError::OverlappingRoots {
                     root: path,
                     other: other.clone(),
                 });
+            }
+            if let Some(e) = in_other_library(&path, &existing, Some(library_id)) {
+                return Err(e);
             }
             c.prepare_cached(
                 "INSERT INTO root(library_id, path, volume_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -984,12 +992,58 @@ fn names_a_volume_not_its_root(t: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && !rest.contains('\\'))
 }
 
-/// The same folder, or one inside the other, compared by whole path
-/// components (`/media/Movies2` is not inside `/media/Movies`; `.` and
-/// duplicate separators are ignored).
+/// The same folder, or one inside the other (see [`root_overlap`]).
 pub(crate) fn roots_overlap(a: &str, b: &str) -> bool {
-    let (a, b) = (std::path::Path::new(a), std::path::Path::new(b));
-    a.starts_with(b) || b.starts_with(a)
+    root_overlap(a, b).is_some()
+}
+
+/// How root `a` relates to root `b`: the same folder, inside it or around
+/// it; `None` when it is neither. Compared as written, by whole path
+/// components (`/media/Movies2` is not inside `/media/Movies`; `.`,
+/// duplicate and trailing separators are ignored), and without regard to
+/// letter case on Windows and macOS, whose volumes usually ignore it.
+/// flux-server compares the folders' real paths too (symlinks, `..`).
+pub fn root_overlap(a: &str, b: &str) -> Option<RootOverlap> {
+    let fold = |s: &str| {
+        if cfg!(any(windows, target_os = "macos")) {
+            s.to_lowercase()
+        } else {
+            s.to_string()
+        }
+    };
+    let (a, b) = (fold(a), fold(b));
+    let (a, b) = (std::path::Path::new(&a), std::path::Path::new(&b));
+    match (a.starts_with(b), b.starts_with(a)) {
+        (true, true) => Some(RootOverlap::Same),
+        (true, false) => Some(RootOverlap::Inside),
+        (false, true) => Some(RootOverlap::Contains),
+        (false, false) => None,
+    }
+}
+
+/// Every root: `(path, library id, library name)`.
+fn all_roots(c: &Connection) -> Result<Vec<(String, Id, String)>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT r.path, r.library_id, l.name FROM root r JOIN library l ON l.id = r.library_id ORDER BY r.id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// [`CatalogError::RootInOtherLibrary`] if `path` overlaps a root of a
+/// library other than `own`.
+fn in_other_library(path: &str, roots: &[(String, Id, String)], own: Option<Id>) -> Option<CatalogError> {
+    roots
+        .iter()
+        .filter(|(_, lib, _)| Some(*lib) != own)
+        .find_map(|(other, _, name)| {
+            root_overlap(path, other).map(|how| CatalogError::RootInOtherLibrary {
+                root: path.to_string(),
+                other: other.clone(),
+                library: name.clone(),
+                how,
+            })
+        })
 }
 
 /// ≥ 90 % watched counts as finished (Plex/Jellyfin use 90–95 %).

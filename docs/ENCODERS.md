@@ -66,12 +66,22 @@ binary once and caches the result (`flux_hls::encoders::FfmpegCaps`):
 |---|---|---|---|
 | Encoder | `--video-encoder auto\|videotoolbox\|nvenc\|qsv\|vaapi\|libx264` | `FLUX_VIDEO_ENCODER` | `video_encoder = "…"` |
 | VAAPI render node | `--vaapi-device PATH` | `FLUX_VAAPI_DEVICE` | `vaapi_device = "…"` |
+| Concurrent video transcodes | `--max-video-transcodes N` | `FLUX_MAX_VIDEO_TRANSCODES` | `max_video_transcodes = N` |
 
 A forced encoder is used even if its test encode fails (`--check` still
 shows the failure). `auto` (the default) detects. `software`, `x264` and
 `h264_*` names are accepted too. In code, `EngineConfig::video_encoder`
 and `EngineConfig::vaapi_device` do the same, and `EngineConfig::default()`
 reads both variables.
+
+Video transcodes run in a pool of encoder slots (ffmpeg runs). Requests
+and pieces encoded ahead share it, but encoding ahead only takes a spare
+slot and gives it up when a request finds every slot busy, so a first
+piece or a seek never waits behind it. The default (`0`) is 6 slots on a
+hardware encoder and 3 for libx264. A GeForce driver allows 8 NVENC
+sessions per machine, shared with other apps (another media server, a
+game recorder): raise the pool on a dedicated machine, lower it when the
+GPU is shared.
 
 ### The pipeline per encoder
 
@@ -86,6 +96,20 @@ decode, scale, tone-map and rotate chain, then the encoder:
 | QSV | `-hwaccel qsv` + `h264_qsv`/`hevc_qsv` decoder (no rotation or tone mapping) | `scale_qsv` | software chain | software chain |
 | VAAPI | `-hwaccel vaapi` on the render node (H.264/HEVC) | `scale_vaapi` | `tonemap_vaapi` when present, else download → software → upload | `transpose_vaapi` when present, else download → software → upload |
 | libx264 | software | `scale` | software chain | `transpose` / `hflip,vflip` |
+
+Interlaced sources (MPEG-2, VC-1, and H.264 that the container flags
+interlaced or, without a flag, whose SPS allows field coding) are
+deinterlaced first, at the source size: `bwdif_cuda` on the NVENC GPU path,
+`yadif_videotoolbox` on VideoToolbox, `deinterlace_vaapi` on VAAPI, else
+`bwdif` (or `yadif`) in the software chain. One frame comes out per frame
+(`mode=send_frame`), so piece frame counts hold, and only frames the
+decoder marks interlaced are touched (`deint=interlaced`). The exception is
+H.264 flagged interlaced but coded as progressive frames, with the fields
+woven in: the decoder marks none, so every frame is deinterlaced
+(`deint=all`). H.264 flagged progressive is left alone even when its SPS
+allows field coding (x264's `fake-interlaced`, used for 25p/30p Blu-ray
+encodes). Browsers can't deinterlace, so the planner transcodes interlaced
+H.264 for web clients.
 
 The **software chain** scales first, then tone-maps with jellyfin-ffmpeg's
 `tonemapx` (BT.2390) when the build has it, else with `zscale` (zimg) to

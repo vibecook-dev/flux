@@ -4,7 +4,7 @@
  * library's state. Kept out of Admin.tsx so the copy for an offline drive and
  * the event bookkeeping can be checked without a browser.
  */
-import type { Library, LibraryKind, ScanStatus } from '../api/types';
+import type { Library, LibraryKind, MetadataSource, ScanStatus } from '../api/types';
 
 export const STATE_LABEL: Record<ScanStatus['state'], string> = {
   idle: 'Not scanned yet',
@@ -37,6 +37,15 @@ export function offlineNote(lib: Library, offline: Set<string>): string | null {
   const all = down > 0 && down === lib.roots.length;
   const what = all ? (lib.roots.length === 1 ? 'This library’s folder isn’t' : 'None of this library’s folders are') : 'Some of this library’s folders aren’t';
   return `${what} responding. flux kept every item; they play again as soon as the folder is back.`;
+}
+
+/**
+ * Why titles look like file names, when the server has nothing to match
+ * them against (no TMDB key, no offline exports); `null` otherwise.
+ */
+export function metadataNote(source: MetadataSource): string | null {
+  if (source !== 'none') return null;
+  return 'Titles, years and posters come from the file names and the videos themselves: flux has no TMDB key to look them up. To match them, set TMDB_READ_TOKEN (or TMDB_API_KEY) in flux-server’s environment and restart it.';
 }
 
 const TITLES: Record<LibraryKind, [one: string, many: string]> = { movies: ['film', 'films'], shows: ['show', 'shows'], mixed: ['title', 'titles'] };

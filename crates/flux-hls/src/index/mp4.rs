@@ -650,9 +650,13 @@ fn track_from_trak(
     // `pasp` (h_spacing, v_spacing) of a visual sample entry.
     let mut pasp: Option<(u32, u32)> = None;
     let pasp_of = |p: &Option<mp4_atom::Pasp>| p.as_ref().map(|p| (p.h_spacing, p.v_spacing));
+    // `fiel` (field count 1 = progressive, 2 = interlaced), as flux-probe reads it.
+    let mut fiel: Option<bool> = None;
+    let fiel_of = |f: &Option<mp4_atom::Fiel>| f.as_ref().map(|f| f.field_count == 2);
     match entry {
         SampleEntry::Avc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc1".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -662,6 +666,7 @@ fn track_from_trak(
         }
         SampleEntry::Avc3(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc3".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -672,6 +677,7 @@ fn track_from_trak(
         }
         SampleEntry::Hvc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hvc1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -681,6 +687,7 @@ fn track_from_trak(
         }
         SampleEntry::Hev1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hev1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -913,8 +920,8 @@ fn track_from_trak(
 
     // A `hev1`/`dvhe` entry may hold no parameter sets at all (they are only
     // in-band): complete its record from the first sync sample, so the SPS
-    // facts below are known and a remux to `hvc1`/`dvh1`, which strips the
-    // in-band sets, still decodes.
+    // facts below are known and a remux to `hvc1`/`dvh1` has them in its
+    // record, where those entries (and Apple's players) need them.
     if t.codec == Codec::Hevc && t.inband_parameter_sets {
         let empty = hevc::HevcConfig::parse(&t.codec_private).filter(|c| c.nalus(33).next().is_none());
         if let (Some(c), Some((off, size))) = (empty, first_sync_sample(&tables)) {
@@ -1034,6 +1041,7 @@ fn track_from_trak(
             Some((h, v)) if h > 0 && v > 0 => t.extra.sar = super::mkv::reduce_ratio(h as u64, v as u64),
             _ => t.extra.sar = vui_sar,
         }
+        t.extra.interlaced = fiel;
         if let Some(&(count, delta)) = tables.stts.first() {
             if delta > 0 && (tables.stts.len() == 1 || count as usize * 10 > sample_count as usize * 9) {
                 t.frame_duration = Some(delta);
@@ -1294,7 +1302,7 @@ fn first_sync_sample(t: &Mp4Tables) -> Option<(u64, u32)> {
 }
 
 /// An `hvcC` record with no SPS, completed with the VPS/SPS/PPS found
-/// in-band in `sample` (marked complete: the remux strips in-band sets).
+/// in-band in `sample` (marked complete, as an `hvc1`/`dvh1` entry requires).
 /// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS,
 /// or sets an `hvcC` can't hold (a unit of 64 KiB or more).
 ///
@@ -1733,7 +1741,7 @@ mod tests {
 
             // The remux writes `dvh1` with the record, and CODECS says so.
             // A `dvhe` record without parameter sets is completed from the
-            // first keyframe (the remux strips the in-band ones).
+            // first keyframe (the samples keep their in-band copies too).
             let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
             let EntrySpec::Video {
                 fourcc, dovi, config, ..
@@ -1779,7 +1787,7 @@ mod tests {
         }
     }
 
-    /// A `hev1` entry remuxes to `hvc1` (parameter sets stripped), and the
+    /// A `hev1` entry remuxes to `hvc1` (parameter sets in the record), and the
     /// `CODECS` entry names the entry written, not the source's.
     #[test]
     fn hev1_codec_string_follows_the_written_entry() {

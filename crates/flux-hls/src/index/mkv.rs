@@ -387,6 +387,8 @@ struct Entry {
     /// DisplayWidth, DisplayHeight, DisplayUnit (the display aspect when
     /// they differ from the pixel size: anamorphic video; unit 4 = unknown).
     display: (Option<u64>, Option<u64>, u64),
+    /// FlagInterlaced: 1 interlaced, 2 progressive, else unknown.
+    interlaced: Option<bool>,
     sampling: Option<f64>,
     channels: Option<u8>,
     bit_depth: Option<u8>,
@@ -487,6 +489,13 @@ fn parse_video(e: &mut Entry, b: &[u8]) {
             ebml::DISPLAY_WIDTH => e.display.0 = Some(ebml::uint(v.body)),
             ebml::DISPLAY_HEIGHT => e.display.1 = Some(ebml::uint(v.body)),
             ebml::DISPLAY_UNIT => e.display.2 = ebml::uint(v.body),
+            ebml::FLAG_INTERLACED => {
+                e.interlaced = match ebml::uint(v.body) {
+                    1 => Some(true),
+                    2 => Some(false),
+                    _ => None,
+                }
+            }
             ebml::COLOUR => {
                 for c in children(v.body) {
                     let u = ebml::uint(c.body);
@@ -1136,6 +1145,7 @@ fn make_track(
     };
     if kind == TrackKind::Video {
         t.extra.sar = display_sar(e);
+        t.extra.interlaced = e.interlaced;
     }
     let first_bytes: Option<Vec<u8>> = first.map(|f| {
         let mut v = e.header_strip.clone().unwrap_or_default();
