@@ -730,6 +730,21 @@ fn a_file_behind_a_junction_records_its_identity() {
     // The same identity on the next scan: unchanged, not re-probed.
     let again = scan(&s, lib);
     assert_eq!(again.unchanged, 2, "{again:?}");
+    // Deleted, its folder left empty: Missing, as inside the root. The
+    // folder's device is unknown on Windows; read as 0, it differed from
+    // the file's volume serial and the folder passed for an unmounted
+    // volume's mount point, keeping the file Present forever.
+    std::fs::remove_file(ext.join("Outside (2021)/Outside (2021).mp4")).unwrap();
+    std::fs::remove_file(root.join("Inside (2020)/Inside (2020).mp4")).unwrap();
+    let gone = scan(&s, lib);
+    assert!(gone.unread_dirs.is_empty(), "{gone:?}");
+    assert_eq!(gone.missing, 2, "{gone:?}");
+    let snap = snapshot(&cat, root_id);
+    assert_eq!(
+        snap["Ext/Outside (2021)/Outside (2021).mp4"].state,
+        FileState::Missing
+    );
+    assert_eq!(snap["Inside (2020)/Inside (2020).mp4"].state, FileState::Missing);
     s.shutdown(Duration::from_secs(5));
     std::fs::remove_dir(&link).unwrap();
 }

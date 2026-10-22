@@ -898,7 +898,13 @@ impl Walk<'_> {
         }
         if e.is_dir() {
             let descend = self.full || !self.idx.known_dirs.contains(rel.as_str());
-            self.dir_dev.insert(rel.clone(), e.dev);
+            // Mille's dev = ino = 0 (Windows) means "unknown", not device 0:
+            // recorded, it would make every emptied folder of files that do
+            // carry an identity (behind a junction) look like an unmounted
+            // volume's mount point, and keep a deleted file forever.
+            if e.dev != 0 || e.ino != 0 {
+                self.dir_dev.insert(rel.clone(), e.dev);
+            }
             self.seen_dirs.insert(rel.clone());
             return if descend {
                 self.listed.insert(rel);
