@@ -108,7 +108,7 @@ To install a release under `/opt/flux` (to upgrade an existing install, see
 
 <!-- x-release-please-start-version -->
 ```sh
-version=0.1.0-alpha.2
+version=0.1.0-alpha.3
 target=aarch64-apple-darwin      # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 base=https://github.com/vibecook-dev/flux/releases/download/v$version
 curl -fLO "$base/flux-$version-$target.tar.gz"
@@ -281,7 +281,7 @@ Visual C++ Redistributable. The commands below are for PowerShell.
 
 <!-- x-release-please-start-version -->
 ```powershell
-$version = '0.1.0-alpha.2'
+$version = '0.1.0-alpha.3'
 $zip = "flux-$version-x86_64-pc-windows-msvc.zip"
 $base = "https://github.com/vibecook-dev/flux/releases/download/v$version"
 curl.exe -fLO "$base/$zip"
@@ -481,7 +481,7 @@ docker run -d --name flux \
   -v /path/to/tv:/media/tv:ro \
   -e FLUX_LIBRARIES="Movies:movies:/media/movies;TV:shows:/media/tv" \
   -e FLUX_ALLOW_HOSTS="nas.local,media.example.com" \
-  ghcr.io/vibecook-dev/flux:0.1.0-alpha.2
+  ghcr.io/vibecook-dev/flux:0.1.0-alpha.3
 ```
 <!-- x-release-please-end -->
 

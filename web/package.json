@@ -1,7 +1,7 @@
 {
   "name": "flux-web",
   "private": true,
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "type": "module",
   "description": "flux web client: React 19 + TypeScript + Vite, hls.js playback, talks flux_core::api",
   "license": "MIT",
