@@ -1,5 +1,6 @@
 //! The ffprobe fallback for containers flux-probe does not read
-//! (`ProbeError::UnknownFormat`: FLV, MPEG-PS/VOB, ASF/WMV, OGM, RMVB…).
+//! (`ProbeError::UnknownFormat`: FLV, MPEG-PS/VOB, ASF/WMV, OGM, RMVB…) and
+//! files it finds malformed, which ffmpeg's demuxers often still read.
 //!
 //! flux-probe's own `ffprobe::probe` has no timeout. Here every run is
 //! bounded: at most `ffprobe_workers` processes at once (the pool in
@@ -13,6 +14,21 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use flux_core::ProbeResult;
+
+/// Most of ffprobe's output (each stream) a run keeps. A real file's JSON is
+/// a few KiB, tens with many chapters; a hostile one's is not (an MP4 whose
+/// `hdlr` name is 96 MiB of a legacy code page, which flux-probe calls
+/// malformed: buffering and parsing its JSON peaked at ~1.1 GiB).
+const MAX_OUTPUT: u64 = 16 << 20;
+
+/// Reads `r` to its end, keeping its first `max` bytes; true when it held
+/// more. The rest is drained, so the child never blocks on a full pipe.
+fn read_capped(r: &mut dyn Read, max: u64) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let _ = (&mut *r).take(max).read_to_end(&mut buf);
+    let more = std::io::copy(r, &mut std::io::sink()).unwrap_or(0) > 0;
+    (buf, more)
+}
 
 /// One ffprobe run with a deadline. Stdout/stderr are drained on helper
 /// threads so a chatty child can't block on a full pipe. `cancelled` is
@@ -33,12 +49,9 @@ pub(crate) fn run(
         .spawn()
         .map_err(|e| format!("ffprobe ({}): spawn: {e}", bin.display()))?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = pipe {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
+        std::thread::spawn(move || match pipe {
+            Some(mut p) => read_capped(&mut p, MAX_OUTPUT),
+            None => (Vec::new(), false),
         })
     };
     let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -66,12 +79,18 @@ pub(crate) fn run(
             }
         }
     };
-    let out = stdout.join().unwrap_or_default();
-    let err = stderr.join().unwrap_or_default();
+    let (out, more) = stdout.join().unwrap_or_default();
+    let (err, _) = stderr.join().unwrap_or_default();
     if !status.success() {
         return Err(format!(
             "ffprobe: exit {status}: {}",
             String::from_utf8_lossy(&err).trim()
+        ));
+    }
+    if more {
+        return Err(format!(
+            "ffprobe: output over {} MiB (not read)",
+            MAX_OUTPUT >> 20
         ));
     }
     let v: serde_json::Value = serde_json::from_slice(&out).map_err(|e| format!("ffprobe: bad JSON: {e}"))?;
@@ -87,6 +106,16 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Output is kept up to the cap, and the rest drained.
+    #[test]
+    fn output_is_read_up_to_a_cap() {
+        let mut long = std::io::Cursor::new(vec![7u8; 100]);
+        let (b, more) = read_capped(&mut long, 64);
+        assert_eq!((b.len(), more, long.position()), (64, true, 100));
+        let (b, more) = read_capped(&mut std::io::Cursor::new(vec![7u8; 64]), 64);
+        assert_eq!((b.len(), more), (64, false));
+    }
 
     #[test]
     fn missing_binary_and_garbage_fail_cleanly() {
