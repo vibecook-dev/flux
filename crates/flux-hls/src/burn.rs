@@ -102,11 +102,15 @@ pub struct BurnProbe {
 /// `start_clock` is where the source timeline starts on ffmpeg's clock for
 /// a video file whose timestamps ffmpeg counts from its start time
 /// (`start_clock_origin_s`), `None` when they are the container's own.
+/// `copyts`: the run keeps every input's own timestamps (`-copyts`, a
+/// time-based run of a file only ffmpeg reads), so `-ss` doesn't move them
+/// and `-itsoffset` alone takes source time `first_s` to 0.
 pub(crate) fn input_args(
     b: &BurnIn,
     probe: &BurnProbe,
     first_s: f64,
     start_clock: Option<f64>,
+    copyts: bool,
 ) -> Vec<String> {
     let preroll = if b.embedded {
         EMBEDDED_PREROLL_S
@@ -130,12 +134,13 @@ pub(crate) fn input_args(
             let at = (origin + seek)
                 .max(file_start)
                 .max(probe.stream_start_s.unwrap_or(file_start));
+            let offset = if copyts { -origin } else { at - origin } - first_s;
             a.extend([
                 "-noaccurate_seek".into(),
                 "-ss".into(),
                 format!("{:.6}", at - file_start),
                 "-itsoffset".into(),
-                format!("{:.6}", at - origin - first_s),
+                format!("{offset:.6}"),
             ]);
         }
         // Timestamps as they are: a `.sup` starts at its first subtitle,
@@ -153,10 +158,8 @@ pub(crate) fn input_args(
                 // No trim at the seek point: keep what is on screen already.
                 a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
             }
-            a.extend([
-                "-itsoffset".into(),
-                format!("{:.6}", seek.unwrap_or(0.0) - first_s),
-            ]);
+            let from = if copyts { 0.0 } else { seek.unwrap_or(0.0) };
+            a.extend(["-itsoffset".into(), format!("{:.6}", from - first_s)]);
         }
     }
     if let Some((w, h)) = probe.canvas {
@@ -430,7 +433,7 @@ mod tests {
             ..Default::default()
         };
         // A subtitle file keeps its own times, whatever the video's clock.
-        let a = input_args(&b, &probe, 600.5, Some(21.4));
+        let a = input_args(&b, &probe, 600.5, Some(21.4), false);
         let s = a.join(" ");
         assert!(
             s.contains("-seek_timestamp 1 -noaccurate_seek -ss 540.500000 -itsoffset -60.000000 -canvas_size 1920x1080 -i /m/Show/Ep.sup"),
@@ -439,7 +442,7 @@ mod tests {
         // Not past the file's first subtitle (near the start, or a late
         // first subtitle): read from the start, shifted the whole way.
         for first in [11.0, 65.0] {
-            let s = input_args(&b, &probe, first, None).join(" ");
+            let s = input_args(&b, &probe, first, None, false).join(" ");
             assert!(
                 s.contains("-seek_timestamp 1 -itsoffset") && !s.contains("-ss"),
                 "{s}"
@@ -449,7 +452,7 @@ mod tests {
             first_subtitle_s: Some(600.0),
             ..probe
         };
-        let s = input_args(&b, &late, 610.0, None).join(" ");
+        let s = input_args(&b, &late, 610.0, None, false).join(" ");
         assert!(
             s.contains("-itsoffset -610.000000 -canvas_size") && !s.contains("-ss"),
             "{s}"
@@ -460,7 +463,7 @@ mod tests {
             stream: 3,
             ..file("/m/Film.mkv", Codec::Pgs)
         };
-        let s = input_args(&e, &BurnProbe::default(), 100.0, None).join(" ");
+        let s = input_args(&e, &BurnProbe::default(), 100.0, None, false).join(" ");
         assert!(
             s.contains(
                 "-seek_timestamp 1 -noaccurate_seek -ss 90.000000 -itsoffset -10.000000 -i /m/Film.mkv"
@@ -480,7 +483,7 @@ mod tests {
             ..Default::default()
         };
         // `-ss` counts from the file's start time (no `-seek_timestamp`).
-        let s = input_args(&ts, &tp, 100.0, Some(21.4)).join(" ");
+        let s = input_args(&ts, &tp, 100.0, Some(21.4), false).join(" ");
         assert!(
             s.contains("-noaccurate_seek -ss 90.000000 -itsoffset -10.000000 -i /m/Film.m2ts")
                 && !s.contains("-seek_timestamp"),
@@ -488,9 +491,9 @@ mod tests {
         );
         // Near the start: seeked to the track's first packet, not before it,
         // and shifted from there.
-        let s = input_args(&ts, &tp, 0.0, Some(21.4)).join(" ");
+        let s = input_args(&ts, &tp, 0.0, Some(21.4), false).join(" ");
         assert!(s.contains("-ss 1.000000 -itsoffset 1.000000 -i"), "{s}");
-        let s = input_args(&ts, &tp, 4.0, Some(21.4)).join(" ");
+        let s = input_args(&ts, &tp, 4.0, Some(21.4), false).join(" ");
         assert!(s.contains("-ss 1.000000 -itsoffset -3.000000 -i"), "{s}");
         // ffmpeg's start time earlier than the source timeline's (a subtitle
         // track starting just before the audio and video): `-ss` from it.
@@ -499,11 +502,23 @@ mod tests {
             stream_start_s: Some(21.0),
             ..Default::default()
         };
-        let s = input_args(&ts, &early, 100.0, Some(21.4)).join(" ");
+        let s = input_args(&ts, &early, 100.0, Some(21.4), false).join(" ");
         assert!(s.contains("-ss 90.400000 -itsoffset -10.000000 -i"), "{s}");
         // ffprobe couldn't tell: the source timeline's origin stands in.
-        let s = input_args(&ts, &BurnProbe::default(), 2.0, Some(21.4)).join(" ");
+        let s = input_args(&ts, &BurnProbe::default(), 2.0, Some(21.4), false).join(" ");
         assert!(s.contains("-ss 0.000000 -itsoffset -2.000000 -i"), "{s}");
+        // A time-based run keeps every input's timestamps (`-copyts`): `-ss`
+        // only seeks, and `-itsoffset` takes the subtitle's own time (a
+        // file's), or the file's clock (a track), to the run's first frame.
+        let s = input_args(&b, &probe, 600.5, Some(21.4), true).join(" ");
+        assert!(
+            s.contains("-noaccurate_seek -ss 540.500000 -itsoffset -600.500000 -canvas_size"),
+            "{s}"
+        );
+        let s = input_args(&b, &late, 610.0, None, true).join(" ");
+        assert!(s.contains("-itsoffset -610.000000 -canvas_size"), "{s}");
+        let s = input_args(&ts, &tp, 100.0, Some(21.4), true).join(" ");
+        assert!(s.contains("-ss 90.000000 -itsoffset -121.400000 -i"), "{s}");
         // Different files, different recipes.
         assert_ne!(
             b.key(),

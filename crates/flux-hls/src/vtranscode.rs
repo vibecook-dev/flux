@@ -223,13 +223,18 @@ fn converts(stts: &[(u32, u32)], timescale: u32, frame_duration: Option<u32>, ra
 /// Where a run of an index-less asset (`Layout::External`) starts ffmpeg:
 /// `input` what it opens (the file, or the part of it the run starts in,
 /// [`ExternalLayout::input_at`](crate::index::external::ExternalLayout::input_at)),
-/// `seek_us` its `-ss` (µs on that input's clock), `shift_us` from there to
-/// the run's first piece.
+/// `seek_us` its `-ss` (µs from that input's start, as ffmpeg counts it),
+/// and where the run's first piece starts on the input's own clock (µs):
+/// the run keeps the input's timestamps (`-copyts`) and subtracts that.
+/// Without `-copyts` the timestamps after `-ss` depend on the ffmpeg
+/// version for a file whose start time isn't 0: 6.1 left the video's start
+/// time in (an MPEG-PS piece showed the source 0.53 s early), 8.1 takes it
+/// out. Audio agrees across versions, and keeps its `-ss` arithmetic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Window {
     pub input: String,
     pub seek_us: i64,
-    pub shift_us: i64,
+    pub first_us: i64,
 }
 
 /// The [`Window`] of a run whose first piece is `first`, or `None` for an
@@ -242,13 +247,13 @@ pub(crate) fn external_window(asset: &Asset, first: &Piece, ts: f64, back_us: i6
         return None;
     };
     let t0_ns = (first.start_ticks as f64 * 1e9 / ts).round() as i64;
-    let (input, base_ns) = l.input_at(&asset.index.source.path, t0_ns);
+    let (input, base_ns, clock_ns) = l.input_at(&asset.index.source.path, t0_ns);
     let t0 = (t0_ns - base_ns) / 1000;
     let seek = (t0 - l.seek_margin_ns.max(0) / 1000 - back_us.max(0)).max(0);
     Some(Window {
         input,
         seek_us: seek,
-        shift_us: t0 - seek,
+        first_us: clock_ns / 1000 + t0,
     })
 }
 
@@ -262,9 +267,11 @@ pub(crate) fn external_window(asset: &Asset, first: &Piece, ts: f64, back_us: i6
 /// point.
 pub(crate) const SEEK_BACK_US: [i64; 3] = [0, 15_000_000, 60_000_000];
 
-/// µs as ffmpeg seconds ("12.345678").
+/// µs as ffmpeg seconds ("12.345678", "-0.500000").
 fn micros(us: i64) -> String {
-    format!("{}.{:06}", us / 1_000_000, us % 1_000_000)
+    let sign = if us < 0 { "-" } else { "" };
+    let us = us.unsigned_abs();
+    format!("{sign}{}.{:06}", us / 1_000_000, us % 1_000_000)
 }
 
 /// Clockwise display rotation of the asset's video (0/90/180/270).
@@ -1035,6 +1042,8 @@ impl VideoTranscoder {
                 a.extend(["-f", "mpegts", "-i", "pipe:0"].map(String::from));
             }
             (_, Some(w)) => {
+                // The input's own timestamps (see `Window`).
+                a.push("-copyts".to_string());
                 if w.seek_us > 0 {
                     a.extend(["-ss".to_string(), micros(w.seek_us)]);
                 }
@@ -1057,7 +1066,13 @@ impl VideoTranscoder {
             .unwrap_or(first.start_ticks);
         if let Some((b, probe)) = burn {
             let clock = burn::start_clock_origin_s(&asset.index.layout);
-            a.extend(burn::input_args(b, probe, first_ticks as f64 / ts, clock));
+            a.extend(burn::input_args(
+                b,
+                probe,
+                first_ticks as f64 / ts,
+                clock,
+                window.is_some(),
+            ));
         }
         let map = if burn.is_some() { "[out]" } else { "0:v:0" };
         // passthrough: never duplicate/drop frames to fake a constant rate
@@ -1116,10 +1131,11 @@ impl VideoTranscoder {
         };
         // Then scale, tone-map and rotate for the encoder (crate::encoders).
         // A time-based run instead puts the piece's start at 0 (in µs, so
-        // AVI's 1/fps timebase doesn't round it to a frame) and converts to
-        // the index's constant rate: `fps` picks the frame on screen at
-        // each grid point (those before 0 only for the first), `tpad`
-        // repeats the last one if the video ends before the file does.
+        // AVI's 1/fps timebase doesn't round it to a frame; the input's own
+        // clock, `-copyts`) and converts to the index's constant rate: `fps`
+        // picks the frame on screen at each grid point (those before 0 only
+        // for the first), `tpad` repeats the last one if the video ends
+        // before the file does.
         // A converted video ([`converted_rate`]) instead starts its clock at
         // the piece (in µs, exact) and takes `fps`'s frames: the frame on
         // screen at each grid point (of those before 0, only the last one).
@@ -1128,7 +1144,7 @@ impl VideoTranscoder {
         // last piece takes the frames there are (`piece_cut`).
         let (pre, chain) = match (&window, v.frame_rate, converted_rate(asset)) {
             (Some(w), Some(r), _) => (
-                format!("settb=AVTB,setpts=PTS-{}/TB", micros(w.shift_us)),
+                format!("settb=AVTB,setpts=PTS-({})/TB", micros(w.first_us)),
                 format!(
                     "{},fps={}/{}:start_time=0,tpad=stop=-1:stop_mode=clone",
                     pipe.filters, r.num, r.den

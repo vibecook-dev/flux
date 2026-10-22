@@ -511,7 +511,7 @@ impl AudioTranscoder {
         // on that part's own clock (`base`: where it starts).
         let (input, base) = match &asset.index.layout {
             Layout::External(l) => {
-                let (input, base_ns) = l.input_at(&asset.index.source.path, ticks_to_ns(start, g.rate));
+                let (input, base_ns, _) = l.input_at(&asset.index.source.path, ticks_to_ns(start, g.rate));
                 (input, ns_to_ticks(base_ns, g.rate))
             }
             _ => (asset.index.source.path.display().to_string(), 0),

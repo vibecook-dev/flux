@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use flux_core::{AudioOp, Codec, Container, PlaybackPlan, Rational, Reason, TrackKind, VideoOp};
+use flux_core::{
+    AudioOp, Codec, Container, PlaybackPlan, Rational, Reason, SubtitleFile, TrackKind, VideoOp,
+    SUBTITLE_FILE_TRACK_BASE,
+};
 use flux_hls::index::{IndexMethod, Layout};
 use flux_hls::playlist::{HlsResource, Rendition};
 use flux_hls::{presets, Asset, AudioKey, EngineConfig, HlsEngine, HlsError, PlanPrefs, VideoEncoder};
@@ -382,6 +385,155 @@ async fn a_seek_that_decodes_nothing_seeks_further_back() {
         psnr > 28.0,
         "the last piece is not the source at {start} s (min PSNR {psnr:.1} dB)"
     );
+}
+
+/// One PGS display set in `.sup` form: a white box at `rect` on a `canvas`
+/// from `from` seconds, cleared at `to` (as in `synthetic.rs`).
+fn pgs_box(canvas: (u16, u16), rect: (u16, u16, u16, u16), from: f64, to: f64) -> Vec<u8> {
+    fn seg(out: &mut Vec<u8>, pts: f64, ty: u8, body: &[u8]) {
+        out.extend_from_slice(b"PG");
+        out.extend_from_slice(&((pts * 90_000.0) as u32).to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.push(ty);
+        out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        out.extend_from_slice(body);
+    }
+    let be = |v: u16| v.to_be_bytes();
+    let (x, y, w, h) = rect;
+    let mut out = Vec::new();
+    let mut pcs = [be(canvas.0), be(canvas.1)].concat();
+    pcs.extend_from_slice(&[0x10, 0, 1, 0x80, 0, 0, 1, 0, 0, 0, 0]);
+    pcs.extend_from_slice(&[be(x), be(y)].concat());
+    let wds = [&[1u8, 0][..], &be(x), &be(y), &be(w), &be(h)].concat();
+    let pds = [0u8, 0, 1, 235, 128, 128, 255];
+    let mut rle = Vec::new();
+    for _ in 0..h {
+        rle.extend_from_slice(&[0, 0xC0 | (w >> 8) as u8, (w & 0xFF) as u8, 1, 0, 0]);
+    }
+    let len = (rle.len() + 4) as u32;
+    let mut ods = vec![0, 0, 0, 0xC0];
+    ods.extend_from_slice(&len.to_be_bytes()[1..]);
+    ods.extend_from_slice(&[be(w), be(h)].concat());
+    ods.extend_from_slice(&rle);
+    seg(&mut out, from, 0x16, &pcs);
+    seg(&mut out, from, 0x17, &wds);
+    seg(&mut out, from, 0x14, &pds);
+    seg(&mut out, from, 0x15, &ods);
+    seg(&mut out, from, 0x80, &[]);
+    let mut clear = [be(canvas.0), be(canvas.1)].concat();
+    clear.extend_from_slice(&[0x10, 0, 2, 0x00, 0, 0, 0]);
+    seg(&mut out, to, 0x16, &clear);
+    seg(&mut out, to, 0x17, &wds);
+    seg(&mut out, to, 0x80, &[]);
+    out
+}
+
+/// The luma of the frame shown at `t` seconds.
+fn gray_frame(ff: &Path, file: &Path, t: f64) -> Vec<u8> {
+    let out = Command::new(ff)
+        .args(["-v", "error", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    out.stdout
+}
+
+/// Mean absolute difference of two `w`-wide gray frames inside `(x0, y0, x1, y1)`.
+fn diff_in(a: &[u8], b: &[u8], w: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let mut sum = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            sum += (a[y * w + x] as i64 - b[y * w + x] as i64).unsigned_abs();
+        }
+    }
+    sum as f64 / ((x1 - x0) * (y1 - y0)) as f64
+}
+
+/// A PGS subtitle file burned into a file only ffmpeg reads, whose clock
+/// starts at 0.53 s (MPEG-PS), shows exactly while it is on screen: from 1 s
+/// to 3 s of the file's own timeline. Each 2 s piece is its own run, and
+/// each keeps the inputs' timestamps (`-copyts`), so the subtitle input is
+/// lined up by `-itsoffset` alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subtitle_file_is_burned_into_an_index_less_file_on_time() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none() || !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::Mpeg1Mp2Ps) else { return };
+    let dir = flux_test_media::scratch("hls-old-formats-burn");
+    let sup = dir.join("ps.sup");
+    std::fs::write(&sup, pgs_box((320, 240), (100, 160, 120, 40), 1.0, 3.0)).unwrap();
+    let file = SubtitleFile {
+        track: SUBTITLE_FILE_TRACK_BASE + 1,
+        path: sup.display().to_string(),
+        codec: Codec::Pgs,
+        language: None,
+        title: None,
+        forced: false,
+        hearing_impaired: false,
+        size: std::fs::metadata(&sup).unwrap().len(),
+        mtime_ns: 0,
+    };
+    let engine = HlsEngine::new(EngineConfig {
+        video_encoder: Some(VideoEncoder::Libx264),
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        video_run_segments: 1,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let prefs = PlanPrefs {
+        subtitle_track: Some(file.track),
+        subtitle_files: vec![file.clone()],
+        ..hls_only()
+    };
+    let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+    let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+        panic!("{:?}", burned.explain())
+    };
+    assert_eq!(*burn_subtitle, Some(file.track));
+    let mut plain = burned.clone();
+    if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+        *burn_subtitle = None;
+    }
+    plain.subtitles.clear();
+    let n = engine.segment_count(&asset, &burned, &Rendition::Video) as u32;
+    let (a, _) = write_segments(
+        &engine,
+        &asset,
+        &burned,
+        Rendition::Video,
+        0..n,
+        &dir,
+        "burned.mp4",
+    )
+    .await;
+    let (b, _) = write_segments(&engine, &asset, &plain, Rendition::Video, 0..n, &dir, "plain.mp4").await;
+    let (inside, above) = ((108, 168, 212, 192), (0, 0, 320, 150));
+    for (t, shown) in [(0.5, false), (1.5, true), (2.5, true), (3.5, false), (6.5, false)] {
+        let (fa, fb) = (gray_frame(&ff, &a, t), gray_frame(&ff, &b, t));
+        assert_eq!(fa.len(), 320 * 240, "t = {t}");
+        let (d_in, d_out) = (diff_in(&fa, &fb, 320, inside), diff_in(&fa, &fb, 320, above));
+        assert!(
+            d_out < 8.0,
+            "t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
+        );
+        if shown {
+            assert!(d_in > 40.0, "t = {t}: no subtitle drawn ({d_in:.1})");
+            let white = fa[180 * 320 + 160];
+            assert!(white > 200, "t = {t}: the box is not white ({white})");
+        } else {
+            assert!(
+                d_in < 8.0,
+                "t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
+            );
+        }
+    }
 }
 
 /// Two recordings joined byte for byte, the clock starting over at 10 s:

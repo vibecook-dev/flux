@@ -52,6 +52,10 @@ pub struct ExternalPart {
     pub offset: u64,
     /// Where it starts on the asset's timeline, ns.
     pub start_ns: i64,
+    /// Its own clock where it starts (its earliest timestamp, the start
+    /// time ffmpeg reads for it), ns.
+    #[serde(default)]
+    pub clock_ns: i64,
 }
 
 impl ExternalLayout {
@@ -61,12 +65,14 @@ impl ExternalLayout {
     }
 
     /// What an ffmpeg run that reads from `t_ns` (asset timeline) on opens,
-    /// and where that input's clock starts on the timeline: the file, or
-    /// for joined parts only the part `t_ns` lies in (ffmpeg's `subfile`
-    /// protocol), since a seek by timestamp can't tell the parts apart.
-    /// Segments start anew at each part (`crate::segment`), and a video
-    /// run stays in one part, so no run reads past its part's end.
-    pub fn input_at(&self, path: &Path, t_ns: i64) -> (String, i64) {
+    /// where that input starts on the timeline, and its clock there (its
+    /// start time, ns: the timestamp of its timeline's 0 as `-copyts`
+    /// leaves it): the file, or for joined parts only the part `t_ns` lies
+    /// in (ffmpeg's `subfile` protocol), since a seek by timestamp can't
+    /// tell the parts apart. Segments start anew at each part
+    /// (`crate::segment`), and a video run stays in one part, so no run
+    /// reads past its part's end.
+    pub fn input_at(&self, path: &Path, t_ns: i64) -> (String, i64, i64) {
         match self.parts.iter().rposition(|p| p.start_ns <= t_ns) {
             Some(i) if self.parts.len() > 1 => {
                 let p = self.parts[i];
@@ -74,9 +80,10 @@ impl ExternalLayout {
                 (
                     format!("subfile,,start,{},end,{end},,:{}", p.offset, path.display()),
                     p.start_ns,
+                    p.clock_ns,
                 )
             }
-            _ => (path.display().to_string(), 0),
+            _ => (path.display().to_string(), 0, self.start_time_ns),
         }
     }
 }
@@ -673,6 +680,7 @@ pub fn build_with_limits(
             parts.push(ExternalPart {
                 offset: p.offset,
                 start_ns,
+                clock_ns: (origin as i128 * 1_000_000_000 / 90_000) as i64,
             });
             let span_ns = p.last_pts.saturating_sub(origin) as i64 * 1_000_000_000 / 90_000;
             at = start_ns + span_ns + frame_ns.round() as i64;

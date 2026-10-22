@@ -309,10 +309,12 @@ mod tests {
                 crate::index::external::ExternalPart {
                     offset: 0,
                     start_ns: 0,
+                    clock_ns: 0,
                 },
                 crate::index::external::ExternalPart {
                     offset: 1 << 20,
                     start_ns: 10_000_000_000,
+                    clock_ns: 500_000_000,
                 },
             ];
         }
