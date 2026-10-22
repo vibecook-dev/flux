@@ -69,9 +69,16 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
         })
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    /// Drops every entry and the table's memory; returns how many there were.
+    pub fn clear(&mut self) -> usize {
+        let n = self.map.len();
+        self.map = HashMap::new();
+        self.weight = 0;
+        n
     }
 
     /// Sum of the entries' weights.
@@ -114,5 +121,11 @@ mod tests {
         assert_eq!((l.len(), l.weight()), (1, 500), "an oversize entry stays alone");
         assert_eq!(l.remove(&4), Some("huge"));
         assert_eq!(l.weight(), 0);
+        l.insert_weighted(5, "e", 30);
+        l.insert_weighted(6, "f", 30);
+        assert_eq!(l.clear(), 2);
+        assert_eq!((l.len(), l.weight()), (0, 0));
+        l.insert_weighted(7, "g", 90);
+        assert_eq!(l.get(&7), Some(&"g"), "usable after a clear");
     }
 }

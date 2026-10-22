@@ -410,6 +410,11 @@ impl AudioTranscoder {
         self.cache.lock().map(|c| c.usage()).unwrap_or_default()
     }
 
+    /// Drops the cached segments ([`crate::HlsEngine::trim`]); returns their bytes.
+    pub(crate) fn clear_cache(&self) -> usize {
+        self.cache.lock().map(|mut c| c.clear()).unwrap_or(0)
+    }
+
     /// Init segment of a transcoded rendition (no ffmpeg needed: the sample
     /// entry is fully determined by the recipe).
     pub fn init_segment(asset: &Asset, track: u32, target: AudioTarget) -> Result<Vec<u8>> {

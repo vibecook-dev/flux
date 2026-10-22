@@ -6,12 +6,12 @@
 
 mod common;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::http::{Method, StatusCode};
 use common::*;
 use flux_core::api::{ItemDetail, PlanPreview, PlayResponse};
-use flux_core::{Codec, LibraryKind, VideoOp};
+use flux_core::{Codec, DeliveryFormat, LibraryKind, VideoOp};
 use flux_hls::VideoEncoder;
 use flux_server::{api::router, build_state, Config};
 use flux_test_media::Clip;
@@ -214,4 +214,171 @@ async fn subtitle_files_play_end_to_end() {
         "{:?}",
         preview.plan.video
     );
+}
+
+/// Idle playback gives the caches' memory back: the prepared asset stays
+/// cached while media requests come (seeks and the next segments still hit
+/// it), is dropped once none came for the idle time, and playback goes on
+/// afterwards. Before, the caches kept their contents for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_playback_drops_the_caches() {
+    let Some(src) = flux_test_media::clip(Clip::H264AacMp4) else {
+        return;
+    };
+    let dir = scratch("play-idle-trim");
+    let lib = dir.path().join("lib");
+    let file = lib.join("Idle Test (2020)").join("Idle Test (2020).mp4");
+    flux_test_media::clone_file(&src, &file).unwrap();
+    let cfg = Config::for_tests(dir.path().join("data"));
+    let (st, _) = build_state(cfg, Instant::now(), None).await.unwrap();
+    let cat = st.catalog.clone();
+    tokio::task::block_in_place(|| seed(&cat, "Movies", LibraryKind::Movies, &lib, |_| true));
+    let (item, asset) = item_of(&cat, "Idle Test (2020).mp4");
+    let app = router(st.clone());
+
+    // An HLS-only client: the MP4 is remuxed from its prepared asset.
+    let mut caps = flux_hls::presets::chrome_desktop();
+    caps.delivery.retain(|d| *d != DeliveryFormat::ProgressiveFile);
+    let r = post(
+        &app,
+        "/api/v1/play",
+        json!({"item_id": item, "asset_id": asset, "caps": caps, "audio_track": null, "subtitle_track": null, "start_ms": 0}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let play: PlayResponse = r.json();
+    assert!(
+        matches!(play.plan.video, VideoOp::Copy { .. }),
+        "{:?}",
+        play.explain
+    );
+    let base = play.url.trim_end_matches("master.m3u8").to_string();
+    let master = get(&app, &play.url).await;
+    let variant_rel = playlist_uris(&master.text()).into_iter().next().expect("variant");
+    let variant = get(&app, &format!("{base}{variant_rel}")).await;
+    let pieces = playlist_uris(&variant.text());
+    let seg = format!(
+        "{base}{}{}",
+        variant_rel.trim_end_matches("index.m3u8"),
+        pieces[0]
+    );
+    let first = get(&app, &seg).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    assert_eq!(st.play.assets_cached(), 1);
+
+    let idle = Duration::from_secs(1);
+    let trimmer = tokio::spawn(flux_server::play::trim_when_idle(st.clone(), idle));
+    // Playing: a request every 100 ms for 2.5 s; nothing is dropped.
+    for _ in 0..25 {
+        assert_eq!(get(&app, &seg).await.status, StatusCode::OK);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(st.play.assets_cached(), 1, "dropped while playing");
+    // Idle: dropped within a few checks.
+    let t0 = Instant::now();
+    while st.play.assets_cached() > 0 && t0.elapsed() < Duration::from_secs(15) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        st.play.assets_cached(),
+        0,
+        "not dropped after {:?} idle",
+        t0.elapsed()
+    );
+    assert_eq!(st.engine.cache_usage().bytes(), 0);
+    // Playback goes on from the catalog's index, the same bytes.
+    let again = get(&app, &seg).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body, first.body);
+    assert_eq!(st.play.assets_cached(), 1);
+    trimmer.abort();
+}
+
+/// What the web client reports on Chrome for Windows
+/// (`web/src/caps/detect.ts`): H.264 High and Main, VP9 profiles 0 and 2;
+/// no Baseline, Vorbis or AC-3 entries.
+fn chrome_web_caps() -> serde_json::Value {
+    json!({
+        "client": "web/chrome-141/windows",
+        "delivery": ["progressive_file", "hls_fmp4", "hls_ts"],
+        "progressive_containers": ["mp4", "web_m", "matroska"],
+        "video": [
+            {"codec": "h264", "profiles": ["high", "main"], "max_level": 51, "max_bit_depth": 8,
+             "max_width": 3840, "max_height": 2160, "hdr": [], "dovi_profiles": []},
+            {"codec": "vp9", "profiles": ["profile2", "profile0"], "max_level": 51, "max_bit_depth": 10,
+             "max_width": 3840, "max_height": 2160, "hdr": [], "dovi_profiles": []}
+        ],
+        "audio": [{"codec": "aac", "max_channels": 8}, {"codec": "opus", "max_channels": 8},
+                  {"codec": "flac", "max_channels": 8}],
+        "display_hdr": false,
+        "subtitles": ["web_vtt"],
+        "needs_demuxed_audio": false,
+        "max_bitrate": null
+    })
+}
+
+/// The dry run (`POST /plan`, from flux-probe's probe in the catalog) and
+/// `POST /play` (from the playback index) agree on the web client's
+/// Chrome caps, and neither transcodes the video any more: H.264 Baseline
+/// without `constraint_set1_flag` plays as it is; VP9 + Vorbis WebM has its
+/// video copied into fMP4 and the Vorbis converted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn baseline_and_vp9_plan_and_play_without_a_video_transcode() {
+    let (Some(baseline), Some(vp9)) = (
+        flux_test_media::clip(Clip::BaselineH264Mp4),
+        flux_test_media::clip(Clip::Vp9VorbisWebm),
+    ) else {
+        return;
+    };
+    let dir = scratch("play-baseline-vp9");
+    let lib = dir.path().join("lib");
+    let files = [
+        ("Baseline Test (2020)", "Baseline Test (2020).mp4", &baseline),
+        ("Vp9 Test (2021)", "Vp9 Test (2021).webm", &vp9),
+    ];
+    for (folder, name, src) in files {
+        flux_test_media::clone_file(src, &lib.join(folder).join(name)).unwrap();
+    }
+    let cfg = Config::for_tests(dir.path().join("data"));
+    let (st, _) = build_state(cfg, Instant::now(), None).await.unwrap();
+    let cat = st.catalog.clone();
+    tokio::task::block_in_place(|| seed(&cat, "Movies", LibraryKind::Movies, &lib, |_| true));
+    let app = router(st.clone());
+    for (_, name, _) in files {
+        let (item, asset) = item_of(&cat, name);
+        let body = json!({"item_id": item, "asset_id": asset, "caps": chrome_web_caps(), "audio_track": null, "subtitle_track": null, "start_ms": 0});
+        let r = post(&app, "/api/v1/plan", body.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.text());
+        let preview: PlanPreview = r.json();
+        let r = post(&app, "/api/v1/play", body).await;
+        assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.text());
+        let play: PlayResponse = r.json();
+        for (how, plan) in [("plan", &preview.plan), ("play", &play.plan)] {
+            assert!(
+                matches!(plan.video, VideoOp::Copy { .. }),
+                "{name} {how}: {:?}",
+                plan.reasons
+            );
+        }
+        assert_eq!(preview.plan.delivery, play.plan.delivery, "{name}");
+        assert_eq!(preview.plan.audio, play.plan.audio, "{name}");
+        if name.ends_with(".mp4") {
+            assert!(play.plan.is_direct(), "{name}: {:?}", play.explain);
+        } else {
+            assert_eq!(play.plan.delivery, DeliveryFormat::HlsFmp4, "{name}");
+            assert!(
+                matches!(
+                    play.plan.audio[0].op,
+                    flux_core::AudioOp::Transcode {
+                        codec: Codec::Aac,
+                        ..
+                    }
+                ),
+                "{name}: {:?}",
+                play.plan.audio
+            );
+            let master = get(&app, &play.url).await;
+            assert!(master.text().contains("vp09."), "{}", master.text());
+        }
+    }
 }

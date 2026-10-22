@@ -1460,7 +1460,8 @@ fn bulk_mode(
 /// small blocks resident (measured: an idle server held its scan-time
 /// footprint, ~85 MB, with ~12 MB live); this releases the free pages.
 /// macOS: `malloc_zone_pressure_relief` over all zones; glibc:
-/// `malloc_trim`; a no-op elsewhere. Then the hook a binary registered for
+/// `malloc_trim`; Windows: `HeapCompact` of the process heap (Rust's and
+/// the C runtime's allocator there); a no-op elsewhere. Then the hook a binary registered for
 /// its own global allocator ([`set_release_hook`]), which also returns the
 /// calling thread's caches. The writer calls it when bulk mode ends; a
 /// scanner can call it once its own scan-sized structures are gone.
@@ -1514,8 +1515,24 @@ fn system_release() {
     }
 }
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn system_release() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetProcessHeap() -> *mut std::ffi::c_void;
+        fn HeapCompact(heap: *mut std::ffi::c_void, flags: u32) -> usize;
+    }
+    // SAFETY: kernel32 functions. The process heap lives as long as the
+    // process; HeapCompact only coalesces free blocks and decommits free
+    // pages (flags 0: serialized, like every other call on that heap).
+    unsafe {
+        HeapCompact(GetProcessHeap(), 0);
+    }
+}
+
 /// See the macOS version: a no-op on this platform.
-#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"), windows)))]
 fn system_release() {}
 
 fn maintenance(
