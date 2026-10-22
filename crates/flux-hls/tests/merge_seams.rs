@@ -107,7 +107,8 @@ async fn engine_shutdown_kills_a_hung_index_scan() {
 }
 
 /// PB-7, end to end in the engine: the first request for a subtitle track
-/// streams it (header, then cue by cue as blocks are read), and the
+/// streams it (the header with the first cue, then cue by cue as blocks
+/// are read), and the
 /// completed document is cached, byte for byte what the whole-document path
 /// (sorted cues) makes.
 #[tokio::test]
@@ -127,11 +128,7 @@ async fn webvtt_streams_cue_by_cue_then_comes_from_the_cache() {
     let streamed = match engine.webvtt_body(&asset, track).await.unwrap() {
         WebVttBody::Streaming(s) => {
             let parts: Vec<_> = s.collect().await;
-            assert!(
-                parts.len() > 2,
-                "header and cues arrive separately: {}",
-                parts.len()
-            );
+            assert!(parts.len() > 2, "cues arrive as they are read: {}", parts.len());
             let mut doc = Vec::new();
             for p in parts {
                 doc.extend_from_slice(&p.unwrap());

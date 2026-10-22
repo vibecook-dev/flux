@@ -14,7 +14,7 @@ import { api, FluxApiError } from '../api/client';
 import { resolveUrl } from '../config';
 import { formatClock } from '../api/format';
 import { parentTitle, useItem, useServer } from '../api/queries';
-import { audioLabel, subtitleLabel, toBcp47 } from '../api/tracks';
+import { audioLabel, subtitleChoices, toBcp47 } from '../api/tracks';
 import type { AudioRef, PlayResponse, ProgressReport, SessionDiagnostics } from '../api/types';
 import { Icon } from '../components/Icon';
 import { audioMenuNote, planAudioSwitch, playingTrack, restartNote, startingRendition, type AudioSwitchSample } from '../player/audio';
@@ -29,6 +29,11 @@ const EMPTY_METRICS: MetricsSnapshot = { ttffMs: null, lastSeekMs: null, seekSam
 function optionsFromQuery(q: URLSearchParams): PlayOptions {
   const num = (k: string) => (q.get(k) === null ? null : Number(q.get(k)));
   return { assetId: num('asset'), audioTrack: num('audio'), subtitleTrack: num('sub'), startMs: num('start') };
+}
+
+/** The subtitle a session draws into its video (a picture format), if any. */
+function burnedSubtitle(res: PlayResponse): number | null {
+  return res.plan.video.op === 'transcode' ? res.plan.video.burn_subtitle : null;
 }
 
 function errorMessage(err: unknown): string {
@@ -108,7 +113,7 @@ export default function Player({ params, query }: RouteProps) {
       (res) => {
         if (!live) return;
         setSession({ res, t0, options });
-        setActiveSub(options.subtitleTrack ?? res.subtitles.find((s) => s.forced)?.track ?? null);
+        setActiveSub(options.subtitleTrack ?? burnedSubtitle(res) ?? res.subtitles.find((s) => s.forced)?.track ?? null);
       },
       (err: unknown) => live && setError(errorMessage(err)),
     );
@@ -332,6 +337,25 @@ export default function Player({ params, query }: RouteProps) {
     else if (v && 'webkitEnterFullscreen' in v && typeof v.webkitEnterFullscreen === 'function') (v.webkitEnterFullscreen as () => void).call(v);
   }, []);
 
+  /** A new session at the current position with `patch` applied (another audio track, a burned-in subtitle). */
+  const restartAt = useCallback(
+    (patch: Partial<PlayOptions>, audioRestart = false) => {
+      const v = videoRef.current;
+      if (!session || !v) return;
+      const options: PlayOptions = { ...session.options, subtitleTrack: activeSub, startMs: Math.round(v.currentTime * 1000), assetId: session.res.asset_id, ...patch };
+      const t0 = performance.now();
+      setWaiting(true);
+      requestPlay(itemId, options).then(
+        (res) => {
+          prefetchUrls(res.prefetch);
+          setSession({ res, t0, options, audioRestart });
+        },
+        (err: unknown) => setError(errorMessage(err)),
+      );
+    },
+    [session, activeSub, itemId],
+  );
+
   /**
    * Audio changes switch renditions inside the session when it has one for
    * that track (player/audio.ts); otherwise they restart the stream at the
@@ -355,23 +379,39 @@ export default function Player({ params, query }: RouteProps) {
         // The player can't find that rendition: fall back to a new session.
         pendingAudioSwitch.current = null;
       }
-      const options: PlayOptions = { ...session.options, audioTrack: track, subtitleTrack: activeSub, startMs: Math.round(v.currentTime * 1000), assetId: session.res.asset_id };
-      const t0 = performance.now();
-      setWaiting(true);
-      requestPlay(itemId, options).then(
-        (res) => {
-          prefetchUrls(res.prefetch);
-          setSession({ res, t0, options, audioRestart: true });
-        },
-        (err: unknown) => setError(errorMessage(err)),
-      );
+      restartAt({ audioTrack: track }, true);
     },
-    [session, currentRef, activeSub, itemId],
+    [session, currentRef, restartAt],
+  );
+
+  /**
+   * Subtitles: text ones are WebVTT tracks of the session, switched in the
+   * page. A picture subtitle (PGS, VobSub, a `.sup` file) is drawn into the
+   * video, so choosing one, or leaving one, restarts playback here with a
+   * new plan.
+   */
+  const chooseSub = useCallback(
+    (track: number | null) => {
+      setMenu(null);
+      if (!session) return;
+      const burned = burnedSubtitle(session.res);
+      const text = track === null || session.res.subtitles.some((s) => s.track === track);
+      if (text && burned === null) {
+        setActiveSub(track);
+        return;
+      }
+      if (track === burned) return;
+      setActiveSub(track);
+      restartAt({ subtitleTrack: track, audioTrack: currentRef?.track ?? session.options.audioTrack });
+    },
+    [session, currentRef, restartAt],
   );
 
   const cycleSubs = useCallback(() => {
     const subs = session?.res.subtitles ?? [];
-    if (subs.length === 0) return;
+    // A subtitle drawn into the video is changed from the menu (a restart).
+    const burned = session ? burnedSubtitle(session.res) : null;
+    if (subs.length === 0 || burned !== null) return;
     const i = subs.findIndex((s) => s.track === activeSub);
     setActiveSub(i + 1 >= subs.length ? null : subs[i + 1].track);
   }, [session, activeSub]);
@@ -451,7 +491,12 @@ export default function Player({ params, query }: RouteProps) {
   const currentAudio = session ? playingTrack(session.res, currentRef) : null;
   const audioNote = session ? audioMenuNote(session.res) : null;
   const subs = session?.res.subtitles ?? [];
-  const subTrackInfo = (track: number) => asset?.probe?.tracks.find((t) => t.index === track);
+  // Every subtitle of this version: its WebVTT renditions, then the picture
+  // subtitles that would be drawn into the video.
+  const choices = subtitleChoices(asset);
+  const burned = session ? burnedSubtitle(session.res) : null;
+  const pictureSubs = choices.filter((c) => c.burnIn);
+  const subLabel = (track: number, fallback: string) => choices.find((c) => c.track === track)?.label ?? fallback;
   const shownTime = scrub ?? time.current;
   const pct = time.duration > 0 ? (shownTime / time.duration) * 100 : 0;
   const bufPct = time.duration > 0 ? (time.buffered / time.duration) * 100 : 0;
@@ -638,7 +683,7 @@ export default function Player({ params, query }: RouteProps) {
             </div>
           )}
 
-          {subs.length > 0 && (
+          {subs.length + pictureSubs.length > 0 && (
             <div className={styles.menuWrap}>
               <button type="button" className={styles.textBtn} aria-haspopup="menu" aria-expanded={menu === 'subs'} onClick={() => setMenu(menu === 'subs' ? null : 'subs')}>
                 <Icon name="subtitles" />
@@ -646,17 +691,20 @@ export default function Player({ params, query }: RouteProps) {
               </button>
               {menu === 'subs' && (
                 <div className={styles.menu} role="menu" aria-label="Subtitles">
-                  <button type="button" role="menuitemradio" aria-checked={activeSub === null} onClick={() => (setActiveSub(null), setMenu(null))}>
+                  <button type="button" role="menuitemradio" aria-checked={activeSub === null && burned === null} onClick={() => chooseSub(null)}>
                     Off
                   </button>
-                  {subs.map((s) => {
-                    const info = subTrackInfo(s.track);
-                    return (
-                      <button key={s.track} type="button" role="menuitemradio" aria-checked={activeSub === s.track} onClick={() => (setActiveSub(s.track), setMenu(null))}>
-                        {info ? subtitleLabel(info) : s.label}
-                      </button>
-                    );
-                  })}
+                  {subs.map((s) => (
+                    <button key={s.track} type="button" role="menuitemradio" aria-checked={activeSub === s.track && burned === null} onClick={() => chooseSub(s.track)}>
+                      {subLabel(s.track, s.label)}
+                    </button>
+                  ))}
+                  {pictureSubs.map((c) => (
+                    <button key={c.track} type="button" role="menuitemradio" aria-checked={burned === c.track} onClick={() => chooseSub(c.track)}>
+                      {c.label}
+                      <span className={styles.menuHint}>drawn into the video (restarts playback)</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

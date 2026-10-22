@@ -53,6 +53,7 @@ use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::asset::Asset;
+use crate::burn::{self, BurnIn, BurnKey, BurnProbe};
 use crate::cache::ByteCache;
 use crate::encoders::{Deinterlace, DetectOptions, FfmpegCaps, PipelineInput, VideoEncoder};
 use crate::error::{HlsError, Result};
@@ -69,10 +70,13 @@ pub struct VideoTarget {
     /// HDR → SDR (BT.709) conversion (`scale_vt`, `tonemap_vaapi` or the
     /// software chain, see [`crate::encoders`]).
     pub tonemap: bool,
+    /// A subtitle drawn into the picture ([`VideoTranscoder::burn_key`]).
+    pub burn: Option<BurnKey>,
 }
 
 impl VideoTarget {
-    /// The target of a `VideoOp::Transcode`.
+    /// The target of a `VideoOp::Transcode`, without a burned-in subtitle
+    /// (the engine adds that from the plan).
     pub fn from_op(op: &VideoOp) -> Option<Self> {
         match op {
             VideoOp::Transcode {
@@ -86,6 +90,7 @@ impl VideoTarget {
                 height: *height,
                 bitrate: *bitrate,
                 tonemap: *tonemap,
+                burn: None,
             }),
             VideoOp::Copy { .. } => None,
         }
@@ -416,6 +421,8 @@ impl Drop for Waiter {
 /// Supervised ffmpeg video transcoder with a piece cache.
 pub struct VideoTranscoder {
     ffmpeg: PathBuf,
+    /// ffprobe, for when a burned-in track starts (`burn::probe`).
+    pub ffprobe: PathBuf,
     /// How the encoder is chosen (forced encoder, VAAPI node, test encodes).
     pub detect: DetectOptions,
     /// What `ffmpeg` can do, detected on first use.
@@ -432,6 +439,10 @@ pub struct VideoTranscoder {
     cache: Mutex<ByteCache<VKey>>,
     inflight: Mutex<HashMap<VKey, InFlight>>,
     avcc: Mutex<HashMap<(String, VideoTarget), Vec<u8>>>,
+    /// Burned-in subtitles named by `VideoTarget::burn`, and what was read
+    /// from them once ([`crate::burn::probe`]).
+    burns: Mutex<HashMap<BurnKey, Arc<BurnIn>>>,
+    burn_probes: Mutex<HashMap<BurnKey, BurnProbe>>,
     stats: Mutex<VideoTranscodeStats>,
     /// Pieces kept encoded ahead of the last request.
     pub lookahead: u32,
@@ -595,6 +606,7 @@ impl VideoTranscoder {
     /// together (0: [`default_max_runs`] for the detected encoder).
     pub fn new(ffmpeg: PathBuf, max_jobs: usize, cache_bytes: usize, cancel: CancellationToken) -> Self {
         VideoTranscoder {
+            ffprobe: crate::ffmpeg_tools::default_ffprobe(&ffmpeg),
             ffmpeg,
             detect: DetectOptions::default(),
             caps: tokio::sync::OnceCell::new(),
@@ -605,6 +617,8 @@ impl VideoTranscoder {
             cache: Mutex::new(ByteCache::new(cache_bytes)),
             inflight: Mutex::new(HashMap::new()),
             avcc: Mutex::new(HashMap::new()),
+            burns: Mutex::new(HashMap::new()),
+            burn_probes: Mutex::new(HashMap::new()),
             stats: Mutex::new(VideoTranscodeStats::default()),
             lookahead: 3,
             piece_ns: 2_000_000_000,
@@ -612,6 +626,49 @@ impl VideoTranscoder {
             timeout: Duration::from_secs(120),
             cancel,
         }
+    }
+
+    /// The key a [`VideoTarget`] that draws `b` into the picture carries.
+    /// Registered for the process (a few hundred bytes per subtitle ever
+    /// burned in).
+    pub fn burn_key(&self, b: BurnIn) -> BurnKey {
+        let k = b.key();
+        if let Ok(mut m) = self.burns.lock() {
+            m.entry(k).or_insert_with(|| Arc::new(b));
+        }
+        k
+    }
+
+    /// A target's burned-in subtitle and its probe (read once, blocking).
+    async fn burn_of(
+        &self,
+        asset: &Arc<Asset>,
+        target: &VideoTarget,
+    ) -> Result<Option<(Arc<BurnIn>, BurnProbe)>> {
+        let Some(k) = target.burn else {
+            return Ok(None);
+        };
+        let b = self
+            .burns
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&k).cloned())
+            .ok_or_else(|| HlsError::NotFound("burned-in subtitle".into()))?;
+        let known = self.burn_probes.lock().ok().and_then(|m| m.get(&k).copied());
+        let probe = match known {
+            Some(p) => p,
+            None => {
+                let (a, bb, ffprobe) = (asset.clone(), b.clone(), self.ffprobe.clone());
+                let p = tokio::task::spawn_blocking(move || burn::probe(&a, &bb, &ffprobe))
+                    .await
+                    .map_err(|e| HlsError::Io(std::io::Error::other(e)))?;
+                if let Ok(mut m) = self.burn_probes.lock() {
+                    m.insert(k, p);
+                }
+                p
+            }
+        };
+        Ok(Some((b, probe)))
     }
 
     /// What ffmpeg can do and the encoder transcodes use: detected on the
@@ -710,6 +767,9 @@ impl VideoTranscoder {
     /// encoder `enc`. `frames` are the run's real source frames when the
     /// index lists them (PB-2): frame counts, the trim point and the forced
     /// IDR times then come from real timestamps, not from a frame rate.
+    /// `burn` is the subtitle drawn into the picture and what was read from
+    /// it ([`crate::burn`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn args(
         asset: &Asset,
         target: &VideoTarget,
@@ -718,6 +778,7 @@ impl VideoTranscoder {
         caps: &FfmpegCaps,
         enc: VideoEncoder,
         vaapi_device: &std::path::Path,
+        burn: Option<(&BurnIn, &BurnProbe)>,
     ) -> Result<Vec<String>> {
         let v = asset
             .index
@@ -738,28 +799,28 @@ impl VideoTranscoder {
             .or_else(|| v.frame_rate.map(|r| 1.0 / r.as_f64()))
             .unwrap_or(1.0 / 24.0);
         let (ow, oh) = output_size(asset, target);
-        let pipe = crate::encoders::pipeline(
-            caps,
-            enc,
-            &PipelineInput {
-                codec: v.codec,
-                bit_depth: v.bit_depth,
-                rotation: rotation(asset),
-                width: target.width,
-                height: target.height,
-                tonemap: target.tonemap,
-                bitrate: target.bitrate,
-                level: h264_level(ow, oh, source_fps(asset)),
-                dovi_reshape: v
-                    .hdr
-                    .as_ref()
-                    .and_then(|h| h.dovi)
-                    .is_some_and(|d| d.bl_signal_compat_id == 0),
-                keep_aspect: v.width.is_none() || v.height.is_none(),
-                deinterlace: deinterlace(v),
-            },
-            vaapi_device,
-        );
+        let input = PipelineInput {
+            codec: v.codec,
+            bit_depth: v.bit_depth,
+            rotation: rotation(asset),
+            width: target.width,
+            height: target.height,
+            tonemap: target.tonemap,
+            bitrate: target.bitrate,
+            level: h264_level(ow, oh, source_fps(asset)),
+            dovi_reshape: v
+                .hdr
+                .as_ref()
+                .and_then(|h| h.dovi)
+                .is_some_and(|d| d.bl_signal_compat_id == 0),
+            keep_aspect: v.width.is_none() || v.height.is_none(),
+            deinterlace: deinterlace(v),
+        };
+        // Burning a subtitle in overlays frames in memory: software decode.
+        let (pipe, upload) = match burn {
+            Some(_) => crate::encoders::software_pipeline(caps, enc, &input, vaapi_device),
+            None => (crate::encoders::pipeline(caps, enc, &input, vaapi_device), None),
+        };
         let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error"]
             .iter()
             .map(|s| s.to_string())
@@ -793,6 +854,16 @@ impl VideoTranscoder {
             ]);
             a.extend(["-i".to_string(), asset.index.source.path.display().to_string()]);
         }
+        // The run's first frame on the source timeline: where the subtitle
+        // input is lined up (crate::burn).
+        let first_ticks = frames
+            .and_then(|f| f.per_piece.first()?.first().copied())
+            .unwrap_or(first.start_ticks);
+        if let Some((b, probe)) = burn {
+            let clock = burn::start_clock_origin_s(&asset.index.layout);
+            a.extend(burn::input_args(b, probe, first_ticks as f64 / ts, clock));
+        }
+        let map = if burn.is_some() { "[out]" } else { "0:v:0" };
         // passthrough: never duplicate/drop frames to fake a constant rate
         // (the default CFR vsync padded the last segment by one frame).
         // Video only: no chapter text track (`-map_chapters`), no metadata
@@ -800,7 +871,7 @@ impl VideoTranscoder {
         a.extend(
             [
                 "-map",
-                "0:v:0",
+                map,
                 "-an",
                 "-sn",
                 "-dn",
@@ -837,12 +908,29 @@ impl VideoTranscoder {
             _ => 0.0,
         };
         // Then scale, tone-map and rotate for the encoder (crate::encoders).
-        let vf = format!(
-            "trim=start={:.6},setpts=PTS-STARTPTS,{}",
-            trim.max(0.0),
-            pipe.filters
-        );
-        a.extend(["-vf".to_string(), vf]);
+        let pre = format!("trim=start={:.6},setpts=PTS-STARTPTS", trim.max(0.0));
+        match burn {
+            Some((b, probe)) => {
+                let src = (v.width.unwrap_or(ow), v.height.unwrap_or(oh));
+                let pix = if enc == VideoEncoder::Libx264 {
+                    "yuv420p"
+                } else {
+                    "nv12"
+                };
+                let graph = burn::filter_graph(
+                    &burn::stream_spec(asset, b),
+                    &pre,
+                    &pipe.filters,
+                    pix,
+                    upload,
+                    probe.canvas.unwrap_or(src),
+                    src,
+                    (ow, oh),
+                );
+                a.extend(["-filter_complex".to_string(), graph]);
+            }
+            None => a.extend(["-vf".to_string(), format!("{pre},{}", pipe.filters)]),
+        }
         // An IDR at every piece boundary after the first: halfway between
         // the piece's first frame and the frame before it, on the output
         // clock (which `setpts` starts at the run's first kept frame).
@@ -1107,6 +1195,7 @@ impl VideoTranscoder {
                 caps.error.as_deref().unwrap_or("none passed its test encode")
             ))
         })?;
+        let burn = self.burn_of(asset, &target).await?;
         let is_prefetch = prefetch.is_some();
         let _permit = match prefetch {
             Some(p) => p,
@@ -1120,6 +1209,7 @@ impl VideoTranscoder {
             &caps,
             enc,
             &self.detect.vaapi_device,
+            burn.as_ref().map(|(b, p)| (b.as_ref(), p)),
         )?;
         tracing::debug!(first = run[0].seg, pieces = run.len(), %enc, ?args, "video run");
         let t0 = Instant::now();
@@ -1571,6 +1661,7 @@ mod tests {
             height: 64,
             bitrate: 1_000_000,
             tonemap: false,
+            burn: None,
         };
         let caps = FfmpegCaps {
             filters: ["bwdif", "yadif"].iter().map(|s| s.to_string()).collect(),
@@ -1638,6 +1729,7 @@ mod tests {
                 &caps,
                 VideoEncoder::Libx264,
                 std::path::Path::new("/dev/dri/renderD128"),
+                None,
             )
             .unwrap();
             assert!(a.windows(2).any(|w| w == ["-map_chapters", "-1"]), "{a:?}");
@@ -1680,6 +1772,7 @@ mod tests {
             height: 1080,
             bitrate: 8_000_000,
             tonemap: false,
+            burn: None,
         };
         assert_eq!(t.codec_string(23.976), "avc1.640029");
         assert_eq!(t.codec_string(59.94), "avc1.64002a");

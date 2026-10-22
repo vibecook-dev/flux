@@ -97,7 +97,29 @@ describe('predictPlan on the feature clips', () => {
 
   it('serves text subtitles as WebVTT sidecars', () => {
     const p = plan('h264_multi_audio_subs.mkv', chrome, null, 3);
-    expect(p.plan.subtitles).toEqual([{ track: 3, op: { op: 'web_vtt' } }]);
+    expect(p.plan.subtitles).toEqual([{ track: 3, op: { op: 'web_vtt' }, file: null }]);
+  });
+
+  it('burns in a picture subtitle file and serves a text one as WebVTT', () => {
+    const base = probe('h264_aac_faststart.mp4');
+    const file = (track: number, codec: 'pgs' | 'subrip') => ({
+      track,
+      path: `/m/Film/Film.${track}`,
+      codec,
+      language: 'eng',
+      title: null,
+      forced: false,
+      hearing_impaired: false,
+      size: 1,
+      mtime_ns: 1,
+    });
+    const files = [file(1048577, 'pgs'), file(1048578, 'subrip')];
+    const burn = predictPlan({ probe: base, caps: chrome, audioTrack: null, subtitleTrack: 1048577, subtitleFiles: files });
+    expect(planLabel(burn.plan)).toBe('Transcode');
+    expect(burn.plan.subtitles[0]).toMatchObject({ track: 1048577, op: { op: 'burn_in' } });
+    const text = predictPlan({ probe: base, caps: chrome, audioTrack: null, subtitleTrack: 1048578, subtitleFiles: files });
+    expect(text.plan.subtitles).toEqual([{ track: 1048578, op: { op: 'web_vtt' }, file: files[1] }]);
+    expect(planLabel(text.plan)).not.toBe('Transcode');
   });
 
   it('burns in image subtitles the client cannot render', () => {
