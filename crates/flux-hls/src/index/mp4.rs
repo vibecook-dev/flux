@@ -9,8 +9,8 @@ use mp4_atom::{Codec as SampleEntry, Colr, Decode, Encode, Moov, StszSamples, Tr
 use serde::{Deserialize, Serialize};
 
 use super::{
-    classify_hdr, mkv::avc_profile_name, ticks_to_ns, IndexMethod, IndexStats, IndexTrack, Keyframe, Layout,
-    PlaybackIndex, INDEX_VERSION,
+    classify_hdr, mkv::avc_profile_name, mkv::parse_dovi, ticks_to_ns, DoviRecord, IndexMethod, IndexStats,
+    IndexTrack, Keyframe, Layout, PlaybackIndex, INDEX_VERSION,
 };
 use crate::codec::{self, audio, h264, hevc, NalFlavor};
 use crate::error::{HlsError, Result};
@@ -415,7 +415,28 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
             if patched == 1 { "y" } else { "ies" }
         ));
     }
-    let moov = Moov::decode(&mut buf.as_slice()).map_err(|e| HlsError::mp4(format!("moov: {e}")))?;
+    // Dolby Vision entries (`dvhe`, `dvh1`, …) decode as the standard entry
+    // they extend; their DV record is read here (mp4-atom skips it).
+    let mut extras = take_dolby_vision_entries(&mut buf);
+    let moov = match Moov::decode(&mut buf.as_slice()) {
+        Ok(moov) => moov,
+        // A Dolby Vision entry without the box its standard entry requires
+        // (or with one mp4-atom rejects) fails the whole `moov` once
+        // renamed: decode it as an unknown entry again (a transcode), as
+        // before DV entries were recognised, instead of losing every track.
+        Err(e) if extras.iter().any(|x| x.renamed_at.is_some()) => {
+            for x in &mut extras {
+                if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
+                    buf[at..at + 4].copy_from_slice(&dv);
+                }
+            }
+            warnings.push(format!(
+                "Dolby Vision sample entry not decodable as its standard entry ({e}): indexed as unknown"
+            ));
+            Moov::decode(&mut buf.as_slice()).map_err(|e| HlsError::mp4(format!("moov: {e}")))?
+        }
+        Err(e) => return Err(HlsError::mp4(format!("moov: {e}"))),
+    };
     // Fragmented MP4 (empty `moov` + `moof`/`mdat` pairs): sample tables come
     // from the fragments' `traf`/`trun` boxes.
     let fragmented = moov.mvex.is_some()
@@ -469,7 +490,8 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
     let mut tables = Vec::new();
     for (i, trak) in moov.trak.iter().enumerate() {
         let frag = frag_tables.as_mut().and_then(|m| m.remove(&trak.tkhd.track_id));
-        match track_from_trak(i as u32, trak, movie_ts, src, &mut warnings, frag) {
+        let x = extras.get(i).cloned().unwrap_or_default();
+        match track_from_trak(i as u32, trak, movie_ts, src, &mut warnings, frag, x) {
             Ok((t, tab)) => {
                 tracks.push(t);
                 tables.push(tab);
@@ -568,6 +590,7 @@ fn track_from_trak(
     src: &Source,
     warnings: &mut Vec<String>,
     frag: Option<Mp4Tables>,
+    extras: EntryExtras,
 ) -> Result<(IndexTrack, Mp4Tables)> {
     let mdia = &trak.mdia;
     let stbl = &mdia.minf.stbl;
@@ -627,9 +650,13 @@ fn track_from_trak(
     // `pasp` (h_spacing, v_spacing) of a visual sample entry.
     let mut pasp: Option<(u32, u32)> = None;
     let pasp_of = |p: &Option<mp4_atom::Pasp>| p.as_ref().map(|p| (p.h_spacing, p.v_spacing));
+    // `fiel` (field count 1 = progressive, 2 = interlaced), as flux-probe reads it.
+    let mut fiel: Option<bool> = None;
+    let fiel_of = |f: &Option<mp4_atom::Fiel>| f.as_ref().map(|f| f.field_count == 2);
     match entry {
         SampleEntry::Avc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc1".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -639,6 +666,7 @@ fn track_from_trak(
         }
         SampleEntry::Avc3(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::H264;
             t.codec_tag = "avc3".into();
             t.codec_private = box_body(&e.avcc, false).unwrap_or_default();
@@ -649,6 +677,7 @@ fn track_from_trak(
         }
         SampleEntry::Hvc1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hvc1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -658,6 +687,7 @@ fn track_from_trak(
         }
         SampleEntry::Hev1(e) => {
             pasp = pasp_of(&e.pasp);
+            fiel = fiel_of(&e.fiel);
             t.codec = Codec::Hevc;
             t.codec_tag = "hev1".into();
             t.codec_private = box_body(&e.hvcc, false).unwrap_or_default();
@@ -674,6 +704,31 @@ fn track_from_trak(
             t.width = Some(e.visual.width as u32);
             t.height = Some(e.visual.height as u32);
             t.color = colr_info(&e.colr);
+        }
+        // Not packageable as fMP4 (the planner transcodes them for HLS), but
+        // a client may play the file as is, and a transcode needs the size.
+        SampleEntry::Vp09(e) => {
+            pasp = pasp_of(&e.pasp);
+            t.codec = Codec::Vp9;
+            t.codec_tag = "vp09".into();
+            t.width = Some(e.visual.width as u32);
+            t.height = Some(e.visual.height as u32);
+            t.bit_depth = Some(e.vpcc.bit_depth);
+            t.color = colr_info(&e.colr);
+        }
+        SampleEntry::Vp08(e) => {
+            pasp = pasp_of(&e.pasp);
+            t.codec = Codec::Vp8;
+            t.codec_tag = "vp08".into();
+            t.width = Some(e.visual.width as u32);
+            t.height = Some(e.visual.height as u32);
+        }
+        SampleEntry::Jpeg(e) => {
+            pasp = pasp_of(&e.pasp);
+            t.codec = Codec::Mjpeg;
+            t.codec_tag = "jpeg".into();
+            t.width = Some(e.visual.width as u32);
+            t.height = Some(e.visual.height as u32);
         }
         SampleEntry::Mp4a(e) => {
             let dc = &e.esds.es_desc.dec_config;
@@ -714,17 +769,29 @@ fn track_from_trak(
             t.synth_config = box_body(&e.dfla, true);
             t.channels = Some(e.audio.channel_count as u8);
         }
+        // The entry's channel_count is 2 by convention (ETSI TS 102 366
+        // Annex F); dac3/dec3 hold the real layout.
         SampleEntry::Ac3(e) => {
             t.codec = Codec::Ac3;
             t.codec_tag = "ac-3".into();
             t.synth_config = box_body(&e.dac3, false);
-            t.channels = Some(e.audio.channel_count as u8);
+            t.channels = Some(audio::ac3_channels(e.dac3.acmod, e.dac3.lfeon));
         }
         SampleEntry::Eac3(e) => {
             t.codec = Codec::Eac3;
             t.codec_tag = "ec-3".into();
             t.synth_config = box_body(&e.dec3, false);
-            t.channels = Some(e.audio.channel_count as u8);
+            t.channels = Some(match e.dec3.substreams.first() {
+                Some(s) => {
+                    let deps = if s.num_dep_sub > 0 {
+                        s.chan_loc.unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    audio::ac3_channels(s.acmod, s.lfeon) + audio::eac3_chan_loc_channels(deps)
+                }
+                None => e.audio.channel_count as u8,
+            });
         }
         SampleEntry::Mp3(e) => {
             t.codec = Codec::Mp3;
@@ -757,10 +824,27 @@ fn track_from_trak(
             t.codec = Codec::Eac3;
             t.codec_tag = "ec-3".into();
         }
-        SampleEntry::Unknown(fourcc, _) => {
+        SampleEntry::Unknown(fourcc, body) => {
             t.codec_tag = fourcc.to_string();
+            if kind == TrackKind::Video {
+                // VisualSampleEntry: 24 bytes of reserved fields, then width
+                // and height. A transcode needs them to keep the shape.
+                let be16 = |at: usize| {
+                    body.get(at..at + 2)
+                        .map(|b| u16::from_be_bytes([b[0], b[1]]) as u32)
+                };
+                t.width = be16(24).filter(|&w| w > 0);
+                t.height = be16(26).filter(|&h| h > 0);
+            }
         }
         _ => t.codec_tag = "other".into(),
+    }
+    // A Dolby Vision entry keeps its own name (`dvhe`, `dvh1`…) and record.
+    if let Some(dv) = extras.dovi_fourcc {
+        t.codec_tag = String::from_utf8_lossy(&dv).into_owned();
+    }
+    if kind == TrackKind::Video {
+        t.dovi = extras.dovi;
     }
 
     // Tables
@@ -834,6 +918,26 @@ fn track_from_trak(
     let sample_count = tables.sample_count;
     tables.check(src.len(), t.codec == Codec::Pcm)?;
 
+    // A `hev1`/`dvhe` entry may hold no parameter sets at all (they are only
+    // in-band): complete its record from the first sync sample, so the SPS
+    // facts below are known and a remux to `hvc1`/`dvh1` has them in its
+    // record, where those entries (and Apple's players) need them.
+    if t.codec == Codec::Hevc && t.inband_parameter_sets {
+        let empty = hevc::HevcConfig::parse(&t.codec_private).filter(|c| c.nalus(33).next().is_none());
+        if let (Some(c), Some((off, size))) = (empty, first_sync_sample(&tables)) {
+            if size < (16 << 20) {
+                let bytes = src.read_at(off, size as usize)?;
+                if let Some(rec) = complete_hvcc(&t.codec_private, &bytes, c.length_size as usize) {
+                    t.codec_private = rec;
+                    warnings.push(format!(
+                        "track {}: hvcC without parameter sets: taken from the first keyframe",
+                        t.id
+                    ));
+                }
+            }
+        }
+    }
+
     // Codec facts
     let mut vui_sar = None;
     match t.codec {
@@ -854,7 +958,14 @@ fn track_from_trak(
         }
         Codec::Hevc => {
             if let Some(c) = hevc::HevcConfig::parse(&t.codec_private) {
-                t.codec_string = Some(c.codec_string(if t.codec_tag == "hev1" { "hev1" } else { "hvc1" }));
+                // The source's entry; the HLS `CODECS` entry is named after
+                // the entry flux writes (`playlist::video_codec_string`).
+                let fourcc = if matches!(t.codec_tag.as_str(), "hev1" | "dvhe") {
+                    "hev1"
+                } else {
+                    "hvc1"
+                };
+                t.codec_string = Some(c.codec_string(fourcc));
                 t.level = Some(c.level_idc as u16);
                 t.bit_depth = Some(c.bit_depth_luma);
                 t.profile = Some(if c.profile_idc == 2 {
@@ -930,6 +1041,7 @@ fn track_from_trak(
             Some((h, v)) if h > 0 && v > 0 => t.extra.sar = super::mkv::reduce_ratio(h as u64, v as u64),
             _ => t.extra.sar = vui_sar,
         }
+        t.extra.interlaced = fiel;
         if let Some(&(count, delta)) = tables.stts.first() {
             if delta > 0 && (tables.stts.len() == 1 || count as usize * 10 > sample_count as usize * 9) {
                 t.frame_duration = Some(delta);
@@ -951,11 +1063,7 @@ fn track_from_trak(
             .map(|fd| ticks_to_ns(fd as i64, timescale) as u64);
         // In-band parameter sets / HDR SEI: look at the first sync sample.
         if let (Some(fl), true) = (flavor, sample_count > 0) {
-            let first_sync = match &tables.sync {
-                None => Some(0),
-                Some(list) => list.first().map(|&k| k.saturating_sub(1)),
-            };
-            if let Some((off, size)) = first_sync.and_then(|i| tables.sample_location(i)) {
+            if let Some((off, size)) = first_sync_sample(&tables) {
                 if size < (16 << 20) {
                     let bytes = src.read_at(off, size as usize)?;
                     if !t.inband_parameter_sets {
@@ -981,6 +1089,7 @@ fn track_from_trak(
             dovi: None,
         });
         hdr.format = format;
+        hdr.dovi = t.dovi.as_ref().and_then(|d| parse_dovi(&d.data));
         t.hdr = Some(hdr);
     } else if kind == TrackKind::Audio {
         t.sample_rate = t.sample_rate.or(Some(timescale));
@@ -1025,7 +1134,7 @@ fn child_boxes(b: &[u8], from: usize) -> Vec<([u8; 4], usize, usize)> {
         let mut size = u32::from_be_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]) as usize;
         let kind = [b[p + 4], b[p + 5], b[p + 6], b[p + 7]];
         if size == 1 && p + 16 <= b.len() {
-            size = u64::from_be_bytes([
+            let large = u64::from_be_bytes([
                 b[p + 8],
                 b[p + 9],
                 b[p + 10],
@@ -1034,11 +1143,14 @@ fn child_boxes(b: &[u8], from: usize) -> Vec<([u8; 4], usize, usize)> {
                 b[p + 13],
                 b[p + 14],
                 b[p + 15],
-            ]) as usize;
+            ]);
+            size = usize::try_from(large).unwrap_or(usize::MAX);
         } else if size == 0 {
             size = b.len() - p;
         }
-        if size < 8 || p + size > b.len() {
+        // A 64-bit size near 2^64 must not wrap `p` back to an earlier box
+        // (an endless loop that grows `out`).
+        if size < 8 || p.checked_add(size).is_none_or(|end| end > b.len()) {
             break;
         }
         out.push((kind, p, p + size));
@@ -1047,27 +1159,98 @@ fn child_boxes(b: &[u8], from: usize) -> Vec<([u8; 4], usize, usize)> {
     out
 }
 
+/// The `stsd` box of each `trak` of a `moov` buffer, in order, as (box
+/// start, box end); `None` for a `trak` without one.
+fn stsd_boxes(moov: &[u8]) -> Vec<Option<(usize, usize)>> {
+    child_boxes(moov, 8)
+        .into_iter()
+        .filter(|c| &c.0 == b"trak")
+        .map(|(_, s, e)| {
+            let mut level = vec![(s, e)];
+            for want in [b"mdia", b"minf", b"stbl", b"stsd"] {
+                level = level
+                    .iter()
+                    .flat_map(|&(s, e)| child_boxes(&moov[..e], s + 8))
+                    .filter(|c| &c.0 == want)
+                    .map(|c| (c.1, c.2))
+                    .collect();
+            }
+            level.first().copied()
+        })
+        .collect()
+}
+
+/// Dolby Vision sample entries and the standard entry each one extends
+/// (Dolby Vision Streams Within the ISO Base Media File Format, §3): the
+/// same `avcC`/`hvcC`/`av1C` box plus a `dvcC`/`dvvC`/`dvwC` record.
+/// `dvhe`/`dvav` (like `hev1`/`avc3`) may carry parameter sets in-band.
+const DOVI_ENTRIES: [([u8; 4], [u8; 4]); 5] = [
+    (*b"dvh1", *b"hvc1"),
+    (*b"dvhe", *b"hev1"),
+    (*b"dva1", *b"avc1"),
+    (*b"dvav", *b"avc3"),
+    (*b"dav1", *b"av01"),
+];
+
+/// Visual sample entries that may carry a Dolby Vision record.
+const DOVI_CAPABLE: [&[u8; 4]; 5] = [b"hvc1", b"hev1", b"avc1", b"avc3", b"av01"];
+
+/// What a track's first sample entry says beyond what mp4-atom decodes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EntryExtras {
+    /// The entry's own type when it is a Dolby Vision entry (`dvhe`, …).
+    dovi_fourcc: Option<[u8; 4]>,
+    /// Its Dolby Vision configuration record, if any (also found in plain
+    /// `hvc1` entries of profile 8 files).
+    dovi: Option<DoviRecord>,
+    /// Where the entry's type was renamed to the standard entry's (the
+    /// offset of its four bytes in the `moov` buffer).
+    renamed_at: Option<usize>,
+}
+
+/// Reads the Dolby Vision record of each track's first sample entry and
+/// renames Dolby Vision entries to the standard entry they extend, in place,
+/// so mp4-atom decodes them (it has no `dvh1`/`dvhe`/…: they came out as
+/// unknown entries, so the video was "Other" and transcoded without tone
+/// mapping). Returns one [`EntryExtras`] per `trak`, in order.
+fn take_dolby_vision_entries(moov: &mut [u8]) -> Vec<EntryExtras> {
+    stsd_boxes(moov)
+        .into_iter()
+        .map(|stsd| {
+            let mut x = EntryExtras::default();
+            let Some((s, e)) = stsd else { return x };
+            // stsd: header, version/flags, entry_count, then the entries.
+            let Some((kind, es, ee)) = child_boxes(&moov[..e], s + 16).first().copied() else {
+                return x;
+            };
+            let standard = DOVI_ENTRIES.iter().find(|(dv, _)| *dv == kind).map(|e| e.1);
+            if standard.is_none() && !DOVI_CAPABLE.contains(&&kind) {
+                return x;
+            }
+            // VisualSampleEntry: 8-byte box header and 78 bytes of fields,
+            // then its boxes.
+            x.dovi = child_boxes(&moov[..ee], es + 86)
+                .into_iter()
+                .find(|c| matches!(&c.0, b"dvcC" | b"dvvC" | b"dvwC"))
+                .map(|(fourcc, s, e)| DoviRecord {
+                    fourcc,
+                    data: moov[s + 8..e].to_vec(),
+                });
+            if let Some(std) = standard {
+                moov[es + 4..es + 8].copy_from_slice(&std);
+                x.dovi_fourcc = Some(kind);
+                x.renamed_at = Some(es + 4);
+            }
+            x
+        })
+        .collect()
+}
+
 /// Renames `ac-3`/`ec-3` sample entries that lack `dac3`/`dec3` (QuickTime
 /// files) to placeholder types, in place; returns how many were renamed.
 fn neutralize_unconfigured_dolby(moov: &mut [u8]) -> usize {
     let mut renamed = 0;
-    let mut stsds = Vec::new();
-    for (k, s, e) in child_boxes(moov, 8) {
-        if &k != b"trak" {
-            continue;
-        }
-        let mut level = vec![(s, e)];
-        for want in [b"mdia", b"minf", b"stbl", b"stsd"] {
-            let next: Vec<(usize, usize)> = level
-                .iter()
-                .flat_map(|&(s, e)| child_boxes(&moov[..e], s + 8))
-                .filter(|c| &c.0 == want)
-                .map(|c| (c.1, c.2))
-                .collect();
-            level = next;
-        }
-        stsds.extend(level);
-    }
+    let stsds: Vec<(usize, usize)> = stsd_boxes(moov).into_iter().flatten().collect();
     for (s, e) in stsds {
         // stsd: header, version/flags, entry_count, then the entries.
         for (k, es, ee) in child_boxes(&moov[..e], s + 16) {
@@ -1107,6 +1290,70 @@ fn stbl_sample_count(stbl: &mp4_atom::Stbl) -> u32 {
         StszSamples::Identical { count, .. } => *count,
         StszSamples::Different { sizes } => sizes.len() as u32,
     }
+}
+
+/// (file offset, size) of a track's first sync sample.
+fn first_sync_sample(t: &Mp4Tables) -> Option<(u64, u32)> {
+    let i = match &t.sync {
+        None => 0,
+        Some(list) => list.first()?.saturating_sub(1),
+    };
+    t.sample_location(i)
+}
+
+/// An `hvcC` record with no SPS, completed with the VPS/SPS/PPS found
+/// in-band in `sample` (marked complete, as an `hvc1`/`dvh1` entry requires).
+/// Other arrays (SEI) are kept. `None` when the sample has no SPS and PPS,
+/// or sets an `hvcC` can't hold (a unit of 64 KiB or more).
+///
+/// A stream has at most 16 VPS, 16 SPS and 64 PPS ids (H.265 §7.4.3), so
+/// each array keeps that many distinct units and skips the rest: a hostile
+/// sample of millions of units costs one linear pass, and every count and
+/// length written fits its 16-bit field.
+fn complete_hvcc(rec: &[u8], sample: &[u8], length_size: usize) -> Option<Vec<u8>> {
+    let c = hevc::HevcConfig::parse(rec)?;
+    // (NAL type, most kept, the distinct units in order of appearance)
+    let mut sets: [(u8, usize, Vec<&[u8]>); 3] =
+        [(32, 16, Vec::new()), (33, 16, Vec::new()), (34, 64, Vec::new())];
+    for (_, nal) in crate::bits::length_prefixed_nals(sample, length_size) {
+        let Some(&h) = nal.first() else { continue };
+        if let Some((_, max, units)) = sets.iter_mut().find(|s| s.0 == ((h >> 1) & 0x3F)) {
+            if units.len() < *max && !units.contains(&nal) {
+                if nal.len() > u16::MAX as usize {
+                    return None;
+                }
+                units.push(nal);
+            }
+        }
+    }
+    if sets[1].2.is_empty() || sets[2].2.is_empty() {
+        return None;
+    }
+    let mut arrays: Vec<(u8, bool, Vec<&[u8]>)> = sets
+        .iter()
+        .filter(|s| !s.2.is_empty())
+        .map(|s| (s.0, true, s.2.clone()))
+        .collect();
+    // (Parsed from 16-bit fields, so these fit.)
+    for a in c.arrays.iter().filter(|a| !(32..=34).contains(&a.nal_type)) {
+        arrays.push((
+            a.nal_type,
+            a.completeness,
+            a.nalus.iter().map(|n| n.as_slice()).collect(),
+        ));
+    }
+    // The 22 header bytes, then numOfArrays and the arrays (ISO/IEC 14496-15 §8.3.3.1).
+    let mut out = rec.get(..22)?.to_vec();
+    out.push(u8::try_from(arrays.len()).ok()?);
+    for (ty, complete, nalus) in arrays {
+        out.push(ty | if complete { 0x80 } else { 0 });
+        out.extend_from_slice(&(nalus.len() as u16).to_be_bytes());
+        for n in nalus {
+            out.extend_from_slice(&(n.len() as u16).to_be_bytes());
+            out.extend_from_slice(n);
+        }
+    }
+    Some(out)
 }
 
 /// (file offset, size) of a track's first sample, without expanding tables.
@@ -1345,6 +1592,393 @@ fn gcd(a: u32, b: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fmp4::{self, AudioConfig, EntrySpec, Fragment, InitSpec, Sample, SampleData};
+
+    /// `hvcC` of HEVC Main 10, level 5.0, 4-byte NAL lengths, no arrays.
+    const HVCC_MAIN10: [u8; 23] = [
+        1, 0x02, 0x20, 0, 0, 0, 0xB0, 0, 0, 0, 0, 0, 150, 0xF0, 0, 0xFC, 0xFD, 0xFA, 0xFA, 0, 0, 0x0F, 0,
+    ];
+    /// `dvcC` of Dolby Vision profile 5, level 6, RPU + base layer, no
+    /// compatible base layer (bl_signal_compatibility_id 0).
+    const DVCC_P5: [u8; 24] = {
+        let mut d = [0u8; 24];
+        d[0] = 1; // version 1.0
+        d[2] = 5 << 1; // profile 5, level's top bit 0
+        d[3] = (6 << 3) | 0b101; // level 6, rpu, no el, bl
+        d
+    };
+    /// `dac3`: 48 kHz, bsid 8, acmod 7 (3/2), LFE on, 448 kb/s.
+    const DAC3_51: [u8; 3] = [0x10, 0x3D, 0xC0];
+
+    /// A fragmented MP4 (init segment + one media segment) whose video
+    /// entry is `video` with an optional `dvcC`, plus one audio entry.
+    fn synthetic_mp4(video: &[u8; 4], dovi: Option<&[u8]>, audio: EntrySpec) -> std::path::PathBuf {
+        let init = fmp4::init_segment(&[
+            InitSpec {
+                track_id: 1,
+                timescale: 24_000,
+                language: 0x55C4,
+                entry: EntrySpec::Video {
+                    fourcc: *video,
+                    config_box: *b"hvcC",
+                    config: HVCC_MAIN10.to_vec(),
+                    width: 3832,
+                    height: 1592,
+                    color: None,
+                    mastering: None,
+                    cll: None,
+                    dovi: dovi.map(|d| DoviRecord {
+                        fourcc: *b"dvcC",
+                        data: d.to_vec(),
+                    }),
+                    pasp: None,
+                    matrix: None,
+                },
+            },
+            InitSpec {
+                track_id: 2,
+                timescale: 48_000,
+                language: 0x55C4,
+                entry: audio,
+            },
+        ]);
+        // Length-prefixed NAL units: an IDR, then trailing pictures. With a
+        // `hev1`/`dvhe` entry the parameter sets are only in-band (the
+        // `hvcC` has none), before the IDR.
+        let nal = |t: u8, len: usize| {
+            let mut v = vec![0, 0, 0, len as u8, t << 1, 1];
+            v.extend(std::iter::repeat_n(0x55u8, len - 2));
+            v
+        };
+        let inband = matches!(video, b"hev1" | b"dvhe");
+        let video_samples = (0..4)
+            .map(|i| {
+                let mut data = Vec::new();
+                if i == 0 && inband {
+                    for ps in [32, 33, 34] {
+                        data.extend(nal(ps, 8));
+                    }
+                }
+                data.extend(nal(if i == 0 { 19 } else { 1 }, 20));
+                Sample {
+                    duration: 1001,
+                    cts: 0,
+                    sync: i == 0,
+                    data: SampleData::Bytes(data.into()),
+                }
+            })
+            .collect();
+        let audio_samples = (0..4)
+            .map(|_| Sample {
+                duration: 1536,
+                cts: 0,
+                sync: true,
+                data: SampleData::Bytes(vec![0x0B, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into()),
+            })
+            .collect();
+        let seg = fmp4::media_segment(
+            1,
+            &[
+                Fragment {
+                    track_id: 1,
+                    base_dts: 0,
+                    samples: video_samples,
+                    video: true,
+                },
+                Fragment {
+                    track_id: 2,
+                    base_dts: 0,
+                    samples: audio_samples,
+                    video: false,
+                },
+            ],
+        );
+        let mut file = init;
+        file.extend(seg.read_in_memory().expect("in-memory segment"));
+        let path = flux_test_media::scratch("mp4-entries").join("clip.mp4");
+        std::fs::write(&path, file).unwrap();
+        path
+    }
+
+    fn ac3_51() -> EntrySpec {
+        EntrySpec::Audio {
+            fourcc: *b"ac-3",
+            // As written by muxers: the real layout is in dac3.
+            channels: 2,
+            sample_rate: 48_000,
+            config: AudioConfig::Dac3(DAC3_51.to_vec()),
+        }
+    }
+
+    /// Dolby Vision profile 5 in a `dvhe` entry (the bug: "Other" video,
+    /// transcoded without tone mapping at a stretched 1920×1080) and AC-3
+    /// 5.1 whose entry says 2 channels (the bug: "AC-3 Stereo").
+    #[test]
+    fn dolby_vision_entries_index_as_hevc_with_their_record() {
+        for (fourcc, inband) in [(b"dvhe", true), (b"dvh1", false)] {
+            let path = synthetic_mp4(fourcc, Some(&DVCC_P5[..]), ac3_51());
+            let idx = crate::index::PlaybackIndex::build(&path).unwrap();
+            let v = &idx.tracks[0];
+            let tag = std::str::from_utf8(fourcc).unwrap();
+            assert_eq!((v.codec, v.codec_tag.as_str()), (Codec::Hevc, tag));
+            assert_eq!(
+                (v.width, v.height, v.bit_depth),
+                (Some(3832), Some(1592), Some(10))
+            );
+            assert_eq!(v.inband_parameter_sets, inband, "{tag}");
+            let hdr = v.hdr.as_ref().unwrap();
+            assert_eq!(hdr.format, flux_core::HdrFormat::DolbyVision);
+            let d = hdr.dovi.unwrap();
+            assert_eq!((d.profile, d.level, d.bl_signal_compat_id), (5, 6, 0));
+            assert!(d.rpu_present && d.bl_present && !d.el_present);
+            assert_eq!(v.dovi.as_ref().unwrap().data, DVCC_P5);
+            assert_eq!(idx.tracks[1].channels, Some(6));
+            assert!(
+                !idx.warnings.iter().any(|w| w.contains("unsupported")),
+                "{:?}",
+                idx.warnings
+            );
+
+            // The remux writes `dvh1` with the record, and CODECS says so.
+            // A `dvhe` record without parameter sets is completed from the
+            // first keyframe (the samples keep their in-band copies too).
+            let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
+            let EntrySpec::Video {
+                fourcc, dovi, config, ..
+            } = asset.video_entry().unwrap()
+            else {
+                panic!("not video");
+            };
+            assert_eq!((&fourcc, dovi.is_some()), (b"dvh1", true));
+            let hvcc = hevc::HevcConfig::parse(&config).unwrap();
+            let sets: Vec<(u8, bool, usize)> = hvcc
+                .arrays
+                .iter()
+                .map(|a| (a.nal_type, a.completeness, a.nalus.len()))
+                .collect();
+            if inband {
+                assert_eq!(sets, [(32, true, 1), (33, true, 1), (34, true, 1)]);
+                assert_eq!(&config[..22], &HVCC_MAIN10[..22]);
+                assert!(idx
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("hvcC without parameter sets")));
+            } else {
+                assert!(sets.is_empty());
+            }
+            assert_eq!(
+                crate::playlist::video_codec_string(&asset).as_deref(),
+                Some("dvh1.05.06")
+            );
+            // Safari (Dolby Vision 5): `dvhe` is remuxed (no transcode), as PQ.
+            let probe = asset.index.to_probe_result();
+            let plan = crate::planner::plan(&probe, &crate::presets::safari_macos(), &Default::default());
+            assert!(matches!(plan.video, flux_core::VideoOp::Copy { .. }), "{plan:?}");
+            assert_eq!(plan.is_direct(), !inband, "{tag}");
+            if inband {
+                let m = crate::playlist::master_playlist(&asset, &plan);
+                assert!(m.contains("CODECS=\"dvh1.05.06,ac-3\""), "{m}");
+                assert!(
+                    m.contains("VIDEO-RANGE=PQ") && !m.contains("VIDEO-RANGE=SDR"),
+                    "{m}"
+                );
+                assert!(m.contains("NAME=\"Unknown (AC-3 5.1)\""), "{m}");
+            }
+        }
+    }
+
+    /// A `hev1` entry remuxes to `hvc1` (parameter sets in the record), and the
+    /// `CODECS` entry names the entry written, not the source's.
+    #[test]
+    fn hev1_codec_string_follows_the_written_entry() {
+        let path = synthetic_mp4(b"hev1", None, ac3_51());
+        let mut asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.codec_string.as_deref(), Some("hev1.2.4.L150.B0"));
+        assert!(v.dovi.is_none());
+        assert_eq!(v.hdr.as_ref().unwrap().format, flux_core::HdrFormat::Sdr);
+        assert_eq!(
+            crate::playlist::video_codec_string(&asset).as_deref(),
+            Some("hvc1.2.4.L150.B0")
+        );
+        asset.strip_parameter_sets = false;
+        assert_eq!(
+            crate::playlist::video_codec_string(&asset).as_deref(),
+            Some("hev1.2.4.L150.B0")
+        );
+    }
+
+    /// E-AC-3 channels come from `dec3` (5.1 here), not the entry's 2.
+    #[test]
+    fn eac3_channels_come_from_dec3() {
+        let f = audio::Ac3Frame {
+            eac3: true,
+            fscod: 0,
+            bsid: 16,
+            bsmod: 0,
+            acmod: 7,
+            lfeon: true,
+            bit_rate_code: 0,
+            frame_size: 1792,
+            sample_rate: 48_000,
+            samples: 1536,
+            strmtyp: 0,
+            chanmap: None,
+        };
+        let entry = EntrySpec::Audio {
+            fourcc: *b"ec-3",
+            channels: 2,
+            sample_rate: 48_000,
+            config: AudioConfig::Dec3(audio::dec3(&[f]).unwrap()),
+        };
+        let idx = crate::index::PlaybackIndex::build(synthetic_mp4(b"hvc1", None, entry)).unwrap();
+        assert_eq!(
+            (idx.tracks[1].codec, idx.tracks[1].channels),
+            (Codec::Eac3, Some(6))
+        );
+        assert_eq!(audio::eac3_chan_loc_channels(0b10), 2); // Lrs/Rrs: 7.1
+        assert_eq!(audio::eac3_chan_loc_channels(0x1FF), 14);
+    }
+
+    fn aac_stereo() -> EntrySpec {
+        EntrySpec::Audio {
+            fourcc: *b"mp4a",
+            channels: 2,
+            sample_rate: 48_000,
+            config: AudioConfig::Esds {
+                object_type: 0x40,
+                dsi: vec![0x11, 0x90],
+                avg_bitrate: 128_000,
+            },
+        }
+    }
+
+    /// `dvcC` of profile 8.1: an HDR10 base layer (bl_signal_compatibility_id 1).
+    const DVCC_P81: [u8; 24] = {
+        let mut d = DVCC_P5;
+        d[2] = 8 << 1;
+        d[4] = 1 << 4;
+        d
+    };
+
+    /// Profile 8.1 in a `dvh1`/`dvhe` entry, for a browser without Dolby
+    /// Vision: not the file (players without platform DV may not open these
+    /// entries) but a remux to `hvc1` with the record, as HDR10.
+    #[test]
+    fn dolby_vision_profile_8_entries_remux_to_hvc1_without_dv() {
+        for fourcc in [b"dvh1", b"dvhe"] {
+            let tag = std::str::from_utf8(fourcc).unwrap();
+            let path = synthetic_mp4(fourcc, Some(&DVCC_P81[..]), aac_stereo());
+            let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
+            let v = asset.index.video_track().unwrap();
+            assert_eq!((v.codec, v.codec_tag.as_str()), (Codec::Hevc, tag));
+            let d = v.hdr.as_ref().and_then(|h| h.dovi).unwrap();
+            assert_eq!((d.profile, d.bl_signal_compat_id), (8, 1));
+            let probe = asset.index.to_probe_result();
+            let plan = crate::planner::plan(&probe, &crate::presets::chrome_desktop(), &Default::default());
+            assert_eq!(
+                plan.delivery,
+                flux_core::DeliveryFormat::HlsFmp4,
+                "{tag}: {plan:?}"
+            );
+            assert!(matches!(plan.video, flux_core::VideoOp::Copy { .. }), "{plan:?}");
+            let EntrySpec::Video {
+                fourcc: written,
+                dovi,
+                ..
+            } = asset.video_entry().unwrap()
+            else {
+                panic!("not video");
+            };
+            assert_eq!((&written, dovi.is_some()), (b"hvc1", true), "{tag}");
+            let m = crate::playlist::master_playlist(&asset, &plan);
+            assert!(m.contains("CODECS=\"hvc1.2.4.L150.B0,"), "{m}");
+            assert!(m.contains("VIDEO-RANGE=PQ"), "{m}");
+        }
+    }
+
+    /// A Dolby Vision entry without the `hvcC` its standard entry requires:
+    /// once renamed, the whole `moov` failed to decode and every track was
+    /// lost. It indexes as an unknown entry (a transcode) again, with its
+    /// record, and the audio is kept.
+    #[test]
+    fn dolby_vision_entry_without_its_config_box_still_indexes() {
+        let path = synthetic_mp4(b"dvhe", Some(&DVCC_P5[..]), ac3_51());
+        let mut b = std::fs::read(&path).unwrap();
+        let at = b.windows(4).position(|w| w == b"hvcC").unwrap();
+        b[at..at + 4].copy_from_slice(b"hvcX");
+        std::fs::write(&path, &b).unwrap();
+        let idx = crate::index::PlaybackIndex::build(&path).unwrap();
+        let v = &idx.tracks[0];
+        assert_eq!((v.codec, v.codec_tag.as_str()), (Codec::Other, "dvhe"));
+        assert_eq!((v.width, v.height), (Some(3832), Some(1592)));
+        assert_eq!(v.hdr.as_ref().and_then(|h| h.dovi).map(|d| d.profile), Some(5));
+        assert_eq!(
+            (idx.tracks[1].codec, idx.tracks[1].channels),
+            (Codec::Ac3, Some(6))
+        );
+        assert!(
+            idx.warnings.iter().any(|w| w.contains("not decodable")),
+            "{:?}",
+            idx.warnings
+        );
+        let plan = crate::planner::plan(
+            &idx.to_probe_result(),
+            &crate::presets::chrome_desktop(),
+            &Default::default(),
+        );
+        assert!(
+            matches!(plan.video, flux_core::VideoOp::Transcode { tonemap: true, .. }),
+            "{plan:?}"
+        );
+    }
+
+    /// A first keyframe of 100 000 distinct VPS units (a hostile file): the
+    /// completion kept them all, in quadratic time, and wrote counts that
+    /// wrapped at 65 536 (an unparseable record). Each array now keeps at
+    /// most as many units as a stream has ids.
+    #[test]
+    fn hvcc_completion_is_bounded() {
+        let nal = |t: u8, i: u32| {
+            let mut v = vec![0, 0, 0, 5, t << 1, 1];
+            v.extend_from_slice(&i.to_be_bytes()[1..]);
+            v
+        };
+        let mut sample = Vec::new();
+        for i in 0..100_000 {
+            sample.extend(nal(32, i));
+        }
+        for i in 0..100 {
+            sample.extend(nal(34, i));
+        }
+        sample.extend(nal(33, 0));
+        sample.extend(nal(34, 0)); // a repeat
+        let rec = complete_hvcc(&HVCC_MAIN10, &sample, 4).unwrap();
+        let c = hevc::HevcConfig::parse(&rec).unwrap();
+        let counts = (c.nalus(32).count(), c.nalus(33).count(), c.nalus(34).count());
+        assert_eq!(counts, (16, 1, 64));
+        assert_eq!(c.nalus(32).next(), Some(&nal(32, 0)[4..]));
+        // A unit an hvcC can't hold (over 65 535 bytes) keeps the record as is.
+        let mut s2 = nal(33, 0);
+        let mut big = vec![0, 1, 0, 2, 34 << 1, 1];
+        big.resize(4 + 65_538, 0x55);
+        s2.extend(big);
+        assert_eq!(complete_hvcc(&HVCC_MAIN10, &s2, 4), None);
+    }
+
+    /// A 64-bit box size near 2^64 wrapped the walk back to an earlier box:
+    /// an endless loop growing the list (overflow checks are off in release).
+    #[test]
+    fn child_boxes_stop_at_a_wrapping_large_size() {
+        let mut b = vec![0, 0, 0, 16];
+        b.extend_from_slice(b"free");
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&[0, 0, 0, 1]);
+        b.extend_from_slice(b"wrap");
+        b.extend_from_slice(&(u64::MAX - 15).to_be_bytes());
+        b.extend_from_slice(&[0; 8]);
+        assert_eq!(child_boxes(&b, 0), vec![(*b"free", 0, 16)]);
+    }
 
     #[test]
     fn expand_tables() {

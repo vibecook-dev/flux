@@ -160,6 +160,11 @@
       "shows",
       "mixed"
     ],
+    "MetadataSource": [
+      "none",
+      "tmdb",
+      "exports"
+    ],
     "Role": [
       "owner",
       "admin",
@@ -880,6 +885,7 @@
         "tvdb": null
       },
       "kind": "episode",
+      "original_title": null,
       "part": null,
       "release_group": "NTb",
       "resolution": "1080p",
@@ -1171,6 +1177,9 @@
       "ttff_ms": 240
     },
     "ServerInfo": {
+      "metadata": {
+        "source": "tmdb"
+      },
       "name": "flux",
       "path": "tailnet-direct",
       "tailnet_name": "flux.tail1234.ts.net",

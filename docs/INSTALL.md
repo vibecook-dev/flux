@@ -147,7 +147,8 @@ flux-server --library Movies:movies:/path/to/Movies --library TV:shows:/path/to/
 Open <http://127.0.0.1:8096>. Libraries named on the command line are created
 on first run; you can also add them on the Admin screen. The catalog,
 artwork and caches live in `~/Library/Application Support/flux` (macOS) or
-`~/.local/share/flux` (Linux) unless you pass `--data-dir`. Every flag, its
+`~/.local/share/flux` (Linux) unless you pass `--data-dir`; the first log
+line and `flux-server --check` name the folder. Every flag, its
 environment variable and the TOML config file are in the
 [README](../README.md#quickstart-build-from-source) and `flux-server --help`.
 
@@ -191,6 +192,13 @@ before the first `[[library]]` table. An unknown key or a missing file stops
 error. flux already answers to this machine's host name, `<hostname>.local`
 and its addresses; `allow_host` adds other names, such as a reverse proxy's.
 The `flux` user needs read access to the library folders.
+
+A folder can be in only one library. When a `--library` flag or
+`[[library]]` entry creates a library whose folder another library already
+has, or one inside or around it (`/media` beside `/media/kids`), flux-server
+stops with exit status 1 and says which library has it. The Admin screen
+refuses such a folder too. Earlier alphas allowed overlapping libraries;
+libraries that already exist in a catalog are left as they are.
 
 ```ini
 # /etc/systemd/system/flux.service
@@ -339,12 +347,17 @@ cd "$env:LOCALAPPDATA\Programs\flux"
 flux found. Then open <http://127.0.0.1:8096>; you can also add libraries
 on the Admin screen. The catalog, artwork and caches live in
 `%LOCALAPPDATA%\flux` unless you pass `--data-dir` (or set
-`FLUX_DATA_DIR`); the first log line names the folder.
+`FLUX_DATA_DIR`); the first log line names the folder. Builds up to
+0.1.0-alpha.2 used `%HOME%\.local\share\flux`, or `flux-data` in the
+working directory: if flux finds a catalog in one of those, it says so at
+startup and in `--check`; pass `--data-dir` to keep using it.
 
 Stop flux with Ctrl-C; Ctrl-Break and closing its console window also stop
 it gracefully. `taskkill /PID` without `/F` can't stop a console program
 (Windows refuses), and `taskkill /F` ends it at once, without the graceful
-stop.
+stop. Windows doesn't send a console program the logoff and shutdown
+events, so at logoff or shutdown only a service wrapper (below) stops flux
+gracefully.
 
 ### A config file
 

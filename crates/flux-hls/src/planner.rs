@@ -231,7 +231,17 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         }
     }
 
-    let video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    let mut video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    // H.264 only: the codecs browsers decode whose transcode deinterlaces
+    // (MPEG-2 and VC-1 are transcoded for browsers anyway; an HEVC, AV1 or
+    // VP9 transcode would come out as interlaced as it went in).
+    let interlaced_h264 = video.is_some_and(|v| v.codec == Codec::H264 && v.interlaced == Some(true));
+    if interlaced_h264 && quirks(&caps.client).no_deinterlacer {
+        // Transcoded, so the transcoder's deinterlacer turns it progressive.
+        video_issues.push(Reason::ClientQuirk {
+            note: "this browser shows interlaced video combed, so it is deinterlaced".into(),
+        });
+    }
     let bitrate_issue = match (probe.bitrate, caps.max_bitrate) {
         (Some(b), Some(m)) if b > m => Some(Reason::BitrateTooHigh { bitrate: b, max: m }),
         _ => None,
@@ -250,7 +260,13 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         && selected_is_default
         && burn_in.is_none()
         && bitrate_issue.is_none();
-    if direct_ok {
+    // The file as is would play but for its sample entry: the remux below
+    // writes a standard one (`hvc1`/`dvh1`, `avc1`, `av01`).
+    let entry_issue = video.filter(|_| direct_ok).and_then(|v| entry_problem(v, caps));
+    if let Some(r) = &entry_issue {
+        reasons.push(r.clone());
+    }
+    if direct_ok && entry_issue.is_none() {
         let audio = selected_audio
             .map(|a| AudioPlan {
                 track: a.index,
@@ -561,14 +577,79 @@ pub struct Quirks {
     /// proportional to the position. Open-GOP HEVC is transcoded for these
     /// clients. (Open-GOP H.264, non-IDR I pictures, seeks fine there.)
     pub idr_random_access_only: bool,
+    /// Apple's players (AVFoundation: Safari, every iOS browser, tvOS)
+    /// play HEVC in MP4 only from `hvc1`/`dvh1` sample entries, which hold
+    /// the parameter sets; a `hev1`/`dvhe` file (parameter sets in-band)
+    /// doesn't play as a file, and Apple's HLS spec requires `hvc1`. Such a
+    /// file is remuxed, which writes `hvc1`/`dvh1`.
+    pub needs_hvc1: bool,
+    /// Interlaced video plays combed: browsers show the two fields of a
+    /// frame woven together (no deinterlacer for MSE or progressive video;
+    /// a 576i DVD clip looked so in Chrome). Interlaced H.264 is
+    /// transcoded, and the transcode deinterlaces it.
+    pub no_deinterlacer: bool,
 }
 
 /// The quirks of a client id such as `"web/firefox-157/macos"`.
 pub fn quirks(client: &str) -> Quirks {
     let c = client.to_ascii_lowercase();
+    let apple_native = ["ios/", "ipados/", "tvos/", "visionos/", "macos/"]
+        .iter()
+        .any(|p| c.starts_with(p));
+    // On iOS every browser is WebKit.
+    let webkit = c.starts_with("web/safari") || (c.starts_with("web/") && c.ends_with("/ios"));
     Quirks {
         idr_random_access_only: c.starts_with("web/firefox") && c.ends_with("/macos"),
+        needs_hvc1: apple_native || webkit,
+        no_deinterlacer: c.starts_with("web/"),
     }
+}
+
+/// HEVC whose MP4 sample entry keeps the parameter sets in-band (`hev1`,
+/// or Dolby Vision's `dvhe`).
+fn inband_hevc_entry(v: &Track) -> bool {
+    v.codec == Codec::Hevc && matches!(v.codec_tag.as_str(), "hev1" | "dvhe")
+}
+
+/// A Dolby Vision MP4 sample entry (`dvh1`, `dvhe`, `dva1`, `dvav`, `dav1`).
+fn dovi_entry(v: &Track) -> bool {
+    matches!(v.codec_tag.as_str(), "dvh1" | "dvhe" | "dva1" | "dvav" | "dav1")
+}
+
+/// Why a video track the client decodes can't be played from its MP4 sample
+/// entry as is (`None`: it can). The remux writes a standard entry
+/// (`Asset::video_entry`), so the fix costs no quality.
+fn entry_problem(v: &Track, caps: &ClientCaps) -> Option<Reason> {
+    if quirks(&caps.client).needs_hvc1 && inband_hevc_entry(v) {
+        return Some(Reason::ClientQuirk {
+            note: "Apple players need HEVC parameter sets in the sample entry (hvc1), \
+                   so flux repackages this hev1 file (no quality loss)"
+                .into(),
+        });
+    }
+    // A client without this Dolby Vision profile plays the stream's
+    // compatible base layer (`video_problems`), but it may not open the DV
+    // entry (`dvh1`, `dvhe`…): Chromium's MP4 parser knows them only in
+    // builds with platform Dolby Vision. The remux writes the standard
+    // entry (`hvc1`/`avc1`/`av01`) with the DV record.
+    if dovi_entry(v) {
+        let profile = v.hdr.as_ref().and_then(|h| h.dovi).map(|d| d.profile);
+        let plays = caps
+            .video
+            .iter()
+            .find(|c| c.codec == v.codec)
+            .is_some_and(|c| profile.is_some_and(|p| c.dovi_profiles.contains(&p)));
+        if !plays {
+            return Some(Reason::ClientQuirk {
+                note: format!(
+                    "This device can't open Dolby Vision ({}) files, so flux repackages the {} video \
+                     in a standard sample entry (no quality loss)",
+                    v.codec_tag, v.codec
+                ),
+            });
+        }
+    }
+    None
 }
 
 /// Plans `probe` for a client whose quirks need facts only the playback
@@ -1064,6 +1145,89 @@ mod tests {
         assert!(plan.is_direct(), "{:?}", plan.reasons);
     }
 
+    /// A 576i H.264 clip (SAR 16:15) is transcoded for browsers, which
+    /// would show it combed, at its own size (the init's `pasp` keeps 4:3);
+    /// a TV box that deinterlaces gets it as it is.
+    #[test]
+    fn interlaced_video_is_transcoded_for_browsers() {
+        let sd = Track {
+            width: Some(720),
+            height: Some(576),
+            interlaced: Some(true),
+            sample_aspect_ratio: Some(flux_core::Rational { num: 16, den: 15 }),
+            ..h264()
+        };
+        let p = probe(
+            Container::Mp4,
+            vec![
+                sd.clone(),
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        for caps in [
+            presets::chrome_desktop(),
+            presets::safari_macos(),
+            presets::firefox(),
+        ] {
+            let plan = plan(&p, &caps, &PlanPrefs::default());
+            let VideoOp::Transcode { width, height, .. } = plan.video else {
+                panic!("{}: {:?}", caps.client, plan.video);
+            };
+            assert_eq!((width, height), (720, 576), "{}", caps.client);
+            assert!(
+                plan.reasons
+                    .iter()
+                    .any(|r| matches!(r, Reason::ClientQuirk { note } if note.contains("deinterlaced"))),
+                "{}: {:?}",
+                caps.client,
+                plan.reasons
+            );
+        }
+        let tv = presets::apple_tv_4k();
+        assert!(matches!(
+            plan(&p, &tv, &PlanPrefs::default()).video,
+            VideoOp::Copy { .. }
+        ));
+        // Progressive (or unknown) video still direct-plays.
+        for interlaced in [Some(false), None] {
+            let q = probe(
+                Container::Mp4,
+                vec![
+                    Track {
+                        interlaced,
+                        ..sd.clone()
+                    },
+                    Track {
+                        channels: Some(2),
+                        ..track(1, TrackKind::Audio, Codec::Aac)
+                    },
+                ],
+            );
+            assert!(plan(&q, &presets::chrome_desktop(), &PlanPrefs::default()).is_direct());
+        }
+        // Only H.264: an HEVC transcode wouldn't deinterlace (HEVC codes
+        // fields as separate pictures), so interlaced HEVC stays a copy.
+        let hevc = probe(
+            Container::Matroska,
+            vec![
+                Track {
+                    codec: Codec::Hevc,
+                    profile: Some("Main".into()),
+                    ..sd.clone()
+                },
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        let p = plan(&hevc, &presets::safari_macos(), &PlanPrefs::default());
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
+    }
+
     #[test]
     fn mp4_aac_direct_plays_on_chrome() {
         let p = probe(
@@ -1448,5 +1612,193 @@ mod tests {
                 container: Container::Matroska
             })
         );
+    }
+
+    /// A 4K Dolby Vision profile 5 MP4 (`dvhe`, no compatible base layer),
+    /// 2.4:1, with AC-3 5.1.
+    fn dovi_p5_mp4() -> ProbeResult {
+        let v = Track {
+            codec_tag: "dvhe".into(),
+            profile: Some("Main 10".into()),
+            level: Some(150),
+            bit_depth: Some(10),
+            width: Some(3832),
+            height: Some(1592),
+            hdr: Some(HdrInfo {
+                format: HdrFormat::DolbyVision,
+                mastering: None,
+                cll: None,
+                dovi: Some(flux_core::DoviConfig {
+                    profile: 5,
+                    level: 6,
+                    rpu_present: true,
+                    el_present: false,
+                    bl_present: true,
+                    bl_signal_compat_id: 0,
+                }),
+            }),
+            ..track(0, TrackKind::Video, Codec::Hevc)
+        };
+        let a = Track {
+            channels: Some(6),
+            ..track(1, TrackKind::Audio, Codec::Ac3)
+        };
+        probe(Container::Mp4, vec![v, a])
+    }
+
+    /// Without Dolby Vision support the picture is tone-mapped (with the RPU
+    /// reshaping, see `encoders`) at the source's shape; a client that plays
+    /// profile 5 gets the video copied, in `dvh1` for Apple.
+    #[test]
+    fn dolby_vision_profile_5_tonemaps_or_copies() {
+        let p = dovi_p5_mp4();
+        let chrome = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
+        assert_eq!(
+            chrome.reasons.first(),
+            Some(&Reason::DoviProfileUnsupported { profile: 5 })
+        );
+        match chrome.video {
+            VideoOp::Transcode {
+                tonemap,
+                width,
+                height,
+                ..
+            } => assert_eq!((tonemap, width, height), (true, 1920, 796)),
+            other => panic!("{other:?}"),
+        }
+        let safari = plan(&p, &presets::safari_macos(), &PlanPrefs::default());
+        assert_eq!(safari.delivery, DeliveryFormat::HlsFmp4);
+        assert!(matches!(safari.video, VideoOp::Copy { .. }), "{safari:?}");
+        assert_eq!(safari.audio[0].op, AudioOp::Copy);
+        assert!(
+            matches!(safari.reasons[..], [Reason::ClientQuirk { .. }]),
+            "{:?}",
+            safari.reasons
+        );
+        // The same plan from the catalog's probe (no index): /plan and /play agree.
+        assert_eq!(
+            plan_from_probe(&p, &presets::safari_macos(), &PlanPrefs::default()),
+            safari
+        );
+    }
+
+    /// Apple's players need `hvc1`: a `hev1` MP4 that Chrome plays as a file
+    /// is remuxed (no transcode) for Safari, tvOS and iOS browsers.
+    #[test]
+    fn hev1_mp4_is_remuxed_for_apple_players() {
+        let hev1 = |tag: &str| {
+            let v = Track {
+                codec_tag: tag.into(),
+                profile: Some("Main".into()),
+                bit_depth: Some(8),
+                width: Some(1920),
+                height: Some(1080),
+                ..track(0, TrackKind::Video, Codec::Hevc)
+            };
+            let a = Track {
+                channels: Some(2),
+                ..track(1, TrackKind::Audio, Codec::Aac)
+            };
+            probe(Container::Mp4, vec![v, a])
+        };
+        let chrome = presets::chrome_desktop();
+        assert!(plan(&hev1("hev1"), &chrome, &PlanPrefs::default()).is_direct());
+        let safari = presets::safari_macos();
+        assert!(plan(&hev1("hvc1"), &safari, &PlanPrefs::default()).is_direct());
+        let p = plan(&hev1("hev1"), &safari, &PlanPrefs::default());
+        assert_eq!(p.delivery, DeliveryFormat::HlsFmp4);
+        assert_eq!(p.label(), "Direct stream");
+        assert!(p.explain()[0].contains("hvc1"), "{:?}", p.explain());
+
+        for (client, apple) in [
+            ("web/safari-26/macos", true),
+            ("web/chrome-141/ios", true),
+            ("tvos/appletv4k-gen4", true),
+            ("web/chrome-141/macos", false),
+            ("web/firefox-157/macos", false),
+            ("web/edge-141/windows", false),
+        ] {
+            assert_eq!(quirks(client).needs_hvc1, apple, "{client}");
+        }
+    }
+
+    /// A Dolby Vision entry with a compatible base layer (profile 8.1 in
+    /// `dvh1`/`dvhe`, 8.4, 9 in `dva1`, 10 in `dav1`): a client without that
+    /// profile plays the base layer, but not from the DV entry, so it gets a
+    /// remux (which writes `hvc1`/`avc1`/`av01`), never the file.
+    #[test]
+    fn dolby_vision_entries_are_remuxed_for_clients_without_the_profile() {
+        let dv = |tag: &str, codec: Codec, profile: u8, compat: u8| {
+            let v = Track {
+                codec_tag: tag.into(),
+                profile: (codec != Codec::Av1)
+                    .then(|| if codec == Codec::H264 { "High" } else { "Main 10" }.to_string()),
+                bit_depth: Some(if codec == Codec::H264 { 8 } else { 10 }),
+                width: Some(1920),
+                height: Some(1080),
+                hdr: Some(HdrInfo {
+                    format: HdrFormat::DolbyVision,
+                    mastering: None,
+                    cll: None,
+                    dovi: Some(flux_core::DoviConfig {
+                        profile,
+                        level: 6,
+                        rpu_present: true,
+                        el_present: false,
+                        bl_present: true,
+                        bl_signal_compat_id: compat,
+                    }),
+                }),
+                ..track(0, TrackKind::Video, codec)
+            };
+            let a = Track {
+                channels: Some(2),
+                ..track(1, TrackKind::Audio, Codec::Aac)
+            };
+            probe(Container::Mp4, vec![v, a])
+        };
+        let chrome = presets::chrome_desktop();
+        let prefs = PlanPrefs::default();
+        for p in [
+            dv("dvh1", Codec::Hevc, 8, 1),
+            dv("dvhe", Codec::Hevc, 8, 1),
+            dv("dvh1", Codec::Hevc, 8, 4),
+            dv("dva1", Codec::H264, 9, 2),
+            dv("dav1", Codec::Av1, 10, 1),
+        ] {
+            let tag = &p.tracks[0].codec_tag;
+            let plan = plan(&p, &chrome, &prefs);
+            assert_eq!(plan.delivery, DeliveryFormat::HlsFmp4, "{tag}: {plan:?}");
+            assert!(matches!(plan.video, VideoOp::Copy { .. }), "{tag}: {plan:?}");
+            assert_eq!(plan.audio[0].op, AudioOp::Copy, "{tag}");
+            match &plan.reasons[..] {
+                [Reason::ClientQuirk { note }] => assert!(note.contains(tag.as_str()), "{note}"),
+                r => panic!("{tag}: {r:?}"),
+            }
+            // /plan (catalog probe) agrees with /play (index).
+            assert_eq!(plan_from_probe(&p, &chrome, &prefs), plan, "{tag}");
+        }
+        // The same stream in a standard entry plays as the file.
+        assert!(plan(&dv("hvc1", Codec::Hevc, 8, 1), &chrome, &prefs).is_direct());
+        // A client with the profile plays the DV entry as is; Apple players
+        // get `dvhe` remuxed (hvc1 quirk).
+        let safari = presets::safari_macos();
+        assert!(plan(&dv("dvh1", Codec::Hevc, 8, 1), &safari, &prefs).is_direct());
+        let p = plan(&dv("dvhe", Codec::Hevc, 8, 1), &safari, &prefs);
+        assert!(!p.is_direct() && p.explain()[0].contains("hvc1"), "{p:?}");
+    }
+
+    /// No size known (an unrecognised sample entry): the 1080p box is kept
+    /// and the transcode pads instead of stretching (`encoders`).
+    #[test]
+    fn transcode_of_unknown_size_uses_the_1080p_box() {
+        let p = probe(
+            Container::Mp4,
+            vec![track(0, TrackKind::Video, Codec::Mpeg4Part2)],
+        );
+        match plan(&p, &presets::chrome_desktop(), &PlanPrefs::default()).video {
+            VideoOp::Transcode { width, height, .. } => assert_eq!((width, height), (1920, 1080)),
+            other => panic!("{other:?}"),
+        }
     }
 }

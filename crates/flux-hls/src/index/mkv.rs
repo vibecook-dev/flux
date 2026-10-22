@@ -387,6 +387,8 @@ struct Entry {
     /// DisplayWidth, DisplayHeight, DisplayUnit (the display aspect when
     /// they differ from the pixel size: anamorphic video; unit 4 = unknown).
     display: (Option<u64>, Option<u64>, u64),
+    /// FlagInterlaced: 1 interlaced, 2 progressive, else unknown.
+    interlaced: Option<bool>,
     sampling: Option<f64>,
     channels: Option<u8>,
     bit_depth: Option<u8>,
@@ -487,6 +489,13 @@ fn parse_video(e: &mut Entry, b: &[u8]) {
             ebml::DISPLAY_WIDTH => e.display.0 = Some(ebml::uint(v.body)),
             ebml::DISPLAY_HEIGHT => e.display.1 = Some(ebml::uint(v.body)),
             ebml::DISPLAY_UNIT => e.display.2 = ebml::uint(v.body),
+            ebml::FLAG_INTERLACED => {
+                e.interlaced = match ebml::uint(v.body) {
+                    1 => Some(true),
+                    2 => Some(false),
+                    _ => None,
+                }
+            }
             ebml::COLOUR => {
                 for c in children(v.body) {
                     let u = ebml::uint(c.body);
@@ -1136,6 +1145,7 @@ fn make_track(
     };
     if kind == TrackKind::Video {
         t.extra.sar = display_sar(e);
+        t.extra.interlaced = e.interlaced;
     }
     let first_bytes: Option<Vec<u8>> = first.map(|f| {
         let mut v = e.header_strip.clone().unwrap_or_default();
@@ -1481,9 +1491,15 @@ fn audio_facts(t: &mut IndexTrack, first: Option<&[u8]>, warnings: &mut Vec<Stri
             }
         }
         Codec::Ac3 | Codec::Eac3 => {
-            let frames: Vec<audio::Ac3Frame> = first
+            let mut frames: Vec<audio::Ac3Frame> = first
                 .map(|f| audio::split_ac3(f).into_iter().map(|x| x.0).collect())
                 .unwrap_or_default();
+            // `first` is the whole first block: a laced block holds several
+            // access units (8 is common). Describe one: the first frame and
+            // the dependent substreams after it. Counting them all made
+            // dec3 and the bitrate 8× too high for laced E-AC-3.
+            let au = 1 + frames.iter().skip(1).take_while(|f| f.strmtyp == 1).count();
+            frames.truncate(au);
             match frames.first() {
                 Some(f0) => {
                     t.frame_duration = Some(f0.samples);

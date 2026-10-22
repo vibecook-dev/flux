@@ -23,12 +23,16 @@ pub mod guard;
 pub mod jobs;
 mod lru;
 pub mod media;
+pub mod metadata;
 pub mod net;
 pub mod play;
+pub mod roots;
 pub mod scan;
 pub mod server;
 pub mod state;
 pub mod web;
+#[cfg(windows)]
+pub mod win32;
 
 pub use config::{Cli, Config};
 pub use server::{build_state, start, start_at, start_with, Server};

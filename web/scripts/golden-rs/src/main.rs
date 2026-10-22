@@ -382,6 +382,7 @@ fn main() {
         "ItemFilter": variants!(ItemFilter: Unwatched, InProgress, Uhd, Hdr),
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
+        "MetadataSource": variants!(MetadataSource: None, Tmdb, Exports),
     });
 
     // Display names used by Reason::explain (web/src/api/explain.ts mirrors them).
@@ -471,6 +472,7 @@ fn main() {
     let name_guess = NameGuess {
         kind: GuessKind::Episode,
         title: Some("Breaking Bad".into()),
+        original_title: None,
         year: Some(2008),
         season: Some(1),
         episodes: vec![1, 2],
@@ -503,6 +505,7 @@ fn main() {
             }),
             path: "tailnet-direct".into(),
             tailnet_name: Some("flux.tail1234.ts.net".into()),
+            metadata: MetadataInfo { source: MetadataSource::Tmdb },
         }),
         "CreateLibrary": v(&CreateLibrary { name: "Movies".into(), kind: LibraryKind::Movies, roots: vec!["/m".into()] }),
         "Library": v(&Library {

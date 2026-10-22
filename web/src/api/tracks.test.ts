@@ -58,6 +58,14 @@ describe('version picker names', () => {
     expect(parts).toEqual(['1080p · H.264 · AAC · MKV · cd1', '1080p · H.264 · AAC · MKV · cd2']);
     const twins = versionNames([asset('h264_aac_faststart.mp4', '/a/Film.mp4'), asset('h264_aac_faststart.mp4', '/b/Film.mp4')]);
     expect(twins).toEqual(['1080p · H.264 · AAC · MP4 · 1', '1080p · H.264 · AAC · MP4 · 2']);
+    // Windows paths compare by file name too, not by folder.
+    const win = versionNames([
+      asset('h264_multi_audio_subs.mkv', 'D:\\Media\\Spirited Away (2001)\\Spirited Away (2001) cd1.mkv'),
+      asset('h264_multi_audio_subs.mkv', 'D:\\Media\\Spirited Away (2001)\\Spirited Away (2001) cd2.mkv'),
+    ]);
+    expect(win).toEqual(['1080p · H.264 · AAC · MKV · cd1', '1080p · H.264 · AAC · MKV · cd2']);
+    const winTwins = versionNames([asset('h264_aac_faststart.mp4', 'D:\\a\\Film.mp4'), asset('h264_aac_faststart.mp4', 'D:\\b\\Film.mp4')]);
+    expect(winTwins).toEqual(['1080p · H.264 · AAC · MP4 · 1', '1080p · H.264 · AAC · MP4 · 2']);
   });
 
   it('every title with several versions in the mock catalog gets distinct names', () => {

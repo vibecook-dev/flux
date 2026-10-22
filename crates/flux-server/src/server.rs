@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use flux_catalog::{read, Catalog, CatalogConfig};
+use flux_catalog::{read, Catalog, CatalogConfig, CatalogError};
 use flux_core::api::{CreateLibrary, Event};
 use flux_hls::{EngineConfig, HlsEngine};
 use tokio::sync::broadcast;
@@ -66,6 +66,7 @@ pub async fn build_state(
         ffprobe: cfg.ffprobe.clone(),
         video_encoder: cfg.video_encoder,
         vaapi_device: cfg.vaapi_device.clone(),
+        max_video_transcodes: cfg.max_video_transcodes,
         ..EngineConfig::default()
     });
     let (scanner, scan_events) = match scanner {
@@ -135,6 +136,7 @@ pub async fn start_with(
         ready_ms = format!("{ready_ms:.1}"),
         "flux is ready"
     );
+    crate::metadata::log_startup(&cfg.tmdb_exports);
 
     // Background work, after the API is up.
     {
@@ -146,15 +148,39 @@ pub async fn start_with(
                 // watch() catches up with a Quick scan (Scheduled priority)
                 // the first time, then follows changes. Without watching,
                 // the startup Quick scan runs on its own.
+                //
+                // After an upgrade (files parsed by an older flux-names or
+                // probed by an older flux-probe) the startup scan is a Deep
+                // one: it also re-parses those files (no I/O) and re-probes
+                // them, which a Quick scan never does for unchanged files.
+                // The watcher's catch-up joins it.
                 let libs = st.catalog.read(read::list_libraries).await.unwrap_or_default();
                 for lib in libs {
+                    let id = lib.id;
+                    let outdated = st
+                        .catalog
+                        .read(move |c| read::outdated_files(c, id))
+                        .await
+                        .unwrap_or(0);
+                    let mode = if outdated > 0 {
+                        tracing::info!(
+                            library_id = id,
+                            files = outdated,
+                            "files cataloged by an older flux: bringing them up to date"
+                        );
+                        Some(scan::ScanMode::Deep)
+                    } else if st.cfg.watch {
+                        None
+                    } else {
+                        Some(scan::ScanMode::Quick)
+                    };
+                    if let Some(mode) = mode {
+                        if let Err(e) = st.scanner.scan_library(id, mode, scan::Priority::Scheduled) {
+                            tracing::info!(library_id = id, "not scanning: {e}");
+                        }
+                    }
                     if st.cfg.watch {
-                        st.scanner.watch(lib.id);
-                    } else if let Err(e) =
-                        st.scanner
-                            .scan_library(lib.id, scan::ScanMode::Quick, scan::Priority::Scheduled)
-                    {
-                        tracing::info!(library_id = lib.id, "not scanning: {e}");
+                        st.scanner.watch(id);
                     }
                 }
             }
@@ -216,6 +242,8 @@ impl Server {
 }
 
 /// Creates the configured libraries that don't exist yet (matched by name).
+/// A folder that another library already has (or one inside or around it)
+/// stops the start with the reason, rather than cataloging its files twice.
 async fn ensure_libraries(catalog: &Catalog, specs: &[LibrarySpec]) -> anyhow::Result<()> {
     if specs.is_empty() {
         return Ok(());
@@ -228,14 +256,26 @@ async fn ensure_libraries(catalog: &Catalog, specs: &[LibrarySpec]) -> anyhow::R
         if !Path::new(&s.path).exists() {
             tracing::warn!(library = %s.name, path = %s.path, "library folder not found; it will show as unavailable");
         }
-        let lib = catalog
-            .writer()
-            .create_library(CreateLibrary {
-                name: s.name.clone(),
-                kind: s.kind,
-                roots: vec![s.path.clone()],
-            })
-            .await?;
+        let created = match crate::roots::check_new_roots(catalog, std::slice::from_ref(&s.path)).await {
+            Ok(()) => {
+                catalog
+                    .writer()
+                    .create_library(CreateLibrary {
+                        name: s.name.clone(),
+                        kind: s.kind,
+                        roots: vec![s.path.clone()],
+                    })
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        let lib = created.map_err(|e| match e {
+            e @ CatalogError::RootInOtherLibrary { .. } => anyhow::anyhow!(
+                "library {:?}: {e} Change or remove its --library flag or config entry.",
+                s.name
+            ),
+            e => e.into(),
+        })?;
         tracing::info!(library = %lib.name, id = lib.id, "library created");
     }
     Ok(())

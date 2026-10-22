@@ -104,14 +104,14 @@ target/release/flux-server \
   --library TV:shows:/path/to/TV
 ```
 
-Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` (macOS) or `~/.local/share/flux` (Linux) unless you pass `--data-dir`.
+Open <http://127.0.0.1:8096>. Libraries named on the command line are created on first run and scanned at startup. You can also add them on the Admin screen. Run from the repo root so that `web/dist` is found, or pass `--web-dir`. Ctrl-C stops the server gracefully. The catalog, caches and artwork go in `~/Library/Application Support/flux` (macOS) or `~/.local/share/flux` (Linux) unless you pass `--data-dir`; the log's first line names the folder.
 
 **Options** (`flux-server --help`). Each flag can also come from its environment variable, or from a TOML file (`--config`). Flags win over variables, and variables win over the file.
 
 | Flag | Variable | Default and meaning |
 |---|---|---|
-| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. |
-| `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `~/.local/share/flux` elsewhere |
+| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. A folder can be in only one library: if a new library's folder is another library's, or inside or around it, flux-server stops at startup and says why. |
+| `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `%LOCALAPPDATA%\flux` on Windows, `$XDG_DATA_HOME/flux` or `~/.local/share/flux` elsewhere |
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |
 | `--tailnet off\|embedded\|system` | `FLUX_TAILNET` | `off`. See [Remote access](#remote-access). |
@@ -142,7 +142,7 @@ path = "/Volumes/NAS/Movies"
 
 `--tailnet` picks one of three modes. You can also switch modes on the web client's Connect screen. The choice is remembered in the data dir, and switching replaces only the tailnet listener, so local streams carry on. A `--tailnet` flag or `FLUX_TAILNET` wins over the remembered choice.
 
-- **`off`** (the default): only 127.0.0.1, plus `--lan` if you set it.
+- **`off`** (the default): only 127.0.0.1, plus `--lan` if you set it. flux runs `tailscale status` once at startup so the Connect screen can offer this machine's Tailscale, unless `--tailnet off` or `FLUX_TAILNET=off` is given explicitly.
 - **`system`**: uses this machine's running Tailscale. flux binds the machine's Tailscale addresses on its port and identifies each caller with `tailscale whois`.
 - **`embedded`**: flux runs its own Tailscale node through Truffle. It needs Truffle's Go `sidecar-slim`, found through `TRUFFLE_SIDECAR_PATH` or next to the binary. On first start, the Connect screen (or `GET /api/v1/tailnet`) shows a login link and QR code. After you sign in, the server is on your tailnet as `http://truffle-flux-<name>.<tailnet>.ts.net:8096`.
 

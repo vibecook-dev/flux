@@ -66,12 +66,22 @@ binary once and caches the result (`flux_hls::encoders::FfmpegCaps`):
 |---|---|---|---|
 | Encoder | `--video-encoder auto\|videotoolbox\|nvenc\|qsv\|vaapi\|libx264` | `FLUX_VIDEO_ENCODER` | `video_encoder = "…"` |
 | VAAPI render node | `--vaapi-device PATH` | `FLUX_VAAPI_DEVICE` | `vaapi_device = "…"` |
+| Concurrent video transcodes | `--max-video-transcodes N` | `FLUX_MAX_VIDEO_TRANSCODES` | `max_video_transcodes = N` |
 
 A forced encoder is used even if its test encode fails (`--check` still
 shows the failure). `auto` (the default) detects. `software`, `x264` and
 `h264_*` names are accepted too. In code, `EngineConfig::video_encoder`
 and `EngineConfig::vaapi_device` do the same, and `EngineConfig::default()`
 reads both variables.
+
+Video transcodes run in a pool of encoder slots (ffmpeg runs). Requests
+and pieces encoded ahead share it, but encoding ahead only takes a spare
+slot and gives it up when a request finds every slot busy, so a first
+piece or a seek never waits behind it. The default (`0`) is 6 slots on a
+hardware encoder and 3 for libx264. A GeForce driver allows 8 NVENC
+sessions per machine, shared with other apps (another media server, a
+game recorder): raise the pool on a dedicated machine, lower it when the
+GPU is shared.
 
 ### The pipeline per encoder
 
@@ -87,6 +97,20 @@ decode, scale, tone-map and rotate chain, then the encoder:
 | VAAPI | `-hwaccel vaapi` on the render node (H.264/HEVC) | `scale_vaapi` | `tonemap_vaapi` when present, else download → software → upload | `transpose_vaapi` when present, else download → software → upload |
 | libx264 | software | `scale` | software chain | `transpose` / `hflip,vflip` |
 
+Interlaced sources (MPEG-2, VC-1, and H.264 that the container flags
+interlaced or, without a flag, whose SPS allows field coding) are
+deinterlaced first, at the source size: `bwdif_cuda` on the NVENC GPU path,
+`yadif_videotoolbox` on VideoToolbox, `deinterlace_vaapi` on VAAPI, else
+`bwdif` (or `yadif`) in the software chain. One frame comes out per frame
+(`mode=send_frame`), so piece frame counts hold, and only frames the
+decoder marks interlaced are touched (`deint=interlaced`). The exception is
+H.264 flagged interlaced but coded as progressive frames, with the fields
+woven in: the decoder marks none, so every frame is deinterlaced
+(`deint=all`). H.264 flagged progressive is left alone even when its SPS
+allows field coding (x264's `fake-interlaced`, used for 25p/30p Blu-ray
+encodes). Browsers can't deinterlace, so the planner transcodes interlaced
+H.264 for web clients.
+
 The **software chain** scales first, then tone-maps with jellyfin-ffmpeg's
 `tonemapx` (BT.2390) when the build has it, else with `zscale` (zimg) to
 linear light, `tonemap=hable` and back to BT.709. A build with neither has
@@ -94,6 +118,16 @@ no tone mapping (HDR sources look washed out on SDR screens); `--check`
 says so. Sources the hardware decoders are not trusted with (MPEG-2,
 MPEG-4 Part 2, AV1, VP9, VC-1) decode in software on every path: a failed
 hwaccel with hardware output frames has no software fallback in ffmpeg.
+
+**Dolby Vision profile 5** is the exception to the table's HDR → SDR
+column. It has no HDR10 or SDR base layer: the decoded picture stays in
+Dolby's IPT colour space until the RPU reshapes it, and only `tonemapx`
+does that (`apply_dovi`, on by default). So when the build has `tonemapx`,
+such a source always takes the software chain, on VideoToolbox and VAAPI
+too (`scale_vt` and `tonemap_vaapi` would leave it purple and green).
+Without `tonemapx` nothing reshapes it, and `--check` says so. Frame
+posters of these sources are tone-mapped by `tonemapx` as well; without
+it they get no frame art.
 
 Rate control is the same target on every encoder: the plan's bitrate on
 average, peaks to 1.5×, a buffer of 2× (`-b:v`/`-maxrate`/`-bufsize`; NVENC
@@ -142,11 +176,14 @@ encoders, in the order flux tries them:
   no  h264_qsv           not built into this ffmpeg
   no  h264_vaapi         not built into this ffmpeg
   ok  libx264            test encode passed
-nothing missing
+missing:
+  - no Dolby Vision reshaping (needs jellyfin-ffmpeg's tonemapx): Dolby Vision profile 5 sources transcode with a purple/green picture
 ```
 
-With `FLUX_VIDEO_ENCODER=libx264` the same machine reports `h264 →
-libx264 (software, forced)` and lists what is missing: no tone mapping
+Every ffmpeg without `tonemapx` (upstream builds such as Homebrew's and
+the Linux distributions') lists that Dolby Vision line, even with hardware
+tone mapping. With `FLUX_VIDEO_ENCODER=libx264` the same machine reports
+`h264 → libx264 (software, forced)` and also lists no tone mapping
 (Homebrew's ffmpeg has neither `zscale` nor `tonemapx`) and no hardware
 encoder. `--check` probes every candidate, not just up to the first that
 passes, and exits 1 when ffmpeg or ffprobe cannot run (2 for a bad flag).

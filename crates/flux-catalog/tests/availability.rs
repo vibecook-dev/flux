@@ -452,3 +452,119 @@ fn a_corrupt_stored_guess_does_not_poison_later_batches() {
     });
     assert_eq!(out.files_changed, 1);
 }
+
+/// A root typed with a trailing backslash used to be stored as typed, so
+/// asset paths read `D:\Library\Films\/Film/Film.mkv`, and every Windows
+/// asset path mixed `\` and `/`. Windows roots lose the trailing separator
+/// (a drive root keeps its own) and their asset paths use `\` throughout;
+/// other roots are unchanged.
+#[test]
+fn windows_roots_are_stored_without_a_trailing_separator_and_join_with_backslashes() {
+    let rel = "Film (2020)/Film (2020).mkv";
+    for (typed, stored, path) in [
+        (
+            "D:\\Library\\Films\\",
+            "D:\\Library\\Films",
+            "D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "D:/Library/Films/",
+            "D:\\Library\\Films",
+            "D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        ("D:\\", "D:\\", "D:\\Film (2020)\\Film (2020).mkv"),
+        ("D:", "D:\\", "D:\\Film (2020)\\Film (2020).mkv"),
+        (
+            "\\\\nas\\media\\",
+            "\\\\nas\\media",
+            "\\\\nas\\media\\Film (2020)\\Film (2020).mkv",
+        ),
+        // Device-namespace volume roots keep their `\`: trimmed, they name
+        // the volume device, which can't be listed.
+        (
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\D:\\",
+            "\\\\?\\D:\\",
+            "\\\\?\\D:\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\.\\D:\\",
+            "\\\\.\\D:\\",
+            "\\\\.\\D:\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\D:\\Library\\Films\\",
+            "\\\\?\\D:\\Library\\Films",
+            "\\\\?\\D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\UNC\\nas\\media\\",
+            "\\\\?\\UNC\\nas\\media",
+            "\\\\?\\UNC\\nas\\media\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "/media/lib/",
+            "/media/lib",
+            "/media/lib/Film (2020)/Film (2020).mkv",
+        ),
+        ("/", "/", "/Film (2020)/Film (2020).mkv"),
+    ] {
+        let e = env_at(LibraryKind::Movies, typed);
+        assert_eq!(e.lib.roots[0].path, stored, "{typed}");
+        e.apply(vec![upsert(rel, movie("Film", Some(2020)), None)]);
+        let d = e.detail(e.find_top("Film").id);
+        assert_eq!(d.assets[0].path, path, "{typed}");
+        let id = d.assets[0].id;
+        let loc = e
+            .cat
+            .read_blocking(move |c| read::asset_location(c, id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loc.path, path, "{typed}");
+        assert_eq!(loc.root_path, stored);
+    }
+}
+
+/// A volume with no drive letter is typed as `\\?\Volume{…}\`. Stored
+/// without its trailing `\` it named the volume device, not its root
+/// folder: the root's stat failed ("Incorrect function") and the root was
+/// unavailable. Here the temp dir's own volume, by its GUID name.
+#[cfg(windows)]
+#[test]
+fn a_volume_guid_root_is_stored_as_a_folder() {
+    use std::path::Component;
+    let tmp = std::env::temp_dir();
+    let Some(Component::Prefix(drive)) = tmp.components().next() else {
+        return;
+    };
+    let mut mount = drive.as_os_str().to_os_string();
+    mount.push("\\");
+    let out = std::process::Command::new("mountvol")
+        .arg(&mount)
+        .arg("/L")
+        .output();
+    let Some(guid) = out
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| s.starts_with("\\\\?\\Volume{"))
+    else {
+        eprintln!("skipping: mountvol gave no volume name for {mount:?}");
+        return;
+    };
+    let e = env_at(LibraryKind::Movies, &guid);
+    let stored = &e.lib.roots[0].path;
+    assert!(stored.ends_with('\\'), "{stored}");
+    let meta = std::fs::metadata(stored).unwrap_or_else(|err| panic!("{stored}: {err}"));
+    assert!(meta.is_dir(), "{stored}");
+    assert!(std::fs::read_dir(stored).is_ok(), "{stored}");
+}

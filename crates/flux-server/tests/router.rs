@@ -256,7 +256,9 @@ async fn admin_routes_auth_tailnet_and_errors() {
         .await
         .unwrap();
     let app = router(st.clone());
-    let lib = json!({"name": "Films", "kind": "movies", "roots": ["/nonexistent/films"]});
+    // A folder that doesn't exist, absolute on every platform.
+    let films = dir.path().join("nonexistent").join("films");
+    let lib = json!({"name": "Films", "kind": "movies", "roots": [films]});
 
     // Only the owner/admin creates libraries; LAN callers are anonymous.
     let r = call(

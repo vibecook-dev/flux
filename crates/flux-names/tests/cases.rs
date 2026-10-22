@@ -557,3 +557,411 @@ fn evidence_and_confidence_explain_decisions() {
     let g = shows("Show/notes.mkv");
     assert_eq!(g.kind, GuessKind::Unknown);
 }
+
+// ---- CJK release names (all names below are made up) ----------------------
+
+fn with_sibs(path: &str, sibs: &[&str], kind: LibraryKind) -> NameGuess {
+    parse(Path::new(path), sibs, kind)
+}
+
+#[test]
+fn chinese_episode_markers() {
+    // `<title>_第01集`: the marker is the episode, never part of a title.
+    let g = shows("示例剧_第01集.mp4");
+    assert_episode(&g, "示例剧", None, &[1]);
+    assert_eq!(g.episode_title, None, "{g:#?}");
+    assert!(g.confidence >= 0.5, "{g:#?}");
+    assert_episode(&shows("示例剧/示例剧_第12集.mp4"), "示例剧", None, &[12]);
+    assert_episode(&shows("示例剧/示例剧 第十二集.mkv"), "示例剧", None, &[12]);
+    assert_episode(&shows("示例剧/示例剧.第二十三话.mkv"), "示例剧", None, &[23]);
+    assert_episode(&shows("示例剧/示例剧 第一百零五回.mkv"), "示例剧", None, &[105]);
+    assert_episode(&shows("示例剧/示例剧第０７集.mkv"), "示例剧", None, &[7]);
+    assert_episode(&shows("示例剧/示例剧 第 8 集.mkv"), "示例剧", None, &[8]);
+    let g = shows("示例剧/示例剧_第01集_开端.mp4");
+    assert_eq!(g.episode_title.as_deref(), Some("开端"), "{g:#?}");
+    // Seasons: `第N季` in the name or as the season folder.
+    assert_episode(&shows("示例剧/示例剧.第2季.第03集.mkv"), "示例剧", Some(2), &[3]);
+    assert_episode(&shows("示例剧/示例剧第2季第3话.mkv"), "示例剧", Some(2), &[3]);
+    assert_episode(&shows("示例剧/第二季/示例剧_第03集.mp4"), "示例剧", Some(2), &[3]);
+    // Also outside a shows library.
+    assert_episode(&p("示例剧_第05集.mp4", LibraryKind::Mixed), "示例剧", None, &[5]);
+    // Titles that start with 第 but carry no marker stay titles.
+    assert_movie(&movies("第一滴血.mkv"), "第一滴血", None);
+    assert_movie(&movies("第九区 (2009).mkv"), "第九区", Some(2009));
+}
+
+#[test]
+fn chinese_release_tags_are_not_titles() {
+    let g = shows("Some Show/S01/示例剧.Some.Show.S01E01.中英字幕.BDrip.1080p-某某影视.mp4");
+    assert_episode(&g, "Some Show", Some(1), &[1]);
+    assert_eq!(g.episode_title, None, "{g:#?}");
+    assert_eq!(g.release_group.as_deref(), Some("某某影视"));
+    let g = shows("Some Show/Some.Show.S01E02.1080p.中英特效字幕.某某字幕组.mp4");
+    assert_episode(&g, "Some Show", Some(1), &[2]);
+    assert_eq!(g.episode_title, None, "{g:#?}");
+    assert_eq!(g.release_group.as_deref(), Some("某某字幕组"));
+    let g = shows("Some Show/Some.Show.S01E03.The.Pilot.官方中文字幕.1080p.mkv");
+    assert_eq!(g.episode_title.as_deref(), Some("The Pilot"), "{g:#?}");
+    assert_movie(&movies("示例片.2019.国语中字.mkv"), "示例片", Some(2019));
+    assert_movie(&movies("示例片.粤语.mkv"), "示例片", None);
+    assert_movie(&movies("示例片 简繁双语.mkv"), "示例片", None);
+    // A stem that is only such a word keeps it as the title.
+    assert_movie(&movies("粤语.mkv"), "粤语", None);
+    // A sharing site's prefix, an edition and a glued quality+subtitle tag.
+    let g = movies("[某某影视分享example.co]示例片.1048.2007.导演剪辑版.BD720P.高清中英双字.mkv");
+    assert_movie(&g, "示例片 1048", Some(2007));
+    assert_eq!(g.edition.as_deref(), Some("Director's Cut"));
+    assert_eq!(g.release_group, None, "a site is not a release group");
+    assert_eq!(g.resolution.as_deref(), Some("720p"));
+}
+
+#[test]
+fn cjk_and_latin_split_where_the_script_changes() {
+    let g = movies("示例片4k.mp4");
+    assert_movie(&g, "示例片", None);
+    assert_eq!(g.resolution.as_deref(), Some("2160p"));
+    assert_movie(&movies("示例片1080p.x265.mkv"), "示例片", None);
+    // A number glued to a CJK title is a sequel number, not an episode the
+    // fast path reads (even in an episode context).
+    let g = parse_with(
+        Path::new("示例片2.mkv"),
+        &[],
+        LibraryKind::Shows,
+        ParseOptions {
+            fallback: Fallback::Never,
+        },
+    );
+    assert_eq!(g.title.as_deref(), Some("示例片2"), "{g:#?}");
+    assert!(g.episodes.is_empty(), "{g:#?}");
+    // Mixed scripts inside one word stay one title.
+    assert_movie(&movies("示ing例.1048.2007.mkv"), "示ing例 1048", Some(2007));
+}
+
+#[test]
+fn bracket_group_names() {
+    // [中文名][Group][English Name][tags]: the Latin title, the CJK original,
+    // the group from the middle — not "[Some Studio]".
+    // A number in the title group stays in the title.
+    let g = movies("[示例片.副题][Some.Studio][Some.Film.3000][BDRip_720P][X264_AAC_ENG_US].mkv");
+    assert_movie(&g, "Some Film 3000", None);
+    assert_eq!(g.original_title.as_deref(), Some("示例片 副题"));
+    assert_eq!(g.release_group.as_deref(), Some("Some.Studio"));
+    assert_eq!(g.resolution.as_deref(), Some("720p"));
+    // [Group][中文名][English][01][tags] (anime fansubs).
+    let g = shows("Some Anime/[某某字幕组][示例动画][Some Anime][01][1080P][简体内嵌].mp4");
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.absolute_episode),
+        (GuessKind::Episode, Some("Some Anime"), Some(1)),
+        "{g:#?}"
+    );
+    assert_eq!(g.release_group.as_deref(), Some("某某字幕组"));
+    assert_eq!(g.original_title.as_deref(), Some("示例动画"));
+    // [Group][Title][EP][tags]: the first group is the fansub group.
+    let g = shows("Some Title/[SomeSub][Some Title][02][1080p].mkv");
+    assert_eq!(
+        (g.title.as_deref(), g.absolute_episode),
+        (Some("Some Title"), Some(2))
+    );
+    assert_eq!(g.release_group.as_deref(), Some("SomeSub"));
+    let g = movies("[Moonlit Tea][Some Film][1080p].mkv");
+    assert_movie(&g, "Some Film", None);
+    assert_eq!(g.release_group.as_deref(), Some("Moonlit Tea"));
+    // A bracketed title that merely looks like a web address is still a title.
+    let g = movies("[Lost.in.Somewhere][1080p].mkv");
+    assert_movie(&g, "Lost in Somewhere", None);
+    let g = shows("示例剧/[某组][示例剧][第03集][1080P].mp4");
+    assert_episode(&g, "示例剧", None, &[3]);
+    let g = movies("[示例片][2019][1080P].mkv");
+    assert_movie(&g, "示例片", Some(2019));
+    // A title that is only a bracket group or tags is flagged for the fallback.
+    let g = movies("中英字幕.1080p.mkv");
+    assert!(
+        g.evidence.iter().any(|e| e.contains("looks like")) || g.title.as_deref() != Some("1080p"),
+        "{g:#?}"
+    );
+}
+
+#[test]
+fn mixed_space_and_dot_names() {
+    let g = movies("XY-01 示例片2.Some.Film.2.2024.4K.WEBrip.x265.10bit.DD5.1-某组.mkv");
+    assert_movie(&g, "XY-01 示例片2 Some Film 2", Some(2024));
+    assert_eq!(g.original_title, None, "three parts: no bilingual split");
+    assert_movie(
+        &movies("Agents of S.H.I.E.L.D. Origins (2020).mkv"),
+        "Agents of S.H.I.E.L.D. Origins",
+        Some(2020),
+    );
+    assert_movie(
+        &movies("Tron 2.0 Legacy (2010).mkv"),
+        "Tron 2.0 Legacy",
+        Some(2010),
+    );
+    assert_movie(
+        &movies("Mr. Robot Returns (2015).mkv"),
+        "Mr. Robot Returns",
+        Some(2015),
+    );
+    // One dot after a short word is an abbreviation, not a word joint.
+    for (name, title) in [
+        ("Some Film Vol.2 (2004).mkv", "Some Film Vol.2"),
+        ("Mr.Someone's Holiday.mkv", "Mr.Someone's Holiday"),
+        ("No.7 Some Film.mkv", "No.7 Some Film"),
+        ("St.Someone's Fire (1985).mkv", "St.Someone's Fire"),
+    ] {
+        assert_eq!(movies(name).title.as_deref(), Some(title), "{name}");
+    }
+    let g = shows("Some Show/Some Show S01E01 Mr.Someone Returns.mkv");
+    assert_eq!(g.episode_title.as_deref(), Some("Mr.Someone Returns"), "{g:#?}");
+    // Two joining dots or more are a scene-style part.
+    assert_movie(
+        &movies("XY-02 Some.Film.Name (2020).mkv"),
+        "XY-02 Some Film Name",
+        Some(2020),
+    );
+}
+
+#[test]
+fn letter_suffixed_parts_stack() {
+    let sibs = ["示例片B.mp4", "notes.txt"];
+    let g = with_sibs("示例片-MP4/示例片A.mp4", &sibs, LibraryKind::Movies);
+    assert_movie(&g, "示例片", None);
+    assert_eq!(g.part, Some(1), "{g:#?}");
+    let g = with_sibs("示例片-MP4/示例片B.mp4", &["示例片A.mp4"], LibraryKind::Movies);
+    assert_eq!((g.title.as_deref(), g.part), (Some("示例片"), Some(2)), "{g:#?}");
+    let g = with_sibs("Some Movie-b.avi", &["Some Movie-a.avi"], LibraryKind::Movies);
+    assert_eq!(
+        (g.title.as_deref(), g.part),
+        (Some("Some Movie"), Some(2)),
+        "{g:#?}"
+    );
+    let g = with_sibs(
+        "2046示例A.mp4",
+        &["2046示例B.mp4", "2046示例C.mp4"],
+        LibraryKind::Movies,
+    );
+    assert_eq!(g.part, Some(1), "{g:#?}");
+    // Guards: no sibling, no "A", a word before the letter, numbered sequels.
+    let g = with_sibs("示例片A.mp4", &[], LibraryKind::Movies);
+    assert_eq!((g.title.as_deref(), g.part), (Some("示例片A"), None));
+    let g = with_sibs("示例片B.mp4", &["示例片C.mp4"], LibraryKind::Movies);
+    assert_eq!(g.part, None, "{g:#?}");
+    let g = parse_with(
+        Path::new("Plan A.mkv"),
+        &["Plan B.mkv"],
+        LibraryKind::Movies,
+        ParseOptions {
+            fallback: Fallback::Never,
+        },
+    );
+    assert_eq!((g.title.as_deref(), g.part), (Some("Plan A"), None));
+    let g = with_sibs("Panda.mkv", &["Pandb.mkv"], LibraryKind::Movies);
+    assert_eq!(g.part, None);
+    let g = parse_with(
+        Path::new("示例片1.mp4"),
+        &["示例片2.mp4"],
+        LibraryKind::Movies,
+        ParseOptions {
+            fallback: Fallback::Never,
+        },
+    );
+    assert_eq!((g.title.as_deref(), g.part), (Some("示例片1"), None));
+}
+
+#[test]
+fn bilingual_names_keep_both_halves() {
+    let g = shows("Some Show/S01/示例剧.Some.Show.S01E01.1080p.mp4");
+    assert_episode(&g, "Some Show", Some(1), &[1]);
+    assert_eq!(g.original_title.as_deref(), Some("示例剧"));
+    // Without a show folder the Latin half is the show; the CJK half is kept.
+    let g = p("示例剧.Some.Show.S01E01.1080p.mp4", LibraryKind::Mixed);
+    assert_episode(&g, "Some Show", Some(1), &[1]);
+    assert_eq!(g.original_title.as_deref(), Some("示例剧"));
+    let g = movies("示例片.Some.Film.2022.BD1080P.X264.AAC/Some.Film.2022.BD1080P.X264.AAC.mp4");
+    assert_movie(&g, "Some Film", Some(2022));
+    assert_eq!(g.original_title.as_deref(), Some("示例片"));
+    let g = movies("示例片.Some.Film.2019.1080p.mkv");
+    assert_movie(&g, "Some Film", Some(2019));
+    assert_eq!(g.original_title.as_deref(), Some("示例片"));
+    // Latin first or spaced names are not split: the Latin part may be a
+    // subtitle, the CJK part an arc name.
+    let g = movies("Some Film 示例片 (2019).mkv");
+    assert_movie(&g, "Some Film 示例片", Some(2019));
+    assert_eq!(g.original_title, None);
+    // Korean and Japanese too.
+    let g = movies("예시영화.Some.Film.2019.mkv");
+    assert_eq!(
+        (g.title.as_deref(), g.original_title.as_deref()),
+        (Some("Some Film"), Some("예시영화"))
+    );
+    // Not bilingual: one script, a single letter, mixed words.
+    assert_eq!(movies("示例片 (2019).mkv").original_title, None);
+    assert_movie(&movies("X示例.2010.mkv"), "X示例", Some(2010));
+    assert_eq!(movies("示ing例.2007.mkv").original_title, None);
+}
+
+#[test]
+fn non_episode_file_beside_episodes_is_an_extra() {
+    let sibs = ["Some.Show.S01E01.1080p.mp4", "Some.Show.S01E02.1080p.mp4"];
+    let g = with_sibs(
+        "Some.Show/示例.Short.1080P.某某字幕组.mp4",
+        &sibs,
+        LibraryKind::Shows,
+    );
+    assert_eq!(
+        (g.kind, g.extra),
+        (GuessKind::Extra, Some(ExtraKind::Other)),
+        "{g:#?}"
+    );
+    assert_eq!(g.title.as_deref(), Some("Some Show"));
+    assert_eq!(g.episode_title.as_deref(), Some("示例 Short"));
+    // Without episode siblings it stays unknown.
+    let g = with_sibs("Some.Show/示例.Short.1080P.mp4", &[], LibraryKind::Shows);
+    assert_eq!(g.kind, GuessKind::Unknown);
+}
+
+#[test]
+fn fansub_tag_groups_are_not_titles() {
+    // [GB], [BIG5], [MP4], [TV], [END]: notes in a group of their own.
+    for tag in [
+        "GB",
+        "BIG5",
+        "CHT][720P][MP4",
+        "TV",
+        "END",
+        "GB_MP4",
+        "CHS&JPN",
+        "V2",
+    ] {
+        let name = format!("[某某字幕组][示例动画][02][{tag}][1080P].mp4");
+        let g = shows(&name);
+        assert_eq!(
+            (g.kind, g.title.as_deref(), g.absolute_episode),
+            (GuessKind::Episode, Some("示例动画"), Some(2)),
+            "{name}: {g:#?}"
+        );
+        assert_eq!(g.original_title, None, "{name}");
+        assert_eq!(g.release_group.as_deref(), Some("某某字幕组"), "{name}");
+    }
+    // Two films with the same tags stay two titles.
+    let a = movies("[某某字幕组][示例片][GB][1080P].mp4");
+    let b = movies("[某某字幕组][另一片][GB][1080P].mp4");
+    assert_movie(&a, "示例片", None);
+    assert_movie(&b, "另一片", None);
+    // An unknown word after the episode is never the title.
+    let g = shows("[某某字幕组][示例动画][03][XYZW][1080P].mp4");
+    assert_eq!(g.title.as_deref(), Some("示例动画"), "{g:#?}");
+    // A generic Latin group is a subtitle, not the title.
+    let g = movies("[某某字幕组][示例动画][Movie][1080P].mp4");
+    assert_movie(&g, "示例动画", None);
+}
+
+#[test]
+fn cjk_fansub_group_without_suffix() {
+    // No group says 字幕组: the first group is the fansub group, by convention.
+    let g = shows("[某某奶茶屋][Some Anime][01][1080p].mp4");
+    assert_eq!(g.title.as_deref(), Some("Some Anime"), "{g:#?}");
+    assert_eq!(g.release_group.as_deref(), Some("某某奶茶屋"));
+    assert_eq!(g.original_title, None);
+    let g = shows("[某某学园][示例动画][Some Anime][01][720P].mp4");
+    assert_eq!(g.title.as_deref(), Some("Some Anime"), "{g:#?}");
+    assert_eq!(g.release_group.as_deref(), Some("某某学园"));
+    assert_eq!(g.original_title.as_deref(), Some("示例动画"));
+    // [中文名][Group][English Name]: the Latin group in the middle is the group.
+    let g = movies("[示例片][Moonlit Tea][Some Film][1080p].mkv");
+    assert_movie(&g, "Some Film", None);
+    assert_eq!(g.release_group.as_deref(), Some("Moonlit Tea"));
+    assert_eq!(g.original_title.as_deref(), Some("示例片"));
+}
+
+#[test]
+fn cjk_season_markers_before_an_episode_number() {
+    // 第二季 + a bare number: season 2, that episode.
+    for name in [
+        "示例动画/示例动画 第二季 05.mkv",
+        "示例动画/示例动画.第二季.05.mkv",
+        "示例动画/示例动画 第2季 - 05.mkv",
+        "示例动画 第二季 05.mkv",
+    ] {
+        assert_episode(&shows(name), "示例动画", Some(2), &[5]);
+    }
+    let a = shows("示例动画 第二季 01.mp4");
+    let b = shows("示例动画 第二季 02.mp4");
+    assert_eq!((a.episodes.clone(), b.episodes.clone()), (vec![1], vec![2]));
+    // 第二期 (an anime's second cour) before an episode number is a season.
+    for name in [
+        "示例动画 第二期/示例动画 第二期 05.mkv",
+        "示例动画 第二期 第05话.mkv",
+        "示例动画第二期 - 05.mkv",
+    ] {
+        assert_episode(&shows(name), "示例动画", Some(2), &[5]);
+    }
+    let g = shows("[某某字幕组][示例动画][第二期][05][1080P].mp4");
+    assert_eq!((g.season, g.episodes.clone()), (Some(2), vec![5]), "{g:#?}");
+    let g = shows("[某某字幕组][示例动画 第二季][05][1080P].mp4");
+    assert_eq!((g.season, g.episodes.clone()), (Some(2), vec![5]), "{g:#?}");
+    // Alone, 第N期 is a variety show's issue: an episode.
+    assert_episode(&shows("示例综艺/示例综艺 第1期.mp4"), "示例综艺", None, &[1]);
+    assert_episode(&shows("示例综艺 第12期.mp4"), "示例综艺", None, &[12]);
+    let g = shows("[某某字幕组][示例综艺 第12期][1080P].mp4");
+    assert_eq!(g.episodes, vec![12], "{g:#?}");
+    // A show folder keeps its season marker; no episode is read from it.
+    let g = shows("示例动画 第二季 01-12/示例动画 第二季 03.mkv");
+    assert_episode(&g, "示例动画", Some(2), &[3]);
+}
+
+#[test]
+fn cjk_markers_inside_words_and_in_movie_libraries() {
+    // A marker that starts a longer word is part of the title.
+    assert_movie(&movies("示例第一回合 (2019).mkv"), "示例第一回合", Some(2019));
+    assert_movie(&movies("示例第三集团.2010.mkv"), "示例第三集团", Some(2010));
+    // In a movie library 回, 期 and 季 alone are title words.
+    assert_movie(&movies("示例 第三期 (2020).mkv"), "示例 第三期", Some(2020));
+    assert_movie(&movies("示例第一季.mkv"), "示例第一季", None);
+    assert_movie(&movies("示例 第一回 (2019).mkv"), "示例 第一回", Some(2019));
+    assert_movie(&movies("示例第二季 05.mkv"), "示例第二季 05", None);
+    // An episode unit still marks an episode there, like S01E01 does.
+    assert_eq!(movies("示例剧 第2季 第3集.mkv").episodes, vec![3]);
+    // A glued episode title after an episode unit is cut off.
+    let g = shows("示例剧/示例剧第36集大结局.mp4");
+    assert_episode(&g, "示例剧", None, &[36]);
+    assert_eq!(g.episode_title.as_deref(), Some("大结局"));
+}
+
+#[test]
+fn number_glued_to_a_cjk_title_is_not_a_year() {
+    let g = movies("示例1900.mkv");
+    assert_movie(&g, "示例1900", None);
+    let g = movies("示例1900.2019.1080p.mkv");
+    assert_movie(&g, "示例1900", Some(2019));
+    assert_movie(&movies("示例片.2019.mkv"), "示例片", Some(2019));
+}
+
+#[test]
+fn cjk_titles_with_latin_subtitles_stay_whole() {
+    for (name, title) in [
+        ("示例动画 III (2019).mkv", "示例动画 III"),
+        ("示例动画 THE MOVIE (2019).mp4", "示例动画 THE MOVIE"),
+        ("示例の刃 Some Train (2020).mkv", "示例の刃 Some Train"),
+        ("示例动画.The.Movie.2019.1080p.mkv", "示例动画 The Movie"),
+        ("示例动画.III.2019.mkv", "示例动画 III"),
+    ] {
+        let g = movies(name);
+        assert_movie(&g, title, Some(if name.contains("2020") { 2020 } else { 2019 }));
+        assert_eq!(g.original_title, None, "{name}");
+    }
+    // Two works with the same subtitle are two titles.
+    let a = movies("示例动画 THE MOVIE (2019).mp4");
+    let b = movies("其他动画 THE MOVIE (2019).mp4");
+    assert_ne!(a.title, b.title);
+    let g = shows("示例动画 Final Season/示例动画 Final Season S01E01.mkv");
+    assert_eq!(g.title.as_deref(), Some("示例动画 Final Season"), "{g:#?}");
+    let g = shows("SOMEANIME 千年篇/SOMEANIME 千年篇 S01E01.mkv");
+    assert_eq!(g.title.as_deref(), Some("SOMEANIME 千年篇"), "{g:#?}");
+    assert_eq!(g.original_title, None);
+    // The release-group layout still splits.
+    let g = movies("示例片.Some.Film.2019.1080p.mkv");
+    assert_eq!(
+        (g.title.as_deref(), g.original_title.as_deref()),
+        (Some("Some Film"), Some("示例片"))
+    );
+}

@@ -30,7 +30,17 @@ use crate::source::{Source, SourceId};
 /// 5: also MPEG-TS/M2TS with H.264/HEVC indexed in-process (`Layout::Ts`)
 ///    instead of by an ffprobe scan (phase-d/hls-perf). Both branches bumped
 ///    to 4 independently; 5 makes every cached index rebuild once.
-pub const INDEX_VERSION: u16 = 5;
+/// 6: MP4 Dolby Vision entries (`dvhe`, `dvh1`, …) index as HEVC/H.264/AV1
+///    with their DV record (were "Other"); AC-3/E-AC-3 channels come from
+///    `dac3`/`dec3` (were the entry's nominal 2); VP8/VP9/JPEG and unknown
+///    video entries keep their size.
+/// 7: [`TrackExtra::interlaced`]: the container's interlace flag (Matroska
+///    FlagInterlaced, MP4 `fiel`), which decides over the SPS.
+/// 8: laced E-AC-3 in Matroska: dec3 and the bitrate describe one access
+///    unit, not the whole first block (8× too high with 8-frame lacing).
+///    play-audio had bumped to 6 alongside play-dv; 8 makes every index
+///    cached by any of these builds rebuild once.
+pub const INDEX_VERSION: u16 = 8;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
@@ -147,6 +157,10 @@ pub struct TrackExtra {
     /// subtitle or audio track that outlasts the video doesn't stretch it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_ns: Option<i64>,
+    /// Video: what the container says about interlacing (Matroska
+    /// FlagInterlaced 1/2, MP4 `fiel` with 2/1 fields), when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interlaced: Option<bool>,
 }
 
 fn is_zero(v: &u16) -> bool {
@@ -214,6 +228,31 @@ impl IndexTrack {
         // `t` alone could add half a tick).
         let off = (ticks_to_ns(g, self.timescale) - pts_ns).abs();
         (off <= GRID_TOLERANCE_NS).then_some(g)
+    }
+
+    /// Whether the video is interlaced: the container's flag when it has
+    /// one, else the codec's ([`IndexTrack::coded_interlaced`]). This is
+    /// flux-probe's rule, so the plan from the catalog's probe and the plan
+    /// from this index agree. The container decides because an SPS that
+    /// allows field coding doesn't mean the frames use it: x264's
+    /// `fake-interlaced` (25p/30p Blu-ray encodes) writes progressive
+    /// frames under such an SPS, and ffmpeg flags those files progressive.
+    pub fn interlaced(&self) -> Option<bool> {
+        self.extra.interlaced.or_else(|| self.coded_interlaced())
+    }
+
+    /// Whether the codec allows the video to be coded interlaced, from its
+    /// parameter sets: an H.264 SPS without `frame_mbs_only_flag` (field
+    /// pictures or MBAFF frames, e.g. a 576i DVD or 1080i broadcast
+    /// encode). `None` when the record doesn't tell (other codecs).
+    pub fn coded_interlaced(&self) -> Option<bool> {
+        use crate::codec::h264;
+        match self.codec {
+            Codec::H264 => h264::AvcConfig::parse(&self.codec_private)
+                .and_then(|c| c.sps.first().and_then(|s| h264::parse_sps(s)))
+                .map(|s| !s.frame_mbs_only),
+            _ => None,
+        }
     }
 }
 
@@ -441,7 +480,7 @@ impl PlaybackIndex {
                 width: t.width,
                 height: t.height,
                 frame_rate: t.frame_rate,
-                interlaced: None,
+                interlaced: t.interlaced(),
                 color: t.color,
                 hdr: t
                     .hdr

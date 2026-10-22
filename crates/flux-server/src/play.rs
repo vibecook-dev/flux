@@ -41,6 +41,7 @@ use flux_catalog::{read, scan_support, AssetLocation, PlayIndex};
 use flux_core::api::{
     AssetInfo, Id, PlanPreview, PlayRequest, PlayResponse, ProgressReport, SessionDiagnostics, SubtitleRef,
 };
+use flux_core::file_id::FileId;
 use flux_core::{ClientCaps, DeliveryFormat, HdrFormat, PlaybackPlan, SubtitleOp};
 use flux_hls::index::{INDEX_FORMAT_BINARY, INDEX_VERSION};
 use flux_hls::{Asset, AudioKey, HlsError, PlanPrefs, PlaybackIndex, Rendition};
@@ -101,18 +102,12 @@ impl SourceKey {
     }
 }
 
-/// `path` still names the inode `asset`'s source reads. A symlink re-pointed
-/// at another file with the same size and mtime doesn't: the asset is then
-/// reloaded, which re-checks that the file may be served (review SEC-2).
-#[cfg(unix)]
+/// `path` still names the file (inode, Windows file id) `asset`'s source
+/// reads. A symlink re-pointed at another file with the same size and mtime
+/// doesn't: the asset is then reloaded, which re-checks that the file may be
+/// served (review SEC-2).
 fn same_inode(path: &Path, asset: &Asset) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).is_ok_and(|m| m.ino() == asset.source().ino())
-}
-
-#[cfg(not(unix))]
-fn same_inode(_path: &Path, _asset: &Asset) -> bool {
-    true
+    FileId::of_path(path).is_ok_and(|id| id.ino == asset.source().ino())
 }
 
 /// Server-side counters for one stream (a plan, or a file served directly).
@@ -732,6 +727,10 @@ pub async fn location(st: &AppState, asset_id: Id) -> ApiResult<AssetLocation> {
 /// for a link, its target's, since the scan stats through links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Recorded {
+    /// `st_dev`, or the Windows volume serial number.
+    pub dev: Option<u64>,
+    /// The inode, or the Windows file id (recorded by the scan for files
+    /// behind a link that leaves the library; see `flux_core::file_id`).
     pub ino: Option<u64>,
     pub size: u64,
     pub mtime_ns: i64,
@@ -747,6 +746,7 @@ pub struct Recorded {
 impl Recorded {
     pub fn of(loc: &AssetLocation) -> Recorded {
         Recorded {
+            dev: loc.dev,
             ino: loc.ino,
             size: loc.size,
             mtime_ns: loc.mtime_ns,
@@ -754,23 +754,22 @@ impl Recorded {
         }
     }
 
-    /// `meta` describes the very file the scan recorded: same inode, size
-    /// and modification time. The device number is left out on purpose: a
-    /// remounted NAS gets a new one, while an inode, size and nanosecond
-    /// mtime that all match can't name a different file by accident, and a
-    /// link's author can't give a file they want to read the inode of the
-    /// media file the scan probed.
-    #[cfg(unix)]
-    pub fn matches(&self, meta: &std::fs::Metadata) -> bool {
-        use std::os::unix::fs::MetadataExt;
-        let mtime_ns = meta.mtime() * 1_000_000_000 + meta.mtime_nsec();
-        self.ino == Some(meta.ino()) && self.size == meta.len() && self.mtime_ns == mtime_ns
-    }
-
-    /// Without inodes there is no identity to compare: never.
-    #[cfg(not(unix))]
-    pub fn matches(&self, _meta: &std::fs::Metadata) -> bool {
-        false
+    /// The file `meta` and `id` describe is the very file the scan
+    /// recorded: same inode (file id), size and modification time. On Unix
+    /// the device number is left out on purpose: a remounted NAS gets a new
+    /// one, while an inode, size and nanosecond mtime that all match can't
+    /// name a different file by accident, and a link's author can't give a
+    /// file they want to read the inode of the media file the scan probed.
+    /// On Windows the volume serial number is stable across remounts and is
+    /// compared too: FAT and exFAT file ids are only positions in a
+    /// directory, so they repeat across volumes. A scan that recorded no
+    /// identity (`None`) matches nothing.
+    pub fn matches(&self, meta: &std::fs::Metadata, id: &FileId) -> bool {
+        let dev_ok = !cfg!(windows) || self.dev == Some(id.dev);
+        dev_ok
+            && self.ino == Some(id.ino)
+            && self.size == meta.len()
+            && self.mtime_ns == flux_core::file_id::mtime_ns(meta)
     }
 }
 
@@ -818,7 +817,8 @@ pub fn allowed(path: &Path, roots: &[String], rec: &Recorded) -> ApiResult<PathB
         return Ok(real);
     }
     let meta = std::fs::metadata(&real).map_err(cant_open)?;
-    if rec.media && rec.matches(&meta) {
+    let id = FileId::of_path(&real).map_err(cant_open)?;
+    if rec.media && rec.matches(&meta, &id) {
         Ok(real)
     } else {
         Err(outside(path, &real))
@@ -834,25 +834,22 @@ pub fn allowed(path: &Path, roots: &[String], rec: &Recorded) -> ApiResult<PathB
 pub fn open_contained(path: &Path, roots: &[String], rec: &Recorded) -> ApiResult<(File, std::fs::Metadata)> {
     let file = File::open(path).map_err(cant_open)?;
     let meta = file.metadata().map_err(cant_open)?;
+    let opened = FileId::of_file(&file).map_err(cant_open)?;
     let real = std::fs::canonicalize(path).map_err(cant_open)?;
     if !inside(&real, roots) {
         // Outside the library: only the very file the scan recorded, and
         // only while that file probes as media (`rec.media`), so a link
         // re-pointed at a non-media file the scan then re-records (with its
         // new identity) is still refused.
-        return if rec.media && rec.matches(&meta) {
+        return if rec.media && rec.matches(&meta, &opened) {
             Ok((file, meta))
         } else {
             Err(outside(path, &real))
         };
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let named = std::fs::metadata(&real).map_err(cant_open)?;
-        if (named.dev(), named.ino()) != (meta.dev(), meta.ino()) {
-            return Err(outside(path, &real));
-        }
+    let named = FileId::of_path(&real).map_err(cant_open)?;
+    if !named.same_file(&opened) {
+        return Err(outside(path, &real));
     }
     Ok((file, meta))
 }
@@ -1417,6 +1414,128 @@ mod tests {
         for &r in BITRATE_RUNGS {
             assert_eq!(round_down(r, BITRATE_RUNGS), r);
         }
+    }
+
+    fn id_scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("flux-play-id-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// What the scan records for a file it reached through a link that
+    /// leaves the library (`flux_scan` asks the file for its identity where
+    /// the walk doesn't report one, as on Windows).
+    fn recorded(path: &Path) -> Recorded {
+        let meta = std::fs::metadata(path).unwrap();
+        let id = FileId::of_path(path).unwrap();
+        Recorded {
+            dev: Some(id.dev),
+            ino: Some(id.ino),
+            size: meta.len(),
+            mtime_ns: flux_core::file_id::mtime_ns(&meta),
+            media: true,
+        }
+    }
+
+    /// SEC-2 on every platform: outside its library's roots, a file is
+    /// served only when it is the very file the scan recorded and probed as
+    /// media. Windows used to refuse every such file (`matches` was always
+    /// false there), so a film behind a junction was listed but never
+    /// played.
+    #[test]
+    fn a_file_outside_the_roots_is_served_only_as_recorded() {
+        let d = id_scratch("outside");
+        let (lib, ext) = (d.join("lib"), d.join("ext"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&ext).unwrap();
+        let film = ext.join("Film (2021).mkv");
+        let other = ext.join("not-media");
+        std::fs::write(&film, vec![1u8; 4096]).unwrap();
+        std::fs::write(&other, vec![2u8; 4096]).unwrap();
+        let mtime = std::fs::metadata(&film).unwrap().modified().unwrap();
+        File::options()
+            .write(true)
+            .open(&other)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let roots = vec![lib.to_string_lossy().into_owned()];
+        let rec = recorded(&film);
+
+        assert!(allowed(&film, &roots, &rec).is_ok());
+        let (_f, meta) = open_contained(&film, &roots, &rec).expect("the recorded file is served");
+        assert_eq!(meta.len(), 4096);
+        // Same size and mtime, another file (a link re-pointed at it).
+        assert!(allowed(&other, &roots, &rec).is_err());
+        assert!(open_contained(&other, &roots, &rec).is_err());
+        // Not media, or no identity recorded: refused.
+        let not_media = Recorded { media: false, ..rec };
+        assert!(open_contained(&film, &roots, &not_media).is_err());
+        let unknown = Recorded { ino: None, ..rec };
+        assert!(allowed(&film, &roots, &unknown).is_err());
+        if cfg!(windows) {
+            // The volume serial is part of a Windows identity.
+            let elsewhere = Recorded {
+                dev: Some(rec.dev.unwrap() ^ 1),
+                ..rec
+            };
+            assert!(allowed(&film, &roots, &elsewhere).is_err());
+        }
+        // Inside the roots, the record doesn't matter.
+        let inside = lib.join("a.mkv");
+        std::fs::write(&inside, b"x").unwrap();
+        assert!(open_contained(&inside, &roots, &unknown).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The case from a Windows run: a folder junction inside the library
+    /// leads to a folder outside it. The file behind it plays while the
+    /// junction points where the scan saw it, and not once it is
+    /// re-pointed at a look-alike.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_behind_a_junction_leaving_the_library_plays() {
+        let d = id_scratch("junction");
+        let (lib, ext, ext2) = (d.join("lib"), d.join("ext"), d.join("ext2"));
+        for dir in [&lib, &ext.join("Film (2021)"), &ext2.join("Film (2021)")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let rel = Path::new("Film (2021)").join("Film (2021).mkv");
+        std::fs::write(ext.join(&rel), vec![1u8; 4096]).unwrap();
+        std::fs::write(ext2.join(&rel), vec![2u8; 4096]).unwrap();
+        let mtime = std::fs::metadata(ext.join(&rel)).unwrap().modified().unwrap();
+        File::options()
+            .write(true)
+            .open(ext2.join(&rel))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let link = lib.join("Ext");
+        let junction = |target: &Path| {
+            let ok = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(target)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "mklink /J");
+        };
+        junction(&ext);
+        let path = link.join(&rel);
+        let roots = vec![lib.to_string_lossy().into_owned()];
+        let rec = recorded(&path);
+        assert!(allowed(&path, &roots, &rec).is_ok());
+        assert!(open_contained(&path, &roots, &rec).is_ok());
+        // Re-pointed: same names, size and mtime, another file.
+        std::fs::remove_dir(&link).unwrap();
+        junction(&ext2);
+        assert!(allowed(&path, &roots, &rec).is_err());
+        assert!(open_contained(&path, &roots, &rec).is_err());
+        std::fs::remove_dir(&link).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

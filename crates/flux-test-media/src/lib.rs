@@ -24,6 +24,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
 
+mod mkv_lace;
+
 /// The variable naming the real-media corpus directory.
 pub const MEDIA_VAR: &str = "FLUX_TEST_MEDIA";
 /// The variable naming the directory bench results are written to.
@@ -308,9 +310,30 @@ pub enum Clip {
     AnamorphicMp4,
     /// HEVC 1080p60, 3 s: a transcode needs level 4.2 (PB-12).
     Hevc1080p60Mkv,
+    // Interlacing (flux-hls's planner and deinterlacer), 4 s 720×576 25 fps
+    // H.264 in Matroska, no audio:
+    /// x264 `fake-interlaced`: an SPS that allows field coding, progressive
+    /// frames, flagged progressive (FlagInterlaced 2).
+    FakeInterlacedMkv,
+    /// Interlaced MBAFF frames (top field first), flagged interlaced.
+    InterlacedMkv,
+    /// Interlaced frames encoded as progressive frames (fields woven in, no
+    /// `+ildct`), flagged interlaced.
+    WovenFieldsMkv,
+    /// 10 s, 640×360 25 fps H.264 (2 s GOP) + two audio tracks of 1 kHz
+    /// tone bursts (30 ms every 250 ms, so a shifted stretch shows): stereo
+    /// AC-3, then stereo E-AC-3, Matroska.
+    Ac3Eac3BurstsMkv,
+    /// [`Clip::Ac3Eac3BurstsMkv`] with each audio track's frames laced 8 to
+    /// a block (256 ms, EBML lacing), as some muxers store (E-)AC-3; no
+    /// Cues.
+    LacedAc3Eac3Mkv,
 }
 
-const CLIP_COUNT: usize = 17;
+const CLIP_COUNT: usize = 22;
+
+/// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
+const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
 
 /// The variable-frame-rate timestamps of the PB-1 clips: 23.976 fps, a
 /// 59.94 stretch from frame 144 to 240, then 23.976 again.
@@ -324,6 +347,9 @@ enum Recipe {
     Ffmpeg(Vec<String>),
     /// A copy of another clip with its Matroska DefaultDuration voided.
     VoidDefaultDuration(Clip),
+    /// A copy of another Matroska clip with its audio frames laced this
+    /// many to a block.
+    LaceAudio(Clip, usize),
 }
 
 impl Clip {
@@ -346,6 +372,11 @@ impl Clip {
         Clip::AnamorphicMkv,
         Clip::AnamorphicMp4,
         Clip::Hevc1080p60Mkv,
+        Clip::FakeInterlacedMkv,
+        Clip::InterlacedMkv,
+        Clip::WovenFieldsMkv,
+        Clip::Ac3Eac3BurstsMkv,
+        Clip::LacedAc3Eac3Mkv,
     ];
 
     /// File name of the cached clip.
@@ -368,6 +399,11 @@ impl Clip {
             Clip::AnamorphicMkv => "anamorphic.mkv",
             Clip::AnamorphicMp4 => "anamorphic.mp4",
             Clip::Hevc1080p60Mkv => "hevc1080p60.mkv",
+            Clip::FakeInterlacedMkv => "fake_interlaced.mkv",
+            Clip::InterlacedMkv => "interlaced_mbaff.mkv",
+            Clip::WovenFieldsMkv => "interlaced_as_frames.mkv",
+            Clip::Ac3Eac3BurstsMkv => "bursts_ac3_eac3.mkv",
+            Clip::LacedAc3Eac3Mkv => "bursts_ac3_eac3_laced.mkv",
         }
     }
 
@@ -382,10 +418,15 @@ impl Clip {
             Clip::H264AacMp4 | Clip::H264AacTs | Clip::VfrSectionMkv | Clip::Rot90H264Mov => {
                 &["libx264", "aac"]
             }
-            Clip::AnamorphicMkv | Clip::AnamorphicMp4 => &["libx264"],
+            Clip::AnamorphicMkv
+            | Clip::AnamorphicMp4
+            | Clip::FakeInterlacedMkv
+            | Clip::InterlacedMkv
+            | Clip::WovenFieldsMkv => &["libx264"],
             Clip::HevcAc3Mkv => &["libx265", "ac3"],
             Clip::Mpeg4Mp2Avi => &["mpeg4", "mp2"],
             Clip::Hdr10HevcMkv | Clip::Hevc1080p60Mkv => &["libx265"],
+            Clip::Ac3Eac3BurstsMkv | Clip::LacedAc3Eac3Mkv => &["libx264", "ac3", "eac3"],
             Clip::HevcAacTs
             | Clip::VfrHevcShortMkv
             | Clip::Hevc30Mkv
@@ -399,10 +440,15 @@ impl Clip {
     /// Video frames of the base clips (`None` for the Phase D clips).
     pub fn frames(self) -> Option<u32> {
         match self {
-            Clip::H264AacMp4 | Clip::HevcAc3Mkv | Clip::H264AacTs | Clip::HevcAacTs | Clip::Mpeg4Mp2Avi => {
-                Some(250)
-            }
+            Clip::H264AacMp4
+            | Clip::HevcAc3Mkv
+            | Clip::H264AacTs
+            | Clip::HevcAacTs
+            | Clip::Mpeg4Mp2Avi
+            | Clip::Ac3Eac3BurstsMkv
+            | Clip::LacedAc3Eac3Mkv => Some(250),
             Clip::Hdr10HevcMkv => Some(144),
+            Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => Some(100),
             _ => None,
         }
     }
@@ -608,6 +654,42 @@ impl Clip {
                 a.extend(x265("keyint=60"));
                 a.extend(s(&["-an", "-f", "matroska"]));
             }
+            Clip::FakeInterlacedMkv | Clip::InterlacedMkv | Clip::WovenFieldsMkv => {
+                a.extend(video("720x576", "25", 4));
+                // `setfield` marks the frames interlaced, so ffmpeg flags the
+                // file so (Matroska FlagInterlaced 1); libx264 codes them as
+                // fields (MBAFF) only with `+ildct`.
+                match self {
+                    Clip::FakeInterlacedMkv => {
+                        a.extend(s(&["-x264-params", "fake-interlaced=1:pic-struct=1"]))
+                    }
+                    Clip::InterlacedMkv => a.extend(s(&["-vf", "setfield=tff", "-flags", "+ildct+ilme"])),
+                    _ => a.extend(s(&["-vf", "setfield=tff"])),
+                }
+                a.extend(s(&[
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-g",
+                    "25",
+                    "-an",
+                    "-f",
+                    "matroska",
+                ]));
+            }
+            Clip::Ac3Eac3BurstsMkv => {
+                a.extend(video("640x360", "25", 10));
+                a.extend(s(&["-f", "lavfi", "-i", BURSTS]));
+                a.extend(s(&["-map", "0:v", "-map", "1:a", "-map", "1:a"]));
+                a.extend(x264("50"));
+                a.extend(s(&[
+                    "-c:a:0", "ac3", "-c:a:1", "eac3", "-b:a", "192k", "-ac", "2", "-f", "matroska",
+                ]));
+            }
+            Clip::LacedAc3Eac3Mkv => return Some(Recipe::LaceAudio(Clip::Ac3Eac3BurstsMkv, 8)),
         }
         Some(Recipe::Ffmpeg(a))
     }
@@ -671,6 +753,13 @@ fn make_clip(c: Clip) -> Option<PathBuf> {
                     false => Err("no DefaultDuration in the first 64 KiB".into()),
                 }
             })
+        }
+        Recipe::LaceAudio(from, per) => {
+            let src = clip(from)?;
+            std::fs::read(&src)
+                .map_err(|e| e.to_string())
+                .and_then(|b| mkv_lace::lace_audio(&b, per))
+                .and_then(|b| std::fs::write(&tmp, b).map_err(|e| e.to_string()))
         }
     };
     if let Err(e) = made {

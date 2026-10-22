@@ -3,6 +3,9 @@
 import type { ServerInfo, CreateLibrary, Library, Page, ItemDetail, Home, PlayRequest, PlayResponse, ProgressReport, SessionDiagnostics, FluxEvent, NameGuess, ItemsParams, PlanPreview, MarkWatched, TailnetInfo, TailnetConnect, ItemSummary, PlaybackPlan, Reason } from '../types';
 
 export const goldenServerInfo = {
+  "metadata": {
+    "source": "tmdb"
+  },
   "name": "flux",
   "path": "tailnet-direct",
   "tailnet_name": "flux.tail1234.ts.net",
@@ -699,6 +702,7 @@ export const goldenNameGuess = {
     "tvdb": null
   },
   "kind": "episode",
+  "original_title": null,
   "part": null,
   "release_group": "NTb",
   "resolution": "1080p",

@@ -251,3 +251,55 @@ fn a_root_that_returns_is_watched_again() {
     .expect("events from the returned root reach the catalog");
     s.shutdown(Duration::from_secs(5));
 }
+
+/// A watched root renamed away and back comes back by itself. The scan that
+/// ran while it was gone marked it unavailable, and nothing says it is
+/// back: on Windows the watch follows the renamed folder and renaming it
+/// back raises no event, so it used to stay unavailable until "Scan now".
+#[test]
+fn an_unavailable_root_that_answers_again_comes_back_by_itself() {
+    use flux_catalog::{scan_support, RootState};
+    let scratch = Scratch::new("recheck");
+    let root = scratch.path("Movies");
+    std::fs::create_dir_all(root.join("Film (2020)")).unwrap();
+    std::fs::write(root.join("Film (2020)/Film (2020).mkv"), b"not really a movie").unwrap();
+    let cat = open_catalog(&scratch.dir);
+    let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
+    let s = scanner_with(
+        &cat,
+        config(),
+        ScannerOptions {
+            startup: StartupCatchUp::Nothing,
+            recheck_unavailable: Duration::from_millis(200),
+            ..ScannerOptions::default()
+        },
+    );
+    let state = || {
+        cat.read_blocking(scan_support::list_roots)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == root_id)
+            .unwrap()
+            .state
+    };
+    scan(&s, lib);
+    s.watch(lib).unwrap();
+    assert_eq!(state(), RootState::Available);
+
+    let away = scratch.path("Movies (renamed)");
+    std::fs::rename(&root, &away).unwrap();
+    let r = scan(&s, lib);
+    assert_eq!(r.unavailable_roots.len(), 1, "{r:?}");
+    assert_eq!(state(), RootState::Unavailable);
+    // Still gone: the recheck leaves it alone.
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(state(), RootState::Unavailable);
+
+    std::fs::rename(&away, &root).unwrap();
+    let (_, after) = eventually(Duration::from_secs(10), || {
+        (state() == RootState::Available).then_some(())
+    })
+    .expect("the root came back without a manual scan");
+    eprintln!("root back after {after:?}");
+    s.shutdown(Duration::from_secs(5));
+}

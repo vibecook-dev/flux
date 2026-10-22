@@ -15,7 +15,13 @@
 //! kind = "movies"            # movies | shows | mixed
 //! path = "/srv/media/Movies"
 //! video_encoder = "auto"     # auto | videotoolbox | nvenc | qsv | vaapi | libx264
+//! max_video_transcodes = 0   # concurrent video transcodes; 0 = by encoder
 //! ```
+//!
+//! Windows paths go in 'single quotes' (TOML literal strings) or use forward
+//! slashes: in "double quotes" a backslash starts an escape, so
+//! `"D:\new\tv"` would hold a line feed and a tab. Paths from the file with
+//! control characters are refused for that reason.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -144,14 +150,15 @@ impl LocalRole {
     name = "flux-server",
     version,
     about = "flux media server: browse, play and stream your movie and TV library",
-    after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}."
+    after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}.\nOn Windows, write paths in 'single quotes' or with forward slashes."
 )]
 pub struct Cli {
     /// TOML config file.
     #[arg(long, env = "FLUX_CONFIG", value_name = "FILE")]
     pub config: Option<PathBuf>,
-    /// Where flux keeps its catalog, caches and artwork
-    /// [default: ~/Library/Application Support/flux on macOS, ~/.local/share/flux elsewhere].
+    /// Where flux keeps its catalog, caches and artwork [default:
+    /// ~/Library/Application Support/flux on macOS, %LOCALAPPDATA%\flux on
+    /// Windows, $XDG_DATA_HOME/flux or ~/.local/share/flux elsewhere].
     #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
     /// A library to create on first run (repeatable; ';'-separated in the
@@ -225,6 +232,11 @@ pub struct Cli {
     /// VAAPI render node [default: /dev/dri/renderD128].
     #[arg(long, env = "FLUX_VAAPI_DEVICE", value_name = "PATH")]
     pub vaapi_device: Option<PathBuf>,
+    /// Video transcodes encoding at once (ffmpeg runs, pieces encoded ahead
+    /// included); 0 picks by encoder: 6 on hardware, 3 for libx264
+    /// [default: 0].
+    #[arg(long, env = "FLUX_MAX_VIDEO_TRANSCODES", value_name = "N")]
+    pub max_video_transcodes: Option<usize>,
     /// Print what ffmpeg and ffprobe can do for flux (paths, versions, the
     /// encoder per codec, hardware acceleration, tone mapping, what is
     /// missing) and exit: non-zero when ffmpeg or ffprobe is missing.
@@ -263,8 +275,60 @@ struct FileConfig {
     #[serde(default, deserialize_with = "de_encoder")]
     video_encoder: Option<EncoderChoice>,
     vaapi_device: Option<PathBuf>,
+    max_video_transcodes: Option<usize>,
     tmdb_exports: Option<PathBuf>,
     log: Option<String>,
+}
+
+impl FileConfig {
+    /// Refuses paths with control characters. In a TOML string in "double
+    /// quotes" a backslash starts an escape, so a Windows path such as
+    /// `"D:\\media\new\tv"` parses into a line feed and a tab, silently.
+    fn check_paths(&self) -> anyhow::Result<()> {
+        let named = [
+            ("data_dir", &self.data_dir),
+            ("web_dir", &self.web_dir),
+            ("ffmpeg", &self.ffmpeg),
+            ("ffprobe", &self.ffprobe),
+            ("vaapi_device", &self.vaapi_device),
+            ("tmdb_exports", &self.tmdb_exports),
+        ];
+        let mut paths: Vec<(String, std::borrow::Cow<'_, str>)> = named
+            .into_iter()
+            .filter_map(|(key, p)| Some((key.to_string(), p.as_deref()?.to_string_lossy())))
+            .collect();
+        for l in &self.libraries {
+            paths.push((format!("library {:?}: path", l.name), l.path.as_str().into()));
+        }
+        for (key, value) in paths {
+            if value.chars().any(char::is_control) {
+                bail!(
+                    "{key} \"{}\" contains control characters. In \"double quotes\" a backslash \
+                     starts an escape (\\n, \\t, \\f, \\b, \\r); write Windows paths in 'single \
+                     quotes' or with forward slashes: path = 'D:\\Media\\TV' or \"D:/Media/TV\"",
+                    show_controls(&value)
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `s` with each control character shown as `<TAB>`, `<LF>`, … or `<U+XXXX>`.
+fn show_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' => out.push_str("<TAB>"),
+            '\n' => out.push_str("<LF>"),
+            '\r' => out.push_str("<CR>"),
+            '\u{8}' => out.push_str("<BS>"),
+            '\u{c}' => out.push_str("<FF>"),
+            c if c.is_control() => out.push_str(&format!("<U+{:04X}>", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// `--video-encoder`: `auto` or one encoder.
@@ -284,6 +348,10 @@ fn de_encoder<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<EncoderCh
 #[derive(Debug, Clone)]
 pub struct Config {
     pub data_dir: PathBuf,
+    /// A folder that an earlier flux used as its default data dir, still
+    /// holding a catalog, while this run uses the default (Windows only).
+    /// Logged at startup and shown by `--check`.
+    pub older_data_dir: Option<PathBuf>,
     pub libraries: Vec<LibrarySpec>,
     /// Local listener (`127.0.0.1:8096`; port 0 = any, for tests).
     pub local_addr: SocketAddr,
@@ -310,6 +378,8 @@ pub struct Config {
     pub video_encoder: Option<VideoEncoder>,
     /// The VAAPI render node.
     pub vaapi_device: PathBuf,
+    /// Concurrent video transcode runs (0: by encoder).
+    pub max_video_transcodes: usize,
     /// Detect the video encoder in the background at startup (else on the
     /// first transcode).
     pub detect_encoder_at_start: bool,
@@ -318,7 +388,9 @@ pub struct Config {
     /// Delay before background jobs start (lets startup scans go first).
     pub jobs_delay: Duration,
     /// Probe this machine's tailscaled once (read-only `tailscale status`)
-    /// to fill `TailnetInfo::system_tailscale`.
+    /// to fill `TailnetInfo::system_tailscale`. Not when `--tailnet off` (or
+    /// `FLUX_TAILNET=off`) is explicit: then flux runs no `tailscale`
+    /// command at all, unless the UI switches remote access on.
     pub probe_system_tailscale: bool,
 }
 
@@ -329,15 +401,25 @@ impl Config {
             Some(path) => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("reading config {}", path.display()))?;
-                toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?
+                let file: FileConfig =
+                    toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
+                file.check_paths()
+                    .with_context(|| format!("config {}", path.display()))?;
+                file
             }
             None => FileConfig::default(),
         };
-        let data_dir = cli
-            .data_dir
-            .or(file.data_dir)
-            .map(expand_home)
-            .unwrap_or_else(default_data_dir);
+        let (data_dir, older_data_dir) = match cli.data_dir.or(file.data_dir) {
+            Some(d) => (expand_home(d), None),
+            None => {
+                let d = default_data_dir()?;
+                let older = older_data_dir(&d, older_default_data_dirs());
+                (d, older)
+            }
+        };
+        // Logged at startup and shown by --check as the folder flux uses,
+        // whatever the working directory was.
+        let data_dir = std::path::absolute(&data_dir).unwrap_or(data_dir);
         let mut libraries = file.libraries;
         for l in cli.libraries {
             if !libraries.iter().any(|x| x.name == l.name) {
@@ -407,6 +489,10 @@ impl Config {
             ffprobe,
             video_encoder,
             vaapi_device,
+            max_video_transcodes: cli
+                .max_video_transcodes
+                .or(file.max_video_transcodes)
+                .unwrap_or(0),
             detect_encoder_at_start: true,
             tmdb_exports,
             log: cli
@@ -415,8 +501,9 @@ impl Config {
                 .or_else(|| std::env::var("RUST_LOG").ok())
                 .unwrap_or_else(|| "info".into()),
             jobs_delay: Duration::from_secs(10),
-            probe_system_tailscale: true,
+            probe_system_tailscale: !(tailnet_explicit && tailnet == TailnetChoice::Off),
             data_dir,
+            older_data_dir,
         })
     }
 
@@ -442,12 +529,14 @@ impl Config {
             ffprobe: find_tool("ffprobe"),
             video_encoder: VideoEncoder::from_env(),
             vaapi_device: flux_hls::encoders::vaapi_device_from_env(),
+            max_video_transcodes: 0,
             detect_encoder_at_start: false,
             tmdb_exports: data_dir.join("tmdb-exports"),
             log: "warn".into(),
             jobs_delay: Duration::ZERO,
             probe_system_tailscale: false,
             data_dir,
+            older_data_dir: None,
         }
     }
 
@@ -456,28 +545,96 @@ impl Config {
     }
 }
 
+/// `~/x` → `$HOME/x` (on Windows `%USERPROFILE%` when `HOME` is unset).
 fn expand_home(p: PathBuf) -> PathBuf {
-    match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| cfg!(windows).then(|| std::env::var_os("USERPROFILE")).flatten());
+    match (p.strip_prefix("~"), home) {
         (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => p,
     }
 }
 
-/// `~/Library/Application Support/flux` (macOS), `$XDG_DATA_HOME/flux` or
-/// `~/.local/share/flux` (elsewhere).
-pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "macos") {
-        if let Some(h) = home {
-            return h.join("Library/Application Support/flux");
-        }
+/// `~/Library/Application Support/flux` (macOS), `%LOCALAPPDATA%\flux`
+/// (Windows), `$XDG_DATA_HOME/flux` or `~/.local/share/flux` (elsewhere).
+pub fn default_data_dir() -> anyhow::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        // The known folder, not HOME: OpenSSH and Git shells set HOME to the
+        // profile folder, where a Unix-style `.local/share` doesn't belong.
+        crate::win32::local_app_data()
+            .map(|d| d.join("flux"))
+            .context("finding %LOCALAPPDATA% for the data dir; pass --data-dir")
     }
-    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|x| !x.is_empty()) {
-        return PathBuf::from(x).join("flux");
+    #[cfg(not(windows))]
+    Ok(unix_data_dir(
+        std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from),
+        std::env::var_os("XDG_DATA_HOME")
+            .filter(|x| !x.is_empty())
+            .map(PathBuf::from),
+        cfg!(target_os = "macos"),
+    ))
+}
+
+/// The folders flux up to 0.1.0-alpha.2 used as its default data dir on
+/// Windows, where the default is now `%LOCALAPPDATA%\flux`. Which one it
+/// used depended on the environment it ran in (see [`older_windows_data_dirs`]).
+/// None elsewhere: the default there hasn't moved.
+fn older_default_data_dirs() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return Vec::new();
     }
-    match home {
-        Some(h) => h.join(".local/share/flux"),
-        None => PathBuf::from("flux-data"),
+    let var = |name| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    older_windows_data_dirs(var("HOME"), var("XDG_DATA_HOME"), std::env::current_dir().ok())
+}
+
+/// `$XDG_DATA_HOME\flux`, `%HOME%\.local\share\flux` (OpenSSH and Git
+/// shells set `HOME`) and `flux-data` in the working directory: the old
+/// Windows defaults, in the order they applied.
+fn older_windows_data_dirs(
+    home: Option<PathBuf>,
+    xdg_data_home: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    [
+        xdg_data_home.map(|x| x.join("flux")),
+        home.map(|h| h.join(".local").join("share").join("flux")),
+        cwd.map(|c| c.join("flux-data")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The first of `older`, other than `data_dir`, that holds a catalog: after
+/// the default moved, flux would otherwise start on an empty catalog while
+/// the old one (libraries, watched and resume state) sat there unnoticed.
+/// Found whether or not `data_dir` has a catalog of its own yet, so the
+/// warning stays until the old folder is moved, deleted or named with
+/// `--data-dir`.
+fn older_data_dir(data_dir: &Path, older: Vec<PathBuf>) -> Option<PathBuf> {
+    older
+        .into_iter()
+        .find(|d| d != data_dir && d.join("catalog.db").is_file())
+}
+
+/// [`default_data_dir`] off Windows, from `HOME` and `XDG_DATA_HOME`;
+/// without either, `flux-data` in the working directory (which
+/// [`Config::resolve`] makes absolute).
+#[cfg_attr(windows, allow(dead_code))]
+fn unix_data_dir(home: Option<PathBuf>, xdg_data_home: Option<PathBuf>, macos: bool) -> PathBuf {
+    match (home, xdg_data_home) {
+        (Some(h), _) if macos => h.join("Library/Application Support/flux"),
+        (_, Some(x)) => x.join("flux"),
+        (Some(h), None) => h.join(".local/share/flux"),
+        (None, None) => PathBuf::from("flux-data"),
     }
 }
 
@@ -568,9 +725,12 @@ mod tests {
     fn flags_beat_the_file_and_defaults_apply() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("flux.toml");
+        // Absolute on every platform ("/m" has no drive letter on Windows);
+        // a TOML literal string keeps Windows backslashes as they are.
         std::fs::write(
             &file,
-            r#"
+            format!(
+                r#"
 port = 9000
 tailnet = "system"
 jobs = false
@@ -579,10 +739,13 @@ localhost_role = "none"
 [[library]]
 name = "Movies"
 kind = "movies"
-path = "/m"
+path = '{}'
 "#,
+                dir.path().join("m").display()
+            ),
         )
         .unwrap();
+        let tv = format!("TV:shows:{}", dir.path().join("tv").display());
         let cli = Cli::try_parse_from([
             "flux-server",
             "--config",
@@ -590,7 +753,7 @@ path = "/m"
             "--port",
             "9100",
             "--library",
-            "TV:shows:/tv",
+            tv.as_str(),
             "--data-dir",
             dir.path().to_str().unwrap(),
             "--allow-host",
@@ -643,6 +806,119 @@ path = "/m"
         assert!(toml::from_str::<FileConfig>("prot = 1").is_err());
     }
 
+    /// Windows used `%HOME%\.local/share/flux` (OpenSSH sets HOME) or, with
+    /// no HOME, `flux-data` in whatever the working directory was.
+    #[test]
+    fn the_data_dir_is_per_user_and_absolute() {
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            unix_data_dir(home.clone(), None, true),
+            Path::new("/home/u/Library/Application Support/flux")
+        );
+        assert_eq!(
+            unix_data_dir(home.clone(), None, false),
+            Path::new("/home/u/.local/share/flux")
+        );
+        assert_eq!(
+            unix_data_dir(home, Some("/x".into()), false),
+            Path::new("/x/flux")
+        );
+        assert_eq!(unix_data_dir(None, None, false), Path::new("flux-data"));
+        #[cfg(windows)]
+        {
+            let local = crate::win32::local_app_data().unwrap();
+            assert_eq!(default_data_dir().unwrap(), local.join("flux"));
+        }
+        let cfg =
+            Config::resolve(Cli::try_parse_from(["flux-server", "--data-dir", "rel-data"]).unwrap()).unwrap();
+        assert!(cfg.data_dir.is_absolute(), "{}", cfg.data_dir.display());
+        assert!(cfg.data_dir.ends_with("rel-data"));
+        assert_eq!(cfg.tmdb_exports, cfg.data_dir.join("tmdb-exports"));
+    }
+
+    /// The Windows default moved to `%LOCALAPPDATA%\flux`; a catalog in an
+    /// old default folder (watched, resume) silently looked lost.
+    #[test]
+    fn an_older_windows_data_dir_with_a_catalog_is_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, xdg, cwd) = (
+            tmp.path().join("home"),
+            tmp.path().join("xdg"),
+            tmp.path().join("cwd"),
+        );
+        let older = older_windows_data_dirs(Some(home.clone()), Some(xdg.clone()), Some(cwd.clone()));
+        let old_home = home.join(".local").join("share").join("flux");
+        assert_eq!(older, [xdg.join("flux"), old_home.clone(), cwd.join("flux-data")]);
+        assert_eq!(older_windows_data_dirs(None, None, None), Vec::<PathBuf>::new());
+
+        let new = tmp.path().join("local").join("flux");
+        assert_eq!(older_data_dir(&new, older.clone()), None, "no catalog anywhere");
+        std::fs::create_dir_all(&old_home).unwrap();
+        assert_eq!(
+            older_data_dir(&new, older.clone()),
+            None,
+            "a folder without a catalog"
+        );
+        std::fs::write(old_home.join("catalog.db"), b"").unwrap();
+        assert_eq!(older_data_dir(&new, older.clone()), Some(old_home.clone()));
+        // Still found once the new folder has a catalog of its own.
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("catalog.db"), b"").unwrap();
+        assert_eq!(older_data_dir(&new, older.clone()), Some(old_home.clone()));
+        // Not when it is the data dir in use.
+        assert_eq!(older_data_dir(&old_home, older), None);
+
+        // Only the default looks: an explicit --data-dir is what the user
+        // chose. Off Windows the default never moved.
+        let d = tmp.path().join("explicit");
+        let cfg =
+            Config::resolve(Cli::try_parse_from(["flux-server", "--data-dir", d.to_str().unwrap()]).unwrap())
+                .unwrap();
+        assert_eq!(cfg.older_data_dir, None);
+        if !cfg!(windows) {
+            assert!(older_default_data_dirs().is_empty());
+        }
+    }
+
+    /// TOML "double quotes" turned Windows paths into control characters
+    /// without a word (`\n`, `\t`, `\f`, …).
+    #[test]
+    fn toml_escapes_in_paths_are_refused_with_a_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        let (f, d) = (file.to_str().unwrap(), dir.path().to_str().unwrap());
+        let resolve = |toml: &str| {
+            std::fs::write(&file, toml).unwrap();
+            Config::resolve(Cli::try_parse_from(["flux-server", "--config", f, "--data-dir", d]).unwrap())
+        };
+        let err = resolve("[[library]]\nname = \"TV\"\nkind = \"shows\"\npath = \"D:\\\\media\\new\\tv\"\n")
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(r#"library "TV": path "D:\media<LF>ew<TAB>v" contains control characters"#),
+            "{err}"
+        );
+        assert!(err.contains("'single quotes'") && err.contains(f), "{err}");
+        // Refused even when the flag overrides it.
+        let err = format!(
+            "{:#}",
+            resolve("data_dir = \"D:\\\\flux\\\\data\\new\"\n").unwrap_err()
+        );
+        assert!(err.contains(r#"data_dir "D:\flux\data<LF>ew" contains"#), "{err}");
+        assert_eq!(
+            show_controls("a\u{8}b\u{c}c\rd\u{1b}"),
+            "a<BS>b<FF>c<CR>d<U+001B>"
+        );
+        // A literal string ('…') keeps backslashes as they are.
+        let movies = dir.path().join("Movies");
+        let cfg = resolve(&format!(
+            "[[library]]\nname = \"Movies\"\nkind = \"movies\"\npath = '{}'\n",
+            movies.display()
+        ))
+        .unwrap();
+        assert_eq!(Path::new(&cfg.libraries[0].path), movies);
+    }
+
     #[test]
     fn video_encoder_from_flag_or_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -691,5 +967,45 @@ path = "/m"
         assert!(toml::from_str::<FileConfig>("video_encoder = \"x265\"").is_err());
         assert!(Cli::try_parse_from(["flux-server", "--check"]).unwrap().check);
         assert!(Cli::try_parse_from(["flux-server", "--doctor"]).unwrap().check);
+    }
+
+    /// `--tailnet off` still ran `tailscale status` at every start.
+    #[test]
+    fn an_explicit_tailnet_off_runs_no_tailscale_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        let cfg = |args: &[&str]| {
+            let argv = [&["flux-server", "--data-dir", d][..], args].concat();
+            Config::resolve(Cli::try_parse_from(argv).unwrap()).unwrap()
+        };
+        if std::env::var_os("FLUX_TAILNET").is_none() {
+            // Off by default, but the UI can offer this machine's Tailscale.
+            assert!(cfg(&[]).probe_system_tailscale);
+        }
+        assert!(!cfg(&["--tailnet", "off"]).probe_system_tailscale);
+        assert!(cfg(&["--tailnet", "system"]).probe_system_tailscale);
+    }
+
+    #[test]
+    fn video_transcode_concurrency_from_flag_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        std::fs::write(&file, "max_video_transcodes = 4\n").unwrap();
+        let d = dir.path().to_str().unwrap();
+        let f = file.to_str().unwrap();
+        let resolve = |args: &[&str]| {
+            let mut a = vec!["flux-server", "--data-dir", d];
+            a.extend_from_slice(args);
+            Config::resolve(Cli::try_parse_from(a).unwrap()).unwrap()
+        };
+        if std::env::var_os("FLUX_MAX_VIDEO_TRANSCODES").is_none() {
+            assert_eq!(resolve(&[]).max_video_transcodes, 0, "by encoder");
+            assert_eq!(resolve(&["--config", f]).max_video_transcodes, 4);
+        }
+        assert_eq!(
+            resolve(&["--config", f, "--max-video-transcodes", "8"]).max_video_transcodes,
+            8
+        );
+        assert!(Cli::try_parse_from(["flux-server", "--max-video-transcodes", "many"]).is_err());
     }
 }

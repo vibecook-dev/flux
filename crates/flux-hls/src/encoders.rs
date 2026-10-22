@@ -35,11 +35,15 @@
 //! "Software" tone mapping is the libx264 chain on decoded frames; without
 //! `tonemapx` or `zscale` there is none (the picture keeps its HDR signal
 //! and looks washed out), which `flux-server --check` reports.
+//!
+//! Dolby Vision profile 5 has no HDR10/SDR base layer: only `tonemapx`
+//! applies its RPU reshaping (`apply_dovi`, on by default), so such a source
+//! always takes the software chain when `tonemapx` exists.
 
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -226,7 +230,7 @@ pub struct FfmpegCaps {
 
 /// Runs ffmpeg with `args`, returning stdout, or why it failed.
 fn run_capture(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = flux_core::tool::command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -499,6 +503,13 @@ impl FfmpegCaps {
                         .into(),
                 );
             }
+            if self.software_tonemap() != Some(SoftwareTonemap::Tonemapx) {
+                m.push(
+                    "no Dolby Vision reshaping (needs jellyfin-ffmpeg's tonemapx): Dolby Vision \
+                     profile 5 sources transcode with a purple/green picture"
+                        .into(),
+                );
+            }
             if !enc.is_hardware() {
                 m.push("no hardware H.264 encoder: video transcodes use the CPU (libx264)".into());
             }
@@ -657,6 +668,48 @@ pub struct PipelineInput {
     pub bitrate: u64,
     /// H.264 `level_idc` (41 = 4.1).
     pub level: u8,
+    /// Dolby Vision without a cross-compatible base layer (profile 5): the
+    /// decoded picture is in Dolby's IPT colour space until the RPU reshapes
+    /// it, which only `tonemapx` (`apply_dovi`) does here. Every other tone
+    /// mapper turns it purple and green.
+    pub dovi_reshape: bool,
+    /// The source's size is unknown, so `width`×`height` may not be its
+    /// shape: fit the picture inside and pad instead of stretching it.
+    pub keep_aspect: bool,
+    /// Which frames are deinterlaced (one frame out per frame in, so piece
+    /// frame counts hold).
+    pub deinterlace: Deinterlace,
+}
+
+/// Which frames a transcode deinterlaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Deinterlace {
+    /// None: progressive video.
+    #[default]
+    Off,
+    /// The frames the decoder marks interlaced (field and MBAFF pictures,
+    /// MPEG-2 frames not marked progressive); the others pass untouched.
+    Marked,
+    /// Every frame: the container says interlaced, but the stream was coded
+    /// as progressive frames with the fields woven in (H.264 with
+    /// `frame_mbs_only_flag`, as ffmpeg writes an interlaced source encoded
+    /// without `+ildct`), which the decoder never marks.
+    All,
+}
+
+impl Deinterlace {
+    fn on(self) -> bool {
+        self != Deinterlace::Off
+    }
+
+    /// The options of `yadif`, `bwdif` and their hardware variants: one
+    /// frame per frame, field order from the frame.
+    fn opts(self) -> &'static str {
+        match self {
+            Deinterlace::All => "mode=send_frame:parity=auto:deint=all",
+            _ => "mode=send_frame:parity=auto:deint=interlaced",
+        }
+    }
 }
 
 /// The ffmpeg arguments of one transcode run, around the input and the
@@ -681,9 +734,26 @@ fn hw_codec(c: Codec) -> bool {
     matches!(c, Codec::H264 | Codec::Hevc)
 }
 
-/// The software scale / tone-map / rotate chain ending in `fmt`.
+/// The software scale / tone-map / rotate chain ending in `fmt`, after the
+/// deinterlacer (at the source size).
 fn sw_chain(caps: &FfmpegCaps, inp: &PipelineInput, fmt: &str) -> String {
-    let mut v = vec![format!("scale={}:{}", inp.width, inp.height)];
+    let (w, h) = (inp.width, inp.height);
+    let mut v = Vec::new();
+    if inp.deinterlace.on() {
+        // bwdif (ffmpeg ≥ 3.1) unless only yadif is listed.
+        let f = if caps.has_filter("bwdif") || !caps.has_filter("yadif") {
+            "bwdif"
+        } else {
+            "yadif"
+        };
+        v.push(format!("{f}={}", inp.deinterlace.opts()));
+    }
+    v.push(if inp.keep_aspect {
+        format!("scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:-1:-1,setsar=1")
+    } else {
+        format!("scale={w}:{h}")
+    });
+    // (`scale` keeps the frames' Dolby Vision metadata for `tonemapx`.)
     if inp.tonemap {
         match caps.software_tonemap() {
             Some(SoftwareTonemap::Tonemapx) => v.push(
@@ -720,10 +790,25 @@ pub fn pipeline(
     let eight_bit = inp.bit_depth.is_none_or(|d| d <= 8);
     let hwaccel = |name: &str| caps.hwaccels.contains(name);
     let output_args = encoder_args(enc, inp.level, inp.bitrate);
+    // Dolby Vision reshaping happens in `tonemapx` on decoded frames, not in
+    // `scale_vt` or `tonemap_vaapi`.
+    let dovi_sw =
+        inp.tonemap && inp.dovi_reshape && caps.software_tonemap() == Some(SoftwareTonemap::Tonemapx);
     let (input_args, filters, hw_decode) = match enc {
         VideoEncoder::VideoToolbox => {
-            if hw_codec(inp.codec) && hwaccel("videotoolbox") && caps.has_filter("scale_vt") {
-                let mut f = format!("scale_vt=w={w}:h={h}");
+            let deint = !inp.deinterlace.on() || caps.has_filter("yadif_videotoolbox");
+            if hw_codec(inp.codec)
+                && hwaccel("videotoolbox")
+                && caps.has_filter("scale_vt")
+                && !dovi_sw
+                && deint
+            {
+                let mut f = if inp.deinterlace.on() {
+                    format!("yadif_videotoolbox={},", inp.deinterlace.opts())
+                } else {
+                    String::new()
+                };
+                f.push_str(&format!("scale_vt=w={w}:h={h}"));
                 if inp.tonemap {
                     f.push_str(":color_matrix=bt709:color_primaries=bt709:color_transfer=bt709");
                 }
@@ -748,16 +833,23 @@ pub fn pipeline(
             }
         }
         VideoEncoder::Nvenc => {
+            let deint = match inp.deinterlace {
+                Deinterlace::Off => Some(String::new()),
+                d => ["bwdif_cuda", "yadif_cuda"]
+                    .into_iter()
+                    .find(|f| caps.has_filter(f))
+                    .map(|f| format!("{f}={},", d.opts())),
+            };
             let full_hw = hw_codec(inp.codec)
                 && eight_bit
                 && !inp.tonemap
                 && inp.rotation == 0
                 && hwaccel("cuda")
                 && caps.has_filter("scale_cuda");
-            if full_hw {
+            if let (true, Some(d)) = (full_hw, deint) {
                 (
                     s(&["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]),
-                    format!("scale_cuda=w={w}:h={h}"),
+                    format!("{d}scale_cuda=w={w}:h={h}"),
                     true,
                 )
             } else {
@@ -771,6 +863,7 @@ pub fn pipeline(
             };
             let full_hw = hw_codec(inp.codec)
                 && !inp.tonemap
+                && !inp.deinterlace.on()
                 && inp.rotation == 0
                 && hwaccel("qsv")
                 && caps.decoders.contains(decoder)
@@ -802,13 +895,20 @@ pub fn pipeline(
                 270 => Some(",transpose_vaapi=dir=cclock"),
                 _ => Some(""),
             };
-            let tonemap_hw = !inp.tonemap || caps.has_filter("tonemap_vaapi");
-            if decode && caps.has_filter("scale_vaapi") && tonemap_hw && rot_hw.is_some() {
-                let mut f = if inp.tonemap {
+            let tonemap_hw = !inp.tonemap || (caps.has_filter("tonemap_vaapi") && !dovi_sw);
+            let deint_hw = !inp.deinterlace.on() || caps.has_filter("deinterlace_vaapi");
+            if decode && caps.has_filter("scale_vaapi") && tonemap_hw && deint_hw && rot_hw.is_some() {
+                let mut f = match inp.deinterlace {
+                    Deinterlace::Off => String::new(),
+                    // `auto=1`: only frames marked interlaced.
+                    Deinterlace::Marked => "deinterlace_vaapi=rate=frame:auto=1,".to_string(),
+                    Deinterlace::All => "deinterlace_vaapi=rate=frame:auto=0,".to_string(),
+                };
+                f.push_str(&if inp.tonemap {
                     format!("scale_vaapi=w={w}:h={h},tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709")
                 } else {
                     format!("scale_vaapi=w={w}:h={h}:format=nv12")
-                };
+                });
                 f.push_str(rot_hw.unwrap_or(""));
                 (vaapi_device_args(vaapi_device, true), f, true)
             } else if decode && inp.bit_depth.is_some() {
@@ -856,6 +956,9 @@ mod tests {
             tonemap: false,
             bitrate: 4_000_000,
             level: 41,
+            dovi_reshape: false,
+            keep_aspect: false,
+            deinterlace: Deinterlace::Off,
         }
     }
 
@@ -977,6 +1080,84 @@ mod tests {
         assert!(!p.output_args.iter().any(|a| a == "-b:v"));
     }
 
+    /// Interlaced sources are deinterlaced before scaling, one frame per
+    /// frame, on the GPU when the decode is there and a filter exists.
+    #[test]
+    fn interlaced_sources_are_deinterlaced_first() {
+        let mut i = input(Codec::H264);
+        i.deinterlace = Deinterlace::Marked;
+        let cuda = caps(&["scale_cuda", "bwdif_cuda", "bwdif"], &["cuda"], &[]);
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(p.hw_decode);
+        assert_eq!(
+            p.filters,
+            "bwdif_cuda=mode=send_frame:parity=auto:deint=interlaced,scale_cuda=w=1280:h=720"
+        );
+        // No CUDA deinterlacer: decode and deinterlace in software.
+        let no_cuda = caps(&["scale_cuda", "bwdif"], &["cuda"], &[]);
+        let p = pipeline(&no_cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(!p.hw_decode && p.input_args.is_empty());
+        assert_eq!(
+            p.filters,
+            "bwdif=mode=send_frame:parity=auto:deint=interlaced,scale=1280:720,format=nv12"
+        );
+        let p = pipeline(
+            &caps(&["yadif"], &[], &[]),
+            VideoEncoder::Libx264,
+            &i,
+            Path::new(DEV),
+        );
+        assert!(p.filters.starts_with("yadif=mode=send_frame:"), "{}", p.filters);
+        let vt = caps(&["scale_vt", "yadif_videotoolbox"], &["videotoolbox"], &[]);
+        let p = pipeline(&vt, VideoEncoder::VideoToolbox, &i, Path::new(DEV));
+        assert!(p.hw_decode);
+        assert!(
+            p.filters.starts_with("yadif_videotoolbox=mode=send_frame:"),
+            "{}",
+            p.filters
+        );
+        let va = caps(&["scale_vaapi", "deinterlace_vaapi"], &["vaapi"], &[]);
+        let p = pipeline(&va, VideoEncoder::Vaapi, &i, Path::new(DEV));
+        assert_eq!(
+            p.filters,
+            "deinterlace_vaapi=rate=frame:auto=1,scale_vaapi=w=1280:h=720:format=nv12"
+        );
+        let qsv = caps(&["scale_qsv", "bwdif"], &["qsv"], &["h264_qsv"]);
+        let p = pipeline(&qsv, VideoEncoder::Qsv, &i, Path::new(DEV));
+        assert!(!p.hw_decode && p.filters.starts_with("bwdif="), "{}", p.filters);
+        // Progressive sources: no deinterlacer.
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &input(Codec::H264), Path::new(DEV));
+        assert_eq!(p.filters, "scale_cuda=w=1280:h=720");
+        // Fields woven into progressive-coded frames (the decoder marks
+        // none): every frame, on each path.
+        i.deinterlace = Deinterlace::All;
+        let p = pipeline(&cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert_eq!(
+            p.filters,
+            "bwdif_cuda=mode=send_frame:parity=auto:deint=all,scale_cuda=w=1280:h=720"
+        );
+        let p = pipeline(&no_cuda, VideoEncoder::Nvenc, &i, Path::new(DEV));
+        assert!(
+            p.filters
+                .starts_with("bwdif=mode=send_frame:parity=auto:deint=all,"),
+            "{}",
+            p.filters
+        );
+        let p = pipeline(&vt, VideoEncoder::VideoToolbox, &i, Path::new(DEV));
+        assert!(
+            p.filters
+                .starts_with("yadif_videotoolbox=mode=send_frame:parity=auto:deint=all,"),
+            "{}",
+            p.filters
+        );
+        let p = pipeline(&va, VideoEncoder::Vaapi, &i, Path::new(DEV));
+        assert!(
+            p.filters.starts_with("deinterlace_vaapi=rate=frame:auto=0,"),
+            "{}",
+            p.filters
+        );
+    }
+
     #[test]
     fn nvenc_and_qsv_scale_on_the_gpu_when_they_can() {
         let c = caps(
@@ -1070,6 +1251,65 @@ mod tests {
         );
         assert_eq!(p.filters, "scale=1280:720,format=nv12,hwupload");
         assert!(p.output_args.windows(2).any(|w| w == ["-rc_mode", "VBR"]));
+    }
+
+    /// Dolby Vision profile 5 is reshaped by `tonemapx` only: the hardware
+    /// colour conversions would leave its IPT picture purple and green.
+    #[test]
+    fn dolby_vision_profile_5_takes_tonemapx() {
+        let mut i = input(Codec::Hevc);
+        i.tonemap = true;
+        i.bit_depth = Some(10);
+        i.dovi_reshape = true;
+        let mut all = caps(
+            &[
+                "scale_vt",
+                "scale_vaapi",
+                "tonemap_vaapi",
+                "tonemapx",
+                "scale_cuda",
+            ],
+            &["videotoolbox", "vaapi", "cuda"],
+            &[],
+        );
+        all.chosen = Some(VideoEncoder::VideoToolbox);
+        for e in [
+            VideoEncoder::VideoToolbox,
+            VideoEncoder::Vaapi,
+            VideoEncoder::Nvenc,
+            VideoEncoder::Libx264,
+        ] {
+            let p = pipeline(&all, e, &i, Path::new(DEV));
+            assert!(
+                p.filters.contains("scale=1280:720,tonemapx="),
+                "{e}: {}",
+                p.filters
+            );
+            assert!(
+                !p.filters.contains("scale_vt") && !p.filters.contains("tonemap_vaapi"),
+                "{e}"
+            );
+        }
+        // Without tonemapx nothing reshapes: the hardware chains stay.
+        let mut no_tmx = caps(&["scale_vt"], &["videotoolbox"], &[]);
+        no_tmx.chosen = Some(VideoEncoder::VideoToolbox);
+        let p = pipeline(&no_tmx, VideoEncoder::VideoToolbox, &i, Path::new(DEV));
+        assert!(p.filters.starts_with("scale_vt="), "{}", p.filters);
+        assert!(no_tmx.missing().iter().any(|m| m.contains("Dolby Vision")));
+        assert!(!all.missing().iter().any(|m| m.contains("Dolby Vision")));
+    }
+
+    /// A source of unknown size is fitted and padded, never stretched.
+    #[test]
+    fn unknown_source_size_keeps_the_aspect_ratio() {
+        let mut i = input(Codec::Mpeg4Part2);
+        i.keep_aspect = true;
+        let p = pipeline(&caps(&[], &[], &[]), VideoEncoder::Libx264, &i, Path::new(DEV));
+        assert_eq!(
+            p.filters,
+            "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,\
+             pad=1280:720:-1:-1,setsar=1,format=yuv420p"
+        );
     }
 
     #[test]

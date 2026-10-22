@@ -21,9 +21,12 @@
 //!    so output frame j covers [E + jF, E + (j+1)F) — the same grid in every
 //!    encode. Three frames of pre-roll warm the encoder and the source
 //!    decoder (TrueHD starts at a major sync); two frames of post-roll give
-//!    the last kept frame real look-ahead.
-//! 4. Frames outside [g_k, g_{k+1}) are discarded; the kept frames are
-//!    packaged as an fMP4 fragment with tfdt = a0 + g_k·F + D.
+//!    the last kept frame real look-ahead. A source that starts too late or
+//!    ends too early is padded with silence instead, never re-gridded; a
+//!    late start whose silence reaches the kept frames is logged.
+//! 4. Frames outside [g_k, g_{k+1}) are discarded; the kept frames, exactly
+//!    g_{k+1} − g_k of them, are packaged as an fMP4 fragment with
+//!    tfdt = a0 + g_k·F + D, so segment k ends where k + 1 begins.
 //!
 //! Results are cached by (asset, track, recipe, n); the next segments are
 //! prefetched in the background (bounded, cancellable). A segment's bytes do
@@ -94,14 +97,27 @@ fn output_rate(src: u32) -> u32 {
 fn frame_samples(codec: Codec, data: &[u8], rate: u32, fallback: Option<u32>) -> Option<u32> {
     match codec {
         Codec::TrueHd => Some(40 * (rate / 44_100).max(1).next_power_of_two()),
-        Codec::Ac3 => Some(1536),
-        Codec::Eac3 => audio::Ac3Frame::parse(data).map(|f| f.samples),
+        Codec::Ac3 => ac3_payload_samples(data).or(Some(1536)),
+        Codec::Eac3 => ac3_payload_samples(data),
         Codec::Dts => audio::dts_frame_samples(data),
         Codec::Flac => audio::flac_frame_samples(data),
         Codec::Mp3 | Codec::Mp2 => audio::mpeg_audio_frame_samples(data),
         _ => None,
     }
     .or(fallback)
+}
+
+/// Samples in an AC-3/E-AC-3 payload: the sum over the independent sync
+/// frames it holds. A Matroska block or an MP4 sample can carry several
+/// (E-AC-3 with 256-sample frames packs six per 1536-sample access unit);
+/// dependent substreams add none.
+fn ac3_payload_samples(data: &[u8]) -> Option<u32> {
+    let n: u32 = audio::split_ac3(data)
+        .iter()
+        .filter(|(f, _)| f.strmtyp != 1)
+        .map(|(f, _)| f.samples)
+        .sum();
+    (n > 0).then_some(n)
 }
 
 /// True when the transcoder can read this track. Indexed sources are piped
@@ -220,6 +236,39 @@ fn adts_header(c: &audio::AacConfig, payload_len: usize) -> [u8; 7] {
         (((len & 7) as u8) << 5) | 0x1F,
         0xFC,
     ]
+}
+
+/// The `-af` chain of a piped encode. Samples are renumbered from the first
+/// decoded one before cutting, so input timestamps (container or
+/// synthesized) never matter. `lead_src` source samples are dropped
+/// (positive) or prepended as silence (negative) so the encoder input starts
+/// at E + d; `min_len` (output samples) pads a source that ends early, so
+/// every frame up to the part's end exists.
+fn filter_chain(lead_src: i64, ratio: i64, rate: u32, min_len: Option<i64>) -> Vec<String> {
+    let mut filters = vec!["asetpts=N/SR/TB".to_string()];
+    if lead_src >= 0 {
+        filters.push(format!("atrim=start_sample={lead_src}"));
+        filters.push("asetpts=N/SR/TB".to_string());
+    } else {
+        filters.push(format!("adelay=delays={}S:all=1", -lead_src));
+    }
+    if ratio > 1 {
+        filters.push(format!("aresample={rate}"));
+    }
+    if let Some(n) = min_len {
+        filters.push(format!("apad=whole_len={n}"));
+    }
+    filters
+}
+
+/// Output samples at the start of a part's kept frames that a late source
+/// leaves silent. The encoder input starts at `e + d` (E on the grid, d the
+/// encoder delay); silence is prepended up to `s_in`, where the source
+/// starts; the kept frames begin at `keep_start`. Pre-roll absorbs a late
+/// start that ends before `keep_start`; the encoder's own delay at the start
+/// of the stream (`keep_start` = E) is not counted.
+fn kept_silence(e: i64, d: i64, s_in: i64, keep_start: i64) -> i64 {
+    (s_in - keep_start.max(e + d)).max(0)
 }
 
 /// One ffmpeg encode covering grid frames [keep_from, keep_to).
@@ -545,10 +594,11 @@ impl AudioTranscoder {
         let fsz = g.frame;
         // Three frames of encoder pre-roll; two of post-roll for look-ahead.
         const PREROLL_FRAMES: i64 = 3;
-        let mut enc_start = (from - PREROLL_FRAMES).max(0);
+        const POSTROLL_FRAMES: i64 = 2;
+        let enc_start = (from - PREROLL_FRAMES).max(0);
         let t0 = ticks_to_ns(g.a0 + enc_start * fsz, rate) - source_preroll_ns(a.codec);
         let t1 = to
-            .map(|e| ticks_to_ns(g.a0 + (e + 2) * fsz, rate) + 20_000_000)
+            .map(|e| ticks_to_ns(g.a0 + (e + POSTROLL_FRAMES) * fsz, rate) + 20_000_000)
             .unwrap_or(i64::MAX);
         let mut frames: Vec<SourceFrame> = asset.audio_frames(track, t0, t1)?;
         if a.codec == Codec::TrueHd {
@@ -596,14 +646,29 @@ impl AudioTranscoder {
             }
         }
         let s_in = ((acc / n.max(1) as f64).round() as i64).div_euclid(ratio);
-        // Encoder input must start at E + d with E on the grid and E + d ≥ s_in.
+        // Encoder input must start at E + d, E on the grid. The source
+        // normally starts earlier and `atrim` drops the excess. When it starts
+        // later (a hole in the source, or a decoder that can only start at a
+        // sync point) the shortfall is filled with silence rather than moving
+        // E: output frame j must cover [E + jF, E + (j+1)F) so that the kept
+        // frames are exactly [from, to), the frames the fragment places from
+        // g_k on. Starting later dropped frames from the segment (a hole at
+        // the seam) and shifted the rest earlier.
         let d = target.delay();
-        let mut e = g.a0 + enc_start * fsz;
-        if e + d < s_in {
-            enc_start = (s_in - d - g.a0 + fsz - 1).div_euclid(fsz);
-            e = g.a0 + enc_start * fsz;
+        let e = g.a0 + enc_start * fsz;
+        let lead_src = (e + d - s_in) * ratio;
+        // Padding keeps the frame count right, so source audio missing at the
+        // start of a part no longer shows as a seam hole: say so when the
+        // silence reaches past the pre-roll into the frames the part keeps.
+        let silent = kept_silence(e, d, s_in, g.a0 + from * fsz);
+        if silent > 0 {
+            tracing::warn!(
+                track,
+                from,
+                silence_ms = silent as f64 * 1000.0 / rate as f64,
+                "source audio starts late for a segment part; the gap is encoded as silence"
+            );
         }
-        let trim_src = (e + d - s_in) * ratio;
 
         let mut stdin = Vec::with_capacity(frames.iter().map(|f| f.data.len() + 7).sum::<usize>() + 64);
         let input: Vec<String> = match &kind {
@@ -660,16 +725,12 @@ impl AudioTranscoder {
                 vec!["-f".into(), "matroska".into()]
             }
         };
-        // Samples are renumbered from the first decoded one before cutting,
-        // so input timestamps (container or synthesized) never matter.
-        let mut filters = vec![
-            "asetpts=N/SR/TB".to_string(),
-            format!("atrim=start_sample={trim_src}"),
-            "asetpts=N/SR/TB".to_string(),
-        ];
-        if ratio > 1 {
-            filters.push(format!("aresample={rate}"));
-        }
+        let filters = filter_chain(
+            lead_src,
+            ratio,
+            rate,
+            to.map(|e| (e + POSTROLL_FRAMES - enc_start) * fsz),
+        );
         let (codec_name, muxer) = if target.codec == Codec::Eac3 {
             ("eac3", "eac3")
         } else {
@@ -712,7 +773,7 @@ impl AudioTranscoder {
     }
 
     async fn run(&self, job: &Job) -> Result<Vec<u8>> {
-        let mut child = tokio::process::Command::new(&self.ffmpeg)
+        let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
             .args(&job.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -832,11 +893,19 @@ impl AudioTranscoder {
         let t1 = Instant::now();
         let out = self.run(&job).await?;
         let ffmpeg_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        Ok((
-            Self::keep_frames(&job, out, target.codec == Codec::Eac3),
-            plan_ms,
-            ffmpeg_ms,
-        ))
+        let frames = Self::keep_frames(&job, out, target.codec == Codec::Eac3);
+        // The fragment places the frames back to back from the part's first
+        // grid frame, so a short part leaves a hole before the next one.
+        if let Some(to) = to.filter(|&to| frames.len() as i64 != to - from) {
+            tracing::warn!(
+                track,
+                from,
+                to,
+                got = frames.len(),
+                "audio transcode produced the wrong number of frames for a segment part"
+            );
+        }
+        Ok((frames, plan_ms, ffmpeg_ms))
     }
 
     async fn produce(
@@ -1042,5 +1111,94 @@ mod tests {
         assert_eq!(output_rate(88_200), 44_100);
         assert_eq!(frame_samples(Codec::TrueHd, &[], 48_000, None), Some(40));
         assert_eq!(frame_samples(Codec::TrueHd, &[], 96_000, None), Some(80));
+    }
+
+    /// A 128-byte AC-3 sync frame: 48 kHz, 32 kb/s, 2/0.
+    fn ac3_frame() -> Vec<u8> {
+        let mut f = vec![0u8; 128];
+        f[..7].copy_from_slice(&[0x0B, 0x77, 0, 0, 0x00, 8 << 3, 2 << 5]);
+        f
+    }
+
+    /// A 128-byte E-AC-3 sync frame: 48 kHz, 2/0, `256 × blocks` samples.
+    fn eac3_frame(strmtyp: u8, numblkscod: u8) -> Vec<u8> {
+        let frmsiz = 63u16; // (63 + 1) words
+        let mut f = vec![0u8; 128];
+        f[0] = 0x0B;
+        f[1] = 0x77;
+        f[2] = (strmtyp << 6) | (frmsiz >> 8) as u8;
+        f[3] = frmsiz as u8;
+        f[4] = (numblkscod << 4) | (2 << 1); // fscod 0, acmod 2, no LFE
+        f[5] = 16 << 3; // bsid 16
+        f
+    }
+
+    #[test]
+    fn ac3_payloads_count_every_sync_frame() {
+        let one = ac3_frame();
+        assert_eq!(frame_samples(Codec::Ac3, &one, 48_000, None), Some(1536));
+        // Two sync frames in one Matroska block.
+        let two = [one.clone(), one].concat();
+        assert_eq!(frame_samples(Codec::Ac3, &two, 48_000, None), Some(3072));
+        // Unparseable (e.g. truncated): one frame, as before.
+        assert_eq!(frame_samples(Codec::Ac3, &[0; 4], 48_000, None), Some(1536));
+
+        // E-AC-3: an access unit of six 256-sample frames plus a dependent
+        // substream is 1536 samples, not 256.
+        let mut au: Vec<u8> = (0..6).flat_map(|_| eac3_frame(0, 0)).collect();
+        au.extend(eac3_frame(1, 0));
+        assert_eq!(frame_samples(Codec::Eac3, &au, 48_000, None), Some(1536));
+        assert_eq!(
+            frame_samples(Codec::Eac3, &eac3_frame(0, 3), 48_000, None),
+            Some(1536)
+        );
+        assert_eq!(
+            frame_samples(Codec::Eac3, &[0; 4], 48_000, Some(1536)),
+            Some(1536)
+        );
+    }
+
+    #[test]
+    fn late_sources_are_padded_never_regridded() {
+        // The usual case: drop the excess source samples.
+        assert_eq!(
+            filter_chain(1500, 1, 48_000, None),
+            ["asetpts=N/SR/TB", "atrim=start_sample=1500", "asetpts=N/SR/TB"]
+        );
+        // The source starts 300 samples late: prepend silence (at the source
+        // rate, before resampling), and pad a short end.
+        assert_eq!(
+            filter_chain(-600, 2, 48_000, Some(10_240)),
+            [
+                "asetpts=N/SR/TB",
+                "adelay=delays=600S:all=1",
+                "aresample=48000",
+                "apad=whole_len=10240"
+            ]
+        );
+    }
+
+    /// The padding hides a late source from the frame count, so the silence
+    /// it leaves in the kept frames is measured (and logged by `plan`).
+    #[test]
+    fn late_source_silence_in_kept_frames_is_measured() {
+        // AAC (F = d = 1024), a part keeping grid frames from 10: the encode
+        // starts 3 frames earlier at E = 7F; its input starts at E + d.
+        let (f, d) = (1024, 1024);
+        let (e, keep) = (7 * f, 10 * f);
+        // The source starts before E + d (trimmed), or late but within the
+        // pre-roll: nothing kept is silent.
+        assert_eq!(kept_silence(e, d, e + d - 500, keep), 0);
+        assert_eq!(kept_silence(e, d, keep - 1, keep), 0);
+        assert_eq!(kept_silence(e, d, keep, keep), 0);
+        // A laced block dropped before the window: 10 ms of the kept frames.
+        assert_eq!(kept_silence(e, d, keep + 480, keep), 480);
+        // The start of the stream (from 0, E = 0): the encoder's own delay
+        // is not silence the source left; anything after it is.
+        assert_eq!(kept_silence(0, d, d, 0), 0);
+        assert_eq!(kept_silence(0, d, d + 96, 0), 96);
+        // E-AC-3 (F = 1536, d = 256), from 1: one frame of pre-roll.
+        assert_eq!(kept_silence(0, 256, 1536, 1536), 0);
+        assert_eq!(kept_silence(0, 256, 1600, 1536), 64);
     }
 }
