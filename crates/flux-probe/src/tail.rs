@@ -241,9 +241,16 @@ fn asf_packet_time(b: &[u8]) -> Option<u64> {
     latest.or(Some(send))
 }
 
+/// The largest ASF packet size taken at the header's word. Encoders write
+/// packets of a few KiB (tens at most); ffmpeg accepts anything below
+/// 512 MiB, so a corrupt or hostile header could otherwise make each read
+/// below as large as the file.
+const ASF_MAX_PACKET: u64 = 1 << 20;
+
 /// For an ASF file whose Data Object runs past the end of the file, where
 /// the whole packets end; `None` for a complete file (its header holds) or
-/// one that doesn't parse.
+/// one that doesn't parse. Reads the header and at most 512 KiB (or one
+/// packet) of the end.
 pub fn asf_end<R: RangeRead>(src: &mut R) -> Option<PacketEnd> {
     let size = src.size();
     let h = read(src, 0, 30)?;
@@ -258,7 +265,7 @@ pub fn asf_end<R: RangeRead>(src: &mut R) -> Option<PacketEnd> {
         .and_then(|i| header.get(i..i + 104))?;
     let preroll = le64(&fp[80..88]);
     let (min_packet, max_packet) = (le32(&fp[92..96]), le32(&fp[96..100]));
-    if min_packet != max_packet || min_packet == 0 {
+    if min_packet != max_packet || min_packet == 0 || min_packet > ASF_MAX_PACKET {
         return None;
     }
     let data = read(src, header_size, 50)?;
@@ -272,8 +279,9 @@ pub fn asf_end<R: RangeRead>(src: &mut R) -> Option<PacketEnd> {
         return None;
     }
     let whole = size.saturating_sub(first_packet) / min_packet;
-    // The last whole packets (64 at most): the latest time among them.
-    let from = whole.saturating_sub(64);
+    // The last whole packets, as many as the window holds (at least one,
+    // 64 at most): the latest time among them.
+    let from = whole.saturating_sub((WINDOW / min_packet).clamp(1, 64));
     let bytes = read(src, first_packet + from * min_packet, (whole - from) * min_packet)?;
     let latest = bytes
         .chunks_exact(min_packet as usize)
@@ -729,28 +737,61 @@ mod tests {
     /// An ASF file of `packets` 1000-byte packets 400 ms apart, its Data
     /// Object stating `declared` packets.
     fn asf(packets: u32, declared: u32) -> Vec<u8> {
+        asf_of(packets, declared, 1000)
+    }
+
+    /// [`asf`] with packets of `len` bytes.
+    fn asf_of(packets: u32, declared: u32, len: u32) -> Vec<u8> {
+        let mut b = asf_head(declared, len);
+        for k in 0..packets {
+            let t = 3000 + k * 400;
+            b.extend_from_slice(&asf_packet(len as usize, &[t, t + 40]));
+        }
+        b
+    }
+
+    /// The Header Object and the Data Object's header of an ASF file of
+    /// `declared` packets of `len` bytes.
+    fn asf_head(declared: u32, len: u32) -> Vec<u8> {
         let mut fp = vec![0u8; 104 - 24];
         // Offsets below are from the object start (24-byte header).
         let put = |fp: &mut Vec<u8>, at: usize, v: &[u8]| fp[at - 24..at - 24 + v.len()].copy_from_slice(v);
         put(&mut fp, 80, &3000u64.to_le_bytes()); // preroll, ms
-        put(&mut fp, 92, &1000u32.to_le_bytes());
-        put(&mut fp, 96, &1000u32.to_le_bytes());
+        put(&mut fp, 92, &len.to_le_bytes());
+        put(&mut fp, 96, &len.to_le_bytes());
         let fpo = guid_object(&ASF_FILE_PROPERTIES, &fp);
         let mut header_body = 1u32.to_le_bytes().to_vec();
         header_body.extend_from_slice(&[1, 2]);
         header_body.extend_from_slice(&fpo);
         let mut b = guid_object(&ASF_HEADER, &header_body);
         let mut data = ASF_DATA.to_vec();
-        data.extend_from_slice(&(50 + u64::from(declared) * 1000).to_le_bytes());
+        data.extend_from_slice(&(50 + u64::from(declared) * u64::from(len)).to_le_bytes());
         data.extend_from_slice(&[0; 16]);
         data.extend_from_slice(&u64::from(declared).to_le_bytes());
         data.extend_from_slice(&[1, 1]);
         b.extend_from_slice(&data);
-        for k in 0..packets {
-            let t = 3000 + k * 400;
-            b.extend_from_slice(&asf_packet(1000, &[t, t + 40]));
-        }
         b
+    }
+
+    /// A file of `size` bytes, `head` then zeros, that records its longest
+    /// read (the buffer a caller allocated for it).
+    struct Sparse {
+        head: Vec<u8>,
+        size: u64,
+        longest: usize,
+    }
+    impl RangeRead for Sparse {
+        fn size(&self) -> u64 {
+            self.size
+        }
+        fn read_at(&mut self, off: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.longest = self.longest.max(buf.len());
+            let n = buf.len().min(self.size.saturating_sub(off) as usize);
+            for (k, x) in buf[..n].iter_mut().enumerate() {
+                *x = self.head.get(off as usize + k).copied().unwrap_or(0);
+            }
+            Ok(n)
+        }
     }
 
     /// An MPEG-2 PES packet of `sid` with a PTS, then `len` bytes.
@@ -820,5 +861,29 @@ mod tests {
         );
         // Complete: the header holds.
         assert_eq!(asf_end(&mut Mem(asf(250, 250))), None);
+        // 64 KiB packets: the last 8 whole ones (the 512 KiB window).
+        let mut b = asf_of(16, 250, 65_536);
+        b.truncate(b.len() - 30_000);
+        let mut src = Sparse {
+            size: b.len() as u64,
+            head: b,
+            longest: 0,
+        };
+        assert_eq!(asf_end(&mut src).map(|e| e.last_ms), Some(14 * 400 + 40));
+        assert!(src.longest <= WINDOW as usize, "{}", src.longest);
+    }
+
+    /// A header that declares huge packets (corrupt or hostile: ffmpeg
+    /// accepts up to 512 MiB) is not taken at its word: no read of up to 64
+    /// such packets (here 19 of 16 MiB, 304 MiB in one buffer).
+    #[test]
+    fn an_asf_header_cannot_size_the_reads() {
+        let mut src = Sparse {
+            head: asf_head(1_000, 16 << 20),
+            size: 20 * (16 << 20),
+            longest: 0,
+        };
+        assert_eq!(asf_end(&mut src), None);
+        assert!(src.longest <= 1 << 20, "{}", src.longest);
     }
 }
