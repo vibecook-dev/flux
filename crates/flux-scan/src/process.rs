@@ -334,12 +334,41 @@ fn process(ctx: &RootCtx, item: WorkItem) -> Outcome {
             read_size: 0,
         };
         let t = Instant::now();
-        let r = flux_probe::probe_cached(&mut cache, ContainerHint::from_path(&abs), &opts);
+        let hint = ContainerHint::from_path(&abs);
+        let r = flux_probe::probe_cached(&mut cache, hint, &opts);
+        // No prober knows it: is it media at all? (A TypeScript `.ts` is
+        // text.) The head is in the page cache already.
+        let not_media = match &r {
+            Err(ProbeError::UnknownFormat { .. }) => cache
+                .read(0, flux_probe::NOT_MEDIA_SNIFF_LEN)
+                .ok()
+                .and_then(|head| flux_probe::not_media(&head, hint)),
+            _ => None,
+        };
         Progress::add(&p.probe_ns, t.elapsed().as_nanos() as u64);
         Progress::add(&p.read_calls, u64::from(cache.reads));
         Progress::add(&p.read_bytes, cache.bytes);
-        r
+        (r, not_media)
     };
+    let (probe_result, not_media) = probe_result;
+    if let Some(why) = not_media {
+        if external && work.is_new() {
+            Progress::add(&p.external_not_media, 1);
+            tracing::info!(path = %abs.display(), reason = why, "not cataloged: reached through a link leaving the library and not media");
+            lock(&ctx.inner.rejected).insert(rejected_key);
+            return Outcome::Skip;
+        }
+        // Cataloged as not media: never an item, never ffprobed, and not
+        // opened again until it changes.
+        Progress::add(&p.not_media, 1);
+        tracing::debug!(path = %abs.display(), reason = why, "not media");
+        let guess = parse(&facts.rel_path, &name, &siblings, ctx.kind);
+        return Outcome::Done(FileUpsert {
+            facts,
+            probe: ProbeUpdate::NotMedia(format!("not media: {why}")),
+            guess: Some(guess),
+        });
+    }
     let defer = work == Work::New
         && facts
             .fp128

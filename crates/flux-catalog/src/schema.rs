@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -390,10 +390,30 @@ CREATE TABLE subtitle_file(
 CREATE INDEX subtitle_file_dir ON subtitle_file(root_id, dir);
 "#;
 
+/// v6: the `videos` library kind (`LibraryKind::Videos`). SQLite can't
+/// change a CHECK constraint, so `library` is rebuilt the way SQLite's
+/// documentation describes (new table, copy, drop, rename). [`migrate`]
+/// runs migrations with foreign keys off, so dropping the old table
+/// deletes nothing that references it; `root` and `item` keep referring to
+/// `library` by name, which is the new table once it is renamed.
+const V6: &str = r#"
+CREATE TABLE library_v6(
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK(kind IN ('movies','shows','mixed','videos')),
+    created_at  INTEGER NOT NULL
+);
+INSERT INTO library_v6(id, name, kind, created_at) SELECT id, name, kind, created_at FROM library;
+DROP TABLE library;
+ALTER TABLE library_v6 RENAME TO library;
+"#;
+
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
 ///
-/// Idempotent: a database already at the current version is left untouched
-/// (no writes).
+/// Foreign keys are off while migrations run (a migration may rebuild a
+/// table that others reference, and dropping it must not cascade), and
+/// checked afterwards. Idempotent: a database already at the current
+/// version is left untouched (no writes).
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -402,6 +422,27 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
             supported: SCHEMA_VERSION,
         });
     }
+    if found == SCHEMA_VERSION {
+        return Ok(());
+    }
+    // `foreign_keys` can only change outside a transaction.
+    let fk: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    if fk {
+        conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    }
+    let res = run_migrations(conn, found);
+    if fk {
+        conn.execute_batch("PRAGMA foreign_keys = ON")?;
+    }
+    res?;
+    let broken: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+    if broken > 0 {
+        tracing::warn!(rows = broken, "catalog rows refer to rows that don't exist");
+    }
+    Ok(())
+}
+
+fn run_migrations(conn: &mut Connection, found: i64) -> Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(found as usize) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
@@ -540,6 +581,73 @@ mod tests {
             })
             .unwrap();
         assert_eq!((n, attribution), (1, None), "rows kept, new columns empty");
+    }
+
+    /// v6 rebuilds `library` to allow the `videos` kind. Roots and items
+    /// refer to it with ON DELETE CASCADE: the rebuild must keep them all,
+    /// and deleting a library must still cascade afterwards.
+    #[test]
+    fn the_library_rebuild_keeps_what_refers_to_it() {
+        let (_d, mut c) = open_tmp();
+        configure_writer(&c, 8192, 0, 1000).unwrap();
+        // A v5 catalog, written with foreign keys on as the writer does.
+        let fk = c
+            .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
+            .unwrap();
+        assert!(fk);
+        for (i, sql) in MIGRATIONS.iter().take(5).enumerate() {
+            c.execute_batch(sql).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0), (2, 'S', 'shows', 0);
+             INSERT INTO root(id, library_id, path, created_at) VALUES (1, 1, '/m', 0), (2, 2, '/s', 0);
+             INSERT INTO item(id, library_id, kind, group_key, title, sort_title, added_at, content_added_at, updated_at)
+             VALUES (1, 1, 'movie', 'heat', 'Heat', 'heat', 0, 0, 0), (2, 2, 'show', 'x', 'X', 'x', 0, 0, 0);",
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "INSERT INTO library(name, kind, created_at) VALUES ('V', 'videos', 0)",
+                []
+            )
+            .is_err());
+        migrate(&mut c).unwrap();
+        let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION);
+        assert_eq!(
+            (
+                count("SELECT count(*) FROM library"),
+                count("SELECT count(*) FROM root"),
+                count("SELECT count(*) FROM item")
+            ),
+            (2, 2, 2)
+        );
+        assert_eq!(count("SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        assert!(c
+            .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
+            .unwrap());
+        c.execute(
+            "INSERT INTO library(name, kind, created_at) VALUES ('V', 'videos', 0)",
+            [],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "INSERT INTO library(name, kind, created_at) VALUES ('X', 'nope', 0)",
+                []
+            )
+            .is_err());
+        // The cascade still reaches roots and items.
+        c.execute("DELETE FROM library WHERE id = 1", []).unwrap();
+        assert_eq!(
+            (
+                count("SELECT count(*) FROM root"),
+                count("SELECT count(*) FROM item")
+            ),
+            (1, 1)
+        );
     }
 
     #[test]

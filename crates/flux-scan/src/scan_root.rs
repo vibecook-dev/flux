@@ -921,6 +921,12 @@ impl Walk<'_> {
             }
         }
         if e.is_dir() {
+            // NAS litter and package trees (`@eaDir`, `node_modules`): never
+            // walked. Not "seen" either, so files an older flux cataloged in
+            // one are proven gone.
+            if flux_names::is_ignored(Path::new(&rel)) {
+                return Visit::SkipChildren;
+            }
             let descend = self.full || !self.idx.known_dirs.contains(rel.as_str());
             // Mille's dev = ino = 0 (Windows) means "unknown", not device 0:
             // recorded, it would make every emptied folder of files that do
@@ -998,15 +1004,25 @@ impl Walk<'_> {
         }
         let p = &self.ctx.job.progress;
         let fingerprints = self.ctx.inner.cfg.fingerprint;
-        // A new part of a multi-part movie ("示例B.mp4" next to "示例A.mp4"):
-        // the parts already cataloged under its stack key are re-parsed (no
-        // I/O), since a part only stacks once a sibling exists and the first
-        // one copied in was parsed alone.
-        let new_parts: HashSet<String> = g
+        // A new part of a multi-part movie ("示例B.mp4" next to "示例A.mp4"),
+        // or in a mixed library a new file of a numbered series ("Clip
+        // 02.mp4" next to "Clip 01.mp4"): the files already cataloged under
+        // its stack or series key are re-parsed (no I/O). A part only stacks,
+        // and a weakly numbered episode only counts as one, once a sibling
+        // exists, and the first file copied in was parsed alone.
+        let mixed = self.ctx.kind == flux_core::LibraryKind::Mixed;
+        let regroup_keys = move |name: &str| {
+            let series = if mixed { flux_names::series_key(name) } else { None };
+            flux_names::stack_key(name)
+                .map(|k| format!("p:{k}"))
+                .into_iter()
+                .chain(series.map(|k| format!("n:{k}")))
+        };
+        let new_keys: HashSet<String> = g
             .media
             .iter()
             .filter(|(_, f, _)| !self.snapshot.contains_key(&f.rel_path))
-            .filter_map(|(name, _, _)| flux_names::stack_key(name))
+            .flat_map(|(name, _, _)| regroup_keys(name))
             .collect();
         let siblings = Arc::new(g.names);
         for (name, facts, external) in g.media {
@@ -1041,8 +1057,7 @@ impl Walk<'_> {
                 self.retry_all,
             ) {
                 Class::Unchanged(need_fp)
-                    if !new_parts.is_empty()
-                        && flux_names::stack_key(&name).is_some_and(|k| new_parts.contains(&k)) =>
+                    if !new_keys.is_empty() && regroup_keys(&name).any(|k| new_keys.contains(&k)) =>
                 {
                     if need_fp && fingerprints {
                         self.ctx.fingerprint_later(&facts, &abs);

@@ -296,6 +296,29 @@ pub(crate) fn enqueue_for_new_work(
     Ok(())
 }
 
+/// [`enqueue_for_new_work`] for an item no metadata source matches (a video
+/// of a videos library): its art job only, ready at once.
+pub(crate) fn enqueue_art_for_new_work(
+    c: &Connection,
+    item_id: Id,
+    now: i64,
+    max_attempts: u32,
+) -> Result<()> {
+    c.prepare_cached(
+        "INSERT OR IGNORE INTO job(kind, key, item_id, priority, max_attempts, not_before, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)",
+    )?
+    .execute(params![
+        JOB_ART,
+        art_key(item_id, now),
+        item_id,
+        priority::ART,
+        max_attempts,
+        now
+    ])?;
+    Ok(())
+}
+
 /// A show gained episodes: (re)arm its art job so the executor makes thumbs
 /// for them. Supersedes a queued art job of the show (one pending per show);
 /// waits for the show's match if one is pending.

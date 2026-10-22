@@ -160,6 +160,12 @@ pub enum ProbeUpdate {
     Probed(Box<ProbeResult>),
     /// The probe failed; the file stays browsable by its name.
     Failed(String),
+    /// The file is not media at all (a text file with a video extension,
+    /// such as a TypeScript `.ts` source), and why. Its row is kept
+    /// `probe_failed` with placement `ignored`, so it maps to no item and
+    /// no later scan looks at it again until it changes
+    /// ([`crate::scan_support::PROBE_RETRY_NEVER`]).
+    NotMedia(String),
 }
 
 /// An added or changed file (keyed by `(root, rel_path)`).
@@ -468,20 +474,14 @@ pub struct AssetLocation {
 // ---- TEXT ↔ enum mappings -------------------------------------------------
 
 pub(crate) fn library_kind_str(k: LibraryKind) -> &'static str {
-    match k {
-        LibraryKind::Movies => "movies",
-        LibraryKind::Shows => "shows",
-        LibraryKind::Mixed => "mixed",
-    }
+    k.as_str()
 }
 
 pub(crate) fn parse_library_kind(s: &str) -> Result<LibraryKind> {
-    match s {
-        "movies" => Ok(LibraryKind::Movies),
-        "shows" => Ok(LibraryKind::Shows),
-        "mixed" => Ok(LibraryKind::Mixed),
-        other => Err(CatalogError::Corrupt(format!("library.kind = {other:?}"))),
-    }
+    LibraryKind::ALL
+        .into_iter()
+        .find(|k| k.as_str() == s)
+        .ok_or_else(|| CatalogError::Corrupt(format!("library.kind = {s:?}")))
 }
 
 pub(crate) fn item_kind_str(k: ItemKind) -> &'static str {
