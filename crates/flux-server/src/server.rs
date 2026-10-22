@@ -147,15 +147,39 @@ pub async fn start_with(
                 // watch() catches up with a Quick scan (Scheduled priority)
                 // the first time, then follows changes. Without watching,
                 // the startup Quick scan runs on its own.
+                //
+                // After an upgrade (files parsed by an older flux-names or
+                // probed by an older flux-probe) the startup scan is a Deep
+                // one: it also re-parses those files (no I/O) and re-probes
+                // them, which a Quick scan never does for unchanged files.
+                // The watcher's catch-up joins it.
                 let libs = st.catalog.read(read::list_libraries).await.unwrap_or_default();
                 for lib in libs {
+                    let id = lib.id;
+                    let outdated = st
+                        .catalog
+                        .read(move |c| read::outdated_files(c, id))
+                        .await
+                        .unwrap_or(0);
+                    let mode = if outdated > 0 {
+                        tracing::info!(
+                            library_id = id,
+                            files = outdated,
+                            "files cataloged by an older flux: bringing them up to date"
+                        );
+                        Some(scan::ScanMode::Deep)
+                    } else if st.cfg.watch {
+                        None
+                    } else {
+                        Some(scan::ScanMode::Quick)
+                    };
+                    if let Some(mode) = mode {
+                        if let Err(e) = st.scanner.scan_library(id, mode, scan::Priority::Scheduled) {
+                            tracing::info!(library_id = id, "not scanning: {e}");
+                        }
+                    }
                     if st.cfg.watch {
-                        st.scanner.watch(lib.id);
-                    } else if let Err(e) =
-                        st.scanner
-                            .scan_library(lib.id, scan::ScanMode::Quick, scan::Priority::Scheduled)
-                    {
-                        tracing::info!(library_id = lib.id, "not scanning: {e}");
+                        st.scanner.watch(id);
                     }
                 }
             }
