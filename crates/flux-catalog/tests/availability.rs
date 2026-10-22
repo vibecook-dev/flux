@@ -479,6 +479,38 @@ fn windows_roots_are_stored_without_a_trailing_separator_and_join_with_backslash
             "\\\\nas\\media",
             "\\\\nas\\media\\Film (2020)\\Film (2020).mkv",
         ),
+        // Device-namespace volume roots keep their `\`: trimmed, they name
+        // the volume device, which can't be listed.
+        (
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\D:\\",
+            "\\\\?\\D:\\",
+            "\\\\?\\D:\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\.\\D:\\",
+            "\\\\.\\D:\\",
+            "\\\\.\\D:\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\D:\\Library\\Films\\",
+            "\\\\?\\D:\\Library\\Films",
+            "\\\\?\\D:\\Library\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films\\",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films",
+            "\\\\?\\Volume{00000000-0000-0000-0000-000000000001}\\Films\\Film (2020)\\Film (2020).mkv",
+        ),
+        (
+            "\\\\?\\UNC\\nas\\media\\",
+            "\\\\?\\UNC\\nas\\media",
+            "\\\\?\\UNC\\nas\\media\\Film (2020)\\Film (2020).mkv",
+        ),
         (
             "/media/lib/",
             "/media/lib",
@@ -500,4 +532,39 @@ fn windows_roots_are_stored_without_a_trailing_separator_and_join_with_backslash
         assert_eq!(loc.path, path, "{typed}");
         assert_eq!(loc.root_path, stored);
     }
+}
+
+/// A volume with no drive letter is typed as `\\?\Volume{…}\`. Stored
+/// without its trailing `\` it named the volume device, not its root
+/// folder: the root's stat failed ("Incorrect function") and the root was
+/// unavailable. Here the temp dir's own volume, by its GUID name.
+#[cfg(windows)]
+#[test]
+fn a_volume_guid_root_is_stored_as_a_folder() {
+    use std::path::Component;
+    let tmp = std::env::temp_dir();
+    let Some(Component::Prefix(drive)) = tmp.components().next() else {
+        return;
+    };
+    let mut mount = drive.as_os_str().to_os_string();
+    mount.push("\\");
+    let out = std::process::Command::new("mountvol")
+        .arg(&mount)
+        .arg("/L")
+        .output();
+    let Some(guid) = out
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| s.starts_with("\\\\?\\Volume{"))
+    else {
+        eprintln!("skipping: mountvol gave no volume name for {mount:?}");
+        return;
+    };
+    let e = env_at(LibraryKind::Movies, &guid);
+    let stored = &e.lib.roots[0].path;
+    assert!(stored.ends_with('\\'), "{stored}");
+    let meta = std::fs::metadata(stored).unwrap_or_else(|err| panic!("{stored}: {err}"));
+    assert!(meta.is_dir(), "{stored}");
+    assert!(std::fs::read_dir(stored).is_ok(), "{stored}");
 }
