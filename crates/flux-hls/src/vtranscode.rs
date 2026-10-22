@@ -314,16 +314,22 @@ pub fn run_frames(asset: &Asset, run: &[Piece]) -> Result<Option<RunFrames>> {
 /// `pending` holds whole fragments, and ffmpeg starts a fragment at every
 /// keyframe (`frag_keyframe`), so until the encoder is done (`eof`) the
 /// sample after the last one received is a sync sample too: a piece is cut
-/// as soon as its fragment is complete. The run's last piece takes what the
-/// encoder produced, up to `f`: a frame the source lacks made `-frames:v`
-/// read one past the run's end, which the next run starts with.
+/// as soon as its fragment is complete, also when that fragment ends up to
+/// [`CUT_SLACK`] frames short of `f` (the IDR came early). The run's last
+/// piece takes what the encoder produced, up to `f`: a frame the source
+/// lacks made `-frames:v` read one past the run's end, which the next run
+/// starts with.
 ///
 /// An AVI with one frame missing at 0.04 s put every forced IDR of the
 /// run's later pieces one sample before their start, so a seek into them
 /// began on a P frame.
 fn piece_cut(pending: &[(Bytes, bool)], f: usize, last: bool, eof: bool) -> Option<usize> {
     let f = f.max(1);
-    if pending.is_empty() || (pending.len() < f && !eof) {
+    // Short of `f` and not done: the next fragment is still to come, unless
+    // the IDR that starts it is the boundary's, early (the run's last piece
+    // has no boundary IDR: it waits for all its frames).
+    let short = pending.len() < f && (last || pending.len() + CUT_SLACK < f);
+    if pending.is_empty() || (short && !eof) {
         return None;
     }
     if last {
@@ -1447,8 +1453,20 @@ mod tests {
         assert_eq!(piece_cut(&p, 52, false, false), Some(52));
         let p = out(&[0], 53);
         assert_eq!(piece_cut(&p, 52, false, false), Some(53));
-        // Not all of the piece's frames yet: wait.
+        // The piece's fragment is complete and ends early: the boundary IDR
+        // came up to CUT_SLACK frames before the count. Cut now, without
+        // waiting for the next piece's fragment.
+        let p = out(&[0], 51);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
         let p = out(&[0], 50);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(50));
+        let p = out(&[0], 49);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(49));
+        // The same piece once the next fragment is there too: the same cut.
+        let p = out(&[0, 51], 103);
+        assert_eq!(piece_cut(&p, 52, false, false), Some(51));
+        // Further short than the slack: not all of the piece's frames yet.
+        let p = out(&[0], 48);
         assert_eq!(piece_cut(&p, 52, false, false), None);
         // The encoder is done: the IDRs it made are all there is.
         let p = out(&[0, 50], 120);
