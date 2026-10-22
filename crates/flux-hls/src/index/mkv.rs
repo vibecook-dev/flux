@@ -1491,9 +1491,15 @@ fn audio_facts(t: &mut IndexTrack, first: Option<&[u8]>, warnings: &mut Vec<Stri
             }
         }
         Codec::Ac3 | Codec::Eac3 => {
-            let frames: Vec<audio::Ac3Frame> = first
+            let mut frames: Vec<audio::Ac3Frame> = first
                 .map(|f| audio::split_ac3(f).into_iter().map(|x| x.0).collect())
                 .unwrap_or_default();
+            // `first` is the whole first block: a laced block holds several
+            // access units (8 is common). Describe one: the first frame and
+            // the dependent substreams after it. Counting them all made
+            // dec3 and the bitrate 8× too high for laced E-AC-3.
+            let au = 1 + frames.iter().skip(1).take_while(|f| f.strmtyp == 1).count();
+            frames.truncate(au);
             match frames.first() {
                 Some(f0) => {
                     t.frame_duration = Some(f0.samples);

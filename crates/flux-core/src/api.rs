@@ -112,6 +112,29 @@ pub struct ServerInfo {
     pub path: String,
     /// MagicDNS name when the server is on a tailnet, e.g. "flux.tail1234.ts.net".
     pub tailnet_name: Option<String>,
+    /// Where titles and artwork come from.
+    pub metadata: MetadataInfo,
+}
+
+/// [`ServerInfo::metadata`]: what the server can match titles against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataInfo {
+    pub source: MetadataSource,
+}
+
+/// The metadata source background matching uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataSource {
+    /// None: titles and years come from file and folder names, artwork from
+    /// frames of the video.
+    None,
+    /// TMDB online, with the server's key (`TMDB_READ_TOKEN` or
+    /// `TMDB_API_KEY`).
+    Tmdb,
+    /// TMDB's daily ID exports, offline: they suggest candidates but accept
+    /// none on their own (no year or runtime to confirm a match).
+    Exports,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

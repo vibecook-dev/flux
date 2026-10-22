@@ -195,6 +195,13 @@ error. flux already answers to this machine's host name, `<hostname>.local`
 and its addresses; `allow_host` adds other names, such as a reverse proxy's.
 The `flux` user needs read access to the library folders.
 
+A folder can be in only one library. When a `--library` flag or
+`[[library]]` entry creates a library whose folder another library already
+has, or one inside or around it (`/media` beside `/media/kids`), flux-server
+stops with exit status 1 and says which library has it. The Admin screen
+refuses such a folder too. Earlier alphas allowed overlapping libraries;
+libraries that already exist in a catalog are left as they are.
+
 ```ini
 # /etc/systemd/system/flux.service
 [Unit]
