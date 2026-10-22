@@ -246,6 +246,13 @@ pub fn config_text(cfg: &Config) -> String {
         cfg.data_dir.display(),
         dir_state(&cfg.data_dir, "created at start")
     );
+    if let Some(older) = &cfg.older_data_dir {
+        let _ = writeln!(
+            s,
+            "older    {}  (a catalog from an earlier flux: --data-dir to use it)",
+            older.display()
+        );
+    }
     for l in &cfg.libraries {
         let path = Path::new(&l.path);
         let _ = writeln!(
@@ -308,6 +315,16 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("web      none"), "{t}");
+        assert!(!t.contains("older"), "{t}");
+        let older = dir.path().join("flux-data");
+        cfg.older_data_dir = Some(older.clone());
+        assert!(
+            config_text(&cfg).contains(&format!(
+                "older    {}  (a catalog from an earlier flux",
+                older.display()
+            )),
+            "{t}"
+        );
         let report = ToolReport::detect(
             Path::new("/nonexistent/ffmpeg"),
             Path::new("/nonexistent/ffprobe"),

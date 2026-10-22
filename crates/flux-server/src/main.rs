@@ -58,6 +58,17 @@ fn main() -> ExitCode {
         data_dir = %cfg.data_dir.display(),
         "starting"
     );
+    if let Some(older) = &cfg.older_data_dir {
+        tracing::warn!(
+            "{} holds a catalog from an earlier flux (the default data dir on Windows up to \
+             0.1.0-alpha.2), but this run uses {}. To keep its libraries and watched and resume \
+             state, stop flux and pass --data-dir \"{}\", or move that folder's contents here; \
+             delete it if you don't need it",
+            older.display(),
+            cfg.data_dir.display(),
+            older.display()
+        );
+    }
 
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

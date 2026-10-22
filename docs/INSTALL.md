@@ -22,13 +22,20 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 | Linux | x86_64 or aarch64 with glibc 2.35 or later: Debian 12+, Ubuntu 22.04+, Fedora 36+, Raspberry Pi OS (64-bit, bookworm or later), and others. Kernels with 4, 16 or 64 KiB pages all work. |
 | ffmpeg | `ffmpeg` and `ffprobe`, any recent version. See [ffmpeg](#ffmpeg). |
 
-Windows is not supported yet. If you try it anyway: the data dir defaults
-to `%LOCALAPPDATA%\flux`; in a TOML config write paths in 'single quotes'
-(`path = 'D:\Media\Movies'`) or with forward slashes, because a backslash
-starts an escape in "double quotes"; and flux stops gracefully on Ctrl-C,
-Ctrl-Break or its console closing. Service wrappers such as NSSM and WinSW
-stop it with Ctrl-C; give them a stop timeout of 10 s or more (NSSM's
-`AppStopMethodConsole` waits 1.5 s by default).
+Windows is not supported yet. If you try it anyway:
+
+- The data dir defaults to `%LOCALAPPDATA%\flux`. Up to 0.1.0-alpha.2 it
+  was `%HOME%\.local\share\flux`, or `flux-data` in the working directory.
+  If flux finds a catalog in one of those, it says so at startup and in
+  `--check`; pass `--data-dir` to keep using it.
+- In a TOML config, write paths in 'single quotes' (`path = 'D:\Media\Movies'`)
+  or with forward slashes, because a backslash starts an escape in
+  "double quotes".
+- flux stops gracefully on Ctrl-C, Ctrl-Break or its console closing.
+  Windows doesn't send it the logoff and shutdown events, so at logoff or
+  shutdown only a service wrapper stops it gracefully. Wrappers such as NSSM
+  and WinSW stop it with Ctrl-C; give them a stop timeout of 10 s or more
+  (NSSM's `AppStopMethodConsole` waits 1.5 s by default).
 
 ## ffmpeg
 

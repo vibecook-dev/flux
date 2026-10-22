@@ -341,6 +341,10 @@ fn de_encoder<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<EncoderCh
 #[derive(Debug, Clone)]
 pub struct Config {
     pub data_dir: PathBuf,
+    /// A folder that an earlier flux used as its default data dir, still
+    /// holding a catalog, while this run uses the default (Windows only).
+    /// Logged at startup and shown by `--check`.
+    pub older_data_dir: Option<PathBuf>,
     pub libraries: Vec<LibrarySpec>,
     /// Local listener (`127.0.0.1:8096`; port 0 = any, for tests).
     pub local_addr: SocketAddr,
@@ -396,9 +400,13 @@ impl Config {
             }
             None => FileConfig::default(),
         };
-        let data_dir = match cli.data_dir.or(file.data_dir) {
-            Some(d) => expand_home(d),
-            None => default_data_dir()?,
+        let (data_dir, older_data_dir) = match cli.data_dir.or(file.data_dir) {
+            Some(d) => (expand_home(d), None),
+            None => {
+                let d = default_data_dir()?;
+                let older = older_data_dir(&d, older_default_data_dirs());
+                (d, older)
+            }
         };
         // Logged at startup and shown by --check as the folder flux uses,
         // whatever the working directory was.
@@ -482,6 +490,7 @@ impl Config {
             jobs_delay: Duration::from_secs(10),
             probe_system_tailscale: !(tailnet_explicit && tailnet == TailnetChoice::Off),
             data_dir,
+            older_data_dir,
         })
     }
 
@@ -513,6 +522,7 @@ impl Config {
             jobs_delay: Duration::ZERO,
             probe_system_tailscale: false,
             data_dir,
+            older_data_dir: None,
         }
     }
 
@@ -553,6 +563,52 @@ pub fn default_data_dir() -> anyhow::Result<PathBuf> {
             .map(PathBuf::from),
         cfg!(target_os = "macos"),
     ))
+}
+
+/// The folders flux up to 0.1.0-alpha.2 used as its default data dir on
+/// Windows, where the default is now `%LOCALAPPDATA%\flux`. Which one it
+/// used depended on the environment it ran in (see [`older_windows_data_dirs`]).
+/// None elsewhere: the default there hasn't moved.
+fn older_default_data_dirs() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let var = |name| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    older_windows_data_dirs(var("HOME"), var("XDG_DATA_HOME"), std::env::current_dir().ok())
+}
+
+/// `$XDG_DATA_HOME\flux`, `%HOME%\.local\share\flux` (OpenSSH and Git
+/// shells set `HOME`) and `flux-data` in the working directory: the old
+/// Windows defaults, in the order they applied.
+fn older_windows_data_dirs(
+    home: Option<PathBuf>,
+    xdg_data_home: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    [
+        xdg_data_home.map(|x| x.join("flux")),
+        home.map(|h| h.join(".local").join("share").join("flux")),
+        cwd.map(|c| c.join("flux-data")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The first of `older`, other than `data_dir`, that holds a catalog: after
+/// the default moved, flux would otherwise start on an empty catalog while
+/// the old one (libraries, watched and resume state) sat there unnoticed.
+/// Found whether or not `data_dir` has a catalog of its own yet, so the
+/// warning stays until the old folder is moved, deleted or named with
+/// `--data-dir`.
+fn older_data_dir(data_dir: &Path, older: Vec<PathBuf>) -> Option<PathBuf> {
+    older
+        .into_iter()
+        .find(|d| d != data_dir && d.join("catalog.db").is_file())
 }
 
 /// [`default_data_dir`] off Windows, from `HOME` and `XDG_DATA_HOME`;
@@ -758,6 +814,50 @@ path = "/m"
         assert!(cfg.data_dir.is_absolute(), "{}", cfg.data_dir.display());
         assert!(cfg.data_dir.ends_with("rel-data"));
         assert_eq!(cfg.tmdb_exports, cfg.data_dir.join("tmdb-exports"));
+    }
+
+    /// The Windows default moved to `%LOCALAPPDATA%\flux`; a catalog in an
+    /// old default folder (watched, resume) silently looked lost.
+    #[test]
+    fn an_older_windows_data_dir_with_a_catalog_is_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, xdg, cwd) = (
+            tmp.path().join("home"),
+            tmp.path().join("xdg"),
+            tmp.path().join("cwd"),
+        );
+        let older = older_windows_data_dirs(Some(home.clone()), Some(xdg.clone()), Some(cwd.clone()));
+        let old_home = home.join(".local").join("share").join("flux");
+        assert_eq!(older, [xdg.join("flux"), old_home.clone(), cwd.join("flux-data")]);
+        assert_eq!(older_windows_data_dirs(None, None, None), Vec::<PathBuf>::new());
+
+        let new = tmp.path().join("local").join("flux");
+        assert_eq!(older_data_dir(&new, older.clone()), None, "no catalog anywhere");
+        std::fs::create_dir_all(&old_home).unwrap();
+        assert_eq!(
+            older_data_dir(&new, older.clone()),
+            None,
+            "a folder without a catalog"
+        );
+        std::fs::write(old_home.join("catalog.db"), b"").unwrap();
+        assert_eq!(older_data_dir(&new, older.clone()), Some(old_home.clone()));
+        // Still found once the new folder has a catalog of its own.
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("catalog.db"), b"").unwrap();
+        assert_eq!(older_data_dir(&new, older.clone()), Some(old_home.clone()));
+        // Not when it is the data dir in use.
+        assert_eq!(older_data_dir(&old_home, older), None);
+
+        // Only the default looks: an explicit --data-dir is what the user
+        // chose. Off Windows the default never moved.
+        let d = tmp.path().join("explicit");
+        let cfg =
+            Config::resolve(Cli::try_parse_from(["flux-server", "--data-dir", d.to_str().unwrap()]).unwrap())
+                .unwrap();
+        assert_eq!(cfg.older_data_dir, None);
+        if !cfg!(windows) {
+            assert!(older_default_data_dirs().is_empty());
+        }
     }
 
     /// TOML "double quotes" turned Windows paths into control characters
