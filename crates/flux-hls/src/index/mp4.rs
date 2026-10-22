@@ -1053,10 +1053,13 @@ fn track_from_trak(
             }
         }
         if t.frame_rate.is_none() && sample_count > 0 {
-            // Coarse timescales alternate deltas (656/672 at 16 kHz for
-            // 23.976 fps): derive the rate from the average instead.
-            let total: i64 = tables.stts.iter().map(|e| e.0 as i64 * e.1 as i64).sum();
-            t.frame_rate = super::average_rate(ticks_to_ns(total, timescale) as f64 / sample_count as f64);
+            // Coarse timescales alternate deltas (656/672 at 16 kHz,
+            // 3753/3754 at 90 kHz for 23.976 fps): derive the rate from the
+            // durations most frames have, else from the average.
+            t.frame_rate = dominant_rate(&tables.stts, timescale).or_else(|| {
+                let total: i64 = tables.stts.iter().map(|e| e.0 as i64 * e.1 as i64).sum();
+                super::average_rate(ticks_to_ns(total, timescale) as f64 / sample_count as f64)
+            });
         }
         t.default_duration_ns = t
             .frame_duration
@@ -1589,6 +1592,34 @@ fn gcd(a: u32, b: u32) -> u32 {
     }
 }
 
+/// The frame rate of the sample durations most of a video's frames have:
+/// the mean of the `stts` deltas within 5 % of the most common one, when
+/// those hold a majority of the samples. A stream cut without re-encoding
+/// holds the frame before each cut for seconds, and six such frames of
+/// 2–20 s among 34 000 of 3753/3754 ticks at 90 kHz pulled the plain
+/// average of a 23.976 fps video down to 22.75 fps.
+fn dominant_rate(stts: &[(u32, u32)], timescale: u32) -> Option<Rational> {
+    let mut by_delta = std::collections::BTreeMap::<u32, u64>::new();
+    for &(count, delta) in stts.iter().filter(|e| e.1 > 0) {
+        *by_delta.entry(delta).or_default() += u64::from(count);
+    }
+    let total: u64 = stts.iter().map(|e| u64::from(e.0)).sum();
+    // The most common delta; the shorter one on a tie.
+    let (&mode, _) = by_delta
+        .iter()
+        .max_by_key(|&(&d, &c)| (c, std::cmp::Reverse(d)))?;
+    let (n, sum) = by_delta
+        .iter()
+        .filter(|&(&d, _)| u64::from(d.abs_diff(mode)) * 20 <= u64::from(mode))
+        .fold((0u64, 0u128), |(n, s), (&d, &c)| {
+            (n + c, s + u128::from(d) * u128::from(c))
+        });
+    if n * 2 <= total || timescale == 0 {
+        return None;
+    }
+    super::average_rate(sum as f64 / n as f64 * 1e9 / f64::from(timescale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2074,5 +2105,50 @@ mod tests {
         assert_eq!(s.cts, vec![2002; 4]);
         assert!(t0.elapsed() < std::time::Duration::from_millis(100));
         assert_eq!(ctts.timing().count(), 4);
+    }
+
+    /// A 23.976 fps video on a 90 kHz clock (deltas 3754, 3754, 3753, …)
+    /// with stretches cut out without re-encoding: the frame before each
+    /// cut lasts seconds. Its rate is the frames', not the average over the
+    /// held frames; a mix with no majority keeps the average.
+    #[test]
+    fn the_rate_of_most_frames_ignores_held_frames() {
+        let mut stts = Vec::new();
+        for gop in 0..136 {
+            for _ in 0..83 {
+                stts.extend([(2, 3754), (1, 3753)]);
+            }
+            // Seven cuts: one frame held 9–15 s.
+            if gop % 20 == 7 {
+                stts.push((1, 90_000 * (2 + gop as u32 % 19)));
+            }
+        }
+        let frames: u32 = stts.iter().map(|e| e.0).sum();
+        let total: u64 = stts.iter().map(|e| e.0 as u64 * e.1 as u64).sum();
+        let average = super::super::average_rate(total as f64 * 1e9 / 90_000.0 / frames as f64);
+        assert!(average.is_some_and(|r| r.as_f64() < 23.5), "{average:?}");
+        assert_eq!(
+            dominant_rate(&stts, 90_000),
+            Some(Rational {
+                num: 24000,
+                den: 1001
+            })
+        );
+        // Alternating deltas of a coarse clock: their mean.
+        assert_eq!(
+            dominant_rate(&[(2, 667), (1, 668), (1, 667), (1, 668), (1, 667)], 16_000),
+            Some(Rational {
+                num: 24000,
+                den: 1001
+            })
+        );
+        // 40 % at 30 fps and 60 % at 60 fps: the 60 fps frames.
+        assert_eq!(
+            dominant_rate(&[(40, 3000), (60, 1500)], 90_000),
+            Some(Rational { num: 60, den: 1 })
+        );
+        // No majority within 5 %: no dominant rate.
+        assert_eq!(dominant_rate(&[(40, 3000), (30, 1500), (30, 4500)], 90_000), None);
+        assert_eq!(dominant_rate(&[], 90_000), None);
     }
 }
