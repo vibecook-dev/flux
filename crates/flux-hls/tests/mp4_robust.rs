@@ -421,3 +421,100 @@ async fn legacy_text_and_junk_in_moov_remux_like_the_clean_clip() {
     }
     assert_eq!(decode_errors(&dir.join("bad-0.mp4")), Vec::<String>::new());
 }
+
+/// Appends `child` (a whole box) to the only sample entry of `stsd`.
+fn push_entry_child(stsd: &mut Bx, child: &[u8]) {
+    let b = &mut stsd.body;
+    // stsd body: version/flags, entry_count, then the entry.
+    let size = be32(&b[8..]) as usize;
+    assert_eq!(size, b.len() - 8, "one sample entry");
+    b.extend_from_slice(child);
+    b[8..12].copy_from_slice(&((size + child.len()) as u32).to_be_bytes());
+}
+
+/// Header boxes with bytes past their fields (`mvhd`, `tkhd`, `mdhd`,
+/// `vmhd`, `smhd`) and a `pasp` with bytes past its own, all of which
+/// ffmpeg reads. mp4-atom rejected each: the audio track was left out (HLS
+/// played the movie silently, AC-3 too), and the `pasp` made the video an
+/// unknown entry (a transcode where Chrome plays the file as is). Each box
+/// now ends after its fields: the file plans and remuxes byte for byte
+/// like the same clip without the padding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn padded_header_and_entry_boxes_play_like_the_clean_clip() {
+    if !tools() {
+        return;
+    }
+    let Some(src) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("mp4-padded-boxes");
+    let bytes = std::fs::read(&src).unwrap();
+    // A square-pixel `pasp` in the video's entry, as many muxers write one
+    // (padded where the clip has its own).
+    let pasp = |m: &mut Bx, pad: usize| {
+        let stsd = m.traks_mut(b"vide").remove(0).find_mut(b"stsd").unwrap();
+        if stsd.body.windows(4).any(|w| w == b"pasp") {
+            stsd.edit_entry_child(b"pasp", |c| [c, &vec![0u8; pad][..]].concat());
+        } else {
+            let body = [&1u32.to_be_bytes()[..], &1u32.to_be_bytes(), &vec![0u8; pad][..]].concat();
+            push_entry_child(stsd, &Bx::leaf(b"pasp", body).to_bytes());
+        }
+    };
+    let reference = with_moov(&bytes, |m| pasp(m, 0));
+    let padded = with_moov(&bytes, |m| {
+        pasp(m, 4);
+        m.visit(&mut |_, b| {
+            if matches!(&b.kind, b"mvhd" | b"tkhd" | b"mdhd" | b"vmhd" | b"smhd") {
+                b.body.extend_from_slice(&[0; 4]);
+            }
+        });
+    });
+    let (ref_path, path) = (dir.join("reference.mp4"), dir.join("padded.mp4"));
+    std::fs::write(&ref_path, &reference).unwrap();
+    std::fs::write(&path, &padded).unwrap();
+    assert_eq!(
+        decode_errors(&path),
+        Vec::<String>::new(),
+        "ffmpeg reads the padded file"
+    );
+
+    let engine = HlsEngine::new(EngineConfig::default());
+    let clean = engine.prepare(&ref_path).await.unwrap();
+    let asset = engine.prepare(&path).await.unwrap();
+    assert_eq!(asset.index.tracks, clean.index.tracks);
+    assert_eq!(asset.index.tracks.len(), 2, "video and sound");
+    assert!(
+        asset.index.warnings.iter().any(|w| w.contains("bytes past")),
+        "{:?}",
+        asset.index.warnings
+    );
+    let caps = presets::chrome_desktop();
+    assert_eq!(
+        engine.plan(&asset, &caps, &Default::default()),
+        engine.plan(&clean, &caps, &Default::default()),
+        "Chrome plays it as it plays the clean clip"
+    );
+    let (plan, cplan) = (
+        engine.plan(&asset, &caps, &hls_only()),
+        engine.plan(&clean, &caps, &hls_only()),
+    );
+    assert_eq!(plan, cplan);
+    assert!(matches!(plan.video, VideoOp::Copy { .. }), "{:?}", plan.explain());
+    assert!(!plan.audio.is_empty(), "{:?}", plan.explain());
+    let mut renditions = vec![Rendition::Video];
+    renditions.extend(
+        plan.audio
+            .iter()
+            .map(|a| Rendition::Audio(AudioKey::from_plan(a))),
+    );
+    for (i, r) in renditions.into_iter().enumerate() {
+        let out = rendition(&engine, &asset, &plan, r, &dir.join(format!("padded-{i}.mp4"))).await;
+        let cout = rendition(
+            &engine,
+            &clean,
+            &cplan,
+            r,
+            &dir.join(format!("reference-{i}.mp4")),
+        )
+        .await;
+        assert!(out == cout, "rendition {i}: the same bytes as the reference's");
+    }
+}

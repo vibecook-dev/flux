@@ -401,9 +401,16 @@ fn top_level_moov(src: &Source) -> Result<(u64, u64)> {
 /// way to the sample tables (their bodies are child boxes and nothing else).
 const MOOV_CONTAINERS: [&[u8; 4]; 7] = [b"trak", b"mdia", b"minf", b"stbl", b"edts", b"dinf", b"mvex"];
 
-/// Sample entries whose configuration is an `avcC` (Dolby Vision's AVC
-/// entries extend `avc1`/`avc3`).
-const AVC_ENTRIES: [&[u8; 4]; 4] = [b"avc1", b"avc3", b"dva1", b"dvav"];
+/// Visual sample entries [`stsd`] fixes the boxes of (Dolby Vision's entries
+/// extend `avc1`/`avc3`/`hvc1`/`hev1`/`av01`, and are only renamed later).
+const VISUAL_ENTRIES: [&[u8; 4]; 13] = [
+    b"avc1", b"avc3", b"dva1", b"dvav", b"hvc1", b"hev1", b"dvh1", b"dvhe", b"av01", b"dav1", b"vp08",
+    b"vp09", b"jpeg",
+];
+
+/// Longest text (an `hdlr` name, a data reference) [`text_box`] copies:
+/// mp4-atom reads each into a `String`, and the index reads none of them.
+const MAX_TEXT: usize = 256;
 
 /// What [`normalize_moov`] changed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -416,7 +423,9 @@ pub(crate) struct MoovRepairs {
     /// that overruns its parent (or a header that can't be one) and all
     /// that follows it.
     pub junk: u64,
-    /// Sample tables and `avcC` records with bytes past their entries.
+    /// Sample tables, header boxes (`tkhd`, `mdhd`, …), `avcC` records and
+    /// fixed-size sample entry boxes (`pasp`, …) with bytes past their
+    /// entries or fields.
     pub trimmed: usize,
     /// `esds` boxes rebuilt: descriptors that overran their parent, bytes
     /// past them, or optional fields mp4-atom doesn't read.
@@ -431,7 +440,7 @@ impl MoovRepairs {
         let s = |n: usize| if n == 1 { "" } else { "s" };
         if self.text > 0 {
             w.push(format!(
-                "moov: {} text field{} not UTF-8 (decoded lossily)",
+                "moov: {} text field{} not UTF-8 (replaced)",
                 self.text,
                 s(self.text)
             ));
@@ -452,7 +461,7 @@ impl MoovRepairs {
         }
         if self.trimmed > 0 {
             w.push(format!(
-                "moov: {} box{} with bytes past {} entries (ignored)",
+                "moov: {} box{} with bytes past {} entries or fields (ignored)",
                 self.trimmed,
                 if self.trimmed == 1 { "" } else { "es" },
                 if self.trimmed == 1 { "its" } else { "their" }
@@ -467,20 +476,26 @@ impl MoovRepairs {
 /// - `udta` and `meta` boxes are left out. They hold titles, iTunes `ilst`
 ///   items and chapters as free text in any code page (non-UTF-8 text failed
 ///   the whole `moov`); the index needs none of it (flux-probe reads titles).
-/// - `hdlr` names and data references that are not UTF-8 are decoded
-///   lossily (QuickTime writes Pascal strings in the system code page, and
-///   `alis` records in binary).
+/// - Track `hdlr` names and data references that are not UTF-8 have their
+///   other bytes replaced by `?` (QuickTime writes Pascal strings in the
+///   system code page, and `alis` records in binary), and any longer than
+///   [`MAX_TEXT`] bytes are cut there: nothing reads them, and a copy may
+///   not cost more than the box.
 /// - A child box that overruns its parent, or a remainder too short to be
 ///   a box, ends the container: it and anything after it are left out
 ///   (ffmpeg clamps such a box to its parent and skips it as unknown).
-/// - Sample tables (`stts`, `stsz`, …) and `avcC` records end after their
-///   last entry: some muxers pad them, and mp4-atom fails a box with bytes
-///   it did not read. An `esds` whose descriptors overrun (or trail bytes)
-///   is rebuilt from its decoder configuration.
+/// - Sample tables (`stts`, `stsz`, …), header boxes (`mvhd`, `tkhd`,
+///   `mdhd`, `vmhd`, `smhd`, …), `avcC` records and the fixed-size boxes of
+///   sample entries (`pasp`, `btrt`, `fiel`, an `nclx` `colr`) end after
+///   their last entry or field: some muxers pad them, and mp4-atom fails a
+///   box with bytes it did not read (ffmpeg skips them). An `esds` whose
+///   descriptors overrun (or trail bytes) is rebuilt from its decoder
+///   configuration.
 ///
 /// Containers and the boxes fixed are rewritten with 32-bit sizes; every
-/// other box is copied as is. Sample tables hold absolute file offsets, so
-/// nothing else moves.
+/// other box is copied as is, so the copy is no larger than `moov` but for
+/// a rebuilt `esds`'s few bytes. Sample tables hold absolute file offsets,
+/// so nothing else moves.
 pub(crate) fn normalize_moov(moov: &[u8], repairs: &mut MoovRepairs) -> Vec<u8> {
     let mut out = Vec::with_capacity(moov.len());
     match box_extent(moov) {
@@ -546,11 +561,12 @@ fn container(kind: [u8; 4], body: &[u8], depth: u32, r: &mut MoovRepairs, out: &
         match &ck {
             b"udta" | b"meta" => r.metadata += 1,
             k if depth < 8 && MOOV_CONTAINERS.contains(&k) => container(ck, cb, depth + 1, r, out),
-            // hdlr: version/flags, pre_defined, handler_type, 12 reserved bytes, name.
-            b"hdlr" => text_box(&ck, cb, 24, r, out),
+            // hdlr: version/flags, pre_defined, handler_type, 12 reserved
+            // bytes, name. Only a track's are read (one elsewhere is copied).
+            b"hdlr" if matches!(&kind, b"mdia" | b"minf") => text_box(&ck, cb, 24, r, out),
             b"dref" => dref(cb, r, out),
             b"stsd" => stsd(cb, r, out),
-            k => match table_len(k, cb).filter(|&n| n < cb.len()) {
+            k => match body_len(k, cb).filter(|&n| n < cb.len()) {
                 Some(n) => {
                     r.trimmed += 1;
                     put_box(k, &cb[..n], out);
@@ -563,24 +579,61 @@ fn container(kind: [u8; 4], body: &[u8], depth: u32, r: &mut MoovRepairs, out: &
     end_box(start, out);
 }
 
-/// Bytes a sample table's body (`kind`, version and flags included) needs
-/// for the entries it declares, when that is computable.
-fn table_len(kind: &[u8; 4], b: &[u8]) -> Option<usize> {
+/// Bytes the body `b` of a `kind` box (version and flags included) needs:
+/// a sample table's for the entries it declares, a header box's for the
+/// fields of its version. `None` for other boxes and unknown versions.
+fn body_len(kind: &[u8; 4], b: &[u8]) -> Option<usize> {
     let be32 = |at: usize| {
         b.get(at..at + 4)
             .map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]) as u64)
     };
-    let n = be32(4)?;
+    let version = |v0: u64, v1: u64| match b.first()? {
+        0 => Some(v0),
+        1 => Some(v1),
+        _ => None,
+    };
     let need = match kind {
-        b"stts" | b"ctts" | b"co64" => 8 + 8 * n,
-        b"stss" | b"stco" => 8 + 4 * n,
-        b"stsc" => 8 + 12 * n,
-        // stsz: sample_size, then sample_count and (if sizes vary) the sizes.
-        b"stsz" => 12 + if n == 0 { 4 * be32(8)? } else { 0 },
-        b"elst" => 8 + n * if b[0] == 1 { 20 } else { 12 },
-        _ => return None,
+        // Header boxes of fixed fields (ISO/IEC 14496-12), with 32- or
+        // 64-bit times by version.
+        b"mvhd" => version(100, 112)?,
+        b"tkhd" => version(84, 96)?,
+        b"mdhd" => version(24, 36)?,
+        b"vmhd" => 12,
+        b"smhd" => 8,
+        b"hmhd" => 20,
+        b"nmhd" | b"sthd" => 4,
+        _ => {
+            let n = be32(4)?;
+            match kind {
+                b"stts" | b"ctts" | b"co64" => 8 + 8 * n,
+                b"stss" | b"stco" => 8 + 4 * n,
+                b"stsc" => 8 + 12 * n,
+                // stsz: sample_size, then sample_count and (if sizes vary)
+                // the sizes.
+                b"stsz" => 12 + if n == 0 { 4 * be32(8)? } else { 0 },
+                b"elst" => 8 + n * if b[0] == 1 { 20 } else { 12 },
+                _ => return None,
+            }
+        }
     };
     usize::try_from(need).ok()
+}
+
+/// Bytes the body `b` of a fixed-size box `kind` of a sample entry needs.
+fn entry_box_len(kind: &[u8], b: &[u8]) -> Option<usize> {
+    Some(match kind {
+        b"pasp" => 8,
+        b"btrt" => 12,
+        b"fiel" => 2,
+        // colour_type, then primaries, transfer and matrix (and nclx's
+        // full-range byte); an ICC profile takes the rest of the box.
+        b"colr" => match b.get(..4)? {
+            b"nclx" => 11,
+            b"nclc" => 10,
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 /// Length of an `avcC` record (ISO/IEC 14496-15 §5.3.3.1): the SPS and PPS
@@ -608,7 +661,7 @@ fn avcc_len(b: &[u8]) -> Option<usize> {
 /// `h` bytes long) whose children [`stsd`] fixes, if it is one.
 fn entry_fields(e: &[u8], h: usize) -> Option<usize> {
     let kind = &e[4..8];
-    if AVC_ENTRIES.iter().any(|k| &k[..] == kind) {
+    if VISUAL_ENTRIES.iter().any(|k| &k[..] == kind) {
         // VisualSampleEntry.
         return Some(78);
     }
@@ -622,9 +675,9 @@ fn entry_fields(e: &[u8], h: usize) -> Option<usize> {
     })
 }
 
-/// Copies an `stsd` with the `avcC` records of its AVC entries ending after
-/// their last field and the `esds` of its `mp4a` entries rebuilt when
-/// mp4-atom can't read them.
+/// Copies an `stsd` with the `avcC` records and fixed-size boxes (`pasp`,
+/// …) of its visual and `mp4a` entries ending after their last field, and
+/// the `esds` of its `mp4a` entries rebuilt when mp4-atom can't read them.
 fn stsd(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
     let start = begin_box(b"stsd", out);
     out.extend_from_slice(&b[..b.len().min(8)]);
@@ -658,7 +711,13 @@ fn stsd(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
                             }
                             None => out.extend_from_slice(c),
                         },
-                        _ => out.extend_from_slice(c),
+                        k => match entry_box_len(k, body).filter(|&n| n < body.len()) {
+                            Some(n) => {
+                                r.trimmed += 1;
+                                put_box(k, &body[..n], out);
+                            }
+                            None => out.extend_from_slice(c),
+                        },
                     }
                     q += cs;
                 }
@@ -759,22 +818,36 @@ fn repair_esds(b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Writes `kind` with `body`, whose NUL-terminated string starts `fields`
-/// bytes in, decoding the string lossily when it is not UTF-8.
+/// bytes in. A string that is not UTF-8 or is longer than [`MAX_TEXT`]
+/// bytes is written as its first [`MAX_TEXT`] bytes, each non-ASCII one as
+/// `?`: no larger than it was (a lossy decode tripled a legacy code page's
+/// bytes, and a box full of them cost ~8× the `moov` in copies).
 fn text_box(kind: &[u8], body: &[u8], fields: usize, r: &mut MoovRepairs, out: &mut Vec<u8>) {
     let s = body.get(fields..).unwrap_or_default();
     let s = &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())];
-    if std::str::from_utf8(s).is_ok() {
+    let utf8 = std::str::from_utf8(s).is_ok();
+    if utf8 && s.len() <= MAX_TEXT {
         put_box(kind, body, out);
         return;
     }
-    r.text += 1;
-    let fixed = String::from_utf8_lossy(s);
-    put_box(kind, &[&body[..fields], fixed.as_bytes(), &[0]].concat(), out);
+    if !utf8 {
+        r.text += 1;
+    }
+    let start = begin_box(kind, out);
+    out.extend_from_slice(&body[..fields]);
+    out.extend(
+        s.iter()
+            .take(MAX_TEXT)
+            .map(|&c| if c.is_ascii() { c } else { b'?' }),
+    );
+    out.push(0);
+    end_box(start, out);
 }
 
 /// Copies a `dref` (version/flags, entry_count, entries), each entry's text
-/// made UTF-8: mp4-atom reads every entry as a `url ` location, also a
-/// QuickTime `alis`, whose record is binary when it points elsewhere.
+/// made short ASCII when it is not UTF-8 or long ([`text_box`]): mp4-atom
+/// reads every entry as a `url ` location, also a QuickTime `alis`, whose
+/// record is binary when it points elsewhere.
 fn dref(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
     let start = begin_box(b"dref", out);
     out.extend_from_slice(&b[..b.len().min(8)]);
@@ -796,17 +869,35 @@ fn dref(b: &[u8], r: &mut MoovRepairs, out: &mut Vec<u8>) {
 /// [`EntryExtras::entry_fourcc`].
 const UNDECODABLE_ENTRY: &[u8; 4] = b"fxun";
 
+/// Video sample entries mp4-atom decodes (Dolby Vision's are renamed to
+/// these by then).
+const DECODED_VIDEO_ENTRIES: [&[u8; 4]; 7] = [b"avc1", b"avc3", b"hvc1", b"hev1", b"av01", b"vp08", b"vp09"];
+
+/// The codec configuration box of a sample entry `kind`, for those with one.
+fn entry_config(kind: &[u8; 4]) -> Option<&'static [u8; 4]> {
+    Some(match kind {
+        b"avc1" | b"avc3" => b"avcC",
+        b"hvc1" | b"hev1" => b"hvcC",
+        b"av01" => b"av1C",
+        b"vp08" | b"vp09" => b"vpcC",
+        b"mp4a" => b"esds",
+        b"ac-3" => b"dac3",
+        b"ec-3" => b"dec3",
+        b"Opus" => b"dOps",
+        b"fLaC" => b"dfLa",
+        _ => return None,
+    })
+}
+
 /// The `trak`s of a normalized `moov` that mp4-atom decodes, with their
 /// position among all `trak`s (the stream index ffmpeg gives them) and
-/// their [`EntryExtras`]. One `trak` mp4-atom can't decode costs that
-/// track, not the file:
-/// - a Dolby Vision entry renamed to the standard entry it extends that then
-///   fails (a missing or rejected `hvcC`, …) decodes as the unknown entry it
-///   was (a transcode), as before Dolby Vision entries were recognised;
-/// - any other entry that fails decodes as an unknown entry too (video is
-///   then transcoded: ffmpeg reads what mp4-atom rejects), an AC-3/E-AC-3
-///   one as an entry configured from its first frame;
-/// - a `trak` that still fails (an empty `stbl`) is left out.
+/// their [`EntryExtras`] ([`decode_trak`] mends what it can). A `trak` that
+/// still fails is left out only when no client could play it: one whose
+/// handler is not video or sound (timecode, chapters, subtitles…) or that
+/// holds no samples (an empty `stbl`, as found). A video or sound track
+/// with samples fails the index with its cause instead, so the file's
+/// probe decides how it plays (a client may play it as is): left out, a
+/// movie played without its sound.
 fn decode_moov(
     buf: &mut [u8],
     extras: Vec<EntryExtras>,
@@ -817,57 +908,39 @@ fn decode_moov(
     let mut kept = Vec::new();
     let mut extras = extras.into_iter();
     let mut ordinal = 0u32;
-    let err = |e: mp4_atom::Error| HlsError::mp4(format!("moov: {e}"));
-    for (kind, s, e) in child_boxes(buf, 8) {
+    let fail = |e: mp4_atom::Error| HlsError::mp4(format!("moov: {e}"));
+    let boxes = child_boxes(buf, 8);
+    // A fragmented file's samples are in its fragments.
+    let fragmented = boxes.iter().any(|c| &c.0 == b"mvex");
+    for (kind, s, e) in boxes {
         match &kind {
-            b"mvhd" => mvhd = Some(mp4_atom::Mvhd::decode(&mut &buf[s..e]).map_err(err)?),
-            b"mvex" => moov.mvex = Some(mp4_atom::Mvex::decode(&mut &buf[s..e]).map_err(err)?),
+            b"mvhd" => mvhd = Some(mp4_atom::Mvhd::decode(&mut &buf[s..e]).map_err(fail)?),
+            b"mvex" => moov.mvex = Some(mp4_atom::Mvex::decode(&mut &buf[s..e]).map_err(fail)?),
             b"trak" => {
                 let n = ordinal;
                 ordinal += 1;
                 let mut x = extras.next().unwrap_or_default();
-                let mut r = Trak::decode(&mut &buf[s..e]);
-                if let Err(first) = &r {
-                    if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
-                        buf[at..at + 4].copy_from_slice(&dv);
-                        warnings.push(format!(
-                            "Dolby Vision sample entry not decodable as its standard entry ({first}): indexed as unknown"
-                        ));
-                        r = Trak::decode(&mut &buf[s..e]);
-                    }
-                }
-                if let Err(first) = &r {
-                    if let Some(at) = trak_stsd(buf, s, e)
-                        .and_then(|(ss, se)| child_boxes(&buf[..se], ss + 16).first().map(|c| c.1 + 4))
-                    {
-                        let own: [u8; 4] = buf[at..at + 4].try_into().expect("fourcc");
-                        // AC-3 with a `dac3` mp4-atom rejects: configured
-                        // from the first frame, as without one.
-                        let placeholder = match &own {
-                            b"ac-3" => UNCONFIGURED_AC3,
-                            b"ec-3" => UNCONFIGURED_EAC3,
-                            _ => UNDECODABLE_ENTRY,
-                        };
-                        buf[at..at + 4].copy_from_slice(placeholder);
-                        match Trak::decode(&mut &buf[s..e]) {
-                            Ok(t) => {
-                                warnings.push(format!(
-                                    "trak {n}: sample entry {} not decodable ({first}): indexed as unknown",
-                                    String::from_utf8_lossy(&own)
-                                ));
-                                x.entry_fourcc = Some(own);
-                                r = Ok(t);
-                            }
-                            Err(_) => buf[at..at + 4].copy_from_slice(&own),
-                        }
-                    }
-                }
-                match r {
+                match decode_trak(buf, s, e, n, &mut x, warnings) {
                     Ok(t) => {
                         moov.trak.push(t);
                         kept.push((n, x));
                     }
-                    Err(e) => warnings.push(format!("trak {n}: {e}: left out")),
+                    Err(err) => match trak_handler(buf, s, e) {
+                        Some(h) if matches!(&h, b"vide" | b"soun") => {
+                            let h = String::from_utf8_lossy(&h);
+                            if trak_has_samples(buf, s, e, fragmented) {
+                                return Err(HlsError::mp4(format!("moov: trak {n} ({h}): {err}")));
+                            }
+                            warnings.push(format!("trak {n} ({h}): {err}: left out (no samples)"));
+                        }
+                        h => warnings.push(format!(
+                            "trak {n} ({}): {err}: left out (not video or sound)",
+                            h.map_or_else(
+                                || "no handler".into(),
+                                |h| String::from_utf8_lossy(&h).into_owned()
+                            )
+                        )),
+                    },
                 }
             }
             _ => {}
@@ -875,6 +948,152 @@ fn decode_moov(
     }
     moov.mvhd = mvhd.ok_or_else(|| HlsError::mp4("moov: missing box: mvhd"))?;
     Ok((moov, kept))
+}
+
+/// Decodes the `trak` at `s..e` of a normalized `moov`, mending its first
+/// sample entry in place when that is what mp4-atom rejects:
+/// 1. optional boxes of the entry it rejects (a `pasp`, `btrt` or `colr`
+///    [`normalize_moov`] could not fix…) are renamed `free` and ignored, as
+///    ffmpeg ignores them: the codec is still copied or played as is;
+/// 2. a Dolby Vision entry renamed to the standard entry it extends decodes
+///    as the unknown entry it was (a transcode), as before Dolby Vision
+///    entries were recognised;
+/// 3. an entry whose codec configuration mp4-atom rejects or misses decodes
+///    as an unknown entry: video is then transcoded (ffmpeg reads what
+///    mp4-atom rejects), AC-3/E-AC-3 is configured from its first frame,
+///    other audio is transcoded. A video entry whose configuration reads
+///    is not (a transcode for a stream a client may play as is): its error
+///    stands.
+///
+/// Returns the first error when the `trak` still fails.
+fn decode_trak(
+    buf: &mut [u8],
+    s: usize,
+    e: usize,
+    n: u32,
+    x: &mut EntryExtras,
+    warnings: &mut Vec<String>,
+) -> std::result::Result<Trak, mp4_atom::Error> {
+    let first = match Trak::decode(&mut &buf[s..e]) {
+        Ok(t) => return Ok(t),
+        Err(err) => err,
+    };
+    let Some((own, es, ee)) =
+        trak_stsd(buf, s, e).and_then(|(ss, se)| child_boxes(&buf[..se], ss + 16).first().copied())
+    else {
+        return Err(first);
+    };
+    let name = String::from_utf8_lossy(&own).into_owned();
+    let config = entry_config(&own);
+    let children = entry_children(buf, es, ee, trak_handler(buf, s, e));
+    let mut ignored = Vec::new();
+    for &(k, cs, ce) in &children {
+        if Some(&k) != config && mp4_atom::Any::decode(&mut &buf[cs..ce]).is_err() {
+            buf[cs + 4..cs + 8].copy_from_slice(b"free");
+            ignored.push(String::from_utf8_lossy(&k).into_owned());
+        }
+    }
+    if !ignored.is_empty() {
+        if let Ok(t) = Trak::decode(&mut &buf[s..e]) {
+            warnings.push(format!(
+                "trak {n}: {} of sample entry {name} not decodable ({first}): ignored",
+                ignored.join(", ")
+            ));
+            return Ok(t);
+        }
+    }
+    if let (Some(at), Some(dv)) = (x.renamed_at.take(), x.dovi_fourcc.take()) {
+        buf[at..at + 4].copy_from_slice(&dv);
+        return match Trak::decode(&mut &buf[s..e]) {
+            Ok(t) => {
+                warnings.push(format!(
+                    "Dolby Vision sample entry not decodable as its standard entry ({first}): indexed as unknown"
+                ));
+                Ok(t)
+            }
+            Err(_) => Err(first),
+        };
+    }
+    let config_reads = config.is_some_and(|c| {
+        children
+            .iter()
+            .any(|&(k, cs, ce)| &k == c && mp4_atom::Any::decode(&mut &buf[cs..ce]).is_ok())
+    });
+    if config_reads && DECODED_VIDEO_ENTRIES.contains(&&own) {
+        return Err(first);
+    }
+    // AC-3 with a `dac3` mp4-atom rejects: configured from the first frame,
+    // as without one.
+    let placeholder = match &own {
+        b"ac-3" => UNCONFIGURED_AC3,
+        b"ec-3" => UNCONFIGURED_EAC3,
+        _ => UNDECODABLE_ENTRY,
+    };
+    buf[es + 4..es + 8].copy_from_slice(placeholder);
+    match Trak::decode(&mut &buf[s..e]) {
+        Ok(t) => {
+            warnings.push(format!(
+                "trak {n}: sample entry {name} not decodable ({first}): indexed as unknown"
+            ));
+            x.entry_fourcc = Some(own);
+            Ok(t)
+        }
+        Err(_) => {
+            buf[es + 4..es + 8].copy_from_slice(&own);
+            Err(first)
+        }
+    }
+}
+
+/// The child boxes of the sample entry at `es..ee` of a `moov` buffer, in a
+/// `trak` whose handler is `handler`: after a VisualSampleEntry's 78 bytes of
+/// fields, or an AudioSampleEntry's 28 (plus 16 or 36 in QuickTime's sound
+/// descriptions 1 and 2). None for other entries.
+fn entry_children(
+    moov: &[u8],
+    es: usize,
+    ee: usize,
+    handler: Option<[u8; 4]>,
+) -> Vec<([u8; 4], usize, usize)> {
+    let kind = moov.get(es + 4..es + 8).unwrap_or_default();
+    let visual = VISUAL_ENTRIES.iter().any(|k| &k[..] == kind) || handler == Some(*b"vide");
+    let fields = if visual {
+        78
+    } else if handler == Some(*b"soun") {
+        28 + match moov.get(es + 16..es + 18) {
+            Some([0, 1]) => 16,
+            Some([0, 2]) => 36,
+            _ => 0,
+        }
+    } else {
+        return Vec::new();
+    };
+    child_boxes(&moov[..ee], es + 8 + fields)
+}
+
+/// The big-endian `u32` `at` bytes into the box at `s..e` of `b`.
+fn box_u32(b: &[u8], (s, e): (usize, usize), at: usize) -> Option<u32> {
+    (s + at + 4 <= e).then(|| u32::from_be_bytes([b[s + at], b[s + at + 1], b[s + at + 2], b[s + at + 3]]))
+}
+
+/// The handler type of the `trak` at `s..e` of a `moov` buffer (`hdlr`:
+/// header, version/flags, pre_defined, then the type).
+fn trak_handler(moov: &[u8], s: usize, e: usize) -> Option<[u8; 4]> {
+    let hdlr = trak_box(moov, s, e, &[b"mdia", b"hdlr"])?;
+    box_u32(moov, hdlr, 16).map(u32::to_be_bytes)
+}
+
+/// Whether the `trak` at `s..e` of a `moov` buffer holds samples: its
+/// `stsz`/`stz2` counts some (header, version/flags, then a field before
+/// the count), or, in a fragmented file, whose fragments hold the samples,
+/// its `stsd` describes some.
+fn trak_has_samples(moov: &[u8], s: usize, e: usize, fragmented: bool) -> bool {
+    let field = |leaf: &[u8; 4], at: usize| {
+        trak_box(moov, s, e, &[b"mdia", b"minf", b"stbl", leaf])
+            .and_then(|b| box_u32(moov, b, at))
+            .unwrap_or(0)
+    };
+    field(b"stsz", 16) > 0 || field(b"stz2", 16) > 0 || (fragmented && field(b"stsd", 12) > 0)
 }
 
 /// A `ctts` offset as ffmpeg reads it: signed 32-bit, whatever the box's
@@ -1731,12 +1950,18 @@ fn stsd_boxes(moov: &[u8]) -> Vec<Option<(usize, usize)>> {
 
 /// The `stsd` box (start, end) of the `trak` at `s..e` of a `moov` buffer.
 fn trak_stsd(moov: &[u8], s: usize, e: usize) -> Option<(usize, usize)> {
+    trak_box(moov, s, e, &[b"mdia", b"minf", b"stbl", b"stsd"])
+}
+
+/// The first box (start, end) at `path` below the `trak` at `s..e` of a
+/// `moov` buffer (its containers have 32-bit headers: [`normalize_moov`]).
+fn trak_box(moov: &[u8], s: usize, e: usize, path: &[&[u8; 4]]) -> Option<(usize, usize)> {
     let mut level = vec![(s, e)];
-    for want in [b"mdia", b"minf", b"stbl", b"stsd"] {
+    for want in path {
         level = level
             .iter()
             .flat_map(|&(s, e)| child_boxes(&moov[..e], s + 8))
-            .filter(|c| &c.0 == want)
+            .filter(|c| &c.0 == *want)
             .map(|c| (c.1, c.2))
             .collect();
     }
@@ -2862,7 +3087,7 @@ mod tests {
         let bytes = std::fs::read(&clean_path).unwrap();
         let (at, size) = find_moov(&bytes).unwrap();
         type Edit = fn(&mut Bx);
-        let cases: [(&str, Edit, &str); 7] = [
+        let cases: [(&str, Edit, &str); 8] = [
             (
                 "hdlr names",
                 |m| {
@@ -2915,6 +3140,18 @@ mod tests {
                     })
                 },
                 "bytes past their entries",
+            ),
+            (
+                // As ffmpeg reads them: the fields, then bytes it skips.
+                "padded headers",
+                |m| {
+                    m.visit(&mut |_, b| {
+                        if matches!(&b.kind, b"mvhd" | b"tkhd" | b"mdhd" | b"vmhd" | b"smhd") {
+                            b.body.extend_from_slice(&[0; 4]);
+                        }
+                    })
+                },
+                "bytes past",
             ),
             (
                 "empty stbl",
@@ -3122,6 +3359,219 @@ mod tests {
         );
         // Parameter sets past the end: not a record to trim.
         assert_eq!(avcc_len(&base[..12]), None);
+    }
+
+    /// `bytes` (a [`synthetic_mp4`] clip) with its `moov` edited in place
+    /// (its fragments address samples from their `moof`), written beside
+    /// `like` as `name`.
+    fn edited(
+        bytes: &[u8],
+        like: &std::path::Path,
+        name: &str,
+        edit: impl FnOnce(&mut flux_test_media::moov::Bx),
+    ) -> std::path::PathBuf {
+        use flux_test_media::moov::{find_moov, Bx};
+        let (at, size) = find_moov(bytes).unwrap();
+        let mut m = Bx::parse(&bytes[at..at + size]);
+        edit(&mut m);
+        let path = like.with_file_name(name);
+        std::fs::write(
+            &path,
+            [&bytes[..at], &m.to_bytes()[..], &bytes[at + size..]].concat(),
+        )
+        .unwrap();
+        path
+    }
+
+    /// Sets a `trak`'s track_ID (a version-0 `tkhd`).
+    fn set_track_id(t: &mut flux_test_media::moov::Bx, id: u32) {
+        t.find_mut(b"tkhd").unwrap().body[12..16].copy_from_slice(&id.to_be_bytes());
+    }
+
+    /// A `trak` mp4-atom rejects is left out only when no client could play
+    /// it: one with no samples (an empty `stbl`, as found) or whose handler
+    /// is neither video nor sound, wherever it sits (the tracks after it
+    /// keep their stream numbers). A video or sound track with samples fails
+    /// the index with its cause: left out, HLS played the movie without its
+    /// sound and said nothing (review F1). An audio `mdhd` with 4 bytes past
+    /// its fields (which ffmpeg reads) is kept.
+    #[test]
+    fn only_tracks_no_client_could_play_are_left_out() {
+        let clean_path = synthetic_mp4(b"hvc1", None, aac_stereo());
+        let clean = crate::index::PlaybackIndex::build(&clean_path).unwrap();
+        let bytes = std::fs::read(&clean_path).unwrap();
+        let build = |name: &str, edit: fn(&mut flux_test_media::moov::Bx)| {
+            crate::index::PlaybackIndex::build(edited(&bytes, &clean_path, name, edit))
+        };
+
+        let padded = build("padded-mdhd.mp4", |m| {
+            let mdhd = m.traks_mut(b"soun").remove(0).find_mut(b"mdhd").unwrap();
+            mdhd.body.extend_from_slice(&[0; 4]);
+        })
+        .unwrap();
+        assert_eq!(padded.tracks, clean.tracks, "{:?}", padded.warnings);
+
+        // Before the clip's tracks: a sound track with an empty stbl, and a
+        // timecode track whose mdhd has a version mp4-atom doesn't know.
+        let first = build("left-out-first.mp4", |m| {
+            let soun = m.traks_mut(b"soun")[0].clone();
+            let mut empty = soun.clone();
+            set_track_id(&mut empty, 3);
+            empty.find_mut(b"stbl").unwrap().kids = Some(Vec::new());
+            let mut tmcd = soun;
+            set_track_id(&mut tmcd, 4);
+            tmcd.find_mut(b"hdlr").unwrap().body[8..12].copy_from_slice(b"tmcd");
+            tmcd.find_mut(b"mdhd").unwrap().body[0] = 2;
+            let kids = m.kids.as_mut().unwrap();
+            let at = kids.iter().position(|k| &k.kind == b"trak").unwrap();
+            kids.insert(at, tmcd);
+            kids.insert(at, empty);
+        })
+        .unwrap();
+        let shifted: Vec<_> = clean
+            .tracks
+            .iter()
+            .cloned()
+            .map(|mut t| {
+                t.index += 2;
+                t
+            })
+            .collect();
+        assert_eq!(first.tracks, shifted, "{:?}", first.warnings);
+        assert_eq!(first.keyframes, clean.keyframes);
+        let left_out: Vec<_> = first.warnings.iter().filter(|w| w.contains("left out")).collect();
+        assert_eq!(left_out.len(), 2, "{:?}", first.warnings);
+        assert!(left_out[0].contains("trak 0 (soun)") && left_out[0].contains("no samples"));
+        assert!(left_out[1].contains("trak 1 (tmcd)") && left_out[1].contains("not video or sound"));
+
+        // The sound track with samples (in its fragments), then the video.
+        let e = build("sound-rejected.mp4", |m| {
+            m.traks_mut(b"soun")[0].find_mut(b"mdhd").unwrap().body[0] = 2;
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("trak 1 (soun): unknown version: 2"), "{e}");
+        let e = build("video-rejected.mp4", |m| {
+            m.traks_mut(b"vide")[0].find_mut(b"tkhd").unwrap().body[0] = 2;
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("trak 0 (vide): unknown version: 2"), "{e}");
+    }
+
+    /// Appends `child` (a whole box) to the only sample entry of `stsd`.
+    fn push_entry_child(stsd: &mut flux_test_media::moov::Bx, child: &[u8]) {
+        let b = &mut stsd.body;
+        // stsd body: version/flags, entry_count, then the entry.
+        let size = u32::from_be_bytes(b[8..12].try_into().unwrap()) as usize;
+        assert_eq!(size, b.len() - 8, "one sample entry");
+        b.extend_from_slice(child);
+        let size = (size + child.len()) as u32;
+        b[8..12].copy_from_slice(&size.to_be_bytes());
+    }
+
+    /// An optional box of a sample entry mp4-atom rejects made the track an
+    /// unknown entry: Chrome transcoded a stream it plays as is (review F2;
+    /// ffmpeg reads each). A `pasp` with 4 bytes past its fields ends after
+    /// them (the pixel aspect holds); one that still fails (a `pasp` cut
+    /// short, a `colr` of a type mp4-atom doesn't know) is ignored.
+    #[test]
+    fn a_rejected_optional_entry_box_keeps_the_codec() {
+        use flux_test_media::moov::Bx;
+        let clean_path = synthetic_mp4(b"hvc1", None, aac_stereo());
+        let clean = crate::index::PlaybackIndex::build(&clean_path).unwrap();
+        let bytes = std::fs::read(&clean_path).unwrap();
+        let with_child = |name: &str, child: Vec<u8>| {
+            let path = edited(&bytes, &clean_path, name, |m| {
+                let stsd = m.traks_mut(b"vide").remove(0).find_mut(b"stsd").unwrap();
+                push_entry_child(stsd, &child);
+            });
+            crate::index::PlaybackIndex::build(&path).unwrap_or_else(|e| panic!("{name}: {e}"))
+        };
+        let pasp = |extra: &[u8]| {
+            let body = [&64u32.to_be_bytes()[..], &45u32.to_be_bytes(), extra].concat();
+            Bx::leaf(b"pasp", body).to_bytes()
+        };
+        let anamorphic = with_child("pasp.mp4", pasp(&[]));
+        assert_eq!(anamorphic.tracks[0].extra.sar, Some((64, 45)));
+        let padded = with_child("padded-pasp.mp4", pasp(&[0; 4]));
+        assert_eq!(padded.tracks, anamorphic.tracks, "{:?}", padded.warnings);
+        assert!(
+            padded.warnings.iter().any(|w| w.contains("bytes past")),
+            "{:?}",
+            padded.warnings
+        );
+        let caps = crate::presets::chrome_desktop();
+        let plan = |i: &crate::index::PlaybackIndex| {
+            crate::planner::plan(&i.to_probe_result(), &caps, &Default::default())
+        };
+        assert_eq!(plan(&padded), plan(&anamorphic));
+        assert!(
+            !matches!(plan(&padded).video, flux_core::VideoOp::Transcode { .. }),
+            "{:?}",
+            plan(&padded)
+        );
+        for (what, child) in [
+            ("short-pasp", Bx::leaf(b"pasp", 1u32.to_be_bytes()).to_bytes()),
+            (
+                "unknown-colr",
+                Bx::leaf(b"colr", *b"xxxx\0\x01\0\x01\0\x01").to_bytes(),
+            ),
+        ] {
+            let idx = with_child(&format!("{what}.mp4"), child);
+            assert_eq!(idx.tracks, clean.tracks, "{what}: {:?}", idx.warnings);
+            assert!(
+                idx.warnings
+                    .iter()
+                    .any(|w| w.contains("of sample entry hvc1 not decodable")),
+                "{what}: {:?}",
+                idx.warnings
+            );
+            assert_eq!(plan(&idx), plan(&clean), "{what}");
+        }
+    }
+
+    /// Text that is not UTF-8 is written as at most [`MAX_TEXT`] ASCII
+    /// bytes: a lossy decode tripled a legacy code page's bytes, and an
+    /// `hdlr` full of them made one index build peak at ~8× the `moov`
+    /// (review F3). An `hdlr` outside a track, which nothing reads, is
+    /// copied as is.
+    #[test]
+    fn text_is_never_larger_than_it_was() {
+        use flux_test_media::moov::{find_moov, Bx};
+        let clean_path = synthetic_mp4(b"hvc1", None, aac_stereo());
+        let clean = crate::index::PlaybackIndex::build(&clean_path).unwrap();
+        let bytes = std::fs::read(&clean_path).unwrap();
+        let (at, size) = find_moov(&bytes).unwrap();
+        let name = vec![0xFFu8; 1 << 20];
+        let hdlr = |h: &[u8]| Bx::leaf(b"hdlr", [&[0u8; 8][..], h, &[0; 12], &name, &[0]].concat());
+        let mut m = Bx::parse(&bytes[at..at + size]);
+        m.visit(&mut |_, b| {
+            if &b.kind == b"hdlr" {
+                *b = hdlr(&b.body[8..12]);
+            }
+        });
+        m.kids.as_mut().unwrap().push(hdlr(b"mdir"));
+        let raw = m.to_bytes();
+        let mut r = MoovRepairs::default();
+        let out = normalize_moov(&raw, &mut r);
+        assert_eq!(r.text, 2);
+        assert_eq!(out.len(), raw.len() - 2 * (name.len() - MAX_TEXT));
+        let file = [&bytes[..at], &raw[..], &bytes[at + size..]].concat();
+        let path = clean_path.with_file_name("long-names.mp4");
+        std::fs::write(&path, file).unwrap();
+        let idx = crate::index::PlaybackIndex::build(&path).unwrap();
+        assert_eq!(idx.tracks, clean.tracks);
+        // A long UTF-8 name is cut too; a short one is left alone.
+        let mut out = Vec::new();
+        let long = [&[0u8; 24][..], &[b'a'; 300], &[0]].concat();
+        text_box(b"hdlr", &long, 24, &mut r, &mut out);
+        assert_eq!(out.len(), 8 + 24 + MAX_TEXT + 1);
+        out.clear();
+        let short = [&[0u8; 24][..], "视频".as_bytes(), &[0]].concat();
+        text_box(b"hdlr", &short, 24, &mut r, &mut out);
+        assert_eq!(&out[8..], &short[..]);
+        assert_eq!(r.text, 2);
     }
 
     /// The normalized `moov` of a clean file is the file's own (no text to
