@@ -1,6 +1,6 @@
 # Release dry run: everything a release builds, nothing it publishes.
 #
-# Builds and packages flux-server for all four release targets (build.yml,
+# Builds and packages flux-server for all five release targets (build.yml,
 # with the smoke tests), adds the jellyfin-ffmpeg source and SHA256SUMS
 # (scripts/package/release-assets.sh, as release.yml does), and builds the
 # linux/amd64 + linux/arm64 image (.github/actions/flux-image, as docker.yml
@@ -99,13 +99,21 @@ jobs:
           {
             echo "### Truffle sidecar"
             echo
-            echo "| Package | bin/sidecar-slim |"
+            echo "| Package | bin/sidecar-slim (sidecar-slim.exe) |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          for f in dist/flux-*.tar.gz; do
-            name=$(basename "$f" .tar.gz)
-            tar -tzf "$f" > "$RUNNER_TEMP/list"
-            if grep -qx "$name/bin/sidecar-slim" "$RUNNER_TEMP/list"; then
+          for f in dist/flux-*.tar.gz dist/flux-*.zip; do
+            case "$f" in
+              *.zip)
+                name=$(basename "$f" .zip) sidecar=sidecar-slim.exe
+                python3 scripts/package/zip.py list "$f" > "$RUNNER_TEMP/list"
+                ;;
+              *)
+                name=$(basename "$f" .tar.gz) sidecar=bin/sidecar-slim
+                tar -tzf "$f" > "$RUNNER_TEMP/list"
+                ;;
+            esac
+            if grep -qx "$name/$sidecar" "$RUNNER_TEMP/list"; then
               echo "| $name | bundled |" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "| $name | **MISSING** |" >> "$GITHUB_STEP_SUMMARY"

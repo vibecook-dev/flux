@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Writes sidecar-NOTICE.txt, the licences of the Go code in Truffle's sidecar
-(bin/sidecar-slim), which package.sh appends to THIRD_PARTY_LICENSES.
+(bin/sidecar-slim, or sidecar-slim.exe on Windows), which package.sh appends
+to THIRD_PARTY_LICENSES.
 
 It takes the sidecars pinned for the truffle-core version in Cargo.lock
-(fetch-sidecar.sh, all four release targets). Each one records the Go
+(fetch-sidecar.sh, all five release targets). Each one records the Go
 modules it was built from, with their go.sum hashes (`go version -m`). For
 every module, this downloads the module's zip from the Go module proxy,
 checks it against that hash, and quotes each licence file in it. The Go
@@ -39,6 +40,7 @@ TARGETS = {
     "x86_64-apple-darwin": "macOS",
     "x86_64-unknown-linux-gnu": "Linux",
     "aarch64-unknown-linux-gnu": "Linux",
+    "x86_64-pc-windows-msvc": "Windows",
 }
 PROXY = "https://proxy.golang.org"
 RAW = "https://raw.githubusercontent.com"
@@ -129,7 +131,7 @@ def main() -> None:
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            sidecar = out / "sidecar-slim"
+            sidecar = out / ("sidecar-slim.exe" if os_name == "Windows" else "sidecar-slim")
             if not sidecar.is_file():
                 die(f"no pinned Truffle {version} sidecar for {target} (fetch-sidecar.sh --pin {version})")
             go, lines = build_info(sidecar.read_bytes())
@@ -181,14 +183,14 @@ def main() -> None:
     for source, file, text in texts:
         sections.setdefault(text, []).append(f"{source}: {file}")
 
-    darwin_only = {p for p, (_, _, oses) in modules.items() if oses == {"macOS"}}
-    linux_only = {p for p, (_, _, oses) in modules.items() if oses == {"Linux"}}
+    every_os = set(TARGETS.values())
     out = [
         "=" * 80,
-        "bin/sidecar-slim: Truffle's Tailscale sidecar",
+        "sidecar-slim: Truffle's Tailscale sidecar",
         "=" * 80,
         "",
-        f"bin/sidecar-slim is the unmodified sidecar binary from Truffle {version}",
+        "bin/sidecar-slim (sidecar-slim.exe in the Windows package) is the unmodified",
+        f"sidecar binary from Truffle {version}",
         f"(https://github.com/{TRUFFLE}/releases/tag/truffle-v{version}), built",
         f"with {', '.join(sorted(gos))} from Truffle's commit {revision[:7]}. It is a Go program built",
         "with Tailscale's tsnet. The Go modules compiled into it, as the binary",
@@ -200,7 +202,8 @@ def main() -> None:
         "Go modules:",
     ]
     for path in sorted(modules):
-        note = " (macOS only)" if path in darwin_only else " (Linux only)" if path in linux_only else ""
+        oses = modules[path][2]
+        note = "" if oses == every_os else f" ({' and '.join(sorted(oses))} only)"
         out.append(f"  {path} {modules[path][0]}{note}")
     for text, heads in sections.items():
         out += ["", RULE, *heads, RULE, "", text]

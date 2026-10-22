@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Downloads Truffle's Tailscale sidecar (`sidecar-slim`) for one release
-# target, so a packaged flux-server can run `--tailnet embedded` without a Go
-# toolchain. flux-server looks for `sidecar-slim` next to its own binary.
+# Downloads Truffle's Tailscale sidecar (`sidecar-slim`, `sidecar-slim.exe`
+# on Windows) for one release target, so a packaged flux-server can run
+# `--tailnet embedded` without a Go toolchain. flux-server looks for it next
+# to its own binary.
 #
 # The sidecar must come from the same Truffle release as the truffle-core
 # crate flux was built with, so the version is read from Cargo.lock (or given
@@ -21,7 +22,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../.." && pwd)
 sums="$here/truffle-sidecar.sha256"
 repo=${TRUFFLE_REPOSITORY:-vibecook-dev/truffle}
-targets="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
+targets="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc"
 
 target="" out="" version=${TRUFFLE_SIDECAR_VERSION:-} pin=""
 
@@ -44,6 +45,7 @@ asset_for() {
     x86_64-apple-darwin) echo tsnet-sidecar-darwin-amd64 ;;
     x86_64-unknown-linux-gnu) echo tsnet-sidecar-linux-amd64 ;;
     aarch64-unknown-linux-gnu) echo tsnet-sidecar-linux-arm64 ;;
+    x86_64-pc-windows-msvc) echo tsnet-sidecar-windows-amd64.exe ;;
     *) return 1 ;;
   esac
 }
@@ -81,7 +83,7 @@ while [ $# -gt 0 ]; do
     --out) out=${2:?}; shift 2 ;;
     --version) version=${2:?}; shift 2 ;;
     --pin) pin=${2:?}; shift 2 ;;
-    -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -132,7 +134,10 @@ esac
 got=$(sha256_of "$work/$asset")
 [ "$got" = "$want" ] || die "truffle-v$version/$asset: SHA-256 $got, expected $want"
 
+# flux-server looks for sidecar-slim.exe on Windows.
+file=sidecar-slim
+case "$target" in *-windows-*) file=sidecar-slim.exe ;; esac
 mkdir -p "$out"
-cp "$work/$asset" "$out/sidecar-slim"
-chmod 0755 "$out/sidecar-slim"
-echo "$out/sidecar-slim (Truffle $version, $asset, sha256 $got)"
+cp "$work/$asset" "$out/$file"
+chmod 0755 "$out/$file"
+echo "$out/$file (Truffle $version, $asset, sha256 $got)"

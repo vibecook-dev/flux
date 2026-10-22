@@ -1,8 +1,8 @@
 # Builds flux release packages: the web bundle once, THIRD_PARTY_LICENSES
 # once, then flux-server per target, packaged by scripts/package/package.sh as
-# flux-<version>-<target>.tar.gz. Called by release.yml (all targets) and
-# docker.yml (Linux only). Uploads one artifact per target, named
-# package-<target>, holding that tarball.
+# flux-<version>-<target>.tar.gz (.zip for Windows). Called by release.yml
+# (all targets) and docker.yml (Linux only). Uploads one artifact per target,
+# named package-<target>, holding that package.
 #
 # No caches: these packages are published (releases, the :edge image), so
 # they are built from the lockfiles alone, never from a cache another
@@ -125,12 +125,14 @@ jobs:
         run: |
           # Linux builds run on Ubuntu 22.04 runners, so the binaries need
           # glibc 2.35 or newer. macOS x86_64 is cross-compiled on arm64 and
-          # smoke-tested there under Rosetta 2.
+          # smoke-tested there under Rosetta 2. Windows is built with MSVC and
+          # packaged as a .zip.
           all='[
             {"target":"aarch64-apple-darwin","os":"macos-15","native":true},
             {"target":"x86_64-apple-darwin","os":"macos-15","native":false,"rosetta":true},
             {"target":"x86_64-unknown-linux-gnu","os":"ubuntu-22.04","native":true},
-            {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-22.04-arm","native":true}
+            {"target":"aarch64-unknown-linux-gnu","os":"ubuntu-22.04-arm","native":true},
+            {"target":"x86_64-pc-windows-msvc","os":"windows-2025","native":true}
           ]'
           case "$TARGETS" in
             all) include=$(jq -c . <<< "$all") ;;
@@ -149,12 +151,25 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Git Bash on Windows, so every target runs the same scripts.
+    defaults:
+      run:
+        shell: bash
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       TARGET: ${{ matrix.target }}
+      # File names on Windows: flux-server.exe, sidecar-slim.exe, a .zip.
+      EXE: ${{ contains(matrix.target, '-windows-') && '.exe' || '' }}
+      PACKAGE: flux-${{ needs.plan.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, '-windows-') && 'zip' || 'tar.gz' }}
       # Distributed binaries: no debug info, symbols kept for backtraces.
       CARGO_PROFILE_RELEASE_DEBUG: "0"
       CARGO_PROFILE_RELEASE_STRIP: debuginfo
+      # Windows: the C runtime linked into flux-server.exe. Windows doesn't
+      # include vcruntime140.dll (the Visual C++ Redistributable does), so a
+      # dynamically linked exe fails to start on a fresh install. The runner
+      # has the DLL, so the smoke test reads the imports instead
+      # (pe-imports.py). Cargo reads this only when building for that target.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       # jemalloc bakes in the page size. 64 KiB covers 4, 16 and 64 KiB
       # kernels (Raspberry Pi 5 and Asahi use 16 KiB); tikv-jemalloc-sys reads
@@ -175,7 +190,7 @@ jobs:
           REQUIRE_SIDECAR: ${{ inputs.require-sidecar }}
         run: |
           scripts/package/fetch-sidecar.sh --target "$TARGET" --out sidecar
-          if [ "$REQUIRE_SIDECAR" = true ] && [ ! -f sidecar/sidecar-slim ]; then
+          if [ "$REQUIRE_SIDECAR" = true ] && [ ! -f "sidecar/sidecar-slim$EXE" ]; then
             echo "::error title=No Truffle sidecar::A release must bundle Truffle's sidecar; see the warning above and docs/RELEASING.md."
             exit 1
           fi
@@ -192,9 +207,9 @@ jobs:
       - name: Package
         run: |
           args=(--target "$TARGET" --version "$VERSION"
-                --bin "$CARGO_TARGET_DIR/$TARGET/release/flux-server"
+                --bin "$CARGO_TARGET_DIR/$TARGET/release/flux-server$EXE"
                 --web web-dist --third-party THIRD_PARTY_LICENSES --out dist)
-          if [ -f sidecar/sidecar-slim ]; then args+=(--sidecar sidecar/sidecar-slim); fi
+          if [ -f "sidecar/sidecar-slim$EXE" ]; then args+=(--sidecar "sidecar/sidecar-slim$EXE"); fi
           scripts/package/package.sh "${args[@]}"
       # The x86_64 macOS package runs under Rosetta 2 on the arm64 runner.
       # Show that Rosetta translates here, installing it if the runner image
@@ -212,22 +227,28 @@ jobs:
             echo "::error::arch -x86_64 does not run under Rosetta 2 on this runner."
             exit 1
           fi
+      # On Windows the test stops flux with Ctrl-C, then Ctrl-Break, as a
+      # service wrapper would (scripts/package/windows-console.ps1).
       - name: Smoke test${{ matrix.rosetta && ' (Rosetta 2)' || '' }}
         if: matrix.native || matrix.rosetta
-        run: scripts/package/smoke-test.sh "dist/flux-$VERSION-$TARGET.tar.gz" --port 18097
+        run: scripts/package/smoke-test.sh "dist/$PACKAGE" --port 18097
       - name: Summary
         run: |
           {
             echo "### flux-$VERSION-$TARGET"
             echo '```'
             ls -l dist/
-            tar -tzf "dist/flux-$VERSION-$TARGET.tar.gz" | grep -v '/share/flux/web/.' || true
+            if [ -n "$EXE" ]; then
+              python scripts/package/zip.py list "dist/$PACKAGE" | grep -v '/web/.' || true
+            else
+              tar -tzf "dist/$PACKAGE" | grep -v '/share/flux/web/.' || true
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-${{ matrix.target }}
-          path: dist/flux-${{ env.VERSION }}-${{ matrix.target }}.tar.gz
+          path: dist/${{ env.PACKAGE }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
