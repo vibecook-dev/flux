@@ -14,6 +14,7 @@ import { setTheme, useTheme, type ThemeSetting } from './theme';
 
 function libraryIcon(l: Library): IconName {
   if (l.kind === 'shows') return 'tv';
+  if (l.kind === 'videos') return 'folder';
   return l.scan.state === 'unavailable' || l.name.toLowerCase().includes('archive') ? 'archive' : 'film';
 }
 

@@ -38,6 +38,8 @@ const TYPES = {
   Events: 'FluxEvent[]',
   NameGuess: 'NameGuess',
   ItemsParams: 'ItemsParams',
+  FolderParams: 'FolderParams',
+  FolderPage: 'FolderPage',
   PlanPreview: 'PlanPreview',
   MarkWatched: 'MarkWatched',
   TailnetInfo: 'TailnetInfo',

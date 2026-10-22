@@ -11,13 +11,15 @@ import { formatAgo, formatCount, pathLabel } from '../api/format';
 import { refreshLibrary } from '../api/library-list';
 import { keys, useLibraries, useServer, useTailnet } from '../api/queries';
 import { invalidateQueries, setQueryData } from '../api/query';
-import type { Library, LibraryKind, ScanStatus } from '../api/types';
+import { LIBRARY_KINDS, type Library, type LibraryKind, type ScanStatus } from '../api/types';
 import { Link } from '../app/Link';
 import { Icon } from '../components/Icon';
 import styles from './Admin.module.css';
 import { STATE_LABEL, applyScanProgress, lastScanLine, metadataNote, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
 
-const KIND_LABEL: Record<LibraryKind, string> = { movies: 'Films', shows: 'Shows', mixed: 'Mixed' };
+const KIND_LABEL: Record<LibraryKind, string> = { movies: 'Films', shows: 'Shows', mixed: 'Mixed', videos: 'Videos' };
+/** The add-library choices. `videos`: home videos and clips, one per file, by folder, never matched. */
+const KIND_CHOICE: Record<LibraryKind, string> = { movies: 'Films', shows: 'TV shows', mixed: 'Both', videos: 'Home videos & clips' };
 
 interface Rate {
   /** performance.now() and wall-clock time when the last progress event arrived. */
@@ -169,10 +171,10 @@ function AddLibraryDialog({ open, onClose }: { open: boolean; onClose: () => voi
         </label>
         <fieldset className={styles.kindPick}>
           <legend>What’s in it</legend>
-          {(['movies', 'shows', 'mixed'] as const).map((k) => (
+          {LIBRARY_KINDS.map((k) => (
             <label key={k}>
               <input type="radio" name="kind" checked={kind === k} onChange={() => setKind(k)} />
-              <span>{k === 'movies' ? 'Films' : k === 'shows' ? 'TV shows' : 'Both'}</span>
+              <span>{KIND_CHOICE[k]}</span>
             </label>
           ))}
         </fieldset>

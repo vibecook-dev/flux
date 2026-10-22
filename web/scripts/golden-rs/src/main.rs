@@ -384,7 +384,7 @@ fn main() {
             Aac, Ac3, Eac3, TrueHd, Dts, Flac, Opus, Vorbis, Mp3, Mp2, Pcm, Alac,
             Subrip, Ass, Ssa, WebVtt, MovText, Pgs, VobSub, DvbSub, Other),
         "HdrFormat": variants!(HdrFormat: Sdr, Hdr10, Hdr10Plus, Hlg, DolbyVision),
-        "LibraryKind": variants!(LibraryKind: Movies, Shows, Mixed),
+        "LibraryKind": variants!(LibraryKind: Movies, Shows, Mixed, Videos),
         "GuessKind": variants!(GuessKind: Movie, Episode, Extra, Sample, Unknown),
         "ExtraKind": variants!(ExtraKind: Trailer, Featurette, BehindTheScenes, DeletedScene, Interview, Short, Scene, Other),
         "DeliveryFormat": variants!(DeliveryFormat: ProgressiveFile, HlsFmp4, HlsTs),
@@ -394,6 +394,7 @@ fn main() {
         "ItemKind": variants!(ItemKind: Movie, Show, Season, Episode, Extra),
         "ArtSource": variants!(ArtSource: Provider, Local, Frame, Generated),
         "ItemSort": variants!(ItemSort: Title, TitleDesc, Year, YearDesc, Added, AddedDesc),
+        "FolderSort": variants!(FolderSort: Title, TitleDesc, Date, DateDesc),
         "ItemFilter": variants!(ItemFilter: Unwatched, InProgress, Uhd, Hdr),
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
@@ -558,6 +559,30 @@ fn main() {
             limit: Some(100),
             sort: Some(ItemSort::AddedDesc),
             filter: Some(ItemFilter::Uhd),
+        }),
+        "FolderParams": v(&FolderParams {
+            folder: Some("3/2019/Trip".into()),
+            cursor: Some("t696d672030303030303031.12".into()),
+            limit: Some(100),
+            sort: Some(FolderSort::DateDesc),
+        }),
+        "FolderPage": v(&FolderPage {
+            at: FolderRef { folder: "3/2019/Trip".into(), name: "Trip".into() },
+            parents: vec![
+                FolderRef { folder: String::new(), name: "Home videos".into() },
+                FolderRef { folder: "3/2019".into(), name: "2019".into() },
+            ],
+            folders: vec![FolderEntry { folder: "3/2019/Trip/Day 2".into(), name: "Day 2".into(), item_count: 4 }],
+            items: vec![ItemSummary {
+                title: "IMG 0001".into(),
+                year: None,
+                poster: None,
+                progress: None,
+                badges: vec![],
+                ..summary()
+            }],
+            next: Some("e1760000000000~696d672030303030303031.12".into()),
+            total: 2,
         }),
         "ItemDetail": v(&detail),
         "Home": v(&Home {

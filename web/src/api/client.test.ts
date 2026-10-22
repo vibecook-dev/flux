@@ -181,6 +181,22 @@ describe('flux client against the mock server', () => {
     expect((await client.libraryItems(1, { limit: 1, filter: '4k' })).total).toBeLessThan(all.total ?? 0);
   });
 
+  it('GET /libraries/{id}/folders browses by folder', async () => {
+    const top = await client.libraryFolders(1);
+    expect(top.at).toEqual({ folder: '', name: 'Movies' });
+    expect(top.parents).toEqual([]);
+    const counted = top.folders.reduce((n, f) => n + f.item_count, 0) + top.total;
+    expect(counted).toBeGreaterThan(0);
+    const first = top.folders[0];
+    if (first) {
+      const inside = await client.libraryFolders(1, { folder: first.folder, sort: '-date', limit: 1 });
+      expect(inside.at).toEqual({ folder: first.folder, name: first.name });
+      expect(inside.parents).toEqual([top.at]);
+      expect(inside.items.length).toBeLessThanOrEqual(1);
+    }
+    await expect(client.libraryFolders(1, { folder: '1/No such folder' })).rejects.toMatchObject({ status: 404 });
+  });
+
   it('POST /plan previews /play without a session', async () => {
     const [dune] = await client.search('Dune: Part Two');
     const req = { item_id: dune.id, asset_id: null, caps: chromeCaps, audio_track: null, subtitle_track: null, start_ms: null };
