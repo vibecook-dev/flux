@@ -13,7 +13,8 @@
 //!   made with ffmpeg's lavfi on first use and cached in the temp dir, so
 //!   CI exercises probe → index → HLS segment → transcode on real files.
 //!   Skipped (with the reason) when ffmpeg or the encoder a clip needs is
-//!   missing.
+//!   missing. [`moov::with_moov`] rewrites an MP4/MOV clip's `moov` into
+//!   the broken shapes real files have.
 //!
 //! ffmpeg and ffprobe come from `FLUX_FFMPEG` / `FLUX_FFPROBE`, else `PATH`,
 //! else the usual Homebrew and system locations ([`ffmpeg`], [`ffprobe`]).
@@ -25,6 +26,7 @@ use std::sync::{Once, OnceLock};
 use std::time::{Duration, Instant};
 
 mod mkv_lace;
+pub mod moov;
 
 /// The variable naming the real-media corpus directory.
 pub const MEDIA_VAR: &str = "FLUX_TEST_MEDIA";

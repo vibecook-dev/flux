@@ -83,7 +83,8 @@ pub struct ScanConfig {
     /// followed (the real path is cataloged). See docs/prototype/scan.md
     /// "Symlinks".
     pub follow_external_links: bool,
-    /// Run ffprobe for files flux-probe can't read (`UnknownFormat`).
+    /// Run ffprobe for files flux-probe can't read (`UnknownFormat`) or
+    /// finds malformed (`ProbeError::wants_ffprobe`).
     pub ffprobe_fallback: bool,
     /// The ffprobe binary for that fallback. The server passes the one it
     /// resolved (`--ffprobe`, its config, Homebrew); the default is

@@ -376,7 +376,7 @@ fn process(ctx: &RootCtx, item: WorkItem) -> Outcome {
     let later = cfg.fingerprint && need_fp && facts.fp128.is_none();
     let probe = match probe_result {
         Ok(r) => ProbeUpdate::Probed(Box::new(r)),
-        Err(ProbeError::UnknownFormat { .. }) if cfg.ffprobe_fallback => {
+        Err(e) if cfg.ffprobe_fallback && e.wants_ffprobe() => {
             return Outcome::Ffprobe(Box::new(FfprobeTask {
                 facts,
                 siblings,

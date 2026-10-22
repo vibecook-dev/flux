@@ -23,7 +23,7 @@ impl ContainerHint {
         let c = match ext.to_ascii_lowercase().as_str() {
             "mkv" | "mka" | "mks" | "mk3d" => Container::Matroska,
             "webm" => Container::WebM,
-            "mp4" | "m4v" | "m4a" | "3gp" => Container::Mp4,
+            "mp4" | "m4v" | "m4a" | "3gp" | "f4v" => Container::Mp4,
             "mov" | "qt" => Container::Mov,
             "ts" | "mts" | "tp" | "trp" => Container::MpegTs,
             "m2ts" | "m2t" => Container::M2ts,
@@ -228,6 +228,7 @@ mod tests {
     #[test]
     fn hint() {
         assert_eq!(ContainerHint::from_extension("M2TS").0, Some(Container::M2ts));
+        assert_eq!(ContainerHint::from_extension("f4v").0, Some(Container::Mp4));
         assert_eq!(
             ContainerHint::from_path(Path::new("a/b.txt")),
             ContainerHint::NONE

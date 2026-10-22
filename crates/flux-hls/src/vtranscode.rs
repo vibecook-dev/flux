@@ -648,7 +648,13 @@ impl FragReader {
             }
             match &kind {
                 b"moov" => {
-                    let moov = mp4_atom::Moov::decode(&mut &self.buf[pos..pos + size])
+                    // As a source's: ffmpeg copies text it is given (titles,
+                    // handler names) in whatever code page it came in.
+                    let bytes = crate::index::mp4::normalize_moov(
+                        &self.buf[pos..pos + size],
+                        &mut Default::default(),
+                    );
+                    let moov = mp4_atom::Moov::decode(&mut bytes.as_slice())
                         .map_err(|e| HlsError::Ffmpeg(format!("encoder moov: {e}")))?;
                     let video = moov
                         .trak

@@ -70,6 +70,11 @@ fn box_header(ctx: &Ctx<'_>, off: u64, limit: u64) -> PResult<BoxHdr> {
 
 /// Box headers of the children of `parent` (starting `skip` bytes into its
 /// body). In free mode, stops at the first header that is not cached.
+///
+/// A child that overruns its parent (or whose size is below its header's)
+/// ends the walk: it and whatever follows are junk, as ffmpeg treats them
+/// (it clamps such a box to its parent and skips it as unknown). The
+/// children before it are kept, and the junk is noted ([`Ctx::note_junk`]).
 fn child_boxes(ctx: &Ctx<'_>, parent: &BoxHdr, skip: u64, paid: bool) -> PResult<Vec<BoxHdr>> {
     let mut out = Vec::new();
     let mut pos = parent.data + skip;
@@ -77,13 +82,14 @@ fn child_boxes(ctx: &Ctx<'_>, parent: &BoxHdr, skip: u64, paid: bool) -> PResult
         if !paid && ctx.store().get(pos, (parent.end - pos).min(16)).is_none() {
             break;
         }
-        let h = box_header(ctx, pos, parent.end)?;
-        if h.end > parent.end {
-            return malformed(
-                ctx.container,
-                format!("box {} overruns its parent", fourcc_str(h.ty)),
-            );
-        }
+        let h = match box_header(ctx, pos, parent.end) {
+            Ok(h) if h.end <= parent.end => h,
+            Ok(_) | Err(PErr::Fail(crate::ProbeError::Malformed { .. })) => {
+                ctx.note_junk(parent.off);
+                break;
+            }
+            Err(e) => return Err(e),
+        };
         out.push(h);
         if h.end <= pos {
             break;
@@ -272,6 +278,17 @@ pub(crate) fn parse(ctx: &mut Ctx<'_>) -> PResult<Parsed> {
         }
     }
 
+    if ctx.junk() > 0 {
+        if traks.is_empty() {
+            return malformed(ctx.container, "moov holds junk and no track before it");
+        }
+        ctx.warn(format!(
+            "{} box{} overran {} parent: ignored, with what followed",
+            ctx.junk(),
+            if ctx.junk() == 1 { "" } else { "es" },
+            if ctx.junk() == 1 { "its" } else { "their" }
+        ));
+    }
     if let (Some(d), true) = (movie_duration, movie_timescale > 0) {
         if d > 0 && d != u64::from(u32::MAX) && d != u64::MAX {
             r.duration_ms = Some((d as f64 * 1000.0 / movie_timescale as f64).round() as u64);
