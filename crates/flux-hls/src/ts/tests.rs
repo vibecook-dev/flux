@@ -154,7 +154,10 @@ async fn h264_aac_ts_is_indexed_and_remuxed() {
     let plan = engine.plan(&asset, &presets::chrome_desktop(), &PlanPrefs::default());
     assert!(matches!(plan.video, VideoOp::Copy { .. }), "{plan:?}");
     assert_eq!(plan.audio[0].op, AudioOp::Copy);
-    assert!(!plan.reasons.contains(&flux_core::Reason::NoIndex));
+    assert!(!plan
+        .reasons
+        .iter()
+        .any(|r| matches!(r, flux_core::Reason::NoIndex { .. })));
     assert_eq!(check_video(&engine, &asset, &plan).await, 144);
     let k = AudioKey::from_plan(&plan.audio[0]);
     let all = asset.audio_frames(1, i64::MIN, i64::MAX).unwrap();

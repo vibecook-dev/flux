@@ -156,9 +156,17 @@ pub fn codec_of(name: &str) -> Codec {
         "vp8" => Codec::Vp8,
         "mpeg2video" => Codec::Mpeg2Video,
         "mpeg4" => Codec::Mpeg4Part2,
+        // WMV 9 (`wmv3`) is VC-1 Simple/Main profile.
         "vc1" | "wmv3" => Codec::Vc1,
         "prores" => Codec::ProRes,
         "mjpeg" => Codec::Mjpeg,
+        "mpeg1video" => Codec::Mpeg1Video,
+        "wmv1" => Codec::Wmv1,
+        "wmv2" => Codec::Wmv2,
+        "msmpeg4v1" | "msmpeg4v2" | "msmpeg4v3" | "msmpeg4" => Codec::Msmpeg4,
+        "vp6" | "vp6f" | "vp6a" => Codec::Vp6,
+        "flv1" => Codec::Flv1,
+        "rv10" | "rv20" | "rv30" | "rv40" | "rv60" => Codec::RealVideo,
         "aac" | "aac_latm" => Codec::Aac,
         "ac3" => Codec::Ac3,
         "eac3" => Codec::Eac3,
@@ -170,6 +178,9 @@ pub fn codec_of(name: &str) -> Codec {
         "mp3" => Codec::Mp3,
         "mp2" => Codec::Mp2,
         "alac" => Codec::Alac,
+        "wmav1" | "wmav2" => Codec::Wma,
+        "wmapro" => Codec::WmaPro,
+        "cook" | "sipr" | "ra_144" | "ra_288" => Codec::RealAudio,
         n if n.starts_with("pcm_") => Codec::Pcm,
         "subrip" | "srt" => Codec::Subrip,
         "ass" => Codec::Ass,
@@ -181,6 +192,58 @@ pub fn codec_of(name: &str) -> Codec {
         "dvb_subtitle" => Codec::DvbSub,
         _ => Codec::Other,
     }
+}
+
+/// The container of an ffprobe `format_name`; `ext` (the file extension)
+/// disambiguates what ffprobe lumps together (MKV/WebM, TS/M2TS).
+pub fn container_of(format_name: &str, ext: &str) -> Container {
+    let ext = ext.to_ascii_lowercase();
+    match format_name {
+        f if f.contains("matroska") => {
+            if ext == "webm" {
+                Container::WebM
+            } else {
+                Container::Matroska
+            }
+        }
+        // `mov` brands are told apart by the caller (`major_brand`).
+        f if f.starts_with("mov") => Container::Mp4,
+        "mpegts" => {
+            if matches!(ext.as_str(), "m2ts" | "mts" | "m2t") {
+                Container::M2ts
+            } else {
+                Container::MpegTs
+            }
+        }
+        "avi" => Container::Avi,
+        "asf" => Container::Asf,
+        "flv" | "live_flv" => Container::Flv,
+        "rm" => Container::RealMedia,
+        // `mpeg` is ffprobe's MPEG-PS demuxer (VOB and MPEG-1 system
+        // streams too); `vob` names the same thing in some builds.
+        "mpeg" | "vob" => Container::MpegPs,
+        _ => Container::Unknown,
+    }
+}
+
+/// The highest frame rate taken at its word: above it a rate is a timebase,
+/// not a frame rate. ASF reports `r_frame_rate` 1000/1 (its millisecond
+/// clock) for streams with uneven timestamps, MJPEG in ASF 90000/1.
+pub const MAX_PLAUSIBLE_FPS: f64 = 240.0;
+
+/// A stream's frame rate from ffprobe: `r_frame_rate` (the exact base rate),
+/// else `avg_frame_rate` when `r_frame_rate` is a timebase (see
+/// [`MAX_PLAUSIBLE_FPS`]), else none: a rate of 1000 fps gave transcodes an
+/// H.264 level no encoder accepts.
+pub fn frame_rate_of(r_frame_rate: Option<&str>, avg_frame_rate: Option<&str>) -> Option<Rational> {
+    let sane = |r: &Rational| {
+        let f = r.as_f64();
+        f > 0.0 && f <= MAX_PLAUSIBLE_FPS
+    };
+    r_frame_rate
+        .and_then(rational)
+        .filter(sane)
+        .or_else(|| avg_frame_rate.and_then(rational).filter(sane))
 }
 
 fn primaries_code(n: &str) -> Option<u8> {
@@ -372,30 +435,16 @@ fn aspect(x: &str) -> Option<Rational> {
 pub fn from_json(v: &Value, ext: &str) -> ProbeResult {
     let fmt = v.get("format").cloned().unwrap_or(Value::Null);
     let fname = s(&fmt, "format_name").unwrap_or("");
-    let ext = ext.to_ascii_lowercase();
-    let container = if fname.contains("matroska") {
-        if ext == "webm" {
-            Container::WebM
-        } else {
-            Container::Matroska
+    let container = match container_of(fname, ext) {
+        Container::Mp4 => {
+            let brand = fmt.get("tags").and_then(|t| s(t, "major_brand")).unwrap_or("");
+            if brand.trim() == "qt" {
+                Container::Mov
+            } else {
+                Container::Mp4
+            }
         }
-    } else if fname.starts_with("mov") {
-        let brand = fmt.get("tags").and_then(|t| s(t, "major_brand")).unwrap_or("");
-        if brand.trim() == "qt" {
-            Container::Mov
-        } else {
-            Container::Mp4
-        }
-    } else if fname == "mpegts" {
-        if matches!(ext.as_str(), "m2ts" | "mts" | "m2t") {
-            Container::M2ts
-        } else {
-            Container::MpegTs
-        }
-    } else if fname == "avi" {
-        Container::Avi
-    } else {
-        Container::Unknown
+        c => c,
     };
     let mut r = empty_result(container);
     r.duration_ms = num(&fmt, "duration").map(|d| (d * 1000.0).round() as u64);
@@ -441,7 +490,7 @@ pub fn from_json(v: &Value, ext: &str) -> ProbeResult {
                 t.height = num(st, "height").map(|h| h as u32);
                 t.sample_aspect_ratio = s(st, "sample_aspect_ratio").and_then(aspect);
                 t.bit_depth = bit_depth_of(st);
-                t.frame_rate = s(st, "r_frame_rate").and_then(rational);
+                t.frame_rate = frame_rate_of(s(st, "r_frame_rate"), s(st, "avg_frame_rate"));
                 t.interlaced = s(st, "field_order").map(|f| f != "progressive" && f != "unknown");
                 t.color = color_of(st);
                 let mut hdr = HdrInfo {
@@ -514,5 +563,119 @@ mod tests {
         assert_eq!(aspect("N/A"), None);
         assert_eq!(r.tracks[1].channels, Some(6));
         assert_eq!(r.tracks[1].language.as_deref(), Some("eng"));
+    }
+
+    /// The old containers and their codecs keep their names (they were all
+    /// `unknown`/`other`), and a millisecond timebase is not a frame rate.
+    #[test]
+    fn old_formats_are_named() {
+        let doc = |format: &str, video: &str, audio: &str, r: &str, avg: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"streams":[{{"index":0,"codec_name":"{video}","codec_type":"video","width":1280,"height":720,
+                    "r_frame_rate":"{r}","avg_frame_rate":"{avg}"}},
+                   {{"index":1,"codec_name":"{audio}","codec_type":"audio","channels":2,"sample_rate":"44100"}}],
+                   "format":{{"format_name":"{format}","duration":"60.0"}}}}"#
+            ))
+            .unwrap()
+        };
+        let cases = [
+            (
+                "asf",
+                "wmv1",
+                "wmav2",
+                "wmv",
+                Container::Asf,
+                Codec::Wmv1,
+                Codec::Wma,
+            ),
+            (
+                "asf",
+                "wmv2",
+                "wmapro",
+                "wmv",
+                Container::Asf,
+                Codec::Wmv2,
+                Codec::WmaPro,
+            ),
+            (
+                "asf",
+                "wmv3",
+                "wmav2",
+                "wmv",
+                Container::Asf,
+                Codec::Vc1,
+                Codec::Wma,
+            ),
+            (
+                "flv",
+                "vp6f",
+                "mp3",
+                "flv",
+                Container::Flv,
+                Codec::Vp6,
+                Codec::Mp3,
+            ),
+            (
+                "flv",
+                "flv1",
+                "mp3",
+                "flv",
+                Container::Flv,
+                Codec::Flv1,
+                Codec::Mp3,
+            ),
+            (
+                "rm",
+                "rv40",
+                "cook",
+                "rmvb",
+                Container::RealMedia,
+                Codec::RealVideo,
+                Codec::RealAudio,
+            ),
+            (
+                "mpeg",
+                "mpeg1video",
+                "mp2",
+                "mpg",
+                Container::MpegPs,
+                Codec::Mpeg1Video,
+                Codec::Mp2,
+            ),
+            (
+                "mpeg",
+                "mpeg2video",
+                "ac3",
+                "vob",
+                Container::MpegPs,
+                Codec::Mpeg2Video,
+                Codec::Ac3,
+            ),
+            (
+                "avi",
+                "msmpeg4v3",
+                "mp3",
+                "avi",
+                Container::Avi,
+                Codec::Msmpeg4,
+                Codec::Mp3,
+            ),
+        ];
+        for (format, video, audio, ext, c, vc, ac) in cases {
+            let r = from_json(&doc(format, video, audio, "30000/1001", "30000/1001"), ext);
+            assert_eq!(r.container, c, "{format}");
+            assert_eq!(
+                (r.tracks[0].codec, r.tracks[1].codec),
+                (vc, ac),
+                "{video}/{audio}"
+            );
+        }
+        // ASF's 1000/1 clock: the average rate, else none.
+        let r = from_json(&doc("asf", "wmv1", "wmav2", "1000/1", "25/1"), "wmv");
+        assert_eq!(r.tracks[0].frame_rate, Some(Rational { num: 25, den: 1 }));
+        let r = from_json(&doc("asf", "wmv1", "wmav2", "1000/1", "0/0"), "wmv");
+        assert_eq!(r.tracks[0].frame_rate, None);
+        let r = from_json(&doc("asf", "mjpeg", "pcm_s16le", "90000/1", "0/0"), "asf");
+        assert_eq!(r.tracks[0].frame_rate, None);
     }
 }

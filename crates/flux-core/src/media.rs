@@ -12,7 +12,12 @@ use serde::{Deserialize, Serialize};
 /// Bump when the probe's output changes in a way that should trigger re-probing.
 ///
 /// v2: [`Track::sample_aspect_ratio`].
-pub const PROBE_VERSION: u16 = 2;
+/// v3: ASF, FLV, RealMedia and MPEG-PS containers and the codecs only they
+///     carry (WMV 7/8, VP6, Sorenson Spark, RealVideo, MS MPEG-4, MPEG-1,
+///     WMA, RealAudio) are named (were `unknown`/`other`); FLV and
+///     incomplete ASF durations come from the file's last packets; AVI
+///     OpenDML durations from the video stream's length, not `dmlh`.
+pub const PROBE_VERSION: u16 = 3;
 
 /// File extensions (lower case, no dot) of video files a scanner hands to
 /// flux-probe and flux-names. This is the one list: `flux_probe::MEDIA_EXTENSIONS`
@@ -69,7 +74,11 @@ pub fn subtitle_file_codec(ext: &str) -> Option<Codec> {
 
 /// Container formats flux can identify. Always sniffed from magic bytes, never
 /// trusted from the file extension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// The in-process probe reads Matroska, MP4/MOV, MPEG-TS and AVI; ASF, FLV,
+/// RealMedia and MPEG-PS are named from ffprobe's `format_name` (the scan's
+/// fallback and the playback index of containers flux doesn't parse).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Container {
     Matroska,
@@ -80,12 +89,23 @@ pub enum Container {
     /// Blu-ray BDAV MPEG-TS (192-byte packets).
     M2ts,
     Avi,
+    /// Advanced Systems Format (`.wmv`, `.asf`).
+    Asf,
+    /// Flash Video.
+    Flv,
+    /// RealMedia (`.rm`, `.rmvb`).
+    RealMedia,
+    /// MPEG program stream (`.mpg`, `.mpeg`, `.vob`), MPEG-1 system streams
+    /// included.
+    MpegPs,
+    #[default]
     Unknown,
 }
 
 impl Container {
-    /// Short name for people: "MKV", "WebM", "MP4", "MOV", "MPEG-TS", "M2TS", "AVI".
-    /// Used by [`crate::Reason::explain`]; the web client mirrors it.
+    /// Short name for people: "MKV", "WebM", "MP4", "MOV", "MPEG-TS", "M2TS",
+    /// "AVI", "ASF", "FLV", "RealMedia", "MPEG-PS". Used by
+    /// [`crate::Reason::explain`]; the web client mirrors it.
     pub fn display_name(self) -> &'static str {
         match self {
             Container::Matroska => "MKV",
@@ -95,6 +115,10 @@ impl Container {
             Container::MpegTs => "MPEG-TS",
             Container::M2ts => "M2TS",
             Container::Avi => "AVI",
+            Container::Asf => "ASF",
+            Container::Flv => "FLV",
+            Container::RealMedia => "RealMedia",
+            Container::MpegPs => "MPEG-PS",
             Container::Unknown => "Unknown",
         }
     }
@@ -132,6 +156,20 @@ pub enum Codec {
     Vc1,
     ProRes,
     Mjpeg,
+    /// MPEG-1 video (Video CD, `.mpg`).
+    Mpeg1Video,
+    /// Windows Media Video 7 (`wmv1`). WMV 9 (`wmv3`) is [`Codec::Vc1`].
+    Wmv1,
+    /// Windows Media Video 8 (`wmv2`).
+    Wmv2,
+    /// Microsoft's pre-standard MPEG-4 (`msmpeg4v1`–`v3`, DivX 3).
+    Msmpeg4,
+    /// On2 VP6 (Flash: `vp6f`, `vp6a`, `vp6`).
+    Vp6,
+    /// Sorenson Spark (Flash's H.263, `flv1`).
+    Flv1,
+    /// RealVideo 1–4 (`rv10`–`rv40`).
+    RealVideo,
     // audio
     Aac,
     Ac3,
@@ -145,6 +183,12 @@ pub enum Codec {
     Mp2,
     Pcm,
     Alac,
+    /// Windows Media Audio (`wmav1`, `wmav2`).
+    Wma,
+    /// Windows Media Audio Professional (`wmapro`).
+    WmaPro,
+    /// RealAudio (Cook, Sipro, 14.4, 28.8).
+    RealAudio,
     // subtitles
     Subrip,
     Ass,
@@ -161,12 +205,10 @@ impl Codec {
     pub fn kind(self) -> TrackKind {
         use Codec::*;
         match self {
-            H264 | Hevc | Av1 | Vp9 | Vp8 | Mpeg2Video | Mpeg4Part2 | Vc1 | ProRes | Mjpeg => {
-                TrackKind::Video
-            }
-            Aac | Ac3 | Eac3 | TrueHd | Dts | Flac | Opus | Vorbis | Mp3 | Mp2 | Pcm | Alac => {
-                TrackKind::Audio
-            }
+            H264 | Hevc | Av1 | Vp9 | Vp8 | Mpeg2Video | Mpeg4Part2 | Vc1 | ProRes | Mjpeg | Mpeg1Video
+            | Wmv1 | Wmv2 | Msmpeg4 | Vp6 | Flv1 | RealVideo => TrackKind::Video,
+            Aac | Ac3 | Eac3 | TrueHd | Dts | Flac | Opus | Vorbis | Mp3 | Mp2 | Pcm | Alac | Wma
+            | WmaPro | RealAudio => TrackKind::Audio,
             Subrip | Ass | Ssa | WebVtt | MovText | Pgs | VobSub | DvbSub => TrackKind::Subtitle,
             Other => TrackKind::Data,
         }
@@ -202,6 +244,13 @@ impl Codec {
             Vc1 => "VC-1",
             ProRes => "ProRes",
             Mjpeg => "MJPEG",
+            Mpeg1Video => "MPEG-1",
+            Wmv1 => "WMV 7",
+            Wmv2 => "WMV 8",
+            Msmpeg4 => "MS MPEG-4",
+            Vp6 => "VP6",
+            Flv1 => "Sorenson Spark",
+            RealVideo => "RealVideo",
             Aac => "AAC",
             Ac3 => "AC-3",
             Eac3 => "E-AC-3",
@@ -214,6 +263,9 @@ impl Codec {
             Mp2 => "MP2",
             Pcm => "PCM",
             Alac => "ALAC",
+            Wma => "WMA",
+            WmaPro => "WMA Pro",
+            RealAudio => "RealAudio",
             Subrip => "SRT",
             Ass => "ASS",
             Ssa => "SSA",
@@ -462,6 +514,12 @@ mod tests {
         assert_eq!(Codec::Eac3.to_string(), "E-AC-3");
         assert_eq!(Codec::H264.display_name(), "H.264");
         assert_eq!(Container::MpegTs.to_string(), "MPEG-TS");
+        assert_eq!(Container::MpegPs.to_string(), "MPEG-PS");
         assert_eq!(HdrFormat::Hdr10Plus.to_string(), "HDR10+");
+        // The codecs only old containers carry are named, not "Other".
+        assert_eq!(Codec::Mpeg1Video.to_string(), "MPEG-1");
+        assert_eq!(Codec::Wmv1.kind(), TrackKind::Video);
+        assert_eq!(Codec::WmaPro.kind(), TrackKind::Audio);
+        assert_eq!(Container::default(), Container::Unknown);
     }
 }

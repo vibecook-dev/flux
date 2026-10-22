@@ -50,7 +50,9 @@ export function explainReason(r: Reason): string {
     case 'bitrate_too_high':
       return `The file's bitrate (${rustFixed0(r.bitrate / 1e6)} Mb/s) is above this connection's capacity (${rustFixed0(r.max / 1e6)} Mb/s)`;
     case 'no_index':
-      return 'The file has no seek index, so flux transcodes it';
+      return r.container === 'unknown'
+        ? "flux can't repackage the streams of this file, so it converts them"
+        : `flux can't repackage the streams of this ${containerName(r.container)} file, so it converts them`;
     case 'codec_not_packageable':
       return `${codecName(r.codec)} can't be carried in an HLS stream, so flux converts it`;
     case 'client_quirk':
@@ -87,8 +89,11 @@ export function planTone(label: PlanLabel): PlanTone {
 export const CODEC_NAMES: Record<Codec, string> = {
   h264: 'H.264', hevc: 'HEVC', av1: 'AV1', vp9: 'VP9', vp8: 'VP8', mpeg2_video: 'MPEG-2', mpeg4_part2: 'MPEG-4 Part 2',
   vc1: 'VC-1', pro_res: 'ProRes', mjpeg: 'MJPEG',
+  mpeg1_video: 'MPEG-1', wmv1: 'WMV 7', wmv2: 'WMV 8', msmpeg4: 'MS MPEG-4', vp6: 'VP6', flv1: 'Sorenson Spark',
+  real_video: 'RealVideo',
   aac: 'AAC', ac3: 'AC-3', eac3: 'E-AC-3', true_hd: 'TrueHD', dts: 'DTS', flac: 'FLAC',
   opus: 'Opus', vorbis: 'Vorbis', mp3: 'MP3', mp2: 'MP2', pcm: 'PCM', alac: 'ALAC',
+  wma: 'WMA', wma_pro: 'WMA Pro', real_audio: 'RealAudio',
   subrip: 'SRT', ass: 'ASS', ssa: 'SSA', web_vtt: 'WebVTT', mov_text: 'MP4 text', pgs: 'PGS', vob_sub: 'VobSub',
   dvb_sub: 'DVB', other: 'Other',
 };
@@ -98,7 +103,8 @@ const CODEC_SHORT: Partial<Record<Codec, string>> = { mpeg4_part2: 'MPEG-4' };
 
 /** `Container::display_name()`. */
 export const CONTAINER_NAMES: Record<Container, string> = {
-  matroska: 'MKV', web_m: 'WebM', mp4: 'MP4', mov: 'MOV', mpeg_ts: 'MPEG-TS', m2ts: 'M2TS', avi: 'AVI', unknown: 'Unknown',
+  matroska: 'MKV', web_m: 'WebM', mp4: 'MP4', mov: 'MOV', mpeg_ts: 'MPEG-TS', m2ts: 'M2TS', avi: 'AVI',
+  asf: 'ASF', flv: 'FLV', real_media: 'RealMedia', mpeg_ps: 'MPEG-PS', unknown: 'Unknown',
 };
 
 /** `HdrFormat::display_name()`. */

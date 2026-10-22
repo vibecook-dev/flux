@@ -339,7 +339,9 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
     // MPEG-TS/M2TS with H.264/HEVC video is indexed by a packet scan.
     let can_index = remuxable_container || crate::ts::probe_remuxable(probe);
     if !can_index {
-        reasons.push(Reason::NoIndex);
+        reasons.push(Reason::NoIndex {
+            container: probe.container,
+        });
     }
     let mut cpu_ms_per_min = 0f64;
     let video_op = match video {
@@ -1679,7 +1681,9 @@ mod tests {
         p.has_index = false;
         let plan = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
         assert!(matches!(plan.video, VideoOp::Transcode { .. }));
-        assert!(plan.reasons.contains(&Reason::NoIndex));
+        assert!(plan.reasons.contains(&Reason::NoIndex {
+            container: Container::MpegTs
+        }));
         // A transcode is not "repackaged with no quality loss" (the stats
         // overlay showed both sentences for every TS and AVI file).
         assert!(

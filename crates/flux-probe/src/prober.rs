@@ -267,7 +267,10 @@ fn parse_all(store: &Store, feeds: u32) -> PResult<Parsed> {
         Container::Mp4 | Container::Mov => mp4::parse(&mut ctx)?,
         Container::MpegTs | Container::M2ts => ts::parse(&mut ctx, container)?,
         Container::Avi => avi::parse(&mut ctx)?,
-        Container::Unknown => return Err(PErr::Fail(ProbeError::UnknownFormat { magic: String::new() })),
+        // Not sniffed: read by the ffprobe fallback.
+        Container::Asf | Container::Flv | Container::RealMedia | Container::MpegPs | Container::Unknown => {
+            return Err(PErr::Fail(ProbeError::UnknownFormat { magic: String::new() }))
+        }
     };
     let r = &mut parsed.result;
     r.warnings.append(&mut ctx.warnings);

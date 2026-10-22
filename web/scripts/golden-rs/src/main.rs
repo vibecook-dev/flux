@@ -320,7 +320,7 @@ fn reasons() -> Vec<Reason> {
         Reason::AudioChannelsTooMany { channels: 8, max: 2 },
         Reason::SubtitleNeedsBurnIn { codec: Codec::Pgs },
         Reason::BitrateTooHigh { bitrate: 60_000_000, max: 20_000_000 },
-        Reason::NoIndex,
+        Reason::NoIndex { container: Container::Asf },
         Reason::CodecNotPackageable { codec: Codec::TrueHd },
         Reason::ClientQuirk { note: "Samsung 2026 MSE is limited to FHD".into() },
     ];
@@ -339,7 +339,7 @@ fn reasons() -> Vec<Reason> {
             | Reason::AudioChannelsTooMany { .. }
             | Reason::SubtitleNeedsBurnIn { .. }
             | Reason::BitrateTooHigh { .. }
-            | Reason::NoIndex
+            | Reason::NoIndex { .. }
             | Reason::CodecNotPackageable { .. }
             | Reason::ClientQuirk { .. } => {}
         }
@@ -378,10 +378,11 @@ fn tailnet_login() -> TailnetInfo {
 
 fn main() {
     let enums = json!({
-        "Container": variants!(Container: Matroska, WebM, Mp4, Mov, MpegTs, M2ts, Avi, Unknown),
+        "Container": variants!(Container: Matroska, WebM, Mp4, Mov, MpegTs, M2ts, Avi, Asf, Flv, RealMedia, MpegPs, Unknown),
         "TrackKind": variants!(TrackKind: Video, Audio, Subtitle, Attachment, Data),
         "Codec": variants!(Codec: H264, Hevc, Av1, Vp9, Vp8, Mpeg2Video, Mpeg4Part2, Vc1, ProRes, Mjpeg,
-            Aac, Ac3, Eac3, TrueHd, Dts, Flac, Opus, Vorbis, Mp3, Mp2, Pcm, Alac,
+            Mpeg1Video, Wmv1, Wmv2, Msmpeg4, Vp6, Flv1, RealVideo,
+            Aac, Ac3, Eac3, TrueHd, Dts, Flac, Opus, Vorbis, Mp3, Mp2, Pcm, Alac, Wma, WmaPro, RealAudio,
             Subrip, Ass, Ssa, WebVtt, MovText, Pgs, VobSub, DvbSub, Other),
         "HdrFormat": variants!(HdrFormat: Sdr, Hdr10, Hdr10Plus, Hlg, DolbyVision),
         "LibraryKind": variants!(LibraryKind: Movies, Shows, Mixed),
@@ -403,9 +404,10 @@ fn main() {
     // Display names used by Reason::explain (web/src/api/explain.ts mirrors them).
     let display = json!({
         "Codec": display_names!(Codec: H264, Hevc, Av1, Vp9, Vp8, Mpeg2Video, Mpeg4Part2, Vc1, ProRes, Mjpeg,
-            Aac, Ac3, Eac3, TrueHd, Dts, Flac, Opus, Vorbis, Mp3, Mp2, Pcm, Alac,
+            Mpeg1Video, Wmv1, Wmv2, Msmpeg4, Vp6, Flv1, RealVideo,
+            Aac, Ac3, Eac3, TrueHd, Dts, Flac, Opus, Vorbis, Mp3, Mp2, Pcm, Alac, Wma, WmaPro, RealAudio,
             Subrip, Ass, Ssa, WebVtt, MovText, Pgs, VobSub, DvbSub, Other),
-        "Container": display_names!(Container: Matroska, WebM, Mp4, Mov, MpegTs, M2ts, Avi, Unknown),
+        "Container": display_names!(Container: Matroska, WebM, Mp4, Mov, MpegTs, M2ts, Avi, Asf, Flv, RealMedia, MpegPs, Unknown),
         "HdrFormat": display_names!(HdrFormat: Sdr, Hdr10, Hdr10Plus, Hlg, DolbyVision),
     });
 

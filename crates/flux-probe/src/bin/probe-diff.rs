@@ -46,6 +46,10 @@ fn class(c: Container) -> &'static str {
         Container::Mp4 | Container::Mov => "mp4",
         Container::MpegTs | Container::M2ts => "mpegts",
         Container::Avi => "avi",
+        Container::Asf => "asf",
+        Container::Flv => "flv",
+        Container::RealMedia => "rm",
+        Container::MpegPs => "mpeg",
         Container::Unknown => "unknown",
     }
 }

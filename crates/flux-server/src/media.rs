@@ -174,6 +174,10 @@ fn content_type(c: Option<Container>, path: &str) -> &'static str {
         Some(Container::Mov) => "video/quicktime",
         Some(Container::MpegTs | Container::M2ts) => "video/mp2t",
         Some(Container::Avi) => "video/x-msvideo",
+        Some(Container::Asf) => "video/x-ms-asf",
+        Some(Container::Flv) => "video/x-flv",
+        Some(Container::RealMedia) => "application/vnd.rn-realmedia",
+        Some(Container::MpegPs) => "video/mpeg",
         _ => match path.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
             Some("mkv" | "mk3d") => "video/x-matroska",
             Some("webm") => "video/webm",
