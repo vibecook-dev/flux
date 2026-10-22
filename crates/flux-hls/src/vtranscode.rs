@@ -750,6 +750,12 @@ impl VideoTranscoder {
                 tonemap: target.tonemap,
                 bitrate: target.bitrate,
                 level: h264_level(ow, oh, source_fps(asset)),
+                dovi_reshape: v
+                    .hdr
+                    .as_ref()
+                    .and_then(|h| h.dovi)
+                    .is_some_and(|d| d.bl_signal_compat_id == 0),
+                keep_aspect: v.width.is_none() || v.height.is_none(),
                 deinterlace: deinterlace(v),
             },
             vaapi_device,
@@ -1121,7 +1127,7 @@ impl VideoTranscoder {
             s.runs += 1;
         }
         let ts = matches!(asset.index.layout, Layout::Ts(_));
-        let mut child = tokio::process::Command::new(&self.ffmpeg)
+        let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
             .args(&args)
             .stdin(if ts { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())

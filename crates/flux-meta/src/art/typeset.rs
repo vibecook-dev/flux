@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ab_glyph::{point, Font, FontRef, GlyphId, PxScale, VariableFont};
@@ -254,8 +255,14 @@ impl std::fmt::Debug for Typesetter {
     }
 }
 
-/// Default fallback fonts: common macOS and Linux locations (CJK, Hangul, Indic, wide coverage).
+/// Default fallback fonts: common macOS and Linux locations (CJK, Hangul,
+/// Indic, wide coverage), or on Windows the fonts it ships in
+/// `%WINDIR%\Fonts` ([`windows_fallback_paths`]).
 pub fn default_fallback_paths() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        let windir = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot"));
+        return windows_fallback_paths(&windows_fonts_dir(windir));
+    }
     [
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/AppleSDGothicNeo.ttc",
@@ -271,6 +278,57 @@ pub fn default_fallback_paths() -> Vec<PathBuf> {
     .iter()
     .map(PathBuf::from)
     .collect()
+}
+
+/// Fonts Windows ships, one group per script, best first (bold faces for
+/// titles; the collections hold a bold face).
+const WINDOWS_FONTS: &[&[&str]] = &[
+    // Chinese, Simplified and Traditional (and kana): Microsoft YaHei, SimHei, SimSun.
+    &["msyhbd.ttc", "msyh.ttc", "simhei.ttf", "simsun.ttc"],
+    // Japanese: Yu Gothic, Meiryo, MS Gothic.
+    &["YuGothB.ttc", "meiryob.ttc", "meiryo.ttc", "msgothic.ttc"],
+    // Korean: Malgun Gothic, Gulim.
+    &["malgunbd.ttf", "malgun.ttf", "gulim.ttc"],
+    // Indic scripts (Devanagari, Bengali, Tamil, Telugu, …): Nirmala UI.
+    &["NirmalaB.ttf", "Nirmala.ttf"],
+    // Latin, Greek, Cyrillic, Hebrew, Arabic: Arial, Segoe UI.
+    &["arialbd.ttf", "segoeuib.ttf"],
+    // Symbols: Segoe UI Symbol.
+    &["seguisym.ttf"],
+];
+
+/// `%WINDIR%\Fonts`, from the variable's value (`C:\Windows` without one).
+pub fn windows_fonts_dir(windir: Option<std::ffi::OsString>) -> PathBuf {
+    windir
+        .filter(|w| !w.is_empty())
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+        .join("Fonts")
+}
+
+/// The Windows fallbacks in `fonts`: the first file of each script's group
+/// that exists. One per script, because a title only the last group covers
+/// loads every font before it (each stays loaded, some are 15–20 MB).
+pub fn windows_fallback_paths(fonts: &Path) -> Vec<PathBuf> {
+    WINDOWS_FONTS
+        .iter()
+        .filter_map(|group| group.iter().map(|f| fonts.join(f)).find(|p| p.is_file()))
+        .collect()
+}
+
+/// Says once per process (then at debug level) that no font covers every
+/// character of `text`: its poster shows boxes for the missing glyphs.
+fn note_uncovered(text: &str, tried: &[PathBuf]) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        tracing::debug!(text, "no font covers every character");
+    } else {
+        tracing::warn!(
+            text,
+            fallbacks = ?tried,
+            "no font covers every character of this title, so frame posters show boxes for the \
+             missing ones; install a font for its script (Noto Sans CJK, for example)"
+        );
+    }
 }
 
 impl Default for Typesetter {
@@ -496,6 +554,7 @@ impl Typesetter {
                 }
             }
         }
+        note_uncovered(text, &self.fallback_paths);
         match best {
             Some((c, spec)) if c > preferred.coverage_count(text) => (spec, true),
             _ => (preferred.clone(), false),
@@ -751,6 +810,51 @@ mod tests {
         // Kerning via GPOS: "AV" is narrower than "A" + "V".
         let av = measure(&t, "AV", 100.0, 0.0);
         assert!(av < measure(&t, "A", 100.0, 0.0) + measure(&t, "V", 100.0, 0.0));
+    }
+
+    /// Windows had no fallbacks, so CJK titles were drawn as boxes.
+    #[test]
+    fn windows_fallbacks_take_one_font_per_script_from_the_fonts_dir() {
+        assert_eq!(
+            windows_fonts_dir(Some(r"D:\Win".into())),
+            Path::new(r"D:\Win").join("Fonts")
+        );
+        assert_eq!(windows_fonts_dir(None), Path::new(r"C:\Windows").join("Fonts"));
+        let dir = tempfile::tempdir().unwrap();
+        for f in [
+            "msyh.ttc",
+            "simsun.ttc",
+            "malgunbd.ttf",
+            "malgun.ttf",
+            "seguisym.ttf",
+        ] {
+            std::fs::write(dir.path().join(f), b"").unwrap();
+        }
+        let names: Vec<String> = windows_fallback_paths(dir.path())
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["msyh.ttc", "malgunbd.ttf", "seguisym.ttf"]);
+        assert!(windows_fallback_paths(&dir.path().join("none")).is_empty());
+    }
+
+    /// The system fallbacks set Chinese and Korean titles on the desktop
+    /// systems that always ship such fonts (Linux may have none).
+    #[test]
+    fn system_fonts_set_cjk_titles() {
+        let ts = Typesetter::default();
+        for title in ["示例剧 第二季", "예시 드라마"] {
+            let (font, fell_back) = ts.pick_font(&ts.title_font, title);
+            if cfg!(any(windows, target_os = "macos")) {
+                assert!(
+                    fell_back && font.covers(title),
+                    "{title}: {:?}",
+                    ts.fallback_paths
+                );
+            } else if !fell_back {
+                eprintln!("skipping {title}: no system font covers it");
+            }
+        }
     }
 
     #[test]

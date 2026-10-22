@@ -30,9 +30,13 @@ use crate::source::{Source, SourceId};
 /// 5: also MPEG-TS/M2TS with H.264/HEVC indexed in-process (`Layout::Ts`)
 ///    instead of by an ffprobe scan (phase-d/hls-perf). Both branches bumped
 ///    to 4 independently; 5 makes every cached index rebuild once.
-/// 6: [`TrackExtra::interlaced`]: the container's interlace flag (Matroska
+/// 6: MP4 Dolby Vision entries (`dvhe`, `dvh1`, …) index as HEVC/H.264/AV1
+///    with their DV record (were "Other"); AC-3/E-AC-3 channels come from
+///    `dac3`/`dec3` (were the entry's nominal 2); VP8/VP9/JPEG and unknown
+///    video entries keep their size.
+/// 7: [`TrackExtra::interlaced`]: the container's interlace flag (Matroska
 ///    FlagInterlaced, MP4 `fiel`), which decides over the SPS.
-pub const INDEX_VERSION: u16 = 6;
+pub const INDEX_VERSION: u16 = 7;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its

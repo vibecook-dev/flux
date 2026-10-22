@@ -78,10 +78,16 @@ impl EmbeddedConfig {
     }
 }
 
+/// The sidecar's file name next to flux-server: `sidecar-slim`, with the
+/// platform's executable suffix (`sidecar-slim.exe` on Windows).
+pub fn sidecar_file_name() -> String {
+    format!("sidecar-slim{}", std::env::consts::EXE_SUFFIX)
+}
+
 /// Find the Truffle Go sidecar: `explicit`, then `TRUFFLE_SIDECAR_PATH`,
-/// then `sidecar-slim` next to the running executable (how a release package
-/// ships it). `scripts/package/fetch-sidecar.sh` downloads the one that
-/// matches truffle-core (docs/RELEASING.md, "The Truffle sidecar").
+/// then [`sidecar_file_name`] next to the running executable (how a release
+/// package ships it). `scripts/package/fetch-sidecar.sh` downloads the one
+/// that matches truffle-core (docs/RELEASING.md, "The Truffle sidecar").
 pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
     let mut tried = Vec::new();
     let candidates = explicit
@@ -94,7 +100,7 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
             std::env::current_exe()
                 .ok()
                 .map(|exe| exe.canonicalize().unwrap_or(exe))
-                .and_then(|exe| exe.parent().map(|dir| dir.join("sidecar-slim"))),
+                .and_then(|exe| exe.parent().map(|dir| dir.join(sidecar_file_name()))),
         );
     for candidate in candidates {
         if candidate.is_file() {
@@ -103,7 +109,7 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
         tried.push(candidate.display().to_string());
     }
     Err(NetError::SidecarNotFound(format!(
-        "tried {}; release packages ship it next to flux-server as sidecar-slim. \
+        "tried {}; release packages ship it next to flux-server as {}. \
          Otherwise set TRUFFLE_SIDECAR_PATH to the tsnet-sidecar asset for this platform \
          from the Truffle release that matches truffle-core \
          (https://github.com/vibecook-dev/truffle/releases), or to a sidecar-slim built \
@@ -112,7 +118,8 @@ pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
             "nothing".to_string()
         } else {
             tried.join(", ")
-        }
+        },
+        sidecar_file_name()
     )))
 }
 
@@ -599,6 +606,26 @@ mod tests {
         );
         let exe = std::env::current_exe().unwrap();
         assert_eq!(resolve_sidecar(Some(&exe)).unwrap(), exe);
+    }
+
+    /// Windows looked for `sidecar-slim` without `.exe`, so a sidecar
+    /// shipped next to flux-server.exe was never found.
+    #[test]
+    fn the_sidecar_next_to_the_binary_has_the_platform_suffix() {
+        let name = sidecar_file_name();
+        if cfg!(windows) {
+            assert_eq!(name, "sidecar-slim.exe");
+        } else {
+            assert_eq!(name, "sidecar-slim");
+        }
+        let missing = Path::new("/nonexistent/flux/sidecar");
+        let err = resolve_sidecar(Some(missing)).unwrap_err().to_string();
+        let exe = std::env::current_exe().unwrap();
+        let next_to_exe = exe.canonicalize().unwrap_or(exe).with_file_name(&name);
+        if std::env::var_os("TRUFFLE_SIDECAR_PATH").is_none() && !next_to_exe.exists() {
+            assert!(err.contains(&next_to_exe.display().to_string()), "{err}");
+        }
+        assert!(err.contains(&format!("next to flux-server as {name}")), "{err}");
     }
 
     #[test]
