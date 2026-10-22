@@ -65,7 +65,9 @@ impl Drop for LibraryWatch {
 /// `(canonical root as the OS reports events, root as the catalog stores it)`.
 type RootMap = Vec<(PathBuf, PathBuf)>;
 
-pub(crate) fn watch(inner: &Arc<Inner>, library_id: Id) -> Result<(), ScanError> {
+/// `with_catch_up`: also catch up with what changed while nothing watched
+/// ([`crate::ScannerOptions::startup`]) once the watcher is up.
+pub(crate) fn watch(inner: &Arc<Inner>, library_id: Id, with_catch_up: bool) -> Result<(), ScanError> {
     if inner.shutting_down.load(Ordering::Relaxed) {
         return Err(ScanError::ShuttingDown);
     }
@@ -166,6 +168,9 @@ pub(crate) fn watch(inner: &Arc<Inner>, library_id: Id) -> Result<(), ScanError>
     );
 
     // Catch up with what changed while nobody was watching.
+    if !with_catch_up {
+        return Ok(());
+    }
     let inner2 = inner.clone();
     let mode = inner.opts.startup;
     let _ = std::thread::Builder::new()

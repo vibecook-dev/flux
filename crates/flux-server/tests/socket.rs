@@ -378,6 +378,12 @@ impl ScanService for RecordingScanner {
     fn watch(&self, library_id: Id) {
         self.calls.lock().unwrap().push(format!("watch {library_id}"));
     }
+    fn watch_without_catch_up(&self, library_id: Id) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("watch {library_id} without catch-up"));
+    }
     fn shutdown(&self, _timeout: Duration) {}
 }
 
@@ -433,7 +439,9 @@ async fn no_watch_scans_at_startup_without_watching() {
 
 /// After an upgrade (a file parsed by an older flux-names), the startup
 /// scan is a Deep one, which re-parses it: a Quick scan never re-reads an
-/// unchanged file. With watching on, the watcher's catch-up joins it.
+/// unchanged file. With watching on, the watcher starts first, without its
+/// catch-up: joining the Deep scan once it had started, the catch-up ran a
+/// second pass that counted every file twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_scan_is_deep_after_a_parser_upgrade() {
     for watch in [false, true] {
@@ -487,10 +495,11 @@ async fn startup_scan_is_deep_after_a_parser_upgrade() {
         })
         .await
         .expect("the startup scan");
-        let mut expect = vec![format!("scan {id} Deep Scheduled")];
+        let mut expect = Vec::new();
         if watch {
-            expect.push(format!("watch {id}"));
+            expect.push(format!("watch {id} without catch-up"));
         }
+        expect.push(format!("scan {id} Deep Scheduled"));
         assert_eq!(startup, expect);
         server.shutdown(Duration::from_secs(5)).await;
     }

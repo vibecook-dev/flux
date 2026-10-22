@@ -706,7 +706,13 @@ impl FragReader {
             }
             match &kind {
                 b"moov" => {
-                    let moov = mp4_atom::Moov::decode(&mut &self.buf[pos..pos + size])
+                    // As a source's: ffmpeg copies text it is given (titles,
+                    // handler names) in whatever code page it came in.
+                    let bytes = crate::index::mp4::normalize_moov(
+                        &self.buf[pos..pos + size],
+                        &mut Default::default(),
+                    );
+                    let moov = mp4_atom::Moov::decode(&mut bytes.as_slice())
                         .map_err(|e| HlsError::Ffmpeg(format!("encoder moov: {e}")))?;
                     let video = moov
                         .trak
@@ -944,6 +950,11 @@ impl VideoTranscoder {
     /// Segment cache (entries, bytes, evictions).
     pub(crate) fn cache_usage(&self) -> (usize, usize, u64) {
         self.cache.lock().map(|c| c.usage()).unwrap_or_default()
+    }
+
+    /// Drops the cached pieces ([`crate::HlsEngine::trim`]); returns their bytes.
+    pub(crate) fn clear_cache(&self) -> usize {
+        self.cache.lock().map(|mut c| c.clear()).unwrap_or(0)
     }
 
     /// The pieces (output segments) of `asset`.
@@ -1980,6 +1991,7 @@ mod tests {
                 pps: PPS,
                 inband: vec![vec![]; 3],
                 flag_interlaced: flag,
+                idr: vec![],
             }
             .write(&format!("run-args-{n}.mkv"));
             let case = format!("case {n}: {flag:?}, frame_mbs_only {}", sps == SPS_PROGRESSIVE);
@@ -1998,7 +2010,8 @@ mod tests {
             assert_eq!(probe.main_video().unwrap().interlaced, Some(interlaced), "{case}");
             for client in [crate::presets::chrome_desktop(), crate::presets::safari_macos()] {
                 let prefs = crate::PlanPrefs::default();
-                let from_index = crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, false);
+                let from_index =
+                    crate::planner::plan_with_index_facts(&index_probe, &client, &prefs, Default::default());
                 let from_probe = crate::planner::plan(&probe, &client, &prefs);
                 assert_eq!(from_index.video, from_probe.video, "{case}, {}", client.client);
                 assert_eq!(

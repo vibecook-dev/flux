@@ -1303,3 +1303,261 @@ fn laced_eac3_reports_the_bitrate_it_was_encoded_at() {
     }
     assert_eq!(seen, 2);
 }
+
+/// The web client's caps on Chrome for Windows (`web/src/caps/detect.ts`):
+/// H.264 High and Main, VP9 profiles 0 and 2, AAC/Opus/FLAC; no Baseline,
+/// Vorbis or AC-3 entries.
+fn chrome_web() -> flux_core::ClientCaps {
+    serde_json::from_value(serde_json::json!({
+        "client": "web/chrome-141/windows",
+        "delivery": ["progressive_file", "hls_fmp4", "hls_ts"],
+        "progressive_containers": ["mp4", "web_m", "matroska"],
+        "video": [
+            {"codec": "h264", "profiles": ["high", "main"], "max_level": 51, "max_bit_depth": 8,
+             "max_width": 3840, "max_height": 2160, "hdr": [], "dovi_profiles": []},
+            {"codec": "vp9", "profiles": ["profile2", "profile0"], "max_level": 51, "max_bit_depth": 10,
+             "max_width": 3840, "max_height": 2160, "hdr": [], "dovi_profiles": []}
+        ],
+        "audio": [{"codec": "aac", "max_channels": 8}, {"codec": "opus", "max_channels": 8},
+                  {"codec": "flac", "max_channels": 8}],
+        "display_hdr": false,
+        "subtitles": ["web_vtt"],
+        "needs_demuxed_audio": false,
+        "max_bitrate": null
+    }))
+    .expect("caps")
+}
+
+/// Safari's (native HLS): H.264 High and Main, MP4/MOV files.
+fn safari_web() -> flux_core::ClientCaps {
+    let mut c = chrome_web();
+    c.client = "web/safari-26/macos".into();
+    c.progressive_containers = vec![flux_core::Container::Mp4, flux_core::Container::Mov];
+    c
+}
+
+/// ffmpeg's decode of a file: (exit status ok, its error lines).
+fn decode_errors(file: &Path) -> (bool, Vec<String>) {
+    let ff = flux_test_media::ffmpeg().expect("ffmpeg");
+    let out = std::process::Command::new(ff)
+        .args(["-hide_banner", "-nostdin", "-v", "error", "-i"])
+        .arg(file)
+        .args(["-f", "null", "-"])
+        .output()
+        .expect("ffmpeg runs");
+    let errs = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(String::from)
+        .collect();
+    (out.status.success(), errs)
+}
+
+/// H.264 Baseline without `constraint_set1_flag` (phones, webcams,
+/// Flash-era encoders) was video-transcoded on every browser. The index
+/// finds no slice groups, arbitrary slice order or
+/// redundant pictures, so the MP4 plays as it is on clients that list only
+/// Main and High, and over HLS its video is copied and decodes cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn baseline_h264_plays_directly_or_remuxed() {
+    let Some(p) = clip(Clip::BaselineH264Mp4) else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let engine = HlsEngine::new(EngineConfig {
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let v = asset.index.video_track().unwrap();
+    assert_eq!(v.profile.as_deref(), Some("Baseline"));
+    assert!(!v.extra.baseline_tools.any(), "{:?}", v.extra.baseline_tools);
+    for caps in [chrome_web(), safari_web()] {
+        let plan = engine.plan(&asset, &caps, &PlanPrefs::default());
+        assert!(plan.is_direct(), "{}: {:?}", caps.client, plan.explain());
+        let plan = engine.plan(&asset, &caps, &hls_only());
+        assert!(
+            matches!(plan.video, VideoOp::Copy { .. }),
+            "{}: {:?}",
+            caps.client,
+            plan.explain()
+        );
+        assert_eq!(plan.audio[0].op, AudioOp::Copy);
+    }
+    let plan = engine.plan(&asset, &chrome_web(), &hls_only());
+    let master = engine.master_playlist(&asset, &plan).unwrap();
+    assert!(master.contains("avc1.4280"), "{master}");
+    let dir = flux_test_media::scratch("hls-baseline");
+    let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, "baseline.mp4").await;
+    assert_eq!(segs.len(), 2, "6 s segments of a 10 s clip");
+    let frames = ffprobe_video_frames(&file).expect("ffprobe");
+    assert_eq!(frames.len(), 250);
+    let (ok, errs) = decode_errors(&file);
+    assert!(ok && errs.is_empty(), "{errs:?}");
+}
+
+/// VP9 WebM on Chrome was transcoded ("VP9 can't be carried in HLS"): the
+/// video is copied into fMP4, a `vp09` entry with the `vpcC` its first key
+/// frame describes, Vorbis (which the client doesn't list) becomes AAC, and
+/// the segments decode cleanly with every frame there, the hidden alt-ref
+/// frames of libvpx's superframes included. Apple's HLS player gets H.264.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vp9_webm_is_copied_into_fmp4() {
+    let Some(p) = clip(Clip::Vp9VorbisWebm) else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let engine = HlsEngine::new(EngineConfig {
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    });
+    let asset = engine.prepare(&p).await.unwrap();
+    let v = asset.index.video_track().unwrap();
+    // 640×360 at 25 fps is VP9 level 2.1.
+    assert_eq!(v.codec_string.as_deref(), Some("vp09.00.21.08"));
+    assert_eq!((v.profile.as_deref(), v.bit_depth), (Some("Profile 0"), Some(8)));
+    let vpcc = v.synth_config.clone().expect("vpcC");
+    assert_eq!(&vpcc[..7], &[1, 0, 0, 0, 0, 21, 0x82], "{vpcc:02x?}");
+
+    let plan = engine.plan(&asset, &chrome_web(), &PlanPrefs::default());
+    assert_eq!(plan.delivery, flux_core::DeliveryFormat::HlsFmp4);
+    assert!(matches!(plan.video, VideoOp::Copy { .. }), "{:?}", plan.explain());
+    assert!(
+        matches!(
+            plan.audio[0].op,
+            AudioOp::Transcode {
+                codec: Codec::Aac,
+                ..
+            }
+        ),
+        "{:?}",
+        plan.audio
+    );
+    let master = engine.master_playlist(&asset, &plan).unwrap();
+    assert!(master.contains("vp09.00.21.08"), "{master}");
+
+    let dir = flux_test_media::scratch("hls-vp9");
+    let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, "vp9.mp4").await;
+    assert_eq!(segs.len(), 2, "6 s segments of a 10 s clip");
+    let init = std::fs::read(&file).unwrap();
+    let at = init.windows(4).position(|w| w == b"vpcC").expect("a vpcC box");
+    assert_eq!(&init[at + 4..at + 4 + vpcc.len()], &vpcc[..]);
+    assert!(init[..at].windows(4).any(|w| w == b"vp09"), "a vp09 entry");
+    let frames = ffprobe_video_frames(&file).expect("ffprobe");
+    assert_eq!(frames.len(), 250, "every shown frame");
+    assert!(frames[0].1);
+    let (ok, errs) = decode_errors(&file);
+    assert!(ok && errs.is_empty(), "{errs:?}");
+    // Each segment starts on a key frame, so a seek can start anywhere.
+    for (n, s) in segs.iter().enumerate() {
+        let (_, samples) = trun(s);
+        assert!(samples[0].2, "segment {n} starts on a key frame");
+    }
+    let a = Rendition::Audio(AudioKey::from_plan(&plan.audio[0]));
+    let (afile, _) = write_rendition(&engine, &asset, &plan, a, &dir, "vp9.aac.mp4").await;
+    let (ok, errs) = decode_errors(&afile);
+    assert!(ok && errs.is_empty(), "{errs:?}");
+
+    // Apple's HLS player doesn't take VP9: transcoded, saying why.
+    let mut safari = safari_web();
+    safari.video.push(chrome_web().video[1].clone());
+    let plan = engine.plan(&asset, &safari, &PlanPrefs::default());
+    assert!(matches!(plan.video, VideoOp::Transcode { .. }));
+    assert!(
+        plan.explain().iter().any(|e| e.contains("VP9")),
+        "{:?}",
+        plan.explain()
+    );
+}
+
+/// VP9 in MP4 (a `vp09` entry), faststart or fragmented, is copied into
+/// fMP4 with the source's `vpcC`. A level VP9 doesn't define (0, which
+/// fails `isTypeSupported`) is replaced by the picture's, and without a
+/// `colr` box the colour comes from the `vpcC`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vp9_mp4_is_copied_into_fmp4() {
+    let (Some(faststart), Some(fragmented)) = (clip(Clip::Vp9AacMp4), clip(Clip::Vp9Level0FragMp4)) else {
+        return;
+    };
+    if flux_test_media::ffprobe().is_none() {
+        return;
+    }
+    let engine = HlsEngine::new(EngineConfig {
+        video_lookahead: 0,
+        audio_lookahead: 0,
+        ..Default::default()
+    });
+    let dir = flux_test_media::scratch("hls-vp9-mp4");
+    for (p, level0) in [(faststart, false), (fragmented, true)] {
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let src = std::fs::read(&p).unwrap();
+        let at = src
+            .windows(4)
+            .position(|w| w == b"vpcC")
+            .expect("the source's vpcC");
+        let mut want = src[at + 4..at + 16].to_vec();
+        let has_colr = src.windows(4).any(|w| w == b"colr");
+        assert_eq!(want[5] == 0, level0, "{name}: the source's level {}", want[5]);
+        // 640×360 at 25 fps is VP9 level 2.1.
+        if level0 {
+            assert!(!has_colr, "{name}: no colr box");
+            want[5] = 21;
+        }
+
+        let asset = engine.prepare(&p).await.unwrap();
+        let v = asset.index.video_track().unwrap();
+        assert_eq!(v.codec_tag, "vp09", "{name}");
+        assert_eq!(v.codec_string.as_deref(), Some("vp09.00.21.08"), "{name}");
+        assert_eq!(
+            (v.profile.as_deref(), v.bit_depth, v.level),
+            (Some("Profile 0"), Some(8), Some(21)),
+            "{name}"
+        );
+        let vpcc = v.synth_config.clone().expect("vpcC");
+        assert_eq!(vpcc, want, "{name}: the source's vpcC");
+        // Without a `colr` box, the `vpcC`'s colour (2 is unspecified): the
+        // fragmented file's is BT.709 limited range.
+        let c = v.color.expect("colour");
+        let got = (c.primaries, c.transfer, c.matrix, c.full_range);
+        if level0 {
+            assert_eq!(got, (Some(1), Some(1), Some(1), Some(false)), "{name}");
+        } else if !has_colr {
+            let f = |x: u8| Some(x).filter(|&x| x != 2);
+            let range = Some(want[6] & 1 == 1);
+            assert_eq!(got, (f(want[7]), f(want[8]), f(want[9]), range), "{name}");
+        }
+
+        let plan = engine.plan(&asset, &chrome_web(), &hls_only());
+        assert!(
+            matches!(plan.video, VideoOp::Copy { .. }),
+            "{name}: {:?}",
+            plan.explain()
+        );
+        assert_eq!(plan.audio[0].op, AudioOp::Copy, "{name}");
+        let master = engine.master_playlist(&asset, &plan).unwrap();
+        assert!(master.contains("vp09.00.21.08"), "{name}: {master}");
+        let (file, segs) = write_rendition(&engine, &asset, &plan, Rendition::Video, &dir, &name).await;
+        assert_eq!(segs.len(), 2, "{name}: 6 s segments of a 10 s clip");
+        let init = std::fs::read(&file).unwrap();
+        let at = init.windows(4).position(|w| w == b"vpcC").expect("a vpcC box");
+        assert_eq!(&init[at + 4..at + 4 + vpcc.len()], &vpcc[..], "{name}");
+        assert!(
+            init[..at].windows(4).any(|w| w == b"vp09"),
+            "{name}: a vp09 entry"
+        );
+        let frames = ffprobe_video_frames(&file).expect("ffprobe");
+        assert_eq!(frames.len(), 250, "{name}: every shown frame");
+        let (ok, errs) = decode_errors(&file);
+        assert!(ok && errs.is_empty(), "{name}: {errs:?}");
+        for (n, s) in segs.iter().enumerate() {
+            let (_, samples) = trun(s);
+            assert!(samples[0].2, "{name}: segment {n} starts on a key frame");
+        }
+    }
+}

@@ -59,6 +59,8 @@ pub(crate) struct TestMkv<'a> {
     pub inband: Vec<Vec<&'a [u8]>>,
     /// The video's FlagInterlaced (1 interlaced, 2 progressive), if any.
     pub flag_interlaced: Option<u64>,
+    /// The slice NAL units of every keyframe (empty: one IDR slice).
+    pub idr: Vec<Vec<u8>>,
 }
 
 impl TestMkv<'_> {
@@ -84,7 +86,11 @@ impl TestMkv<'_> {
                 let payload = if key {
                     let idr: &[u8] = &[0x65, 0x88, 0x84, g as u8, 0x21];
                     let mut units = sets.clone();
-                    units.push(idr);
+                    if self.idr.is_empty() {
+                        units.push(idr);
+                    } else {
+                        units.extend(self.idr.iter().map(Vec::as_slice));
+                    }
                     nals(&units)
                 } else {
                     nals(&[&[0x41, 0x9A, f as u8, g as u8]])

@@ -42,6 +42,17 @@ pub use frames::{Frame, MediaFacts, Tools, Transfer};
 pub use score::FrameScore;
 pub use typeset::Typesetter;
 
+/// The version of flux's own art: frame posters, backdrops and episode
+/// thumbnails, and the typography on generated posters. Bump it whenever
+/// the images made from the same file and title change (fonts, colour,
+/// layout): flux-server then makes every image of an older version again
+/// (`flux_catalog::read::stale_art`). Images made before art was
+/// versioned (up to 0.1.0-alpha.2) have none and are made again too.
+///
+/// - 1: titles in CJK scripts typeset with glyphs (no empty boxes), and
+///   Dolby Vision profile 5 frames tone-mapped (no green and magenta cast).
+pub const ART_VERSION: u32 = 1;
+
 /// Errors from artwork generation.
 #[derive(Debug, thiserror::Error)]
 pub enum ArtError {

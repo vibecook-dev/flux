@@ -235,11 +235,32 @@ impl Asset {
                 _ => (*b"hvc1", *b"hvcC"),
             },
             Codec::Av1 => (*b"av01", *b"av1C"),
+            Codec::Vp9 => (*b"vp09", *b"vpcC"),
             c => {
                 return Err(HlsError::Unsupported(format!(
                     "{c:?} video cannot be remuxed to fMP4"
                 )))
             }
+        };
+        let config = match v.codec {
+            // The `vpcC` the index derived from the first key frame (or
+            // copied from an MP4 entry); an older index has none.
+            Codec::Vp9 => v.synth_config.clone().unwrap_or_else(|| {
+                let fps = v
+                    .frame_rate
+                    .filter(|r| r.den > 0)
+                    .map(|r| r.num as f64 / r.den as f64);
+                crate::codec::vp9::Vp9Config::new(
+                    None,
+                    &v.codec_private,
+                    (v.width, v.height),
+                    fps,
+                    v.color.as_ref(),
+                )
+                .vpcc()
+            }),
+            // Matroska CodecPrivate for AVC/HEVC/AV1 *is* the ISO record.
+            _ => v.codec_private.clone(),
         };
         // Profile 7 has an enhancement layer no fMP4 client can use: play the
         // HDR10 base layer and drop the DV record (a real 7→8.1 rewrite is a gap).
@@ -247,7 +268,7 @@ impl Asset {
         Ok(EntrySpec::Video {
             fourcc,
             config_box,
-            config: v.codec_private.clone(),
+            config,
             width: v.width.unwrap_or(0) as u16,
             height: v.height.unwrap_or(0) as u16,
             color: v.color,
@@ -1230,6 +1251,7 @@ mod inband_parameter_set_tests {
             pps: PPS,
             inband: vec![vec![SPS, PPS], vec![SPS, PPS_B], vec![SPS, PPS]],
             flag_interlaced: None,
+            idr: vec![],
         }
         .write("inband-pps.mkv");
         let a = Asset::open(&path, 1_000_000_000).unwrap();

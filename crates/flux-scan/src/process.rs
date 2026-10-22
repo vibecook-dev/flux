@@ -12,7 +12,7 @@ use crossbeam_channel::{bounded, Sender};
 use flux_catalog::{scan_support, ExpectedRow, FileFacts, FileMove, FileUpsert, ProbeUpdate};
 use flux_core::api::Id;
 use flux_core::LibraryKind;
-use flux_probe::{ContainerHint, FileSource, FrameSeiMode, PageCache, ProbeError, ProbeOptions};
+use flux_probe::{ContainerHint, FileSource, FrameSeiMode, PageCache, ProbeOptions};
 use mille_core::ErrorCode;
 
 use crate::device::Device;
@@ -347,7 +347,7 @@ fn process(ctx: &RootCtx, item: WorkItem) -> Outcome {
     let later = cfg.fingerprint && need_fp && facts.fp128.is_none();
     let probe = match probe_result {
         Ok(r) => ProbeUpdate::Probed(Box::new(r)),
-        Err(ProbeError::UnknownFormat { .. }) if cfg.ffprobe_fallback => {
+        Err(e) if cfg.ffprobe_fallback && e.wants_ffprobe() => {
             return Outcome::Ffprobe(Box::new(FfprobeTask {
                 facts,
                 siblings,

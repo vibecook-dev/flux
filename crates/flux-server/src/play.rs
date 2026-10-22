@@ -31,7 +31,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as UrlPath, State};
@@ -394,6 +394,18 @@ impl PlayState {
         remove_files(gone);
     }
 
+    /// Prepared assets held in memory.
+    pub fn assets_cached(&self) -> usize {
+        lock(&self.assets).len()
+    }
+
+    /// Drops the prepared assets ([`trim_caches`]); returns how many. A
+    /// request that holds one keeps it; the next one reloads the index from
+    /// the catalog.
+    pub fn trim(&self) -> usize {
+        lock(&self.assets).clear()
+    }
+
     /// Plan files on disk that this process knows of.
     pub fn plan_files(&self) -> usize {
         lock(&self.plan_files).used.len()
@@ -681,6 +693,61 @@ async fn build_asset(st: &AppState, loc: &AssetLocation) -> Result<Arc<Asset>, H
         Err(e) => tracing::debug!(asset_id, error = %e, "could not encode the playback index"),
     }
     st.engine.prepare_with_index(idx).await
+}
+
+/// How long playback stays idle (no media request) before the playback
+/// caches are dropped ([`trim_when_idle`]).
+pub const CACHE_IDLE: Duration = Duration::from_secs(5 * 60);
+
+/// What [`trim_caches`] dropped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Trimmed {
+    /// Prepared assets (indexes, MP4 sample tables, segment plans).
+    pub assets: usize,
+    /// Bytes in the engine's caches (segments, WebVTT, its own assets).
+    pub engine_bytes: usize,
+}
+
+/// Drops the playback caches (the engine's segments, WebVTT and assets,
+/// and the prepared assets here), then has the allocator return the freed
+/// memory to the OS ([`flux_catalog::release_free_memory`]).
+pub async fn trim_caches(st: &AppState) -> Trimmed {
+    let engine_bytes = st.engine.trim().bytes();
+    let assets = st.play.trim();
+    let _ = tokio::task::spawn_blocking(flux_catalog::release_free_memory).await;
+    Trimmed { assets, engine_bytes }
+}
+
+/// Until shutdown: once no media request came for `idle`, drops the
+/// playback caches ([`trim_caches`]), once per idle stretch. Otherwise the
+/// caches hold up to their budgets (about 1.1 GB) for good after playback
+/// stops. While anyone plays, a media request comes every few seconds, so
+/// nothing is dropped and seeks and prefetched pieces still hit the caches.
+pub async fn trim_when_idle(st: Arc<AppState>, idle: Duration) {
+    let idle_ms = i64::try_from(idle.as_millis()).unwrap_or(i64::MAX);
+    let mut tick =
+        tokio::time::interval((idle / 4).clamp(Duration::from_millis(20), Duration::from_secs(30)));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The last media request a trim already followed.
+    let mut done_for = 0i64;
+    loop {
+        tokio::select! {
+            _ = st.shutdown.cancelled() => return,
+            _ = tick.tick() => {}
+        }
+        let last = st.activity.last_media_ms();
+        if last == 0 || last == done_for || st.activity.media_idle_ms() < idle_ms {
+            continue;
+        }
+        done_for = last;
+        let t = trim_caches(&st).await;
+        tracing::info!(
+            idle_s = idle.as_secs(),
+            assets = t.assets,
+            segments_mb = t.engine_bytes >> 20,
+            "playback idle: dropped the playback caches and returned their memory"
+        );
+    }
 }
 
 /// The asset's location and the root paths of its library; 404 unknown,

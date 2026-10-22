@@ -18,7 +18,7 @@ use super::{
     classify_hdr, rational_rate, DoviRecord, IndexMethod, IndexStats, IndexTrack, Keyframe, Layout,
     PlaybackIndex, INDEX_VERSION,
 };
-use crate::codec::{self, audio, h264, hevc, NalFlavor};
+use crate::codec::{self, audio, h264, hevc, vp9, NalFlavor};
 use crate::ebml::{self, children};
 use crate::error::{HlsError, Result};
 use crate::source::{Source, Windows};
@@ -995,6 +995,7 @@ pub(crate) fn build(src: &Source) -> Result<PlaybackIndex> {
             }
         }
         out_tracks[vi].open_gop = super::classify_open_gop(&out_tracks[vi], &firsts);
+        out_tracks[vi].extra.baseline_tools = super::classify_baseline_tools(&out_tracks[vi], &firsts);
     }
 
     Ok(PlaybackIndex {
@@ -1329,7 +1330,30 @@ fn video_facts(
             measured_reorder = Some(0);
         }
         Codec::Vp9 => {
-            t.codec_string = Some("vp09.00.40.08".into());
+            // Profile, bit depth and the `vpcC` record of the fMP4 copy from
+            // the first (key) frame; the CodecPrivate, if any, fills gaps.
+            let fps = t
+                .frame_rate
+                .filter(|r| r.den > 0)
+                .map(|r| r.num as f64 / r.den as f64);
+            let c = vp9::Vp9Config::new(
+                first,
+                &t.codec_private,
+                (t.width, t.height),
+                fps,
+                t.color.as_ref(),
+            );
+            t.codec_string = Some(c.codec_string());
+            t.profile = Some(c.profile_name());
+            t.level = Some(u16::from(c.level));
+            t.bit_depth = Some(c.bit_depth);
+            t.synth_config = Some(c.vpcc());
+            sps_color = first.and_then(vp9::parse_keyframe).map(|h| codec::VuiColor {
+                primaries: 2,
+                transfer: 2,
+                matrix: h.matrix(),
+                full_range: h.full_range,
+            });
             measured_reorder = Some(0);
         }
         _ => {}

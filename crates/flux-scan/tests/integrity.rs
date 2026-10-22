@@ -193,6 +193,8 @@ fn int1_a_title_fixing_rename_keeps_watch_state_and_the_pin() {
                 blurhash: None,
                 attribution: None,
                 generator: None,
+                gen_version: None,
+                gen_title: None,
             },
         )
         .wait()

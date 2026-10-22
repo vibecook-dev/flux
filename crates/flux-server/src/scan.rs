@@ -25,6 +25,12 @@ pub trait ScanService: Send + Sync + 'static {
     /// first call per library also catches up with changes made while
     /// nothing watched (flux-scan: a Quick scan at Scheduled priority).
     fn watch(&self, library_id: Id);
+    /// [`ScanService::watch`] without the first call's catch-up, for a
+    /// library the caller scans in full right after (the catch-up would
+    /// only add a second pass to that scan).
+    fn watch_without_catch_up(&self, library_id: Id) {
+        self.watch(library_id);
+    }
     fn shutdown(&self, timeout: Duration);
     /// Puts the live per-root `last_seen` (when each root last answered a
     /// scan of this process, even one that wrote nothing) over the
@@ -56,6 +62,12 @@ impl ScanService for FluxScanner {
 
     fn watch(&self, library_id: Id) {
         if let Err(e) = self.inner.watch(library_id) {
+            tracing::warn!(library_id, error = %e, "cannot watch library for changes");
+        }
+    }
+
+    fn watch_without_catch_up(&self, library_id: Id) {
+        if let Err(e) = self.inner.watch_without_catch_up(library_id) {
             tracing::warn!(library_id, error = %e, "cannot watch library for changes");
         }
     }

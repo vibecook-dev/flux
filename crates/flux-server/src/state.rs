@@ -32,7 +32,7 @@ pub struct AppState {
     pub engine: HlsEngine,
     pub events: EventBus,
     pub play: PlayState,
-    pub art: ArtStore,
+    pub art: Arc<ArtStore>,
     pub web: Option<WebUi>,
     pub users: Users,
     pub tailnet: TailnetView,
@@ -116,6 +116,11 @@ impl Activity {
     pub fn touch_media(&self) {
         self.last_media_ms
             .store(flux_catalog::now_ms(), Ordering::Relaxed);
+    }
+
+    /// Unix ms of the last media request (0: none yet).
+    pub fn last_media_ms(&self) -> i64 {
+        self.last_media_ms.load(Ordering::Relaxed)
     }
 
     /// Milliseconds since the last media request (`i64::MAX` if none).

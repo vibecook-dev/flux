@@ -70,6 +70,8 @@ fn art(path: &str) -> NewArt {
         blurhash: None,
         attribution: None,
         generator: None,
+        gen_version: None,
+        gen_title: None,
     }
 }
 

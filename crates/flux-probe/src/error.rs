@@ -61,6 +61,16 @@ pub enum ProbeError {
 }
 
 impl ProbeError {
+    /// True when ffprobe may still read the file: the container is one
+    /// flux-probe doesn't parse, or one it found inconsistent where ffmpeg's
+    /// demuxers are more forgiving.
+    pub fn wants_ffprobe(&self) -> bool {
+        matches!(
+            self,
+            ProbeError::UnknownFormat { .. } | ProbeError::Malformed { .. }
+        )
+    }
+
     pub(crate) fn malformed(container: Container, msg: impl Into<String>) -> Self {
         ProbeError::Malformed {
             container,

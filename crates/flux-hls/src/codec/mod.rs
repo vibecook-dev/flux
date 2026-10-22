@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod h264;
 pub mod hevc;
+pub mod vp9;
 pub mod wrap;
 
 use flux_core::{ContentLightLevel, MasteringDisplay};

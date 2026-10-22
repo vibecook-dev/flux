@@ -73,6 +73,12 @@ interface AudioCandidate {
   mime: string;
   /** Channels the browser decodes (it downmixes to the output device itself). */
   channels: number;
+  /**
+   * Only in files the browser plays itself (`canPlayType`), not in fMP4 over
+   * MSE. flux's planner converts such a codec for HLS (it can't package it)
+   * and leaves a WebM/Matroska file that has it to play as it is.
+   */
+  fileOnly?: boolean;
 }
 
 const AUDIO_CANDIDATES: AudioCandidate[] = [
@@ -85,6 +91,9 @@ const AUDIO_CANDIDATES: AudioCandidate[] = [
   { codec: 'alac', mime: 'audio/mp4; codecs="alac"', channels: 8 },
   { codec: 'true_hd', mime: 'audio/mp4; codecs="mlpa"', channels: 8 },
   { codec: 'dts', mime: 'audio/mp4; codecs="dtsc"', channels: 6 },
+  // WebM's other audio codec: without it a VP9 + Vorbis WebM was converted
+  // instead of played as it is.
+  { codec: 'vorbis', mime: 'audio/webm; codecs="vorbis"', channels: 8, fileOnly: true },
 ];
 
 const PROGRESSIVE: [Container, string][] = [
@@ -202,7 +211,7 @@ export async function detectCaps(probe: MediaProbe): Promise<ClientCaps> {
 
   const audio: AudioCap[] = [];
   for (const a of AUDIO_CANDIDATES) {
-    if (!playable(a.mime)) continue;
+    if (a.fileOnly ? probe.canPlayType(a.mime) === '' : !playable(a.mime)) continue;
     // Safari decodes Opus as stereo only (research/03 §2.2).
     const channels = a.codec === 'opus' && appleWebKit ? 2 : a.channels;
     audio.push({ codec: a.codec, max_channels: channels });

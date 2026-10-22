@@ -24,9 +24,10 @@ pub const PROBE_VERSION: u16 = 3;
 /// and `flux_names::is_video_ext` are thin wrappers over it.
 ///
 /// It is the union of what the in-process probe reads (Matroska, MP4/MOV,
-/// MPEG-TS/M2TS, AVI and their aliases) and what is worth sending to the
-/// ffprobe fallback (`mpg`/`vob`/`wmv`/`flv`/`ogv`/`3gp`/`rmvb`: the probe
-/// sniffs magic bytes and answers `UnknownFormat` for those).
+/// MPEG-TS/M2TS, AVI and their aliases, Flash's `f4v` among them) and what
+/// is worth sending to the ffprobe fallback (`mpg`/`vob`/`wmv`/`flv`/`ogv`/
+/// `3gp`/`rm`/`rmvb`: the probe sniffs magic bytes and answers
+/// `UnknownFormat` for those).
 ///
 /// Deliberately **not** listed:
 /// - `iso` (and other disc images): a filesystem, not a stream. Playing one
@@ -35,7 +36,7 @@ pub const PROBE_VERSION: u16 = 3;
 /// - `strm`: a text file holding a URL (Kodi/Jellyfin convention), not media.
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mk3d", "webm", "mp4", "m4v", "mov", "qt", "avi", "divx", "ts", "m2ts", "mts", "m2t", "tp", "trp",
-    "mpg", "mpeg", "vob", "wmv", "asf", "flv", "ogv", "3gp", "rmvb",
+    "mpg", "mpeg", "vob", "wmv", "asf", "flv", "ogv", "3gp", "rmvb", "rm", "f4v",
 ];
 
 /// Extensions of files that travel with a video and inform the scan without
@@ -488,7 +489,7 @@ mod tests {
     #[test]
     fn one_video_extension_list() {
         for e in [
-            "mkv", "MK3D", "m2t", "tp", "trp", "qt", "divx", "wmv", "vob", "rmvb", "3gp",
+            "mkv", "MK3D", "m2t", "tp", "trp", "qt", "divx", "wmv", "vob", "rmvb", "3gp", "rm", "F4V",
         ] {
             assert!(is_video_extension(e), "{e}");
         }
