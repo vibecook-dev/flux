@@ -642,7 +642,10 @@ fn assert_tone(pcm: &[i16], rate: f64, secs: f64, hz: f64, what: &str) {
 /// same point. A piece shows the part's pictures at its time (the runs
 /// took the first packet's time, the video's, for the part's start: the
 /// pictures came 0.63 s early, min PSNR 21.9 dB), and the first audio
-/// segment is the part's tone throughout.
+/// segment is the part's tone throughout. The first part lists its audio
+/// first and the second its video, so the second part, read alone,
+/// numbers its streams unlike the whole file: audio runs map the track by
+/// its stream id (by its number, a real DVD capture's answered 500).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_part_that_starts_mid_stream_keeps_its_time() {
     let Some(engine) = x264_engine() else { return };
@@ -656,6 +659,7 @@ async fn a_part_that_starts_mid_stream_keeps_its_time() {
     assert_eq!(l.parts.len(), 2, "{:?}", l.parts);
     let start = l.parts[1].start_ns as f64 / 1e9;
     assert!((start - 10.0).abs() < 0.1, "{:?}", l.parts);
+    assert_eq!(asset.index.tracks[0].kind, TrackKind::Audio);
     let plan = engine.plan(&asset, &presets::chrome_desktop(), &hls_only());
     let playlist =
         String::from_utf8(bytes(&engine, &asset, &plan, HlsResource::Playlist(Rendition::Video)).await)

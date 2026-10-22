@@ -170,6 +170,12 @@ pub struct TrackExtra {
     /// FlagInterlaced 1/2, MP4 `fiel` with 2/1 fields), when it says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interlaced: Option<bool>,
+    /// MPEG-PS: the stream's id as ffmpeg gives it (0x1e0, 0x1c0, 0x80 for
+    /// AC-3 in private stream 1 …). A joined file's part read alone numbers
+    /// its streams in the order they first appear in it, which can differ
+    /// from the whole file's; the id is the same in every part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<u64>,
 }
 
 fn is_zero(v: &u16) -> bool {

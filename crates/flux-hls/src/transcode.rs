@@ -543,16 +543,29 @@ impl AudioTranscoder {
         }
         args.extend(["-i".to_string(), input]);
         const FILL: &str = "aresample=async=1:first_pts=0,apad";
-        match (&asset.index.layout, asset.index.track(track)) {
+        // A part of a joined MPEG-PS, read alone, numbers its streams in its
+        // own order (a part that starts with audio lists it first): by the
+        // stream's id, which every part keeps.
+        let part_stream = match (&asset.index.layout, asset.index.track(track)) {
+            (Layout::External(l), Some(t)) if l.parts.len() > 1 => t.extra.stream_id,
+            _ => None,
+        };
+        match (&asset.index.layout, asset.index.track(track), part_stream) {
             // By PID: ffmpeg's stream numbers count streams the index skips.
             // A filtergraph input takes the *first* stream of the PID: for
             // Blu-ray TrueHD ffmpeg adds a second one (the AC-3 core) on the
             // same PID, which `-map 0:i:<pid>` would map too.
-            (Layout::Ts(_), Some(t)) => args.extend([
+            (Layout::Ts(_), Some(t), _) => args.extend([
                 "-filter_complex".to_string(),
                 format!("[0:i:{}]{FILL}[a]", t.id),
                 "-map".to_string(),
                 "[a]".to_string(),
+            ]),
+            (_, _, Some(id)) => args.extend([
+                "-map".to_string(),
+                format!("0:i:{id}"),
+                "-af".to_string(),
+                FILL.to_string(),
             ]),
             _ => args.extend([
                 "-map".to_string(),

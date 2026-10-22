@@ -382,12 +382,16 @@ pub enum Clip {
     /// first packet is video, but its audio starts 0.63 s earlier, and
     /// ffmpeg starts its clock there.
     CutMpeg1Mp2PsB,
-    /// [`Clip::Mpeg1Mp2Ps`] then [`Clip::CutMpeg1Mp2PsB`], joined byte for
-    /// byte.
+    /// [`Clip::Mpeg1Mp2Ps`] with its audio muxed as the first stream: ffmpeg
+    /// lists it first (stream 0, the video 1).
+    Mpeg1Mp2PsAudioFirst,
+    /// [`Clip::Mpeg1Mp2PsAudioFirst`] then [`Clip::CutMpeg1Mp2PsB`], joined
+    /// byte for byte: the second part, read alone, lists its video first,
+    /// so its streams are numbered unlike the whole file's.
     JoinedCutPs,
 }
 
-const CLIP_COUNT: usize = 38;
+const CLIP_COUNT: usize = 39;
 
 /// The tone bursts of [`Clip::Ac3Eac3BurstsMkv`]: 1 kHz, 30 ms every 250 ms.
 const BURSTS: &str = "aevalsrc=exprs=if(lt(mod(t\\,0.25)\\,0.03)\\,0.5*sin(2*PI*1000*t)\\,0):s=48000:d=10";
@@ -456,6 +460,7 @@ impl Clip {
         Clip::CutBareFlv,
         Clip::SparseKeysPs,
         Clip::CutMpeg1Mp2PsB,
+        Clip::Mpeg1Mp2PsAudioFirst,
         Clip::JoinedCutPs,
     ];
 
@@ -499,7 +504,8 @@ impl Clip {
             Clip::CutBareFlv => "cut_bare_flv1_aac.flv",
             Clip::SparseKeysPs => "sparse_keys_mpeg1_mp2.mpg",
             Clip::CutMpeg1Mp2PsB => "cut_mpeg1_mp2_b.mpg",
-            Clip::JoinedCutPs => "joined_cut_mpeg1_mp2.mpg",
+            Clip::Mpeg1Mp2PsAudioFirst => "synth_mpeg1_mp2_audio_first.mpg",
+            Clip::JoinedCutPs => "joined_audio_first_cut_mpeg1_mp2.mpg",
         }
     }
 
@@ -535,6 +541,7 @@ impl Clip {
             | Clip::JoinedPs
             | Clip::SparseKeysPs
             | Clip::CutMpeg1Mp2PsB
+            | Clip::Mpeg1Mp2PsAudioFirst
             | Clip::JoinedCutPs => &["mpeg1video", "mp2"],
             Clip::Rv20Ac3Rm => &["rv20", "ac3"],
             Clip::HevcAacTs
@@ -561,6 +568,7 @@ impl Clip {
             | Clip::Flv1AacFlv
             | Clip::BareFlv
             | Clip::Mpeg1Mp2Ps
+            | Clip::Mpeg1Mp2PsAudioFirst
             | Clip::Rv20Ac3Rm => Some(250),
             Clip::GapAudioFlv => Some(500),
             Clip::MsClockWmv1Asf => Some(300),
@@ -907,11 +915,8 @@ impl Clip {
                     "asf",
                 ]));
             }
-            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB => {
-                if self == Clip::Mpeg1Mp2Ps {
-                    a.extend(video("320x240", "25", 10));
-                    a.extend(tone(10));
-                } else {
+            Clip::Mpeg1Mp2Ps | Clip::Mpeg1Mp2PsB | Clip::Mpeg1Mp2PsAudioFirst => {
+                if self == Clip::Mpeg1Mp2PsB {
                     a.extend(s(&[
                         "-f",
                         "lavfi",
@@ -924,6 +929,12 @@ impl Clip {
                         "-i",
                         "sine=frequency=660:sample_rate=48000:duration=8",
                     ]));
+                } else {
+                    a.extend(video("320x240", "25", 10));
+                    a.extend(tone(10));
+                }
+                if self == Clip::Mpeg1Mp2PsAudioFirst {
+                    a.extend(s(&["-map", "1:a", "-map", "0:v"]));
                 }
                 a.extend(s(&[
                     "-c:v",
@@ -983,7 +994,7 @@ impl Clip {
             }
             Clip::JoinedPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::Mpeg1Mp2PsB)),
             Clip::CutMpeg1Mp2PsB => return Some(Recipe::CutAtSequence(Clip::Mpeg1Mp2PsB, 40)),
-            Clip::JoinedCutPs => return Some(Recipe::Join(Clip::Mpeg1Mp2Ps, Clip::CutMpeg1Mp2PsB)),
+            Clip::JoinedCutPs => return Some(Recipe::Join(Clip::Mpeg1Mp2PsAudioFirst, Clip::CutMpeg1Mp2PsB)),
         }
         Some(Recipe::Ffmpeg(a))
     }

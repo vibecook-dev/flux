@@ -450,7 +450,7 @@ pub(crate) fn run(
 
 /// The streams, the format and the first packets, in one ffprobe run.
 const ENTRIES: &str = "format=format_name,start_time,duration\
-    :stream=index,codec_type,codec_name,profile,width,height,has_b_frames,r_frame_rate,avg_frame_rate,\
+    :stream=index,id,codec_type,codec_name,profile,width,height,has_b_frames,r_frame_rate,avg_frame_rate,\
     sample_rate,channels,start_time,duration,bit_rate,sample_aspect_ratio\
     :stream_tags=language,title:stream_disposition=default,forced\
     :packet=stream_index,pts_time,dts_time,flags";
@@ -633,6 +633,11 @@ pub fn build_with_limits(
         };
         if kind == TrackKind::Audio {
             t.timescale = t.sample_rate.unwrap_or(48_000);
+        }
+        if container == flux_core::Container::MpegPs {
+            t.extra.stream_id = s["id"]
+                .as_str()
+                .and_then(|id| u64::from_str_radix(id.trim_start_matches("0x"), 16).ok());
         }
         if kind == TrackKind::Video {
             let sar = s["sample_aspect_ratio"].as_str().and_then(|x| {
