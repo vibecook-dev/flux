@@ -3,8 +3,9 @@
 //!
 //! Out of the way by construction:
 //! - one title at a time; frame posters with 2 parallel ffmpeg decodes;
-//! - ffmpeg/ffprobe run through a `nice -n 19` wrapper; the export index is
-//!   built on a background-priority thread;
+//! - ffmpeg/ffprobe run through a `nice -n 19` wrapper (on Windows at below
+//!   normal priority, `flux_core::tool::background_command`); the export
+//!   index is built on a background-priority thread;
 //! - paused while anyone streamed in the last 30 s or a library is scanning.
 //!
 //! The queue (`flux_catalog::jobs`): the scanner's apply enqueues a `match`
@@ -170,7 +171,9 @@ impl Ctx {
 }
 
 /// A shell wrapper that runs `tool` at `nice -n 19`, so frame decodes yield
-/// to playback (child processes inherit nothing from tokio's threads).
+/// to playback (child processes inherit nothing from tokio's threads). Not
+/// on Windows, where `tool` is returned as is: flux-meta starts frame tools
+/// with `flux_core::tool::background_command`, below normal priority.
 fn low_priority_tool(data_dir: &Path, tool: &Path, name: &str) -> PathBuf {
     #[cfg(unix)]
     {
@@ -226,6 +229,11 @@ fn lower_this_thread() {
     #[cfg(target_os = "linux")]
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+    }
+    // Background mode: lower CPU, I/O and memory priority.
+    #[cfg(windows)]
+    if let Err(e) = crate::win32::background_this_thread() {
+        tracing::debug!(error = %e, "job thread stays at normal priority");
     }
 }
 
@@ -860,5 +868,22 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
         let script = std::fs::read_to_string(&w).unwrap();
         assert!(script.contains("-n 19 '/bin/echo'"), "{script}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// Job threads (the TMDB export index build) ran at normal priority on
+    /// Windows, next to playback.
+    #[test]
+    #[allow(unsafe_code)]
+    fn job_threads_run_in_background_mode() {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority};
+        // SAFETY: reads the priority of the calling thread.
+        let rx = run_low_priority(|| unsafe { GetThreadPriority(GetCurrentThread()) });
+        let priority = rx.blocking_recv().unwrap();
+        assert!(priority < 0, "{priority}");
     }
 }
