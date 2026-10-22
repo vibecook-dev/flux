@@ -250,6 +250,7 @@ impl HlsEngine {
             cancel.clone(),
         );
         video.lookahead = cfg.video_lookahead;
+        video.ffprobe = cfg.ffprobe.clone();
         video.detect.forced = cfg.video_encoder;
         video.detect.vaapi_device = cfg.vaapi_device.clone();
         video.piece_ns = cfg.video_segment_target.as_nanos() as i64;

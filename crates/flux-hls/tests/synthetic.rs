@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use flux_core::{Codec, PlaybackPlan, SubtitleFile, SubtitleOp, VideoOp, SUBTITLE_FILE_TRACK_BASE};
+use flux_hls::index::Layout;
 use flux_hls::playlist::{HlsResource, Rendition};
 use flux_hls::{presets, Asset, EngineConfig, HlsEngine, PlanPrefs, VideoEncoder, WebVttBody};
 use flux_test_media::{clip, ffprobe_video_frames, Clip};
@@ -569,25 +570,124 @@ async fn a_pgs_file_is_burned_in_where_and_when_it_shows() {
     plain.subtitles.clear();
     let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, "burned.mp4").await;
     let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, "plain.mp4").await;
+    assert_box_burned_in_from_1_to_3(&ff, &a, &b);
+}
+
+/// `burned`, a rendition with the box of [`pgs_box`] at (200, 260, 240, 60)
+/// shown from 1 s to 3 s drawn in, against `plain`, the same transcode
+/// without it: they differ inside the box exactly while it is shown, and
+/// nowhere else.
+fn assert_box_burned_in_from_1_to_3(ff: &Path, burned: &Path, plain: &Path) {
+    let what = burned.file_name().unwrap().to_string_lossy();
+    let (a, b) = (burned, plain);
     let inside = (208, 268, 432, 312);
     let above = (0, 0, 640, 200);
     for (t, shown) in [(0.5, false), (1.5, true), (2.5, true), (3.5, false), (6.5, false)] {
-        let (fa, fb) = (gray_frame(&ff, &a, t), gray_frame(&ff, &b, t));
-        assert_eq!(fa.len(), 640 * 360, "t = {t}");
+        let (fa, fb) = (gray_frame(ff, a, t), gray_frame(ff, b, t));
+        assert_eq!(fa.len(), 640 * 360, "{what}, t = {t}");
         let (d_in, d_out) = (diff_in(&fa, &fb, inside), diff_in(&fa, &fb, above));
         assert!(
             d_out < 8.0,
-            "t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
+            "{what}, t = {t}: the pictures differ away from the subtitle ({d_out:.1})"
         );
         if shown {
-            assert!(d_in > 40.0, "t = {t}: no subtitle drawn ({d_in:.1})");
+            assert!(d_in > 40.0, "{what}, t = {t}: no subtitle drawn ({d_in:.1})");
             let white = fa[290 * 640 + 320];
-            assert!(white > 200, "t = {t}: the box is not white ({white})");
+            assert!(white > 200, "{what}, t = {t}: the box is not white ({white})");
         } else {
             assert!(
                 d_in < 8.0,
-                "t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
+                "{what}, t = {t}: a subtitle drawn when none is shown ({d_in:.1})"
             );
         }
+    }
+}
+
+/// A PGS track of an M2TS whose timestamps start at 21.4 s (a Blu-ray rip)
+/// is drawn in at its own time. ffmpeg counts a TS from its start time,
+/// where the source timeline has 0, and lines up a track that starts later
+/// (here at 22.4 s, with its first subtitle) from its first packet when
+/// seeked before it: the track used to land 21.4 s late, or not at all.
+/// With TrueHD audio (when this ffmpeg can make it) ffmpeg also counts the
+/// AC-3 core of the TrueHD PID as a stream of its own, so the track is
+/// picked by PID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pgs_track_of_an_m2ts_is_burned_in_on_time() {
+    let Some(ff) = flux_test_media::ffmpeg() else {
+        return;
+    };
+    if !flux_test_media::has_encoder("libx264") {
+        return;
+    }
+    let Some(p) = clip(Clip::H264AacMp4) else { return };
+    let dir = flux_test_media::scratch("hls-synthetic-burn-m2ts");
+    let sup = dir.join("box.sup");
+    std::fs::write(&sup, pgs_box((640, 360), (200, 260, 240, 60), 1.0, 3.0)).unwrap();
+    let mut audio: Vec<(&str, &[&str])> = vec![("aac", &["-c:a", "copy"])];
+    if flux_test_media::ffmpeg_encoders().iter().any(|e| e == "truehd") {
+        audio.push(("truehd", &["-c:a", "truehd", "-strict", "-2"]));
+    }
+    for (name, args) in audio {
+        let m2ts = dir.join(format!("Clip-{name}.m2ts"));
+        // `-seek_timestamp 1`: both inputs keep their times (the box at 1 s).
+        let st = std::process::Command::new(&ff)
+            .args(["-v", "error", "-y", "-seek_timestamp", "1", "-i"])
+            .arg(&p)
+            .args(["-seek_timestamp", "1", "-i"])
+            .arg(&sup)
+            .args(["-map", "0:v", "-map", "0:a", "-map", "1", "-c:v", "copy"])
+            .args(args)
+            .args([
+                "-c:s",
+                "copy",
+                "-output_ts_offset",
+                "20",
+                "-mpegts_m2ts_mode",
+                "1",
+                "-f",
+                "mpegts",
+            ])
+            .arg(&m2ts)
+            .status()
+            .unwrap();
+        assert!(st.success(), "ffmpeg made no {name} M2TS");
+        let engine = HlsEngine::new(EngineConfig {
+            video_encoder: Some(VideoEncoder::Libx264),
+            video_lookahead: 0,
+            audio_lookahead: 0,
+            video_run_segments: 1,
+            ..Default::default()
+        });
+        let asset = engine.prepare(&m2ts).await.unwrap();
+        let Layout::Ts(ts) = &asset.index.layout else {
+            panic!("{name}: not indexed as MPEG-TS: {:?}", asset.index.warnings)
+        };
+        assert!(ts.origin > 20 * 90_000, "{name}: starts at {} ticks", ts.origin);
+        let track = asset
+            .index
+            .tracks
+            .iter()
+            .find(|t| t.codec == Codec::Pgs)
+            .expect("a PGS track")
+            .index;
+        let prefs = PlanPrefs {
+            subtitle_track: Some(track),
+            ..hls_only()
+        };
+        let burned = engine.plan(&asset, &presets::chrome_desktop(), &prefs);
+        let VideoOp::Transcode { burn_subtitle, .. } = &burned.video else {
+            panic!("{name}: {:?}", burned.explain())
+        };
+        assert_eq!(*burn_subtitle, Some(track));
+        let mut plain = burned.clone();
+        if let VideoOp::Transcode { burn_subtitle, .. } = &mut plain.video {
+            *burn_subtitle = None;
+        }
+        plain.subtitles.clear();
+        let a_name = format!("burned-{name}.mp4");
+        let b_name = format!("plain-{name}.mp4");
+        let (a, _) = write_rendition(&engine, &asset, &burned, Rendition::Video, &dir, &a_name).await;
+        let (b, _) = write_rendition(&engine, &asset, &plain, Rendition::Video, &dir, &b_name).await;
+        assert_box_burned_in_from_1_to_3(&ff, &a, &b);
     }
 }

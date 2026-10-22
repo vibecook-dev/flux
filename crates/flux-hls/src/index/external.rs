@@ -121,7 +121,13 @@ fn kill_group(pid: i32) {
 /// its own process group; stdout and stderr are drained on helper threads
 /// (the packet scan of a film is MBs, more than a pipe holds); the group is
 /// killed when it stalls, overruns its deadline or is cancelled.
-fn run(ffprobe: &Path, args: &[&str], path: &Path, limits: &ScanLimits, file_len: u64) -> Result<String> {
+pub(crate) fn run(
+    ffprobe: &Path,
+    args: &[&str],
+    path: &Path,
+    limits: &ScanLimits,
+    file_len: u64,
+) -> Result<String> {
     let mut cmd = Command::new(ffprobe);
     cmd.args(args)
         .arg(path)

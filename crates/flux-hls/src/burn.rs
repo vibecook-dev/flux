@@ -20,7 +20,11 @@
 //!   there too. Pieces and seeks then line up exactly like the video. A
 //!   subtitle file is read from its start instead when that point is not
 //!   after its first subtitle: ffmpeg's seek in a `.sup` then fails after
-//!   consuming the first display set, which would never be drawn.
+//!   consuming the first display set, which would never be drawn. A track
+//!   of an MPEG-TS/M2TS (or of a file indexed by ffprobe) is seeked and
+//!   shifted on ffmpeg's clock for it, which counts from the file's start
+//!   time, and never seeked before the track's own start (`probe` asks
+//!   ffprobe for both).
 //! - **Canvas.** A PGS or VobSub stream is drawn for a picture size (its
 //!   canvas) that need not be the video's: 1920×1080 subtitles over a
 //!   cropped 1920×800 encode. The canvas is read from the stream
@@ -29,11 +33,13 @@
 //!   for the video's own size, else to fit inside, bottom-aligned).
 
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use flux_core::Codec;
 
 use crate::asset::Asset;
+use crate::index::Layout;
 
 /// Names a [`BurnIn`] inside a [`crate::vtranscode::VideoTarget`] (which
 /// stays `Copy`): registered by `VideoTranscoder::burn_key`.
@@ -82,11 +88,26 @@ pub struct BurnProbe {
     pub canvas: Option<(u32, u32)>,
     /// When a subtitle file's first subtitle shows, in seconds.
     pub first_subtitle_s: Option<f64>,
+    /// For a track of a file whose timestamps ffmpeg counts from its start
+    /// time (MPEG-TS, or a file indexed by ffprobe): ffmpeg's start time of
+    /// the file, which `-ss` counts from, in seconds on its clock.
+    pub file_start_s: Option<f64>,
+    /// … and ffmpeg's start time of the track: its first packet when ffmpeg
+    /// probed one, else the file's.
+    pub stream_start_s: Option<f64>,
 }
 
 /// The ffmpeg input options and `-i` of the subtitle input of a run whose
 /// first frame is at source time `first_s` (see the module docs).
-pub(crate) fn input_args(b: &BurnIn, probe: &BurnProbe, first_s: f64) -> Vec<String> {
+/// `start_clock` is where the source timeline starts on ffmpeg's clock for
+/// a video file whose timestamps ffmpeg counts from its start time
+/// (`start_clock_origin_s`), `None` when they are the container's own.
+pub(crate) fn input_args(
+    b: &BurnIn,
+    probe: &BurnProbe,
+    first_s: f64,
+    start_clock: Option<f64>,
+) -> Vec<String> {
     let preroll = if b.embedded {
         EMBEDDED_PREROLL_S
     } else {
@@ -94,28 +115,123 @@ pub(crate) fn input_args(b: &BurnIn, probe: &BurnProbe, first_s: f64) -> Vec<Str
     };
     let first_s = first_s.max(0.0);
     let seek = (first_s - preroll).max(0.0);
-    // A subtitle file is seeked only past its first subtitle.
-    let seek = match (b.embedded, probe.first_subtitle_s) {
-        (true, _) => Some(seek),
-        (false, Some(f)) if seek > f => Some(seek),
-        _ => None,
-    };
-    // Timestamps as they are: a `.sup` starts at its first subtitle, which
-    // ffmpeg would otherwise subtract.
-    let mut a: Vec<String> = vec!["-seek_timestamp".into(), "1".into()];
-    if let Some(seek) = seek {
-        // No trim at the seek point: keep what is on screen already.
-        a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
+    let mut a: Vec<String> = Vec::new();
+    match start_clock.filter(|_| b.embedded) {
+        // A track of an MPEG-TS (or of a file ffmpeg indexed): `-ss` counts
+        // from ffmpeg's start time of the file (`-seek_timestamp 1` there
+        // loses a track that starts later than the file). Never before the
+        // track's own start: ffmpeg would then line the track up from its
+        // first packet instead of the seek point (measured with ffmpeg 8.1;
+        // there is nothing before it to read anyway). `-itsoffset` minus
+        // the seek point then takes source time `first_s` (at
+        // `origin + first_s` on that clock) to 0.
+        Some(origin) => {
+            let file_start = probe.file_start_s.unwrap_or(origin);
+            let at = (origin + seek)
+                .max(file_start)
+                .max(probe.stream_start_s.unwrap_or(file_start));
+            a.extend([
+                "-noaccurate_seek".into(),
+                "-ss".into(),
+                format!("{:.6}", at - file_start),
+                "-itsoffset".into(),
+                format!("{:.6}", at - origin - first_s),
+            ]);
+        }
+        // Timestamps as they are: a `.sup` starts at its first subtitle,
+        // which ffmpeg would otherwise subtract; Matroska and MP4 index
+        // times are the container's.
+        None => {
+            // A subtitle file is seeked only past its first subtitle.
+            let seek = match (b.embedded, probe.first_subtitle_s) {
+                (true, _) => Some(seek),
+                (false, Some(f)) if seek > f => Some(seek),
+                _ => None,
+            };
+            a.extend(["-seek_timestamp".into(), "1".into()]);
+            if let Some(seek) = seek {
+                // No trim at the seek point: keep what is on screen already.
+                a.extend(["-noaccurate_seek".into(), "-ss".into(), format!("{seek:.6}")]);
+            }
+            a.extend([
+                "-itsoffset".into(),
+                format!("{:.6}", seek.unwrap_or(0.0) - first_s),
+            ]);
+        }
     }
-    a.extend([
-        "-itsoffset".into(),
-        format!("{:.6}", seek.unwrap_or(0.0) - first_s),
-    ]);
     if let Some((w, h)) = probe.canvas {
         a.extend(["-canvas_size".into(), format!("{w}x{h}")]);
     }
     a.extend(["-i".into(), b.path.display().to_string()]);
     a
+}
+
+/// MPEG-TS timestamps wrap at 2^33 (90 kHz ticks).
+const TS_WRAP: i64 = 1 << 33;
+
+/// For a video file whose timestamps ffmpeg counts from its start time, where
+/// the source timeline (the playback index's, the pieces') starts on
+/// ffmpeg's clock, in seconds: the ffprobe-scan index counts from the start
+/// time, and the MPEG-TS index from its origin (ffmpeg's start time,
+/// unwrapped: ffmpeg instead takes the wrap off a file that starts less
+/// than 60 s before it, whose timestamps then start below 0).
+/// Discontinuities, which the TS index closes up and ffmpeg doesn't, still
+/// move what comes after them. `None` for Matroska and MP4, whose index
+/// times are the container's own.
+pub(crate) fn start_clock_origin_s(layout: &Layout) -> Option<f64> {
+    match layout {
+        Layout::Matroska(_) | Layout::Mp4(_) => None,
+        Layout::External(l) => Some(l.start_time_ns as f64 / 1e9),
+        Layout::Ts(l) => {
+            let o = if l.origin >= TS_WRAP - 60 * 90_000 {
+                l.origin - TS_WRAP
+            } else {
+                l.origin
+            };
+            Some(o as f64 / 90_000.0)
+        }
+    }
+}
+
+/// ffmpeg's start times of the file at `path` and of its stream `spec`, in
+/// seconds on ffmpeg's clock ([`BurnProbe::file_start_s`]), as ffprobe
+/// (the same probe as ffmpeg's) reads them. Blocking, bounded.
+fn ffmpeg_start_times(ffprobe: &Path, path: &Path, spec: &str) -> Option<(f64, Option<f64>)> {
+    let limits = crate::index::external::ScanLimits {
+        stall: Duration::from_secs(20),
+        base: Duration::from_secs(30),
+        per_gb: Duration::ZERO,
+    };
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        spec,
+        "-show_entries",
+        "format=start_time:stream=start_time",
+        "-of",
+        "json",
+    ];
+    let out = crate::index::external::run(ffprobe, &args, path, &limits, 0).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    let secs = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok());
+    let file = secs(&v["format"]["start_time"])?;
+    let stream = v["streams"].get(0).and_then(|s| secs(&s["start_time"]));
+    Some((file, stream))
+}
+
+/// How a run's filter graph names the subtitle stream of its second input
+/// (`[1:…]`): 0 in a subtitle file; a track of the video by its index, or
+/// in MPEG-TS by its PID, since ffmpeg's stream numbers there count streams
+/// the index leaves out and the AC-3 core it adds on a Blu-ray TrueHD PID.
+pub(crate) fn stream_spec(asset: &Asset, b: &BurnIn) -> String {
+    if !b.embedded {
+        return "0".into();
+    }
+    match (&asset.index.layout, asset.index.track(b.stream)) {
+        (Layout::Ts(_), Some(t)) => format!("i:{}", t.id),
+        _ => b.stream.to_string(),
+    }
 }
 
 /// Size and place of the subtitle picture on an `out` picture: `(w, h, x,
@@ -134,14 +250,15 @@ pub(crate) fn place(canvas: (u32, u32), src: (u32, u32), out: (u32, u32)) -> (u3
     (w, h, (ow - w) / 2, oh - h)
 }
 
-/// The `-filter_complex` of a run that burns `b` in: the video chain
-/// (`pre`: trim and setpts; `chain`: the software scale / tone-map / rotate
-/// ending in `pix`), the subtitle picture scaled and overlaid, then
-/// `upload` (`hwupload` for VAAPI) when the encoder needs it. The output
-/// pad is `[out]`.
+/// The `-filter_complex` of a run that burns subtitle stream `stream`
+/// (`stream_spec`) of its second input in: the video chain (`pre`: trim
+/// and setpts; `chain`: the software scale / tone-map / rotate ending in
+/// `pix`), the subtitle picture scaled and overlaid, then `upload`
+/// (`hwupload` for VAAPI) when the encoder needs it. The output pad is
+/// `[out]`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn filter_graph(
-    b: &BurnIn,
+    stream: &str,
     pre: &str,
     chain: &str,
     pix: &str,
@@ -150,7 +267,6 @@ pub(crate) fn filter_graph(
     src: (u32, u32),
     out: (u32, u32),
 ) -> String {
-    let stream = if b.embedded { b.stream } else { 0 };
     let (w, h, x, y) = place(canvas, src, out);
     let scale = if (w, h) == canvas {
         "null".to_string()
@@ -227,9 +343,23 @@ pub(crate) fn vobsub_canvas(idx: &[u8]) -> Option<(u32, u32)> {
 /// What `b` is drawn for and when it starts: the canvas from its first
 /// presentation segment (PGS) or index (VobSub), and a file's first
 /// subtitle time. Unknown parts stay `None` (for DVB, ffmpeg then uses the
-/// video's size). Blocking: reads the head of a subtitle file, or a
-/// track's first block.
-pub(crate) fn probe(asset: &Asset, b: &BurnIn) -> BurnProbe {
+/// video's size); for a track of an MPEG-TS (or a file indexed by
+/// ffprobe), ffmpeg's start times of the file and the track. Blocking:
+/// reads the head of a subtitle file, or a track's first block, or runs
+/// ffprobe once.
+pub(crate) fn probe(asset: &Asset, b: &BurnIn, ffprobe: &Path) -> BurnProbe {
+    let mut p = probe_stream(asset, b);
+    if b.embedded && start_clock_origin_s(&asset.index.layout).is_some() {
+        if let Some((file, stream)) = ffmpeg_start_times(ffprobe, &b.path, &stream_spec(asset, b)) {
+            p.file_start_s = Some(file);
+            p.stream_start_s = stream;
+        }
+    }
+    p
+}
+
+/// [`probe`] without the start times.
+fn probe_stream(asset: &Asset, b: &BurnIn) -> BurnProbe {
     use std::io::Read;
     let head = |limit: u64| -> Option<Vec<u8>> {
         let mut v = Vec::new();
@@ -246,6 +376,7 @@ pub(crate) fn probe(asset: &Asset, b: &BurnIn) -> BurnProbe {
             BurnProbe {
                 canvas: pgs_canvas(&h, true),
                 first_subtitle_s: sup_first_s(&h),
+                ..Default::default()
             }
         }
         (Codec::VobSub, false) => {
@@ -253,6 +384,7 @@ pub(crate) fn probe(asset: &Asset, b: &BurnIn) -> BurnProbe {
             BurnProbe {
                 canvas: vobsub_canvas(&h),
                 first_subtitle_s: idx_first_s(&h),
+                ..Default::default()
             }
         }
         (Codec::Pgs, true) => BurnProbe {
@@ -261,14 +393,14 @@ pub(crate) fn probe(asset: &Asset, b: &BurnIn) -> BurnProbe {
                 .ok()
                 .flatten()
                 .and_then(|block| pgs_canvas(&block, false)),
-            first_subtitle_s: None,
+            ..Default::default()
         },
         (Codec::VobSub, true) => BurnProbe {
             canvas: asset
                 .index
                 .track(b.stream)
                 .and_then(|t| vobsub_canvas(&t.codec_private)),
-            first_subtitle_s: None,
+            ..Default::default()
         },
         _ => BurnProbe::default(),
     }
@@ -295,8 +427,10 @@ mod tests {
         let probe = BurnProbe {
             canvas: Some((1920, 1080)),
             first_subtitle_s: Some(9.1),
+            ..Default::default()
         };
-        let a = input_args(&b, &probe, 600.5);
+        // A subtitle file keeps its own times, whatever the video's clock.
+        let a = input_args(&b, &probe, 600.5, Some(21.4));
         let s = a.join(" ");
         assert!(
             s.contains("-seek_timestamp 1 -noaccurate_seek -ss 540.500000 -itsoffset -60.000000 -canvas_size 1920x1080 -i /m/Show/Ep.sup"),
@@ -305,7 +439,7 @@ mod tests {
         // Not past the file's first subtitle (near the start, or a late
         // first subtitle): read from the start, shifted the whole way.
         for first in [11.0, 65.0] {
-            let s = input_args(&b, &probe, first).join(" ");
+            let s = input_args(&b, &probe, first, None).join(" ");
             assert!(
                 s.contains("-seek_timestamp 1 -itsoffset") && !s.contains("-ss"),
                 "{s}"
@@ -315,7 +449,7 @@ mod tests {
             first_subtitle_s: Some(600.0),
             ..probe
         };
-        let s = input_args(&b, &late, 610.0).join(" ");
+        let s = input_args(&b, &late, 610.0, None).join(" ");
         assert!(
             s.contains("-itsoffset -610.000000 -canvas_size") && !s.contains("-ss"),
             "{s}"
@@ -326,11 +460,50 @@ mod tests {
             stream: 3,
             ..file("/m/Film.mkv", Codec::Pgs)
         };
-        let s = input_args(&e, &BurnProbe::default(), 100.0).join(" ");
+        let s = input_args(&e, &BurnProbe::default(), 100.0, None).join(" ");
         assert!(
-            s.contains("-ss 90.000000 -itsoffset -10.000000 -i /m/Film.mkv"),
+            s.contains(
+                "-seek_timestamp 1 -noaccurate_seek -ss 90.000000 -itsoffset -10.000000 -i /m/Film.mkv"
+            ),
             "{s}"
         );
+        // A track of an M2TS: ffmpeg's clock starts at the file's start time
+        // (21.4 s), the source timeline at 21.4 s on it, and the track's
+        // first packet is at 22.4 s.
+        let ts = BurnIn {
+            path: PathBuf::from("/m/Film.m2ts"),
+            ..e
+        };
+        let tp = BurnProbe {
+            file_start_s: Some(21.4),
+            stream_start_s: Some(22.4),
+            ..Default::default()
+        };
+        // `-ss` counts from the file's start time (no `-seek_timestamp`).
+        let s = input_args(&ts, &tp, 100.0, Some(21.4)).join(" ");
+        assert!(
+            s.contains("-noaccurate_seek -ss 90.000000 -itsoffset -10.000000 -i /m/Film.m2ts")
+                && !s.contains("-seek_timestamp"),
+            "{s}"
+        );
+        // Near the start: seeked to the track's first packet, not before it,
+        // and shifted from there.
+        let s = input_args(&ts, &tp, 0.0, Some(21.4)).join(" ");
+        assert!(s.contains("-ss 1.000000 -itsoffset 1.000000 -i"), "{s}");
+        let s = input_args(&ts, &tp, 4.0, Some(21.4)).join(" ");
+        assert!(s.contains("-ss 1.000000 -itsoffset -3.000000 -i"), "{s}");
+        // ffmpeg's start time earlier than the source timeline's (a subtitle
+        // track starting just before the audio and video): `-ss` from it.
+        let early = BurnProbe {
+            file_start_s: Some(21.0),
+            stream_start_s: Some(21.0),
+            ..Default::default()
+        };
+        let s = input_args(&ts, &early, 100.0, Some(21.4)).join(" ");
+        assert!(s.contains("-ss 90.400000 -itsoffset -10.000000 -i"), "{s}");
+        // ffprobe couldn't tell: the source timeline's origin stands in.
+        let s = input_args(&ts, &BurnProbe::default(), 2.0, Some(21.4)).join(" ");
+        assert!(s.contains("-ss 0.000000 -itsoffset -2.000000 -i"), "{s}");
         // Different files, different recipes.
         assert_ne!(
             b.key(),
@@ -359,9 +532,9 @@ mod tests {
 
     #[test]
     fn overlay_comes_after_the_chain() {
-        let b = file("/m/Ep.sup", Codec::Pgs);
+        // A subtitle file is stream 0 of its input.
         let g = filter_graph(
-            &b,
+            "0",
             "trim=start=1.5,setpts=PTS-STARTPTS",
             "scale=1280:720,format=nv12",
             "nv12",
@@ -376,13 +549,8 @@ mod tests {
              [1:0]scale=1280:720[s];\
              [v][s]overlay=x=0:y=0:eof_action=pass:repeatlast=0,format=nv12[out]"
         );
-        let e = BurnIn {
-            embedded: true,
-            stream: 4,
-            ..b
-        };
         let g = filter_graph(
-            &e,
+            "4",
             "p",
             "c",
             "nv12",
@@ -395,6 +563,36 @@ mod tests {
             g.contains("[1:4]null[s]") && g.ends_with("format=nv12,hwupload[out]"),
             "{g}"
         );
+        // A TS track, by PID.
+        let g = filter_graph("i:4608", "p", "c", "nv12", None, (1, 1), (1, 1), (1, 1));
+        assert!(g.contains("[1:i:4608]null[s]"), "{g}");
+    }
+
+    #[test]
+    fn source_timelines_start_where_ffmpeg_reads_them() {
+        let ts = |origin: i64| {
+            Layout::Ts(crate::ts::TsLayout {
+                packet_size: 192,
+                first_packet: 0,
+                data_end: 0,
+                origin,
+                discontinuities: Vec::new(),
+                video_share_ppm: 0,
+                byte_rate: 0,
+            })
+        };
+        assert_eq!(start_clock_origin_s(&ts(1_926_000)), Some(21.4));
+        // Starting 19.3 s before the 33-bit wrap: ffmpeg's timestamps start
+        // at −19.3 s there (it takes the wrap off), not at 95 424.4 s.
+        let near = TS_WRAP - 1_737_000;
+        assert_eq!(start_clock_origin_s(&ts(near)), Some(-19.3));
+        // More than 60 s before it: as they are.
+        let far = TS_WRAP - 61 * 90_000;
+        assert_eq!(start_clock_origin_s(&ts(far)), Some(far as f64 / 90_000.0));
+        let ext = Layout::External(crate::index::external::ExternalLayout {
+            start_time_ns: 1_400_000_000,
+        });
+        assert_eq!(start_clock_origin_s(&ext), Some(1.4));
     }
 
     #[test]

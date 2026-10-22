@@ -368,6 +368,8 @@ impl Drop for Waiter {
 /// Supervised ffmpeg video transcoder with a piece cache.
 pub struct VideoTranscoder {
     ffmpeg: PathBuf,
+    /// ffprobe, for when a burned-in track starts (`burn::probe`).
+    pub ffprobe: PathBuf,
     /// How the encoder is chosen (forced encoder, VAAPI node, test encodes).
     pub detect: DetectOptions,
     /// What `ffmpeg` can do, detected on first use.
@@ -529,6 +531,7 @@ impl VideoTranscoder {
     /// uses at most one more.
     pub fn new(ffmpeg: PathBuf, max_jobs: usize, cache_bytes: usize, cancel: CancellationToken) -> Self {
         VideoTranscoder {
+            ffprobe: crate::ffmpeg_tools::default_ffprobe(&ffmpeg),
             ffmpeg,
             detect: DetectOptions::default(),
             caps: tokio::sync::OnceCell::new(),
@@ -578,8 +581,8 @@ impl VideoTranscoder {
         let probe = match known {
             Some(p) => p,
             None => {
-                let (a, bb) = (asset.clone(), b.clone());
-                let p = tokio::task::spawn_blocking(move || burn::probe(&a, &bb))
+                let (a, bb, ffprobe) = (asset.clone(), b.clone(), self.ffprobe.clone());
+                let p = tokio::task::spawn_blocking(move || burn::probe(&a, &bb, &ffprobe))
                     .await
                     .map_err(|e| HlsError::Io(std::io::Error::other(e)))?;
                 if let Ok(mut m) = self.burn_probes.lock() {
@@ -736,7 +739,8 @@ impl VideoTranscoder {
             .and_then(|f| f.per_piece.first()?.first().copied())
             .unwrap_or(first.start_ticks);
         if let Some((b, probe)) = burn {
-            a.extend(burn::input_args(b, probe, first_ticks as f64 / ts));
+            let clock = burn::start_clock_origin_s(&asset.index.layout);
+            a.extend(burn::input_args(b, probe, first_ticks as f64 / ts, clock));
         }
         let map = if burn.is_some() { "[out]" } else { "0:v:0" };
         // passthrough: never duplicate/drop frames to fake a constant rate
@@ -776,7 +780,7 @@ impl VideoTranscoder {
                     "nv12"
                 };
                 let graph = burn::filter_graph(
-                    b,
+                    &burn::stream_spec(asset, b),
                     &pre,
                     &pipe.filters,
                     pix,
