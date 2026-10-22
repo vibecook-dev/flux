@@ -48,7 +48,7 @@ export function isImageSubtitle(codec: Codec): boolean {
   return codec === 'pgs' || codec === 'vob_sub' || codec === 'dvb_sub';
 }
 
-/** "中英特效字幕 · Chinese · PGS", "English · SRT · forced": a subtitle file beside the video. */
+/** "中英双语字幕 · Chinese · PGS", "English · SRT · forced": a subtitle file beside the video. */
 export function subtitleFileLabel(f: SubtitleFile): string {
   const lang = languageName(f.language);
   const parts = [f.title ?? lang ?? 'Subtitles'];

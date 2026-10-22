@@ -295,7 +295,7 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF)
 }
 
-/// The language a run of CJK text names (`中英特效字幕`, `简体中文`, `繁中`).
+/// The language a run of CJK text names (`中英双语字幕`, `简体中文`, `繁中`).
 fn cjk_language(token: &str) -> Option<&'static str> {
     if !token.chars().any(is_cjk) {
         return None;
@@ -402,7 +402,7 @@ pub fn name_tags(added: &str) -> NameTags {
         }
         if let Some(l) = cjk_language(token) {
             tags.language.get_or_insert_with(|| l.to_string());
-            // `中英特效字幕` says more than its language: keep it as the title.
+            // `中英双语字幕` says more than its language: keep it as the title.
             title.push(token);
             continue;
         }
