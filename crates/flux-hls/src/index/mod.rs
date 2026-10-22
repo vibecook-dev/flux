@@ -40,7 +40,11 @@ use crate::source::{Source, SourceId};
 ///    unit, not the whole first block (8× too high with 8-frame lacing).
 ///    play-audio had bumped to 6 alongside play-dv; 8 makes every index
 ///    cached by any of these builds rebuild once.
-pub const INDEX_VERSION: u16 = 8;
+/// 9: an MP4 video without a constant sample duration is rated by the
+///    durations most of its frames have (`mp4::dominant_rate`), not their
+///    average: frames held for seconds made 23.976 fps 22.75, and a
+///    transcode converts such a video at this rate.
+pub const INDEX_VERSION: u16 = 9;
 
 /// Matroska timestamps are rounded (mkvmerge) or truncated (ffmpeg) to the
 /// TimestampScale, 1 ms in practice: a frame within this distance of its
