@@ -1795,6 +1795,63 @@ mod tests {
         assert_eq!(audio::eac3_chan_loc_channels(0x1FF), 14);
     }
 
+    fn aac_stereo() -> EntrySpec {
+        EntrySpec::Audio {
+            fourcc: *b"mp4a",
+            channels: 2,
+            sample_rate: 48_000,
+            config: AudioConfig::Esds {
+                object_type: 0x40,
+                dsi: vec![0x11, 0x90],
+                avg_bitrate: 128_000,
+            },
+        }
+    }
+
+    /// `dvcC` of profile 8.1: an HDR10 base layer (bl_signal_compatibility_id 1).
+    const DVCC_P81: [u8; 24] = {
+        let mut d = DVCC_P5;
+        d[2] = 8 << 1;
+        d[4] = 1 << 4;
+        d
+    };
+
+    /// Profile 8.1 in a `dvh1`/`dvhe` entry, for a browser without Dolby
+    /// Vision: not the file (players without platform DV may not open these
+    /// entries) but a remux to `hvc1` with the record, as HDR10.
+    #[test]
+    fn dolby_vision_profile_8_entries_remux_to_hvc1_without_dv() {
+        for fourcc in [b"dvh1", b"dvhe"] {
+            let tag = std::str::from_utf8(fourcc).unwrap();
+            let path = synthetic_mp4(fourcc, Some(&DVCC_P81[..]), aac_stereo());
+            let asset = crate::asset::Asset::open(&path, 6_000_000_000).unwrap();
+            let v = asset.index.video_track().unwrap();
+            assert_eq!((v.codec, v.codec_tag.as_str()), (Codec::Hevc, tag));
+            let d = v.hdr.as_ref().and_then(|h| h.dovi).unwrap();
+            assert_eq!((d.profile, d.bl_signal_compat_id), (8, 1));
+            let probe = asset.index.to_probe_result();
+            let plan = crate::planner::plan(&probe, &crate::presets::chrome_desktop(), &Default::default());
+            assert_eq!(
+                plan.delivery,
+                flux_core::DeliveryFormat::HlsFmp4,
+                "{tag}: {plan:?}"
+            );
+            assert!(matches!(plan.video, flux_core::VideoOp::Copy { .. }), "{plan:?}");
+            let EntrySpec::Video {
+                fourcc: written,
+                dovi,
+                ..
+            } = asset.video_entry().unwrap()
+            else {
+                panic!("not video");
+            };
+            assert_eq!((&written, dovi.is_some()), (b"hvc1", true), "{tag}");
+            let m = crate::playlist::master_playlist(&asset, &plan);
+            assert!(m.contains("CODECS=\"hvc1.2.4.L150.B0,"), "{m}");
+            assert!(m.contains("VIDEO-RANGE=PQ"), "{m}");
+        }
+    }
+
     #[test]
     fn expand_tables() {
         let t = Mp4Tables {

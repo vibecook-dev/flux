@@ -251,16 +251,12 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         && burn_in.is_none()
         && bitrate_issue.is_none();
     // The file as is would play but for its sample entry: the remux below
-    // writes `hvc1`/`dvh1` (parameter sets in the sample entry).
-    let entry_quirk = direct_ok && quirks(&caps.client).needs_hvc1 && video.is_some_and(inband_hevc_entry);
-    if entry_quirk {
-        reasons.push(Reason::ClientQuirk {
-            note: "Apple players need HEVC parameter sets in the sample entry (hvc1), \
-                   so flux repackages this hev1 file (no quality loss)"
-                .into(),
-        });
+    // writes a standard one (`hvc1`/`dvh1`, `avc1`, `av01`).
+    let entry_issue = video.filter(|_| direct_ok).and_then(|v| entry_problem(v, caps));
+    if let Some(r) = &entry_issue {
+        reasons.push(r.clone());
     }
-    if direct_ok && !entry_quirk {
+    if direct_ok && entry_issue.is_none() {
         let audio = selected_audio
             .map(|a| AudioPlan {
                 track: a.index,
@@ -597,6 +593,47 @@ pub fn quirks(client: &str) -> Quirks {
 /// or Dolby Vision's `dvhe`).
 fn inband_hevc_entry(v: &Track) -> bool {
     v.codec == Codec::Hevc && matches!(v.codec_tag.as_str(), "hev1" | "dvhe")
+}
+
+/// A Dolby Vision MP4 sample entry (`dvh1`, `dvhe`, `dva1`, `dvav`, `dav1`).
+fn dovi_entry(v: &Track) -> bool {
+    matches!(v.codec_tag.as_str(), "dvh1" | "dvhe" | "dva1" | "dvav" | "dav1")
+}
+
+/// Why a video track the client decodes can't be played from its MP4 sample
+/// entry as is (`None`: it can). The remux writes a standard entry
+/// (`Asset::video_entry`), so the fix costs no quality.
+fn entry_problem(v: &Track, caps: &ClientCaps) -> Option<Reason> {
+    if quirks(&caps.client).needs_hvc1 && inband_hevc_entry(v) {
+        return Some(Reason::ClientQuirk {
+            note: "Apple players need HEVC parameter sets in the sample entry (hvc1), \
+                   so flux repackages this hev1 file (no quality loss)"
+                .into(),
+        });
+    }
+    // A client without this Dolby Vision profile plays the stream's
+    // compatible base layer (`video_problems`), but it may not open the DV
+    // entry (`dvh1`, `dvhe`…): Chromium's MP4 parser knows them only in
+    // builds with platform Dolby Vision. The remux writes the standard
+    // entry (`hvc1`/`avc1`/`av01`) with the DV record.
+    if dovi_entry(v) {
+        let profile = v.hdr.as_ref().and_then(|h| h.dovi).map(|d| d.profile);
+        let plays = caps
+            .video
+            .iter()
+            .find(|c| c.codec == v.codec)
+            .is_some_and(|c| profile.is_some_and(|p| c.dovi_profiles.contains(&p)));
+        if !plays {
+            return Some(Reason::ClientQuirk {
+                note: format!(
+                    "This device can't open Dolby Vision ({}) files, so flux repackages the {} video \
+                     in a standard sample entry (no quality loss)",
+                    v.codec_tag, v.codec
+                ),
+            });
+        }
+    }
+    None
 }
 
 /// Plans `probe` for a client whose quirks need facts only the playback
@@ -1584,6 +1621,72 @@ mod tests {
         ] {
             assert_eq!(quirks(client).needs_hvc1, apple, "{client}");
         }
+    }
+
+    /// A Dolby Vision entry with a compatible base layer (profile 8.1 in
+    /// `dvh1`/`dvhe`, 8.4, 9 in `dva1`, 10 in `dav1`): a client without that
+    /// profile plays the base layer, but not from the DV entry, so it gets a
+    /// remux (which writes `hvc1`/`avc1`/`av01`), never the file.
+    #[test]
+    fn dolby_vision_entries_are_remuxed_for_clients_without_the_profile() {
+        let dv = |tag: &str, codec: Codec, profile: u8, compat: u8| {
+            let v = Track {
+                codec_tag: tag.into(),
+                profile: (codec != Codec::Av1)
+                    .then(|| if codec == Codec::H264 { "High" } else { "Main 10" }.to_string()),
+                bit_depth: Some(if codec == Codec::H264 { 8 } else { 10 }),
+                width: Some(1920),
+                height: Some(1080),
+                hdr: Some(HdrInfo {
+                    format: HdrFormat::DolbyVision,
+                    mastering: None,
+                    cll: None,
+                    dovi: Some(flux_core::DoviConfig {
+                        profile,
+                        level: 6,
+                        rpu_present: true,
+                        el_present: false,
+                        bl_present: true,
+                        bl_signal_compat_id: compat,
+                    }),
+                }),
+                ..track(0, TrackKind::Video, codec)
+            };
+            let a = Track {
+                channels: Some(2),
+                ..track(1, TrackKind::Audio, Codec::Aac)
+            };
+            probe(Container::Mp4, vec![v, a])
+        };
+        let chrome = presets::chrome_desktop();
+        let prefs = PlanPrefs::default();
+        for p in [
+            dv("dvh1", Codec::Hevc, 8, 1),
+            dv("dvhe", Codec::Hevc, 8, 1),
+            dv("dvh1", Codec::Hevc, 8, 4),
+            dv("dva1", Codec::H264, 9, 2),
+            dv("dav1", Codec::Av1, 10, 1),
+        ] {
+            let tag = &p.tracks[0].codec_tag;
+            let plan = plan(&p, &chrome, &prefs);
+            assert_eq!(plan.delivery, DeliveryFormat::HlsFmp4, "{tag}: {plan:?}");
+            assert!(matches!(plan.video, VideoOp::Copy { .. }), "{tag}: {plan:?}");
+            assert_eq!(plan.audio[0].op, AudioOp::Copy, "{tag}");
+            match &plan.reasons[..] {
+                [Reason::ClientQuirk { note }] => assert!(note.contains(tag.as_str()), "{note}"),
+                r => panic!("{tag}: {r:?}"),
+            }
+            // /plan (catalog probe) agrees with /play (index).
+            assert_eq!(plan_from_probe(&p, &chrome, &prefs), plan, "{tag}");
+        }
+        // The same stream in a standard entry plays as the file.
+        assert!(plan(&dv("hvc1", Codec::Hevc, 8, 1), &chrome, &prefs).is_direct());
+        // A client with the profile plays the DV entry as is; Apple players
+        // get `dvhe` remuxed (hvc1 quirk).
+        let safari = presets::safari_macos();
+        assert!(plan(&dv("dvh1", Codec::Hevc, 8, 1), &safari, &prefs).is_direct());
+        let p = plan(&dv("dvhe", Codec::Hevc, 8, 1), &safari, &prefs);
+        assert!(!p.is_direct() && p.explain()[0].contains("hvc1"), "{p:?}");
     }
 
     /// No size known (an unrecognised sample entry): the 1080p box is kept
