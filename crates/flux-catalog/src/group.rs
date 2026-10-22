@@ -211,6 +211,10 @@ pub fn is_season_dir(name: &str) -> bool {
     if matches!(lower.as_str(), "specials" | "special") {
         return true;
     }
+    // "第2季", "第二季": Chinese season folders.
+    if lower.starts_with('第') && lower.ends_with('季') && (3..=8).contains(&lower.chars().count()) {
+        return true;
+    }
     let words: Vec<&str> = lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -338,6 +342,9 @@ pub struct WorkTarget {
     /// ids agree, or one folder is inside the other (`Show/` and
     /// `Show/alt versions/` are one show).
     pub folder: Option<String>,
+    /// The other-script half of a bilingual name ([`NameGuess::original_title`]),
+    /// stored as the item's `original_title` and indexed for search.
+    pub original_title: Option<String>,
 }
 
 /// One episode slot within a season.
@@ -410,6 +417,7 @@ fn unmatched(guess: &NameGuess, rel_path: &str) -> Placement {
             evidence: guess.evidence.clone(),
             unmatched: true,
             folder: None,
+            original_title: None,
         },
         edition: guess.edition.clone(),
         part: guess.part,
@@ -438,6 +446,7 @@ pub fn place(guess: &NameGuess, rel_path: &str) -> Placement {
                     evidence: guess.evidence.clone(),
                     unmatched: false,
                     folder: None,
+                    original_title: non_empty(&guess.original_title).map(str::to_string),
                 },
                 edition: guess.edition.clone(),
                 part: guess.part,
@@ -473,6 +482,7 @@ pub fn place(guess: &NameGuess, rel_path: &str) -> Placement {
                     evidence: guess.evidence.clone(),
                     unmatched: false,
                     folder: show_folder(rel_path),
+                    original_title: non_empty(&guess.original_title).map(str::to_string),
                 },
                 season: season.unwrap_or(1),
                 episodes,
@@ -546,6 +556,7 @@ struct NewItem<'a> {
     parent_id: Option<Id>,
     group_key: &'a str,
     title: &'a str,
+    original_title: Option<&'a str>,
     year: Option<u16>,
     season_number: Option<u16>,
     episode_number: Option<u16>,
@@ -566,8 +577,9 @@ fn insert_item(conn: &Connection, r: &mut Resolver, n: NewItem<'_>) -> Result<Id
     conn.prepare_cached(
         "INSERT INTO item(library_id, kind, parent_id, group_key, title, sort_title, year,
                           season_number, episode_number, air_date, extra_kind, tmdb_id, tvdb_id, imdb_id,
-                          match_state, match_confidence, match_evidence, added_at, content_added_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18, ?18)",
+                          match_state, match_confidence, match_evidence, added_at, content_added_at, updated_at,
+                          original_title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18, ?18, ?19)",
     )?
     .execute(params![
         r.library_id,
@@ -588,6 +600,7 @@ fn insert_item(conn: &Connection, r: &mut Resolver, n: NewItem<'_>) -> Result<Id
         n.confidence.map(f64::from),
         evidence,
         r.now,
+        n.original_title,
     ])?;
     let id = conn.last_insert_rowid();
     r.created.push(id);
@@ -596,7 +609,7 @@ fn insert_item(conn: &Connection, r: &mut Resolver, n: NewItem<'_>) -> Result<Id
         let doc = crate::fts::Doc {
             kind: n.kind.to_string(),
             title: n.title.to_string(),
-            original_title: None,
+            original_title: n.original_title.map(str::to_string),
             overview: None,
         };
         crate::fts::add(conn, id, &doc)?;
@@ -703,7 +716,12 @@ pub(crate) fn resolve_work(
     }
     let found = find_work(conn, r, kind, w, prefer)?;
     let id = match found {
-        Some(id) => id,
+        Some(id) => {
+            if let Some(o) = &w.original_title {
+                fill_original_title(conn, r, id, o)?;
+            }
+            id
+        }
         None => insert_item(
             conn,
             r,
@@ -712,6 +730,7 @@ pub(crate) fn resolve_work(
                 parent_id: None,
                 group_key: &w.group_key,
                 title: &w.title,
+                original_title: w.original_title.as_deref(),
                 year: w.year,
                 season_number: None,
                 episode_number: None,
@@ -731,6 +750,21 @@ pub(crate) fn resolve_work(
     }
     r.cache.insert(cache_key, id);
     Ok(id)
+}
+
+/// Give an existing work the original title a file's name carries, when it
+/// has none (a re-parse, or a bilingual file joining an English-named show),
+/// and re-index it for search. A provider's original title is never replaced.
+fn fill_original_title(conn: &Connection, r: &Resolver, id: Id, original: &str) -> Result<()> {
+    let Some(old) = crate::fts::doc(conn, id)? else {
+        return Ok(());
+    };
+    if old.original_title.is_some() {
+        return Ok(());
+    }
+    conn.prepare_cached("UPDATE item SET original_title = ?2, updated_at = ?3 WHERE id = ?1")?
+        .execute(params![id, original, r.now])?;
+    crate::fts::update(conn, id, &old)
 }
 
 /// A same-titled top-level candidate: `(id, year, ids)`.
@@ -1101,6 +1135,7 @@ fn resolve_child(
                     parent_id: Some(parent_id),
                     group_key,
                     title: &c.title,
+                    original_title: None,
                     year: None,
                     season_number: c.season_number,
                     episode_number: c.episode_number,

@@ -73,6 +73,34 @@ pub(crate) fn title_case_if_lower(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// `true` for CJK script characters: Han ideographs, kana, Hangul, bopomofo
+/// and their extensions. Release names glue these to Latin words and digits
+/// (`示例4k`, `S01E01中字`), and they are never ASCII-cased.
+pub(crate) fn is_cjk(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1100..=0x11FF       // Hangul jamo
+            | 0x2E80..=0x2FDF // CJK and Kangxi radicals
+            | 0x3005..=0x3007 // 々 〆 〇
+            | 0x3021..=0x3029 // Suzhou numerals
+            | 0x3040..=0x30FF // Hiragana, Katakana
+            | 0x3100..=0x312F // Bopomofo
+            | 0x3130..=0x318F // Hangul compatibility jamo
+            | 0x31F0..=0x31FF // Katakana extensions
+            | 0x3400..=0x4DBF // CJK extension A
+            | 0x4E00..=0x9FFF // CJK unified ideographs
+            | 0xAC00..=0xD7AF // Hangul syllables
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFF66..=0xFF9F // halfwidth Katakana
+            | 0x20000..=0x323AF // CJK extensions B–H
+    )
+}
+
+/// `true` when `s` contains a CJK character ([`is_cjk`]).
+pub(crate) fn has_cjk(s: &str) -> bool {
+    !s.is_ascii() && s.chars().any(is_cjk)
+}
+
 /// Collapses runs of whitespace into single spaces and trims the ends.
 pub(crate) fn collapse_ws(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -109,6 +137,13 @@ mod tests {
         );
         assert_eq!(norm_key("WALL·E"), "walle");
         assert_eq!(norm_key("千と千尋の神隠し"), "千と千尋の神隠し");
+    }
+
+    #[test]
+    fn cjk_characters() {
+        assert!(is_cjk('剧') && is_cjk('の') && is_cjk('カ') && is_cjk('한') && is_cjk('〇'));
+        assert!(!is_cjk('a') && !is_cjk('1') && !is_cjk('é') && !is_cjk('：') && !is_cjk('【'));
+        assert!(has_cjk("Some.Show.示例") && !has_cjk("Amélie"));
     }
 
     #[test]

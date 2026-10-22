@@ -28,7 +28,7 @@ use regex::Regex;
 use crate::folders::{self, FolderRole, GenericHint};
 use crate::ids;
 use crate::stem::{self, Marker, Stem, StemOpts};
-use crate::text::{nfc, norm_key, trim_seps};
+use crate::text::{is_cjk, nfc, norm_key, trim_seps};
 use crate::vocab;
 
 /// Fast-path confidence below which the fallback parser is consulted.
@@ -99,6 +99,12 @@ static SUFFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// `VideoFileStackingRules`.
 static STACK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(.*?)[\s._-]*(?:cd|dvd|part|pt|dis[ck])[\s._-]*(\d{1,2})$").expect("valid stack regex")
+});
+
+/// A sibling file name with an explicit episode marker (`S01E02`, `第02集`).
+static SIBLING_EPISODE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^a-z0-9])s\d{1,3}[\s._-]?e\d{1,4}|第(?:[0-9０-９]{1,4}|[零〇一二两兩三四五六七八九十百千]{1,7})[集话話回期]")
+        .expect("valid sibling episode regex")
 });
 
 /// Bare episode numbers inside a season folder: `03.mkv`, `03 - Title.mkv`.
@@ -188,15 +194,27 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
 
     // 3. Extra/sample suffixes, then the stem grammar.
     let (suffix, stem_core) = split_suffix(stem_noid.trim());
-    let stacked = stack_evidence(stem_core, siblings);
+    let letter = letter_stack(stem_core, siblings);
+    let stem_core = letter.map_or(stem_core, |(core, _)| core);
+    let stacked = letter.is_some() || stack_evidence(stem_core, siblings);
     let opts = StemOpts {
         tv: tv_ctx,
         stacked,
         folder: false,
         season_hint,
         movie_lib: lib == LibraryKind::Movies,
+        period_season: false,
     };
     let mut sp = stem::parse_stem(stem_core, opts);
+    if let Some((_, part)) = letter {
+        sp.part.get_or_insert(part);
+        ev.push(format!(
+            "stacked part {part}: a sibling differs only in the last letter"
+        ));
+    }
+    if sp.bracket_layout {
+        ev.push("name made of bracket groups: read group by group".into());
+    }
 
     // An obfuscated or bare filename inside a release folder
     // ("We.Bare.Bears.S01E14…-TVSmash/mxNMuJWe….mkv"): parse the folder.
@@ -267,6 +285,22 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
             strong: show_strong,
         };
         episode_guess(&mut g, &sp, show, season_folder, &l, &mut ev);
+    } else if let (true, Some(show), Some(own)) = (
+        (lib == LibraryKind::Shows || (tv_prior && l.season.is_some())) && siblings_are_episodes(siblings),
+        show_parse.as_ref().filter(|p| p.title.is_some()),
+        sp.full_title.clone().or_else(|| sp.title.clone()),
+    ) {
+        // "Show/Short.Film.1080p.mkv" beside Show.S01E01…: bonus material of
+        // the show, named after itself.
+        g.kind = GuessKind::Extra;
+        g.extra = Some(ExtraKind::Other);
+        g.title = show.title.clone();
+        g.original_title = show.original_title.clone();
+        g.year = show.year;
+        g.season = season_folder;
+        g.episode_title = Some(own);
+        g.confidence = 0.5;
+        ev.push("no episode number, but the other files here are episodes: an extra of the show".into());
     } else if lib == LibraryKind::Shows || (tv_prior && l.season.is_some()) {
         // A shows library file with no episode numbers: keep what we know.
         g.kind = GuessKind::Unknown;
@@ -294,6 +328,16 @@ pub(crate) fn resolve(rel_path: &Path, siblings: &[&str], lib: LibraryKind) -> R
             g.edition = Some(ed);
         }
     }
+    if let Some(o) = &g.original_title {
+        ev.push(format!("bilingual name: original title '{o}'"));
+    }
+    if matches!(g.kind, GuessKind::Movie | GuessKind::Episode)
+        && g.title.as_deref().is_some_and(stem::title_looks_like_tags)
+    {
+        // "[Some Studio]", "中英字幕": let the fallback have a go.
+        g.confidence = g.confidence.min(0.3);
+        ev.push("title looks like a bracket group or release tags".into());
+    }
     copy_tags(&mut g, &sp);
     if !g.ids.is_empty() {
         g.confidence = g.confidence.max(0.95);
@@ -309,6 +353,8 @@ fn folder_opts(tv: bool) -> StemOpts {
         folder: true,
         season_hint: None,
         movie_lib: false,
+        // A show folder "示例动画 第二期" names the season, not an episode.
+        period_season: tv,
     }
 }
 
@@ -407,6 +453,73 @@ fn stack_evidence(stem: &str, siblings: &[&str]) -> bool {
             .captures(s)
             .is_some_and(|c2| c2[1].to_lowercase() == prefix && &c2[2] != num)
     })
+}
+
+/// Letter-suffixed parts (`示例A.mp4` + `示例B.mp4`, `Movie-a.avi` +
+/// `Movie-b.avi`, Plex's and Kodi's "stacking"): the stem without its letter,
+/// and the part number (A = 1). Guards against titles that end in a letter:
+/// a sibling must share the prefix with another letter, the letters must run
+/// A, B, … without a gap, and the letter must follow CJK, a digit or a
+/// separator — never a Latin letter or a space ("Plan A" and "Plan B" are
+/// two films). Numbered siblings ("示例1", "示例2") are not stacked: those are
+/// usually sequels.
+fn letter_stack<'a>(stem: &'a str, siblings: &[&str]) -> Option<(&'a str, u8)> {
+    let (core, part) = letter_part(stem)?;
+    let key = norm_key(core);
+    let mut parts = vec![part];
+    for sib in siblings {
+        let (s, ext) = split_ext(sib);
+        if !ext.is_some_and(crate::is_video_ext) {
+            continue;
+        }
+        if let Some((c, p)) = letter_part(s) {
+            if norm_key(c) == key {
+                parts.push(p);
+            }
+        }
+    }
+    parts.sort_unstable();
+    parts.dedup();
+    let run = parts.len() >= 2 && parts[0] == 1 && parts.windows(2).all(|w| w[1] == w[0] + 1);
+    run.then_some((core, part))
+}
+
+/// The stacking key of a stem: [`letter_part`]'s or [`STACK_RE`]'s prefix,
+/// normalised (see [`crate::stack_key`]).
+pub(crate) fn stack_key(stem: &str) -> Option<String> {
+    let prefix = match letter_part(stem) {
+        Some((core, _)) => core.to_string(),
+        None => STACK_RE.captures(stem)?[1].to_string(),
+    };
+    let key = norm_key(&prefix);
+    (!key.is_empty()).then_some(key)
+}
+
+/// `示例A` → (`示例`, 1); `Movie-b` → (`Movie`, 2).
+fn letter_part(stem: &str) -> Option<(&str, u8)> {
+    let last = stem.chars().last()?;
+    let part = match last.to_ascii_lowercase() {
+        'a' => 1,
+        'b' => 2,
+        'c' => 3,
+        'd' => 4,
+        _ => return None,
+    };
+    let prefix = &stem[..stem.len() - 1];
+    let prev = prefix.chars().last()?;
+    let ok = is_cjk(prev) || prev.is_ascii_digit() || matches!(prev, '-' | '_' | '.' | ')' | ']');
+    let core = prefix.trim_end_matches(['-', '_', '.', ' ']);
+    (ok && core.chars().filter(|c| c.is_alphanumeric()).count() >= 2).then_some((core, part))
+}
+
+/// At least two of the other video files carry an explicit episode marker.
+fn siblings_are_episodes(siblings: &[&str]) -> bool {
+    siblings
+        .iter()
+        .filter(|s| split_ext(s).1.is_some_and(crate::is_video_ext) && SIBLING_EPISODE_RE.is_match(s))
+        .take(2)
+        .count()
+        >= 2
 }
 
 fn bare_episode(stem_core: &str, sp: &mut Stem, show: Option<&Stem>, ev: &mut Vec<String>) {
@@ -545,6 +658,7 @@ fn episode_guess(
         Marker::Date => 0.8,
         Marker::Absolute | Marker::Packed => 0.75,
         Marker::EpisodeOnly => 0.65,
+        Marker::CjkEpisode => 0.8,
         // A season pack file: no episode number; needs a human or AI.
         Marker::SeasonOnly => 0.4,
     };
@@ -592,6 +706,7 @@ fn episode_guess(
         }
     }
     g.year = show.and_then(|s| s.year).or(sp.year);
+    g.original_title = original_title(g.title.as_deref(), &[show, Some(sp)]);
 
     // Season: the filename marker, then the season folder, then a season-pack folder.
     let pack_season = show.and_then(|s| s.season);
@@ -717,6 +832,11 @@ fn movie_guess(
             (None, _) => "fast path: title only".to_string(),
         });
     }
+    g.original_title = if use_folder {
+        folder.as_ref().and_then(|f| f.original_title.clone())
+    } else {
+        original_title(g.title.as_deref(), &[Some(sp), folder.as_ref()])
+    };
     if let Some(alt) = &sp.alt_title {
         ev.push(format!("alternative title '({alt})' dropped from the title"));
     }
@@ -744,6 +864,17 @@ fn movie_guess(
         g.release_group = f.release_group;
     }
     g.confidence = conf.clamp(0.0, 1.0);
+}
+
+/// The CJK half of a bilingual name, from the first parse (file or folder)
+/// whose title is the one chosen.
+fn original_title(title: Option<&str>, parses: &[Option<&Stem>]) -> Option<String> {
+    let key = title.map(norm_key)?;
+    parses
+        .iter()
+        .flatten()
+        .filter(|p| p.title.as_deref().map(norm_key).as_ref() == Some(&key))
+        .find_map(|p| p.original_title.clone())
 }
 
 /// File tags override folder tags.

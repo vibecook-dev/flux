@@ -167,6 +167,8 @@ export interface ProviderIds {
 export interface NameGuess {
   kind: GuessKind;
   title: string | null;
+  /** The other-script half of a bilingual name ("示例剧" beside "Some Show"). */
+  original_title: string | null;
   year: number | null;
   season: number | null;
   episodes: number[];

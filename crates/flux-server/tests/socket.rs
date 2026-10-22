@@ -430,3 +430,68 @@ async fn no_watch_scans_at_startup_without_watching() {
         server.shutdown(Duration::from_secs(5)).await;
     }
 }
+
+/// After an upgrade (a file parsed by an older flux-names), the startup
+/// scan is a Deep one, which re-parses it: a Quick scan never re-reads an
+/// unchanged file. With watching on, the watcher's catch-up joins it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_scan_is_deep_after_a_parser_upgrade() {
+    for watch in [false, true] {
+        let dir = scratch("socket-upgrade");
+        let films = dir.path().join("films");
+        std::fs::create_dir_all(&films).unwrap();
+        let mut cfg = Config::for_tests(dir.path().join("data"));
+        cfg.scan = true;
+        cfg.watch = watch;
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        // A catalog an older flux wrote: one file at the previous parser version.
+        let id = tokio::task::block_in_place(|| {
+            let cat = Catalog::open(cfg.catalog_path(), CatalogConfig::default()).unwrap();
+            let lib = cat
+                .writer()
+                .create_library(flux_core::api::CreateLibrary {
+                    name: "Films".into(),
+                    kind: LibraryKind::Movies,
+                    roots: vec![films.to_string_lossy().into_owned()],
+                })
+                .wait()
+                .unwrap();
+            let lib_id = lib.id;
+            cat.writer()
+                .exec(move |c| {
+                    let root: i64 =
+                        c.query_row("SELECT id FROM root WHERE library_id = ?1", [lib_id], |r| {
+                            r.get(0)
+                        })?;
+                    c.execute(
+                        "INSERT INTO file(root_id, rel_path, size, mtime_ns, state, probe_version,
+                                          parse_version, first_seen_at, updated_at)
+                         VALUES(?1, 'Some Film (2019).mkv', 1, 1, 'present', ?2, ?3, 0, 0)",
+                        (root, flux_core::PROBE_VERSION, flux_core::PARSER_VERSION - 1),
+                    )?;
+                    Ok(())
+                })
+                .wait()
+                .unwrap();
+            cat.close().unwrap();
+            lib_id
+        });
+        let scanner = Arc::new(RecordingScanner::default());
+        let server = flux_server::start_with(cfg, Instant::now(), Some(scanner.clone()))
+            .await
+            .unwrap();
+        let want = if watch { 2 } else { 1 };
+        let startup = eventually(10, || {
+            let calls = scanner.calls.lock().unwrap().clone();
+            (calls.len() >= want).then_some(calls)
+        })
+        .await
+        .expect("the startup scan");
+        let mut expect = vec![format!("scan {id} Deep Scheduled")];
+        if watch {
+            expect.push(format!("watch {id}"));
+        }
+        assert_eq!(startup, expect);
+        server.shutdown(Duration::from_secs(5)).await;
+    }
+}

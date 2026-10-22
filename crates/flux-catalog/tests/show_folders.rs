@@ -62,6 +62,8 @@ fn show_folder_skips_season_folders_and_packs() {
         "Specials",
         "Season 1 (2005)",
         "12",
+        "第2季",
+        "第二季",
     ] {
         assert!(is_season_dir(s), "{s}");
     }
@@ -73,9 +75,16 @@ fn show_folder_skips_season_folders_and_packs() {
         "Season of the Witch",
         "Stargate SG-1",
         "The 4400",
+        "示例剧",
+        "第一滴血",
     ] {
         assert!(!is_season_dir(s), "{s}");
     }
+    // Chinese season folders sit inside the show folder too.
+    assert_eq!(
+        show_folder("示例剧/第二季/示例剧_第03集.mp4").as_deref(),
+        Some("示例剧")
+    );
 }
 
 /// `Show/` (yearless names) and `Show (1963)/`: two shows, in either order.
