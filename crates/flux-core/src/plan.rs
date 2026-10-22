@@ -109,11 +109,14 @@ pub enum VideoOp {
 pub enum BitstreamFix {
     /// Dolby Vision profile 7 → 8.1 (drop the enhancement layer, rewrite RPU).
     DoviP7To81,
-    /// Strip in-band VPS/SPS/PPS so `hvc1`/`avc1` sample entries are valid.
+    /// Strip in-band VPS/SPS/PPS, leaving them to the `hvc1`/`avc1` record.
     ///
     /// Not set by the planner: whether a stream carries in-band parameter sets
     /// is only known from the playback index, so flux-hls decides it per asset
     /// (`EngineConfig::strip_parameter_sets`) and plans list no fix for it.
+    /// flux-hls strips them from MPEG-TS remuxes only; Matroska/MP4 keyframes
+    /// keep theirs under `avc1`/`hvc1`, since a stream may change them
+    /// between keyframes.
     StripInbandParameterSets,
 }
 

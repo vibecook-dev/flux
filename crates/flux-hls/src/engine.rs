@@ -64,7 +64,10 @@ pub struct EngineConfig {
     pub audio_lookahead: u32,
     /// ffmpeg processes per on-demand transcoded audio segment.
     pub audio_parallel_parts: u32,
-    /// Concurrent encoder runs (sessions) for on-demand video segments.
+    /// Concurrent encoder runs (sessions) for video transcodes, requests
+    /// and prefetch together; 0 picks by the detected encoder
+    /// ([`crate::vtranscode::default_max_runs`]: 6 on hardware, 3 for
+    /// libx264).
     pub max_video_transcodes: usize,
     /// Byte budget of the transcoded-video segment cache.
     pub video_cache_bytes: usize,
@@ -74,7 +77,9 @@ pub struct EngineConfig {
     pub max_concurrent_reads: usize,
     /// Segments whose source range fits are served from the parse buffer.
     pub inline_limit: usize,
-    /// Strip in-band parameter sets so `hvc1`/`avc1` entries stay valid.
+    /// Signal parameter sets in the sample entry (`avc1`/`hvc1`) and drop
+    /// the in-band copies of MPEG-TS video ([`Asset::strip_parameter_sets`];
+    /// Matroska/MP4 samples keep theirs). `false`: `avc3`/`hev1`.
     pub strip_parameter_sets: bool,
     /// Byte budget of prepared assets kept in memory (index, expanded MP4
     /// sample tables, segment plan; LRU). An asset in use by a request stays
@@ -116,7 +121,7 @@ impl Default for EngineConfig {
             audio_cache_bytes: 256 << 20,
             audio_lookahead: 2,
             audio_parallel_parts: 2,
-            max_video_transcodes: 2,
+            max_video_transcodes: 0,
             video_cache_bytes: 512 << 20,
             video_lookahead: 3,
             max_concurrent_reads: 8,

@@ -268,7 +268,17 @@ pub fn plan(probe: &ProbeResult, caps: &ClientCaps, prefs: &PlanPrefs) -> Playba
         }
     }
 
-    let video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    let mut video_issues = video.map(|v| video_problems(v, caps)).unwrap_or_default();
+    // H.264 only: the codecs browsers decode whose transcode deinterlaces
+    // (MPEG-2 and VC-1 are transcoded for browsers anyway; an HEVC, AV1 or
+    // VP9 transcode would come out as interlaced as it went in).
+    let interlaced_h264 = video.is_some_and(|v| v.codec == Codec::H264 && v.interlaced == Some(true));
+    if interlaced_h264 && quirks(&caps.client).no_deinterlacer {
+        // Transcoded, so the transcoder's deinterlacer turns it progressive.
+        video_issues.push(Reason::ClientQuirk {
+            note: "this browser shows interlaced video combed, so it is deinterlaced".into(),
+        });
+    }
     let bitrate_issue = match (probe.bitrate, caps.max_bitrate) {
         (Some(b), Some(m)) if b > m => Some(Reason::BitrateTooHigh { bitrate: b, max: m }),
         _ => None,
@@ -628,6 +638,11 @@ pub struct Quirks {
     /// doesn't play as a file, and Apple's HLS spec requires `hvc1`. Such a
     /// file is remuxed, which writes `hvc1`/`dvh1`.
     pub needs_hvc1: bool,
+    /// Interlaced video plays combed: browsers show the two fields of a
+    /// frame woven together (no deinterlacer for MSE or progressive video;
+    /// a 576i DVD clip looked so in Chrome). Interlaced H.264 is
+    /// transcoded, and the transcode deinterlaces it.
+    pub no_deinterlacer: bool,
 }
 
 /// The quirks of a client id such as `"web/firefox-157/macos"`.
@@ -641,6 +656,7 @@ pub fn quirks(client: &str) -> Quirks {
     Quirks {
         idr_random_access_only: c.starts_with("web/firefox") && c.ends_with("/macos"),
         needs_hvc1: apple_native || webkit,
+        no_deinterlacer: c.starts_with("web/"),
     }
 }
 
@@ -1182,6 +1198,89 @@ mod tests {
         );
         let plan = plan(&p, &presets::chrome_desktop(), &PlanPrefs::default());
         assert!(plan.is_direct(), "{:?}", plan.reasons);
+    }
+
+    /// A 576i H.264 clip (SAR 16:15) is transcoded for browsers, which
+    /// would show it combed, at its own size (the init's `pasp` keeps 4:3);
+    /// a TV box that deinterlaces gets it as it is.
+    #[test]
+    fn interlaced_video_is_transcoded_for_browsers() {
+        let sd = Track {
+            width: Some(720),
+            height: Some(576),
+            interlaced: Some(true),
+            sample_aspect_ratio: Some(flux_core::Rational { num: 16, den: 15 }),
+            ..h264()
+        };
+        let p = probe(
+            Container::Mp4,
+            vec![
+                sd.clone(),
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        for caps in [
+            presets::chrome_desktop(),
+            presets::safari_macos(),
+            presets::firefox(),
+        ] {
+            let plan = plan(&p, &caps, &PlanPrefs::default());
+            let VideoOp::Transcode { width, height, .. } = plan.video else {
+                panic!("{}: {:?}", caps.client, plan.video);
+            };
+            assert_eq!((width, height), (720, 576), "{}", caps.client);
+            assert!(
+                plan.reasons
+                    .iter()
+                    .any(|r| matches!(r, Reason::ClientQuirk { note } if note.contains("deinterlaced"))),
+                "{}: {:?}",
+                caps.client,
+                plan.reasons
+            );
+        }
+        let tv = presets::apple_tv_4k();
+        assert!(matches!(
+            plan(&p, &tv, &PlanPrefs::default()).video,
+            VideoOp::Copy { .. }
+        ));
+        // Progressive (or unknown) video still direct-plays.
+        for interlaced in [Some(false), None] {
+            let q = probe(
+                Container::Mp4,
+                vec![
+                    Track {
+                        interlaced,
+                        ..sd.clone()
+                    },
+                    Track {
+                        channels: Some(2),
+                        ..track(1, TrackKind::Audio, Codec::Aac)
+                    },
+                ],
+            );
+            assert!(plan(&q, &presets::chrome_desktop(), &PlanPrefs::default()).is_direct());
+        }
+        // Only H.264: an HEVC transcode wouldn't deinterlace (HEVC codes
+        // fields as separate pictures), so interlaced HEVC stays a copy.
+        let hevc = probe(
+            Container::Matroska,
+            vec![
+                Track {
+                    codec: Codec::Hevc,
+                    profile: Some("Main".into()),
+                    ..sd.clone()
+                },
+                Track {
+                    channels: Some(2),
+                    ..track(1, TrackKind::Audio, Codec::Aac)
+                },
+            ],
+        );
+        let p = plan(&hevc, &presets::safari_macos(), &PlanPrefs::default());
+        assert!(matches!(p.video, VideoOp::Copy { .. }), "{:?}", p.reasons);
     }
 
     #[test]

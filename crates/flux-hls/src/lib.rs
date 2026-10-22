@@ -41,6 +41,8 @@ pub mod playlist;
 pub mod segment;
 pub mod source;
 pub mod subtitle;
+#[cfg(test)]
+mod test_mkv;
 pub mod transcode;
 pub mod ts;
 pub mod vtranscode;
