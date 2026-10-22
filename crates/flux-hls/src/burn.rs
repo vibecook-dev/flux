@@ -136,8 +136,10 @@ pub struct BurnProbe {
     /// without, and the run with it. ffmpeg reads the rate from the head of
     /// the file (`-probesize`, 5 MB), which can hold no audio frame (an
     /// MPEG-TS whose audio starts late), and ffprobe reads the same head the
-    /// same way; it also makes a stream of the AC-3 core a Blu-ray TrueHD
-    /// PID may lack. Matroska and MP4 headers carry the rate.
+    /// same way. A Blu-ray TrueHD PID is two streams to ffmpeg, TrueHD and
+    /// its AC-3 core, and the core's has no rate where the PID has no core
+    /// (ffmpeg's own TrueHD encoder writes none). Matroska and MP4 headers
+    /// carry the rate.
     pub heartbeat_stream: Option<u32>,
 }
 
@@ -342,9 +344,9 @@ const HEARTBEAT_RELEASE: u32 = 7;
 /// video file again) copied to ffmpeg's `null` muxer until `run_s` (the
 /// run's length from its first frame, where that input's clock is 0) plus
 /// a margin. Its packets are the subtitle's heartbeats (module docs).
-/// Empty for a subtitle file, a video without audio whose sample rate
-/// ffmpeg knows, and an ffmpeg before [`HEARTBEAT_RELEASE`] or of an
-/// unknown release.
+/// Empty for a subtitle file, for a video file without an audio stream
+/// whose sample rate ffmpeg knows, and for an ffmpeg before
+/// [`HEARTBEAT_RELEASE`] or of an unknown release.
 pub(crate) fn companion_output(b: &BurnIn, probe: &BurnProbe, caps: &FfmpegCaps, run_s: f64) -> Vec<String> {
     match probe.heartbeat_stream {
         Some(n) if b.embedded && caps.major_version().is_some_and(|m| m >= HEARTBEAT_RELEASE) => {
