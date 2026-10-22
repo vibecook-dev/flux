@@ -10,6 +10,8 @@ import type {
   ArtRef,
   CreateInvite,
   CreateLibrary,
+  FolderPage,
+  FolderSort,
   Home,
   Id,
   Invite,
@@ -113,6 +115,14 @@ export interface ItemsQuery {
   filter?: ItemFilter | null;
 }
 
+export interface FolderQuery {
+  /** A `FolderRef.folder`; omitted or empty = the library's top. */
+  folder?: string | null;
+  cursor?: string | null;
+  limit?: number;
+  sort?: FolderSort;
+}
+
 /** Pick an image width bucket so `?w=` URLs repeat (and cache) across screens. */
 export function artWidthBucket(cssPx: number, dpr = 1): number {
   const want = cssPx * dpr;
@@ -181,6 +191,16 @@ export function createFluxClient(opts: FluxClientOptions) {
       if (q.filter) params.set('filter', q.filter);
       const qs = params.toString();
       return get<Page<ItemSummary>>(`/api/v1/libraries/${id}/items${qs ? `?${qs}` : ''}`, signal);
+    },
+    /** GET /api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort= (a videos library's folders). */
+    libraryFolders: (id: Id, q: FolderQuery = {}, signal?: AbortSignal) => {
+      const params = new URLSearchParams();
+      if (q.folder) params.set('folder', q.folder);
+      if (q.cursor) params.set('cursor', q.cursor);
+      if (q.limit !== undefined) params.set('limit', String(q.limit));
+      if (q.sort) params.set('sort', q.sort);
+      const qs = params.toString();
+      return get<FolderPage>(`/api/v1/libraries/${id}/folders${qs ? `?${qs}` : ''}`, signal);
     },
     /** GET /api/v1/home */
     home: () => get<Home>('/api/v1/home'),

@@ -11,8 +11,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use flux_catalog::read;
 use flux_core::api::{
-    CreateLibrary, Home, Id, ItemDetail, ItemSummary, ItemsParams, Library, MarkWatched, Page, ScanStatus,
-    ServerInfo, TailnetConnect, TailnetInfo,
+    CreateLibrary, FolderPage, FolderParams, Home, Id, ItemDetail, ItemSummary, ItemsParams, Library,
+    MarkWatched, Page, ScanStatus, ServerInfo, TailnetConnect, TailnetInfo,
 };
 use serde::Deserialize;
 
@@ -32,6 +32,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/libraries", get(list_libraries).post(create_library))
         .route("/api/v1/libraries/{id}/scan", post(scan_library))
         .route("/api/v1/libraries/{id}/items", get(library_items))
+        .route("/api/v1/libraries/{id}/folders", get(library_folders))
         .route("/api/v1/home", get(home))
         .route("/api/v1/items/{id}", get(item))
         .route("/api/v1/items/{id}/children", get(children))
@@ -222,6 +223,32 @@ async fn library_items(
         ..Default::default()
     };
     Ok(Json(st.catalog.read(move |c| read::items_page(c, &q)).await?))
+}
+
+/// `GET /api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=`: one
+/// folder of a videos library; 400 for a library of another kind.
+async fn library_folders(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    id: Result<UrlPath<Id>, axum::extract::rejection::PathRejection>,
+    params: Result<Query<FolderParams>, QueryRejection>,
+) -> ApiResult<Json<FolderPage>> {
+    let id = id_of(id)?;
+    let Query(p) = params?;
+    let user = st.user_id(&caller).await?;
+    let q = read::FolderQuery {
+        library_id: id,
+        folder: p.folder.unwrap_or_default(),
+        sort: p.sort.unwrap_or_default(),
+        cursor: p.cursor,
+        limit: p.limit.unwrap_or(100),
+        user_id: Some(user),
+    };
+    st.catalog
+        .read(move |c| read::folder_page(c, &q))
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("No such folder"))
 }
 
 /// `GET /api/v1/home`.

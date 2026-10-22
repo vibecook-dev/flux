@@ -10,11 +10,12 @@ import { subscribeEvents } from '../api/events';
 import { foldForSearch, formatAgo, formatCount, titleSortKey } from '../api/format';
 import { refreshLibrary, useLibraryList } from '../api/library-list';
 import { useLibraries } from '../api/queries';
-import { LIBRARY_SORTS, type ItemSummary, type LibrarySort } from '../api/types';
+import { LIBRARY_SORTS, type Id, type ItemSummary, type Library as LibraryInfo, type LibrarySort } from '../api/types';
 import { PosterCard } from '../components/Cards';
 import { Icon } from '../components/Icon';
 import { VirtualGrid, type CellArgs, type VirtualGridHandle } from '../components/VirtualGrid';
 import styles from './Library.module.css';
+import { VideoFolders } from './VideoFolders';
 
 const SORT_LABELS: Record<LibrarySort, string> = {
   title: 'Title A–Z',
@@ -54,7 +55,14 @@ export default function Library({ params, query }: RouteProps) {
   const libs = useLibraries();
   const lib = libs.data?.find((l) => l.id === id);
   useTitle(lib?.name ?? 'Library');
+  // A videos library opens by folder (the whole list is a click away); its
+  // kind is known once the library list is in.
+  if (lib?.kind === 'videos' && query.get('view') !== 'all') return <VideoFolders lib={lib} query={query} />;
+  if (libs.data === undefined && libs.status !== 'error') return <div className={styles.page} aria-busy="true" />;
+  return <LibraryGrid id={id} lib={lib} query={query} />;
+}
 
+function LibraryGrid({ id, lib, query }: { id: Id; lib: LibraryInfo | undefined; query: URLSearchParams }) {
   const sortParam = query.get('sort') ?? 'title';
   const sort: LibrarySort = (LIBRARY_SORTS as readonly string[]).includes(sortParam) ? (sortParam as LibrarySort) : 'title';
   const text = query.get('q') ?? '';
@@ -116,7 +124,7 @@ export default function Library({ params, query }: RouteProps) {
     setQuery({ f: [...next].join(',') || null });
   };
 
-  const noun = lib?.kind === 'shows' ? 'shows' : lib?.kind === 'mixed' ? 'titles' : 'films';
+  const noun = lib?.kind === 'shows' ? 'shows' : lib?.kind === 'mixed' ? 'titles' : lib?.kind === 'videos' ? 'videos' : 'films';
   // Roots say for themselves whether they answer (RootStatus), no scan-state parsing.
   const offlineRoots = lib?.roots.filter((r) => !r.available) ?? [];
 
@@ -152,6 +160,16 @@ export default function Library({ params, query }: RouteProps) {
             onChange={(e) => setQuery({ q: e.target.value || null })}
           />
         </label>
+        {lib?.kind === 'videos' && (
+          <div className={`${styles.chips} ${styles.viewChips}`} role="group" aria-label="View">
+            <button type="button" className={styles.chip} aria-pressed="false" onClick={() => setQuery({ view: null, q: null, f: null })}>
+              Folders
+            </button>
+            <button type="button" className={styles.chip} aria-pressed="true">
+              All videos
+            </button>
+          </div>
+        )}
         <div className={styles.chips} role="group" aria-label="Filters">
           {FILTERS.map(([f, label]) => (
             <button key={f} type="button" className={styles.chip} aria-pressed={active.has(f)} onClick={() => toggle(f)}>

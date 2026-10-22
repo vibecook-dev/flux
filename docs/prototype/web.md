@@ -110,6 +110,7 @@ mock/       db.ts (catalog), handlers.ts (MSW), art.ts (stand-in posters + real 
 | `createLibrary(CreateLibrary)` | `POST /api/v1/libraries` |
 | `scanLibrary(id)` | `POST /api/v1/libraries/{id}/scan` |
 | `libraryItems(id, {cursor, limit, sort}, signal?)` | `GET /api/v1/libraries/{id}/items` |
+| `libraryFolders(id, {folder, cursor, limit, sort}, signal?)` | `GET /api/v1/libraries/{id}/folders` (a videos library's folder view) |
 | `home()` | `GET /api/v1/home` |
 | `item(id)` | `GET /api/v1/items/{id}` |
 | `children(id)` | `GET /api/v1/items/{id}/children` |

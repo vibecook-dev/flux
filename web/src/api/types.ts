@@ -151,7 +151,11 @@ export interface ProbeResult {
 
 // ───────────────────────────── names.rs ─────────────────────────────
 
-export const LIBRARY_KINDS = ['movies', 'shows', 'mixed'] as const;
+/**
+ * `videos`: home videos and clips, one item per file, browsed by folder
+ * (`GET /libraries/{id}/folders`) and never matched against a metadata source.
+ */
+export const LIBRARY_KINDS = ['movies', 'shows', 'mixed', 'videos'] as const;
 export type LibraryKind = (typeof LIBRARY_KINDS)[number];
 
 export const GUESS_KINDS = ['movie', 'episode', 'extra', 'sample', 'unknown'] as const;
@@ -427,6 +431,48 @@ export interface ItemsParams {
   limit: number | null;
   sort: LibrarySort | null;
   filter: ItemFilter | null;
+}
+
+/** Orders of a folder's videos (`FolderSort`): by name, or by the file's date. */
+export const FOLDER_SORTS = ['title', '-title', 'date', '-date'] as const;
+export type FolderSort = (typeof FOLDER_SORTS)[number];
+
+/** Query of `GET /api/v1/libraries/{id}/folders` (every key optional on the wire). */
+export interface FolderParams {
+  /** A `FolderRef.folder` from an earlier answer; `null`/empty = the library's top. */
+  folder: string | null;
+  cursor: string | null;
+  limit: number | null;
+  sort: FolderSort | null;
+}
+
+/** A folder of a library: opaque `folder` to pass back, and its name. */
+export interface FolderRef {
+  folder: string;
+  name: string;
+}
+
+/** A subfolder: videos in it and below it. */
+export interface FolderEntry {
+  folder: string;
+  name: string;
+  item_count: number;
+}
+
+/** `GET /api/v1/libraries/{id}/folders`: one folder of a library. */
+export interface FolderPage {
+  /** This folder (`folder` "" and the library's name at the top). */
+  at: FolderRef;
+  /** The folders above this one, top first (empty at the top): breadcrumbs. */
+  parents: FolderRef[];
+  /** Subfolders that hold videos, by name; repeated on every page. */
+  folders: FolderEntry[];
+  /** A page of the videos directly in this folder. */
+  items: ItemSummary[];
+  /** Cursor for the next page of `items`; `null` at the end. */
+  next: string | null;
+  /** Videos directly in this folder. */
+  total: number;
 }
 
 export const ITEM_KINDS = ['movie', 'show', 'season', 'episode', 'extra'] as const;

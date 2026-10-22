@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 /// 3: no change in the parser's output. A catalog a version-2 build already
 /// re-parsed is re-parsed once more, so the catalog's re-parse rules regroup
 /// and retitle it as they do a version-1 catalog.
-pub const PARSER_VERSION: u16 = 3;
+///
+/// 4: in a mixed library without a TV or season folder, an episode without
+/// an explicit marker needs a numbered series of files beside it, a dated
+/// recording is never one, and `other`/`others` folders hold no extras;
+/// [`LibraryKind::Videos`].
+pub const PARSER_VERSION: u16 = 4;
 
 /// What kind of library a root belongs to. It is a strong prior for parsing:
 /// `Show 1x03.mkv` in a movie library is still probably an episode, but
@@ -18,6 +23,37 @@ pub enum LibraryKind {
     Movies,
     Shows,
     Mixed,
+    /// Home videos, clips and anything else that is neither a film nor a
+    /// series (Plex's "Other Videos"): every file is its own item, titled
+    /// after the file and browsed by folder. Nothing is grouped (no shows,
+    /// versions or extras; only a true multi-part stack is one item) and
+    /// nothing is matched against a metadata source.
+    Videos,
+}
+
+impl LibraryKind {
+    /// Every kind, in the order the API lists them.
+    pub const ALL: [LibraryKind; 4] = [
+        LibraryKind::Movies,
+        LibraryKind::Shows,
+        LibraryKind::Mixed,
+        LibraryKind::Videos,
+    ];
+
+    /// The wire and catalog name: `movies`, `shows`, `mixed`, `videos`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LibraryKind::Movies => "movies",
+            LibraryKind::Shows => "shows",
+            LibraryKind::Mixed => "mixed",
+            LibraryKind::Videos => "videos",
+        }
+    }
+
+    /// Whether a metadata source (TMDB) may match this library's items.
+    pub fn matches_metadata(self) -> bool {
+        self != LibraryKind::Videos
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,5 +172,22 @@ impl NameGuess {
             confidence: 0.0,
             evidence: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_kinds_serialise_as_their_names() {
+        for k in LibraryKind::ALL {
+            let wire = serde_json::to_string(&k).unwrap();
+            assert_eq!(wire, format!("\"{}\"", k.as_str()));
+            assert_eq!(serde_json::from_str::<LibraryKind>(&wire).unwrap(), k);
+        }
+        assert_eq!(LibraryKind::Videos.as_str(), "videos");
+        assert!(!LibraryKind::Videos.matches_metadata());
+        assert!(LibraryKind::Mixed.matches_metadata());
     }
 }

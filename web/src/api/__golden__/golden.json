@@ -148,6 +148,12 @@
       "scene",
       "other"
     ],
+    "FolderSort": [
+      "title",
+      "-title",
+      "date",
+      "-date"
+    ],
     "GuessKind": [
       "movie",
       "episode",
@@ -186,7 +192,8 @@
     "LibraryKind": [
       "movies",
       "shows",
-      "mixed"
+      "mixed",
+      "videos"
     ],
     "MetadataSource": [
       "none",
@@ -599,6 +606,55 @@
         "type": "tailnet"
       }
     ],
+    "FolderPage": {
+      "at": {
+        "folder": "3/2019/Trip",
+        "name": "Trip"
+      },
+      "folders": [
+        {
+          "folder": "3/2019/Trip/Day 2",
+          "item_count": 4,
+          "name": "Day 2"
+        }
+      ],
+      "items": [
+        {
+          "added_at": 1760000000000,
+          "available": true,
+          "backdrop": null,
+          "badges": [],
+          "child_count": null,
+          "id": 7,
+          "kind": "movie",
+          "parent_title": null,
+          "poster": null,
+          "progress": null,
+          "subtitle": null,
+          "title": "IMG 0001",
+          "unwatched_count": null,
+          "year": null
+        }
+      ],
+      "next": "e1760000000000~696d672030303030303031.12",
+      "parents": [
+        {
+          "folder": "",
+          "name": "Home videos"
+        },
+        {
+          "folder": "3/2019",
+          "name": "2019"
+        }
+      ],
+      "total": 2
+    },
+    "FolderParams": {
+      "cursor": "t696d672030303030303031.12",
+      "folder": "3/2019/Trip",
+      "limit": 100,
+      "sort": "-date"
+    },
     "Home": {
       "continue_watching": [
         {

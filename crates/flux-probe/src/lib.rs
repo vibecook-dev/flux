@@ -39,7 +39,7 @@ pub use driver::{
 };
 pub use error::ProbeError;
 pub use prober::{FrameSei, FrameSeiProber, Prober, SeiStep, Step, MAX_BYTES, MAX_READS, MIN_READ, TS_HEAD};
-pub use sniff::{sniff, ContainerHint};
+pub use sniff::{not_media, sniff, ContainerHint, NOT_MEDIA_SNIFF_LEN};
 
 /// File extensions the scanner hands to the probe (lower case): the single
 /// list in [`flux_core::VIDEO_EXTENSIONS`]. It includes containers only the

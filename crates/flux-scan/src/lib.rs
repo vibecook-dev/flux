@@ -222,6 +222,10 @@ pub struct ScanSummary {
     /// that did not probe as media, and so were not cataloged (a
     /// `Leak (2021).mkv -> ~/.ssh/id_ed25519` link never becomes an item).
     pub external_not_media: u64,
+    /// Files with a video extension that are not media at all (text: a
+    /// TypeScript `.ts`). Cataloged as such, so they never become items
+    /// and no later scan opens them again until they change.
+    pub not_media: u64,
     /// Files left to the background fingerprint pass
     /// ([`ScanConfig::fingerprint_later`]); see [`Scanner::wait_fingerprints`].
     pub fingerprints_deferred: u64,

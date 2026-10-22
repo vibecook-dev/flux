@@ -10,6 +10,7 @@
 //! | POST | `/api/v1/libraries` | [`CreateLibrary`] → [`Library`] |
 //! | POST | `/api/v1/libraries/{id}/scan` | → [`ScanStatus`] |
 //! | GET  | `/api/v1/libraries/{id}/items?cursor=&limit=&sort=&filter=` | [`ItemsParams`] → [`Page`]`<`[`ItemSummary`]`>` |
+//! | GET  | `/api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=` | [`FolderParams`] → [`FolderPage`] (a videos library by folder: a folder's subfolders and the videos directly in it; 400 for other kinds) |
 //! | GET  | `/api/v1/home` | → [`Home`] (continue watching, recently added, per-library rows) |
 //! | GET  | `/api/v1/items/{id}` | → [`ItemDetail`] |
 //! | GET  | `/api/v1/items/{id}/children` | → `Vec<`[`ItemSummary`]`>` (seasons of a show, episodes of a season) |
@@ -268,6 +269,85 @@ pub enum ItemSort {
     /// Newest addition first ("recently added").
     #[serde(rename = "-added")]
     AddedDesc,
+}
+
+/// Query parameters of `GET /api/v1/libraries/{id}/folders`, the folder
+/// view of a videos library ([`LibraryKind::Videos`]), where every file is
+/// a video of its own. A library of another kind answers 400: there a
+/// show's episodes and a film's extras are no top-level items, so its
+/// folders would list few of their files.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FolderParams {
+    /// The folder: a [`FolderRef::folder`] from an earlier answer. `None`
+    /// (or empty) = the library's top: its folder when it has one, one
+    /// subfolder per folder when it has several.
+    pub folder: Option<String>,
+    /// Opaque cursor from the previous page's [`FolderPage::next`].
+    pub cursor: Option<String>,
+    /// Page size of [`FolderPage::items`]; the server clamps it (1..=500,
+    /// default 100).
+    pub limit: Option<u32>,
+    /// `None` = [`FolderSort::Title`].
+    pub sort: Option<FolderSort>,
+}
+
+/// Orders of a folder's videos. On the wire a leading `-` reverses:
+/// `title`, `-title`, `date`, `-date`. Subfolders are always by name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FolderSort {
+    /// By name, numbers in natural order (`clip 2` before `clip 10`).
+    #[default]
+    #[serde(rename = "title")]
+    Title,
+    #[serde(rename = "-title")]
+    TitleDesc,
+    /// Oldest first, by the file's modification time (when a home video
+    /// was recorded or saved, for most files).
+    #[serde(rename = "date")]
+    Date,
+    /// Newest first.
+    #[serde(rename = "-date")]
+    DateDesc,
+}
+
+/// A folder of a library: what to call it and how to open it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderRef {
+    /// Opaque; pass it back as [`FolderParams::folder`]. `""` is the top.
+    pub folder: String,
+    /// The folder's own name (for one of a library's folders, the last
+    /// part of its path; for the top, the library's name).
+    pub name: String,
+}
+
+/// A subfolder in a [`FolderPage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderEntry {
+    /// Opaque; pass it back as [`FolderParams::folder`].
+    pub folder: String,
+    pub name: String,
+    /// Videos in it and in its subfolders.
+    pub item_count: u64,
+}
+
+/// `GET /api/v1/libraries/{id}/folders`: one folder of a library.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderPage {
+    /// This folder (`folder` `""` and the library's name at the top).
+    pub at: FolderRef,
+    /// The folders above this one, top first, for breadcrumbs: empty at the
+    /// top, else the top and every folder down to this one's parent.
+    pub parents: Vec<FolderRef>,
+    /// Subfolders that hold videos, by name. Every page repeats them.
+    pub folders: Vec<FolderEntry>,
+    /// A page of the videos directly in this folder (top-level items with
+    /// a file here), in [`FolderParams::sort`] order.
+    pub items: Vec<ItemSummary>,
+    /// Cursor for the next page of `items`; `None` at the end.
+    pub next: Option<String>,
+    /// Videos directly in this folder, on every page.
+    pub total: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -681,6 +761,35 @@ mod tests {
         assert_eq!(wire, ["\"unwatched\"", "\"in_progress\"", "\"4k\"", "\"hdr\""]);
         let p: ItemsParams = serde_json::from_str(r#"{"filter":"4k"}"#).unwrap();
         assert_eq!(p.filter, Some(ItemFilter::Uhd));
+    }
+
+    #[test]
+    fn folder_sorts_and_params_match_the_web_client() {
+        // web/src/api/types.ts `FOLDER_SORTS`.
+        let all = [
+            FolderSort::Title,
+            FolderSort::TitleDesc,
+            FolderSort::Date,
+            FolderSort::DateDesc,
+        ];
+        let wire: Vec<String> = all.iter().map(|s| serde_json::to_string(s).unwrap()).collect();
+        assert_eq!(wire, ["\"title\"", "\"-title\"", "\"date\"", "\"-date\""]);
+        let p: FolderParams = serde_json::from_str(r#"{"folder":"3/a/b","sort":"-date"}"#).unwrap();
+        assert_eq!(
+            p,
+            FolderParams {
+                folder: Some("3/a/b".into()),
+                sort: Some(FolderSort::DateDesc),
+                ..FolderParams::default()
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<FolderParams>("{}").unwrap(),
+            FolderParams::default()
+        );
+        let lib: CreateLibrary =
+            serde_json::from_str(r#"{"name":"Home","kind":"videos","roots":["/v"]}"#).unwrap();
+        assert_eq!(lib.kind, LibraryKind::Videos);
     }
 
     #[test]

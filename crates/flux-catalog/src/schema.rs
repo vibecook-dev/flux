@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -443,10 +443,30 @@ ALTER TABLE art_v6 RENAME TO art;
 CREATE INDEX art_item ON art(item_id, kind);
 "#;
 
+/// v7: the `videos` library kind (`LibraryKind::Videos`). SQLite can't
+/// change a CHECK constraint, so `library` is rebuilt the way SQLite's
+/// documentation describes (new table, copy, drop, rename). [`migrate`]
+/// runs migrations with foreign keys off, so dropping the old table
+/// deletes nothing that references it; `root` and `item` keep referring to
+/// `library` by name, which is the new table once it is renamed.
+const V7: &str = r#"
+CREATE TABLE library_v7(
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK(kind IN ('movies','shows','mixed','videos')),
+    created_at  INTEGER NOT NULL
+);
+INSERT INTO library_v7(id, name, kind, created_at) SELECT id, name, kind, created_at FROM library;
+DROP TABLE library;
+ALTER TABLE library_v7 RENAME TO library;
+"#;
+
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
 ///
-/// Idempotent: a database already at the current version is left untouched
-/// (no writes).
+/// Foreign keys are off while migrations run (a migration may rebuild a
+/// table that others reference, and dropping it must not cascade), and
+/// checked afterwards. Idempotent: a database already at the current
+/// version is left untouched (no writes).
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -455,6 +475,27 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
             supported: SCHEMA_VERSION,
         });
     }
+    if found == SCHEMA_VERSION {
+        return Ok(());
+    }
+    // `foreign_keys` can only change outside a transaction.
+    let fk: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    if fk {
+        conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    }
+    let res = run_migrations(conn, found);
+    if fk {
+        conn.execute_batch("PRAGMA foreign_keys = ON")?;
+    }
+    res?;
+    let broken: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+    if broken > 0 {
+        tracing::warn!(rows = broken, "catalog rows refer to rows that don't exist");
+    }
+    Ok(())
+}
+
+fn run_migrations(conn: &mut Connection, found: i64) -> Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(found as usize) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
@@ -663,6 +704,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx, 1);
+    }
+
+    /// v7 rebuilds `library` to allow the `videos` kind. Roots and items
+    /// refer to it with ON DELETE CASCADE (and art to items): the rebuild
+    /// must keep them all, and deleting a library must still cascade
+    /// afterwards. Catalogs arrive at v5 (before v6 rebuilt `art`) and at v6.
+    #[test]
+    fn the_library_rebuild_keeps_what_refers_to_it() {
+        for from in [5, 6] {
+            library_rebuild_from(from);
+        }
+    }
+
+    fn library_rebuild_from(from: usize) {
+        let (_d, mut c) = open_tmp();
+        configure_writer(&c, 8192, 0, 1000).unwrap();
+        // A catalog at `from`, written with foreign keys on as the writer does.
+        let fk = c
+            .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
+            .unwrap();
+        assert!(fk);
+        for (i, sql) in MIGRATIONS.iter().take(from).enumerate() {
+            c.execute_batch(sql).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0), (2, 'S', 'shows', 0);
+             INSERT INTO root(id, library_id, path, created_at) VALUES (1, 1, '/m', 0), (2, 2, '/s', 0);
+             INSERT INTO item(id, library_id, kind, group_key, title, sort_title, added_at, content_added_at, updated_at)
+             VALUES (1, 1, 'movie', 'heat', 'Heat', 'heat', 0, 0, 0), (2, 2, 'show', 'x', 'X', 'x', 0, 0, 0);
+             INSERT INTO art(id, item_id, kind, source, path, created_at) VALUES
+               (1, 1, 'poster', 'frame', 'art/1-poster-0a1b2c3d.jpg', 0),
+               (2, 2, 'poster', 'frame', 'art/2-poster-00ff00ff.jpg', 0);",
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO library(name, kind, created_at) VALUES ('V', 'videos', 0)",
+                []
+            )
+            .is_err(),
+            "v{from}"
+        );
+        migrate(&mut c).unwrap();
+        let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION, "v{from}");
+        assert_eq!(
+            (
+                count("SELECT count(*) FROM library"),
+                count("SELECT count(*) FROM root"),
+                count("SELECT count(*) FROM item"),
+                count("SELECT count(*) FROM art")
+            ),
+            (2, 2, 2, 2),
+            "v{from}"
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM pragma_foreign_key_check"),
+            0,
+            "v{from}"
+        );
+        assert!(c
+            .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
+            .unwrap());
+        c.execute(
+            "INSERT INTO library(name, kind, created_at) VALUES ('V', 'videos', 0)",
+            [],
+        )
+        .unwrap();
+        assert!(c
+            .execute(
+                "INSERT INTO library(name, kind, created_at) VALUES ('X', 'nope', 0)",
+                []
+            )
+            .is_err());
+        // v6's art ids are still never reused.
+        c.execute_batch(
+            "DELETE FROM art WHERE id = 2;
+             INSERT INTO art(item_id, kind, source, created_at) VALUES (2, 'poster', 'provider', 0);",
+        )
+        .unwrap();
+        assert_eq!(count("SELECT max(id) FROM art"), 3, "v{from}");
+        // The cascade still reaches roots, items and their art.
+        c.execute("DELETE FROM library WHERE id = 1", []).unwrap();
+        assert_eq!(
+            (
+                count("SELECT count(*) FROM root"),
+                count("SELECT count(*) FROM item"),
+                count("SELECT count(*) FROM art")
+            ),
+            (1, 1, 1),
+            "v{from}"
+        );
     }
 
     #[test]

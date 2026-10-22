@@ -12,11 +12,11 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-pub use flux_core::api::ItemSort;
 use flux_core::api::{
-    ArtRef, AssetInfo, Home, HomeRow, Id, ItemDetail, ItemFilter, ItemKind, ItemSummary, Library, Page,
-    Progress, RootStatus, ScanState, ScanStatus,
+    ArtRef, AssetInfo, FolderEntry, FolderPage, FolderRef, Home, HomeRow, Id, ItemDetail, ItemFilter,
+    ItemKind, ItemSummary, Library, Page, Progress, RootStatus, ScanState, ScanStatus,
 };
+pub use flux_core::api::{FolderSort, ItemSort};
 use flux_core::{Container, HdrFormat, ProbeResult};
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
@@ -283,12 +283,14 @@ impl FileCounts {
     }
 }
 
-/// `(files, probed files, visible top-level items)` of a library.
+/// `(files, probed files, visible top-level items)` of a library. A file
+/// that is not media (`probe_failed` and placed nowhere) doesn't count.
 fn count_library(c: &Connection, library_id: Id) -> Result<(i64, i64, i64)> {
     let (seen, probed): (i64, i64) = c
         .prepare_cached(
             "SELECT count(*), count(f.probe_version) FROM file f JOIN root r ON r.id = f.root_id
-             WHERE r.library_id = ?1 AND f.state <> 'missing'",
+             WHERE r.library_id = ?1 AND f.state <> 'missing'
+               AND NOT (f.state = 'probe_failed' AND f.placement = 'ignored')",
         )?
         .query_row([library_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let items: i64 = c
@@ -1105,6 +1107,361 @@ pub fn items_page_plan(c: &Connection, q: &ItemsQuery) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+// ---- folders -------------------------------------------------------------------------
+
+/// Parameters of [`folder_page`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderQuery {
+    pub library_id: Id,
+    /// A [`FolderRef::folder`]: `""` is the library's top, `"{root id}"` one
+    /// of its folders (roots), `"{root id}/{dir}"` a folder inside one.
+    pub folder: String,
+    pub sort: FolderSort,
+    /// Opaque cursor from a previous page's `next`.
+    pub cursor: Option<String>,
+    /// Page size, clamped to 1..=500.
+    pub limit: u32,
+    /// Fills `progress` for this user.
+    pub user_id: Option<Id>,
+}
+
+impl Default for FolderQuery {
+    fn default() -> Self {
+        FolderQuery {
+            library_id: 0,
+            folder: String::new(),
+            sort: FolderSort::Title,
+            cursor: None,
+            limit: 100,
+            user_id: None,
+        }
+    }
+}
+
+/// The last part of a root's path, its name in the folder view
+/// (`D:\Home Videos` → "Home Videos", `/srv/media/` → "media").
+fn root_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    match trimmed.rsplit(['/', '\\']).next() {
+        Some(last) if !last.is_empty() => last.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// Visible top-level items with a file in `(root, dir)`, each with its sort
+/// title and the earliest modification time of its files there.
+/// `dir = ""` is the root itself.
+fn folder_items(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<(Id, String, i64)>> {
+    const SELECT: &str = "SELECT i.id, i.sort_title, MIN(f.mtime_ns) FROM file f
+          JOIN asset a ON a.file_id = f.id JOIN item i ON i.id = a.item_id";
+    const VISIBLE: &str =
+        "f.state <> 'missing' AND i.state <> 'missing' AND i.parent_id IS NULL AND i.library_id = ?2";
+    let mut out = Vec::new();
+    if dir.is_empty() {
+        let mut stmt = c.prepare_cached(&format!(
+            "{SELECT} WHERE f.root_id = ?1 AND instr(f.rel_path, '/') = 0 AND {VISIBLE} GROUP BY i.id"
+        ))?;
+        let rows = stmt.query_map(params![root, library], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        for r in rows {
+            out.push(r?);
+        }
+    } else {
+        // Range scan on UNIQUE(root_id, rel_path): '0' is the byte after '/';
+        // `substr` counts characters.
+        let (lo, hi) = (format!("{dir}/"), format!("{dir}0"));
+        let mut stmt = c.prepare_cached(&format!(
+            "{SELECT} WHERE f.root_id = ?1 AND f.rel_path >= ?3 AND f.rel_path < ?4
+               AND instr(substr(f.rel_path, ?5), '/') = 0 AND {VISIBLE} GROUP BY i.id"
+        ))?;
+        let rows = stmt.query_map(
+            params![root, library, lo, hi, lo.chars().count() as i64 + 1],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        for r in rows {
+            out.push(r?);
+        }
+    }
+    Ok(out)
+}
+
+/// The subfolders of `(root, dir)` that hold visible top-level items, with
+/// the number of items in each (and below it).
+fn subfolders(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<(String, u64)>> {
+    let mut seen: HashMap<String, std::collections::HashSet<Id>> = HashMap::new();
+    let mut add = |rest: &str, item: Id| {
+        if let Some((name, _)) = rest.split_once('/') {
+            seen.entry(name.to_string()).or_default().insert(item);
+        }
+    };
+    if dir.is_empty() {
+        let mut stmt = c.prepare_cached(
+            "SELECT a.item_id, f.rel_path FROM file f JOIN asset a ON a.file_id = f.id JOIN item i ON i.id = a.item_id
+              WHERE f.root_id = ?1 AND instr(f.rel_path, '/') > 0
+                AND f.state <> 'missing' AND i.state <> 'missing' AND i.parent_id IS NULL AND i.library_id = ?2",
+        )?;
+        let mut rows = stmt.query(params![root, library])?;
+        while let Some(r) = rows.next()? {
+            add(&r.get::<_, String>(1)?, r.get(0)?);
+        }
+    } else {
+        let (lo, hi) = (format!("{dir}/"), format!("{dir}0"));
+        let mut stmt = c.prepare_cached(
+            "SELECT a.item_id, substr(f.rel_path, ?5) FROM file f JOIN asset a ON a.file_id = f.id
+               JOIN item i ON i.id = a.item_id
+              WHERE f.root_id = ?1 AND f.rel_path >= ?3 AND f.rel_path < ?4 AND instr(substr(f.rel_path, ?5), '/') > 0
+                AND f.state <> 'missing' AND i.state <> 'missing' AND i.parent_id IS NULL AND i.library_id = ?2",
+        )?;
+        let mut rows = stmt.query(params![root, library, lo, hi, lo.chars().count() as i64 + 1])?;
+        while let Some(r) = rows.next()? {
+            add(&r.get::<_, String>(1)?, r.get(0)?);
+        }
+    }
+    let mut out: Vec<(String, u64)> = seen
+        .into_iter()
+        .map(|(name, items)| (name, items.len() as u64))
+        .collect();
+    out.sort_by(|a, b| {
+        sort_title(&a.0)
+            .cmp(&sort_title(&b.0))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    Ok(out)
+}
+
+fn folder_cursor_tag(sort: FolderSort) -> char {
+    match sort {
+        FolderSort::Title => 't',
+        FolderSort::TitleDesc => 'u',
+        FolderSort::Date => 'd',
+        FolderSort::DateDesc => 'e',
+    }
+}
+
+/// One folder of a videos library (`GET /libraries/{id}/folders`): where
+/// it is, its subfolders, and a page of the videos with a file directly in
+/// it. Folders come from the files' paths, so a folder is listed while it
+/// holds a visible video somewhere below it. `None` when the library or the
+/// folder isn't there (the folder of another library, a folder that holds
+/// nothing). [`CatalogError::Invalid`] for a library of another kind: only
+/// in a videos library is every file a top-level item of its own (in a
+/// shows library every file is an episode, and a movie library's extras
+/// belong to their films), so elsewhere a folder page would leave most of
+/// its files out.
+pub fn folder_page(c: &Connection, q: &FolderQuery) -> Result<Option<FolderPage>> {
+    let Some((name, kind)) = c
+        .prepare_cached("SELECT name, kind FROM library WHERE id = ?1")?
+        .query_row([q.library_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if kind != flux_core::LibraryKind::Videos.as_str() {
+        return Err(CatalogError::Invalid(format!(
+            "a {kind} library has no folder view: folders are browsed in a videos library"
+        )));
+    }
+    let roots: Vec<(Id, String)> = {
+        let mut stmt = c.prepare_cached("SELECT id, path FROM root WHERE library_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([q.library_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let top = FolderRef {
+        folder: String::new(),
+        name,
+    };
+    // Where we are: the top (several roots), or a root and a folder in it.
+    let place: Option<(Id, String)> = match q.folder.trim_matches('/') {
+        "" if roots.len() == 1 => Some((roots[0].0, String::new())),
+        "" => None,
+        f => {
+            let (root, dir) = f.split_once('/').unwrap_or((f, ""));
+            let root: Id = root
+                .parse()
+                .map_err(|_| CatalogError::Invalid(format!("bad folder {:?}", q.folder)))?;
+            if !roots.iter().any(|(id, _)| *id == root) {
+                return Ok(None);
+            }
+            Some((root, dir.to_string()))
+        }
+    };
+    let token = |root: Id, dir: &str| {
+        if dir.is_empty() {
+            root.to_string()
+        } else {
+            format!("{root}/{dir}")
+        }
+    };
+    let Some((root, dir)) = place else {
+        // The top of a library with several roots: one folder per root.
+        let mut folders = Vec::new();
+        for (id, path) in &roots {
+            let n: i64 = c
+                .prepare_cached(
+                    "SELECT count(DISTINCT i.id) FROM file f JOIN asset a ON a.file_id = f.id
+                       JOIN item i ON i.id = a.item_id
+                      WHERE f.root_id = ?1 AND f.state <> 'missing' AND i.state <> 'missing'
+                        AND i.parent_id IS NULL AND i.library_id = ?2",
+                )?
+                .query_row(params![id, q.library_id], |r| r.get(0))?;
+            if n > 0 {
+                folders.push(FolderEntry {
+                    folder: id.to_string(),
+                    name: root_name(path),
+                    item_count: n as u64,
+                });
+            }
+        }
+        return Ok(Some(FolderPage {
+            at: top,
+            parents: Vec::new(),
+            folders,
+            items: Vec::new(),
+            next: None,
+            total: 0,
+        }));
+    };
+    let mut rows = folder_items(c, q.library_id, root, &dir)?;
+    let folders: Vec<FolderEntry> = subfolders(c, q.library_id, root, &dir)?
+        .into_iter()
+        .map(|(n, count)| FolderEntry {
+            folder: token(
+                root,
+                &if dir.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{dir}/{n}")
+                },
+            ),
+            name: n,
+            item_count: count,
+        })
+        .collect();
+    if !dir.is_empty() && rows.is_empty() && folders.is_empty() {
+        return Ok(None);
+    }
+    // The way down: the top, the root (when the library has several), then
+    // every folder above this one.
+    let single = roots.len() == 1;
+    let mut parents = Vec::new();
+    let mut at = top.clone();
+    if !(single && dir.is_empty()) {
+        parents.push(top);
+        let root_path = roots
+            .iter()
+            .find(|(id, _)| *id == root)
+            .map(|(_, p)| p.as_str())
+            .unwrap_or("");
+        let mut chain = vec![FolderRef {
+            folder: token(root, ""),
+            name: root_name(root_path),
+        }];
+        if !dir.is_empty() {
+            let mut sofar = String::new();
+            for part in dir.split('/') {
+                if !sofar.is_empty() {
+                    sofar.push('/');
+                }
+                sofar.push_str(part);
+                chain.push(FolderRef {
+                    folder: token(root, &sofar),
+                    name: part.to_string(),
+                });
+            }
+        }
+        if single {
+            // With one root, the top is that root: skip it.
+            chain.remove(0);
+        }
+        at = chain.pop().unwrap_or(at);
+        parents.extend(chain);
+    }
+    // Order, then the page after the cursor.
+    let desc = matches!(q.sort, FolderSort::TitleDesc | FolderSort::DateDesc);
+    match q.sort {
+        FolderSort::Title | FolderSort::TitleDesc => rows.sort_by(|a, b| (&a.1, a.0).cmp(&(&b.1, b.0))),
+        FolderSort::Date | FolderSort::DateDesc => {
+            rows.sort_by(|a, b| (a.2, &a.1, a.0).cmp(&(b.2, &b.1, b.0)))
+        }
+    }
+    if desc {
+        rows.reverse();
+    }
+    // A row's position in the order: (mtime or 0, sort title, id).
+    let key_of = |r: &(Id, String, i64)| match q.sort {
+        FolderSort::Title | FolderSort::TitleDesc => (0, r.1.clone(), r.0),
+        FolderSort::Date | FolderSort::DateDesc => (r.2, r.1.clone(), r.0),
+    };
+    // The page starts after the cursor's row (or where it was: a cursor
+    // stays valid when its row goes away).
+    let start = match &q.cursor {
+        None => 0,
+        Some(cur) => {
+            let after = parse_folder_cursor(cur, q.sort)
+                .ok_or_else(|| CatalogError::Invalid(format!("bad cursor {cur:?}")))?;
+            rows.iter()
+                .position(|r| {
+                    if desc {
+                        key_of(r) < after
+                    } else {
+                        key_of(r) > after
+                    }
+                })
+                .unwrap_or(rows.len())
+        }
+    };
+    let limit = q.limit.clamp(1, 500) as usize;
+    let total = rows.len() as u64;
+    let page: Vec<&(Id, String, i64)> = rows.iter().skip(start).take(limit).collect();
+    let next = match page.last() {
+        Some(last) if start + page.len() < rows.len() => {
+            let (t, title, id) = key_of(last);
+            let tag = folder_cursor_tag(q.sort);
+            Some(match q.sort {
+                FolderSort::Title | FolderSort::TitleDesc => format!("{tag}{}.{id}", hex(&title)),
+                FolderSort::Date | FolderSort::DateDesc => format!("{tag}{t}~{}.{id}", hex(&title)),
+            })
+        }
+        _ => None,
+    };
+    let ids: Vec<Id> = page.iter().map(|r| r.0).collect();
+    let mut by_id: HashMap<Id, SummaryRow> = HashMap::new();
+    {
+        let mut stmt = c.prepare_cached(&format!(
+            "SELECT {SUMMARY_COLS} FROM item i WHERE i.id IN (SELECT value FROM json_each(?1))"
+        ))?;
+        let it = stmt.query_map([id_list(&ids)], summary_row)?;
+        for r in it {
+            let r = r?;
+            by_id.insert(r.id, r);
+        }
+    }
+    let ordered: Vec<SummaryRow> = ids.iter().filter_map(|id| by_id.remove(id)).collect();
+    Ok(Some(FolderPage {
+        at,
+        parents,
+        folders,
+        items: summaries(c, ordered, q.user_id)?,
+        next,
+        total,
+    }))
+}
+
+/// `(mtime or 0, sort title, id)` of a folder cursor.
+fn parse_folder_cursor(s: &str, sort: FolderSort) -> Option<(i64, String, Id)> {
+    let (head, id) = s.rsplit_once('.')?;
+    let id: Id = id.parse().ok()?;
+    let body = head.strip_prefix(folder_cursor_tag(sort))?;
+    match sort {
+        FolderSort::Title | FolderSort::TitleDesc => Some((0, unhex(body)?, id)),
+        FolderSort::Date | FolderSort::DateDesc => {
+            let (t, title) = body.split_once('~')?;
+            Some((t.parse().ok()?, unhex(title)?, id))
+        }
+    }
+}
+
 /// Seasons of a show (Specials last), episodes of a season, extras of a
 /// movie. Hidden (missing) children are omitted.
 pub fn children(c: &Connection, id: Id, user: Option<Id>) -> Result<Vec<ItemSummary>> {
@@ -1690,6 +2047,15 @@ pub fn item_library(c: &Connection, item_id: Id) -> Result<Option<Id>> {
     Ok(c.prepare_cached("SELECT library_id FROM item WHERE id = ?1")?
         .query_row([item_id], |r| r.get(0))
         .optional()?)
+}
+
+/// The kind of the library an item belongs to.
+pub fn item_library_kind(c: &Connection, item_id: Id) -> Result<Option<flux_core::LibraryKind>> {
+    let kind: Option<String> = c
+        .prepare_cached("SELECT l.kind FROM item i JOIN library l ON l.id = i.library_id WHERE i.id = ?1")?
+        .query_row([item_id], |r| r.get(0))
+        .optional()?;
+    kind.as_deref().map(parse_library_kind).transpose()
 }
 
 /// The available episodes of a show (directly or through its seasons) in

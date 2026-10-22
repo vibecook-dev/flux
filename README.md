@@ -110,7 +110,7 @@ Open <http://127.0.0.1:8096>. Libraries named on the command line are created on
 
 | Flag | Variable | Default and meaning |
 |---|---|---|
-| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. A folder can be in only one library: if a new library's folder is another library's, or inside or around it, flux-server stops at startup and says why. |
+| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows`, `mixed` or `videos` (home videos and clips: one item per file, titled after the file, browsed by folder, never matched; `home` and `other` are accepted too). A folder can be in only one library: if a new library's folder is another library's, or inside or around it, flux-server stops at startup and says why. |
 | `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `%LOCALAPPDATA%\flux` on Windows, `$XDG_DATA_HOME/flux` or `~/.local/share/flux` elsewhere |
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |
@@ -134,7 +134,7 @@ tailnet = "off"                  # off | embedded | system
 allow_host = ["media.example.com"]
 [[library]]
 name = "Movies"
-kind = "movies"                  # movies | shows | mixed
+kind = "movies"                  # movies | shows | mixed | videos
 path = "/Volumes/NAS/Movies"
 ```
 
