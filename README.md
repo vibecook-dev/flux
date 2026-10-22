@@ -110,7 +110,7 @@ Open <http://127.0.0.1:8096>. Libraries named on the command line are created on
 
 | Flag | Variable | Default and meaning |
 |---|---|---|
-| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. |
+| `--library NAME:KIND:PATH` | `FLUX_LIBRARIES` (`;`-separated) | A library to create on first run (repeatable). KIND is `movies`, `shows` or `mixed`. A folder can be in only one library: if a new library's folder is another library's, or inside or around it, flux-server stops at startup and says why. |
 | `--data-dir DIR` | `FLUX_DATA_DIR` | `~/Library/Application Support/flux` on macOS, `~/.local/share/flux` elsewhere |
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |

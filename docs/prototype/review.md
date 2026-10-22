@@ -217,7 +217,7 @@ Paths are relative to `crates/` unless they start with `web/`. "merge" means the
 
 ### INT-7 (low): overlapping roots
 
-- **Fix.** `create_library`/`add_root` return `CatalogError::OverlappingRoots` (whole-component comparison, so `/m/Movies2` doesn't overlap `/m/Movies`); the server answers 400 with a message (merge). Different libraries may share a root.
+- **Fix.** `create_library`/`add_root` return `CatalogError::OverlappingRoots` (whole-component comparison, so `/m/Movies2` doesn't overlap `/m/Movies`); the server answers 400 with a message (merge). Different libraries may share a root. *Superseded after alpha.2:* they may not (`CatalogError::RootInOtherLibrary`; PR #22).
 
 ### INT-8 (low): a merge drops the user's pin
 
