@@ -1968,10 +1968,17 @@ pub struct ArtRow {
     pub generator: Option<String>,
     /// The user chose this image.
     pub pinned: bool,
+    /// The art version that made a frame or generated image (`None`:
+    /// provider or local art, or made before versioning).
+    pub gen_version: Option<u32>,
+    /// The caption typeset into a frame or generated poster.
+    pub gen_title: Option<String>,
 }
 
-const ART_COLS: &str =
-    "id, item_id, kind, source, path, url, width, height, blurhash, attribution, generator, pinned";
+const ART_COLS: &str = concat!(
+    "id, item_id, kind, source, path, url, width, height, blurhash, attribution, generator, pinned, ",
+    "gen_version, gen_title"
+);
 
 fn art_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ArtRow, String)> {
     Ok((
@@ -1988,6 +1995,8 @@ fn art_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ArtRow, String)> {
             attribution: r.get(9)?,
             generator: r.get(10)?,
             pinned: r.get(11)?,
+            gen_version: r.get(12)?,
+            gen_title: r.get(13)?,
         },
         r.get(3)?,
     ))
@@ -2005,6 +2014,14 @@ pub fn art(c: &Connection, art_id: Id) -> Result<Option<ArtRow>> {
         .optional()?
         .map(finish_art)
         .transpose()
+}
+
+/// Every image row's id and stored path: what the server's art and cache
+/// folders may hold files for.
+pub fn art_paths(c: &Connection) -> Result<Vec<(Id, Option<String>)>> {
+    let mut stmt = c.prepare_cached("SELECT id, path FROM art")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Every image of an item, best first per kind (the order [`best_art`]
@@ -2055,6 +2072,148 @@ pub fn show_episodes_art(c: &Connection, show_id: Id, kind: crate::ArtKind) -> R
     )?;
     let rows = stmt.query_map(params![show_id, kind.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// [`show_episodes_art`], counting only images that aren't stale for art
+/// `version` ([`stale_art`]): an episode whose only thumb is out of date
+/// gets a new one.
+pub fn show_episodes_fresh_art(
+    c: &Connection,
+    show_id: Id,
+    kind: crate::ArtKind,
+    version: u32,
+) -> Result<Vec<(Id, bool)>> {
+    let mut stmt = c.prepare_cached(&format!(
+        "SELECT e.id, EXISTS (SELECT 1 FROM art a JOIN item i ON i.id = a.item_id
+                               WHERE a.item_id = e.id AND a.kind = :kind AND NOT ({}))
+           FROM item e LEFT JOIN item s ON s.id = e.parent_id AND s.kind = 'season'
+          WHERE e.kind = 'episode' AND e.state = 'available' AND (e.parent_id = :show OR s.parent_id = :show)
+          ORDER BY COALESCE(s.season_number, e.season_number, 0) = 0,
+                   COALESCE(s.season_number, e.season_number), e.episode_number, e.id",
+        stale_sql("a", "i")
+    ))?;
+    let rows = stmt.query_map(
+        rusqlite::named_params! { ":show": show_id, ":kind": kind.as_str(), ":version": version },
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The caption flux typesets into a frame or generated poster of an item
+/// titled `title` and dated `year`: "Title (2024)", or "Title". Stored as
+/// the poster's `gen_title`; a poster whose caption isn't its item's any
+/// more is stale ([`stale_art`]). The SQL that finds stale art builds the
+/// same string.
+pub fn art_caption(title: &str, year: Option<u16>) -> String {
+    match year {
+        Some(y) => format!("{title} ({y})"),
+        None => title.to_string(),
+    }
+}
+
+/// SQL: art row `a` (an image of item `i`) is one of flux's own images that
+/// is out of date for art version `:version`. See [`stale_art`].
+fn stale_sql(a: &str, i: &str) -> String {
+    format!(
+        "{a}.source IN ('frame', 'generated') AND {a}.pinned = 0
+         AND ({a}.gen_version IS NULL OR {a}.gen_version < :version
+              OR ({a}.kind = 'poster' AND {a}.gen_title IS NOT ({i}.title || COALESCE(' (' || {i}.year || ')', ''))))"
+    )
+}
+
+/// Whether `item_id` has an image of `kind` that isn't stale for art
+/// `version` ([`stale_art`]): provider or local art, a pinned image, or one
+/// of flux's own made by this version for the item's title.
+pub fn has_fresh_art(c: &Connection, item_id: Id, kind: crate::ArtKind, version: u32) -> Result<bool> {
+    let sql = format!(
+        "SELECT EXISTS (SELECT 1 FROM art a JOIN item i ON i.id = a.item_id
+                         WHERE a.item_id = :item AND a.kind = :kind AND NOT ({}))",
+        stale_sql("a", "i")
+    );
+    Ok(c.prepare_cached(&sql)?.query_row(
+        rusqlite::named_params! { ":item": item_id, ":kind": kind.as_str(), ":version": version },
+        |r| r.get(0),
+    )?)
+}
+
+/// One of flux's own images that an art job should make again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleArt {
+    pub art_id: Id,
+    pub item_id: Id,
+    /// The movie or show the item belongs to (the item itself when it is
+    /// top-level): whose art job makes the image again.
+    pub work_id: Id,
+    pub kind: String,
+    /// As stored: relative to the data dir (`art/<file>`), or a legacy
+    /// absolute path.
+    pub path: Option<String>,
+}
+
+/// flux's own images (frame posters, backdrops and thumbs; generated art)
+/// that should be made again:
+///
+/// - made by an art version older than `version`, or before art was
+///   versioned (the fonts without CJK glyphs, HDR frames without tone
+///   mapping…);
+/// - posters typeset with a caption ([`art_caption`]) other than their
+///   item's title and year now: a re-parse, a regroup or a match renamed
+///   the item, or a merge brought another work's poster along.
+///
+/// Provider and local art, and images the user pinned, are never stale.
+/// `work`: only that movie or show and everything below it; `None`: the
+/// whole catalog.
+pub fn stale_art(c: &Connection, version: u32, work: Option<Id>) -> Result<Vec<StaleArt>> {
+    stale_art_where(c, version, work, "")
+}
+
+/// The [`stale_art`] of a work whose item has a fresh image of the same
+/// kind now ([`has_fresh_art`]): what an art job that made new images
+/// deletes.
+pub fn replaced_stale_art(c: &Connection, version: u32, work: Id) -> Result<Vec<StaleArt>> {
+    let fresh = format!(
+        "AND EXISTS (SELECT 1 FROM art f WHERE f.item_id = a.item_id AND f.kind = a.kind AND NOT ({}))",
+        stale_sql("f", "i")
+    );
+    stale_art_where(c, version, Some(work), &fresh)
+}
+
+fn stale_art_where(c: &Connection, version: u32, work: Option<Id>, and: &str) -> Result<Vec<StaleArt>> {
+    let stale = stale_sql("a", "i");
+    let sql = match work {
+        Some(_) => format!(
+            "WITH RECURSIVE sub(id) AS (SELECT :work UNION ALL SELECT i.id FROM item i JOIN sub ON i.parent_id = sub.id)
+             SELECT a.id, a.item_id, :work, a.kind, a.path
+               FROM sub JOIN item i ON i.id = sub.id JOIN art a ON a.item_id = i.id
+              WHERE {stale} {and} ORDER BY a.id"
+        ),
+        // Items are at most two levels below their work (episode → season → show).
+        None => format!(
+            "SELECT a.id, a.item_id, COALESCE(g.id, p.id, i.id), a.kind, a.path
+               FROM art a JOIN item i ON i.id = a.item_id
+               LEFT JOIN item p ON p.id = i.parent_id LEFT JOIN item g ON g.id = p.parent_id
+              WHERE {stale} {and} ORDER BY a.id"
+        ),
+    };
+    let mut stmt = c.prepare_cached(&sql)?;
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(StaleArt {
+            art_id: r.get(0)?,
+            item_id: r.get(1)?,
+            work_id: r.get(2)?,
+            kind: r.get(3)?,
+            path: r.get(4)?,
+        })
+    };
+    let rows = match work {
+        Some(w) => stmt
+            .query_map(rusqlite::named_params! { ":work": w, ":version": version }, map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map(rusqlite::named_params! { ":version": version }, map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+    Ok(rows)
 }
 
 #[cfg(test)]

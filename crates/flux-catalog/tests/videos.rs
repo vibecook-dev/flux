@@ -455,3 +455,102 @@ fn a_reparse_that_changes_nothing_writes_nothing() {
     let out = e.apply(vec![touched]);
     assert_eq!(out.files_changed, 1, "{out:?}");
 }
+
+fn sql(e: &Env, statement: &'static str) {
+    e.cat
+        .writer()
+        .exec(move |c| {
+            c.execute_batch(statement)?;
+            Ok(())
+        })
+        .wait()
+        .unwrap();
+}
+
+fn queued_art_jobs(e: &Env, item: Id) -> i64 {
+    e.cat
+        .read_blocking(move |c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM job WHERE item_id = ?1 AND kind = 'art' AND state = 'queued'",
+                [item],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+}
+
+/// A re-parse (a new parser version) that reads a video's name otherwise
+/// retitles its item as a fresh scan would title it, whatever kind of
+/// guess the old parse made: old and new guess are both placed as a videos
+/// library places files. An item whose title no file gives any more (an
+/// earlier build stored the new guess without retitling) takes the one its
+/// file gives. A title the user locked stays, and a retitled video gets its
+/// art job again, as its poster carries the title.
+#[test]
+fn a_reparse_retitles_videos_named_by_their_old_parse() {
+    let e = env(LibraryKind::Videos);
+    let dotted = "Trip/Harbor.Walk.2019.mp4";
+    let episode_like = "Trip/Day One E01.mp4";
+    let healed = "Trip/Night Market.mp4";
+    let locked = "Trip/Old.Pier.mp4";
+    e.apply(vec![
+        upsert(dotted, video("Harbor.Walk.2019", None), None),
+        // An old parse that took it for an episode: a video all the same,
+        // titled by the guess.
+        upsert(episode_like, episode("Day One", None, 1, &[1]), None),
+        upsert(healed, episode("Night Market", None, 1, &[2]), None),
+        upsert(locked, video("Old.Pier", None), None),
+    ]);
+    let walk = e.find_top("Harbor.Walk.2019").id;
+    let day = e.find_top("Day One").id;
+    let market = e.find_top("Night Market").id;
+    let pier = e.find_top("Old.Pier").id;
+    // What an earlier build left: this file's stored guess is the one the
+    // re-parse gives, its item's title the old one.
+    sql(
+        &e,
+        "UPDATE item SET title = 'Night.Market', sort_title = 'night.market' WHERE title = 'Night Market';
+         UPDATE item SET title = 'Pier', sort_title = 'pier', match_state = 'locked' WHERE title = 'Old.Pier';
+         UPDATE job SET state = 'done', finished_at = 0;",
+    );
+    e.cat.writer().rebuild_search_index().wait().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let reparse = || {
+        vec![
+            upsert(dotted, video("Harbor Walk 2019", None), None),
+            upsert(episode_like, video("Day One E01", None), None),
+            upsert(healed, episode("Night Market", None, 1, &[2]), None),
+            upsert(locked, video("Old Pier", None), None),
+        ]
+    };
+    let out = e.apply(reparse());
+    let title = |id: Id| e.detail(id).summary.title;
+    assert_eq!(
+        [title(walk), title(day), title(market), title(pier)],
+        ["Harbor Walk 2019", "Day One E01", "Night Market", "Pier"]
+    );
+    assert_eq!(e.top().len(), 4, "the same items");
+    for id in [walk, day, market] {
+        assert!(out.items_updated.contains(&id), "{id}: {out:?}");
+        assert_eq!(queued_art_jobs(&e, id), 1, "{id}: its poster carries the title");
+    }
+    assert_eq!(queued_art_jobs(&e, pier), 0);
+    let hits = e
+        .cat
+        .read_blocking(|c| read::search(c, "harbor walk", 10, None))
+        .unwrap();
+    assert_eq!(hits.iter().map(|h| h.id).collect::<Vec<_>>(), [walk]);
+
+    // A second re-parse changes nothing.
+    sql(&e, "UPDATE job SET state = 'done', finished_at = 0;");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    e.apply(reparse());
+    assert_eq!(
+        [title(walk), title(day), title(market), title(pier)],
+        ["Harbor Walk 2019", "Day One E01", "Night Market", "Pier"]
+    );
+    for id in [walk, day, market, pier] {
+        assert_eq!(queued_art_jobs(&e, id), 0, "{id}: nothing changed");
+    }
+}

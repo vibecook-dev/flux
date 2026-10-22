@@ -323,15 +323,43 @@ pub(crate) fn enqueue_art_for_new_work(
 /// for them. Supersedes a queued art job of the show (one pending per show);
 /// waits for the show's match if one is pending.
 pub(crate) fn rearm_art(c: &Connection, show_id: Id, now: i64, max_attempts: u32) -> Result<Enqueued> {
+    arm_art(c, show_id, &art_key(show_id, now), now, max_attempts)
+}
+
+/// Queue an art job for every movie or show with stale images
+/// ([`crate::read::stale_art`] for art `version`): the job makes them again,
+/// then deletes the stale ones. Returns how many works got a job.
+///
+/// The key names the art version and the stale images, so a restart
+/// doesn't queue the same refresh again once it ran, or failed (a file that
+/// gives no usable frame keeps its old image rather than none).
+pub(crate) fn refresh_stale_art(c: &Connection, version: u32, now: i64, max_attempts: u32) -> Result<u64> {
+    let mut works: std::collections::BTreeMap<Id, (Id, u64)> = std::collections::BTreeMap::new();
+    for s in crate::read::stale_art(c, version, None)? {
+        let e = works.entry(s.work_id).or_insert((0, 0));
+        e.0 = e.0.max(s.art_id);
+        e.1 += 1;
+    }
+    let mut queued = 0;
+    for (work, (newest, n)) in works {
+        let key = format!("{work}:refresh:v{version}:{newest}:{n}");
+        if let Enqueued::New(_) | Enqueued::Superseded(_) = arm_art(c, work, &key, now, max_attempts)? {
+            queued += 1;
+        }
+    }
+    Ok(queued)
+}
+
+/// Queue (or supersede) the art job of a movie or show under `key`; it
+/// waits for the work's match if one is pending.
+fn arm_art(c: &Connection, work: Id, key: &str, now: i64, max_attempts: u32) -> Result<Enqueued> {
     let pending_match: Option<Id> = c
         .prepare_cached(
             "SELECT id FROM job WHERE item_id = ?1 AND kind = ?2 AND state IN ('queued','running') LIMIT 1",
         )?
-        .query_row(params![show_id, JOB_MATCH], |r| r.get(0))
+        .query_row(params![work, JOB_MATCH], |r| r.get(0))
         .optional()?;
-    let mut spec = JobSpec::new(JOB_ART, art_key(show_id, now))
-        .item(show_id)
-        .priority(priority::ART);
+    let mut spec = JobSpec::new(JOB_ART, key).item(work).priority(priority::ART);
     spec.after = pending_match;
     enqueue(c, &spec, now, max_attempts)
 }

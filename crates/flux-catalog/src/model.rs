@@ -395,6 +395,12 @@ pub struct NewArt {
     pub attribution: Option<String>,
     /// Model id for generated art → `ArtRef::generator`.
     pub generator: Option<String>,
+    /// flux's art version that made a frame or generated image (see
+    /// [`crate::read::stale_art`]); `None` for provider and local art.
+    pub gen_version: Option<u32>,
+    /// The caption typeset into a frame or generated poster
+    /// ([`crate::read::art_caption`] of the item's title and year).
+    pub gen_title: Option<String>,
 }
 
 /// A stored user.

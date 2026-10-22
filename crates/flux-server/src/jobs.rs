@@ -21,6 +21,14 @@
 //!   (`merge_items`).
 //! - **art:** one job per movie or show: a frame poster + backdrop when the
 //!   item has none, then (shows) a thumbnail for every episode without one.
+//!   flux's own images are versioned ([`flux_meta::art::ART_VERSION`]) and
+//!   posters record the title they carry: an image of an older version, or
+//!   a poster of a title the item no longer has, counts as missing, and
+//!   is deleted once its replacement is stored. At start the loop queues
+//!   the art job of every work with such images
+//!   (`Writer::refresh_stale_art`) and deletes image files no row refers
+//!   to; a re-parse, a regroup or a match that renames a work queues its
+//!   art job too.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +41,7 @@ use flux_catalog::{
 };
 use flux_core::api::{Event, Id, ItemKind, ScanState};
 use flux_core::ProbeResult;
-use flux_meta::art::{self, ArtImage, FramePosterOptions, MediaFacts, Tools};
+use flux_meta::art::{self, ArtImage, FramePosterOptions, MediaFacts, Tools, ART_VERSION};
 use flux_meta::export_index::{BuildOptions, ExportIndex, ExportKind};
 use flux_meta::matcher::{Candidate, Decision, MatchQuery, MatchResult, Matcher, MediaKind};
 use flux_meta::tmdb::{self, MovieSearch, TmdbClient};
@@ -231,6 +239,7 @@ async fn run(st: Arc<AppState>) {
         return;
     }
     let mut ctx = Ctx::new(&st);
+    refresh_art(&st).await;
     if ctx.can_match(&st) {
         // Match jobs failed for want of a source (or out of attempts) get
         // another go now that there is one.
@@ -305,6 +314,34 @@ async fn run(st: Arc<AppState>) {
             _ = tokio::time::sleep(nap) => {}
             _ = st.shutdown.cancelled() => break,
         }
+    }
+}
+
+/// Before the first art job: queue the art job of every work whose own
+/// images are out of date (an older art version: an upgrade; a poster of
+/// another title), then delete image files no row refers to any more.
+async fn refresh_art(st: &AppState) {
+    match st.catalog.writer().refresh_stale_art(ART_VERSION).await {
+        Ok(n) if n > 0 => tracing::info!(
+            works = n,
+            "art made by an older flux or for another title: making it again"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::debug!(error = %e, "refresh_stale_art"),
+    }
+    let rows = match st.catalog.read(read::art_paths).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "art_paths");
+            return;
+        }
+    };
+    let art = st.art.clone();
+    let swept = tokio::task::spawn_blocking(move || art.sweep(&rows))
+        .await
+        .unwrap_or(0);
+    if swept > 0 {
+        tracing::info!(files = swept, "deleted image files no item uses any more");
     }
 }
 
@@ -599,6 +636,8 @@ async fn apply_match(
                     blurhash: None,
                     attribution: Some(tmdb::attribution::PROVIDER_NAME.to_string()),
                     generator: None,
+                    gen_version: None,
+                    gen_title: None,
                 },
             )
             .await;
@@ -670,10 +709,12 @@ async fn art_job(st: &AppState, ctx: &Ctx, job: &JobLease, item: Id) -> JobResul
     };
     let t0 = Instant::now();
     let mut made = 0usize;
+    // An image that is stale (made by an older flux, or a poster of
+    // another title) counts as missing; it goes once replaced.
     let episodes = if summary.kind == ItemKind::Show {
         match st
             .catalog
-            .read(move |c| read::show_episodes_art(c, item, ArtKind::Thumb))
+            .read(move |c| read::show_episodes_fresh_art(c, item, ArtKind::Thumb, ART_VERSION))
             .await
         {
             Ok(e) => e,
@@ -686,11 +727,9 @@ async fn art_job(st: &AppState, ctx: &Ctx, job: &JobLease, item: Id) -> JobResul
     // Poster + backdrop for the movie or show, unless it has both.
     let has = |kind: ArtKind| async move {
         st.catalog
-            .read(move |c| read::best_art(c, item, kind))
+            .read(move |c| read::has_fresh_art(c, item, kind, ART_VERSION))
             .await
-            .ok()
-            .flatten()
-            .is_some()
+            .unwrap_or(false)
     };
     let (poster, backdrop) = (has(ArtKind::Poster).await, has(ArtKind::Backdrop).await);
     if !(poster && backdrop) {
@@ -710,7 +749,9 @@ async fn art_job(st: &AppState, ctx: &Ctx, job: &JobLease, item: Id) -> JobResul
                         _ => !backdrop,
                     };
                     if wanted {
-                        if let Err(e) = store_art(st, item, kind, &img).await {
+                        let caption = (kind == ArtKind::Poster)
+                            .then(|| read::art_caption(&summary.title, summary.year));
+                        if let Err(e) = store_art(st, item, kind, &img, caption).await {
                             return JobResult::Retry(e);
                         }
                         made += 1;
@@ -744,7 +785,7 @@ async fn art_job(st: &AppState, ctx: &Ctx, job: &JobLease, item: Id) -> JobResul
             break;
         }
         match episode_thumb(st, ctx, episode).await {
-            Ok(img) => match store_art(st, episode, ArtKind::Thumb, &img).await {
+            Ok(img) => match store_art(st, episode, ArtKind::Thumb, &img, None).await {
                 Ok(()) => made += 1,
                 Err(e) => return JobResult::Retry(e),
             },
@@ -759,6 +800,10 @@ async fn art_job(st: &AppState, ctx: &Ctx, job: &JobLease, item: Id) -> JobResul
         if !held {
             return JobResult::Retry("lease lost".into());
         }
+    }
+    let replaced = drop_replaced(st, item).await;
+    if replaced > 0 {
+        tracing::debug!(item, images = replaced, "stale images replaced");
     }
     if made > 0 {
         tracing::info!(item, title = %summary.title, images = made, ms = t0.elapsed().as_millis() as u64, "frame art ready");
@@ -822,13 +867,22 @@ async fn episode_thumb(st: &AppState, ctx: &Ctx, episode: Id) -> Result<ArtImage
     Ok(thumb)
 }
 
-/// Writes the JPEG under `<data>/art/` and adds the art row.
-async fn store_art(st: &AppState, item: Id, kind: ArtKind, img: &ArtImage) -> Result<(), String> {
-    let file = st.art.dir.join(format!(
+/// Writes the JPEG under `<data>/art/` and adds the art row, its path
+/// relative to the data dir, with the art version and (posters) the
+/// caption typeset into it.
+async fn store_art(
+    st: &AppState,
+    item: Id,
+    kind: ArtKind,
+    img: &ArtImage,
+    caption: Option<String>,
+) -> Result<(), String> {
+    let name = format!(
         "{item}-{}-{:08x}.jpg",
         kind.as_str(),
         xxhash_rust::xxh3::xxh3_64(&img.bytes) as u32
-    ));
+    );
+    let file = st.art.dir.join(&name);
     tokio::fs::write(&file, &img.bytes)
         .await
         .map_err(|e| format!("writing {}: {e}", file.display()))?;
@@ -839,18 +893,54 @@ async fn store_art(st: &AppState, item: Id, kind: ArtKind, img: &ArtImage) -> Re
             NewArt {
                 kind,
                 source: img.source,
-                path: Some(file.to_string_lossy().into_owned()),
+                path: Some(crate::art::ArtStore::stored_path(&name)),
                 url: None,
                 width: Some(img.width),
                 height: Some(img.height),
                 blurhash: Some(img.blurhash.clone()),
                 attribution: None,
                 generator: img.generator.clone(),
+                gen_version: Some(ART_VERSION),
+                gen_title: caption,
             },
         )
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Deletes a work's stale images that have a fresh replacement now
+/// (`read::replaced_stale_art`), and their files. The writer finds and
+/// deletes the rows in one write (`Writer::remove_replaced_art`), so an
+/// image pinned since the read below is kept. Returns how many went.
+async fn drop_replaced(st: &AppState, work: Id) -> usize {
+    // Most art jobs replace nothing: a read spares them a write.
+    match st
+        .catalog
+        .read(move |c| read::replaced_stale_art(c, ART_VERSION, work))
+        .await
+    {
+        Ok(s) if s.is_empty() => return 0,
+        Ok(_) => {}
+        Err(e) => {
+            tracing::debug!(work, error = %e, "replaced_stale_art");
+            return 0;
+        }
+    }
+    match st.catalog.writer().remove_replaced_art(work, ART_VERSION).await {
+        Ok(gone) => {
+            let n = gone.len();
+            let (ids, paths): (Vec<Id>, Vec<Option<String>>) = gone.into_iter().unzip();
+            let paths: Vec<String> = paths.into_iter().flatten().collect();
+            let art = st.art.clone();
+            let _ = tokio::task::spawn_blocking(move || art.remove(&paths, &ids)).await;
+            n
+        }
+        Err(e) => {
+            tracing::debug!(work, error = %e, "remove_replaced_art");
+            0
+        }
+    }
 }
 
 async fn library_of(st: &AppState, item_id: Id) -> Option<Id> {

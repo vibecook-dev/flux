@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 /// Bump when the parser's output changes in a way that should trigger re-parsing.
 ///
+/// 3: no change in the parser's output. A catalog a version-2 build already
+/// re-parsed is re-parsed once more, so the catalog's re-parse rules regroup
+/// and retitle it as they do a version-1 catalog.
+///
 /// 4: in a mixed library without a TV or season folder, an episode without
 /// an explicit marker needs a numbered series of files beside it, a dated
 /// recording is never one, and `other`/`others` folders hold no extras;

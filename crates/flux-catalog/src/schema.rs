@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -390,22 +390,75 @@ CREATE TABLE subtitle_file(
 CREATE INDEX subtitle_file_dir ON subtitle_file(root_id, dir);
 "#;
 
-/// v6: the `videos` library kind (`LibraryKind::Videos`). SQLite can't
+/// v6: art that survives a moved data dir and knows what made it.
+///
+/// - `path` of flux's own images (frame and generated art) is relative to
+///   the data dir (`art/<file>`), so moving the data dir keeps every image.
+///   Rows of older catalogs held the absolute path of the data dir they
+///   were made in; those whose file is in an `art` folder are rewritten
+///   here (the server also reads a legacy absolute path, preferring the
+///   same file name in its own `art` folder). Local art (next to the media)
+///   keeps its absolute path.
+/// - `gen_version`: the art version (`flux_meta::art::ART_VERSION`) that
+///   made a frame or generated image (NULL: made before versioning). An
+///   older one is made again (fonts, tone mapping…), see
+///   [`crate::read::stale_art`].
+/// - `gen_title`: the caption typeset into a poster ("Title (Year)"); a
+///   poster whose item is titled otherwise now is made again.
+/// - Ids are never reused (`AUTOINCREMENT`): `/api/v1/art/{id}` responses
+///   are cached as immutable, by browsers and in `art-cache/`, so an id
+///   must not name another image after its row is deleted.
+const V6: &str = r#"
+CREATE TABLE art_v6(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id      INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL CHECK(kind IN ('poster','backdrop','thumb','logo')),
+    source       TEXT NOT NULL CHECK(source IN ('provider','local','frame','generated')),
+    path         TEXT,
+    url          TEXT,
+    width        INTEGER,
+    height       INTEGER,
+    blurhash     TEXT,
+    generated    INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    attribution  TEXT,
+    generator    TEXT,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    gen_version  INTEGER,
+    gen_title    TEXT
+);
+-- `p` is the path with `/` separators, `dir` its folder part up to the
+-- last `/` (rtrim strips every character that isn't a `/` from the end).
+INSERT INTO art_v6(id, item_id, kind, source, path, url, width, height, blurhash, generated, created_at,
+                   attribution, generator, pinned)
+SELECT id, item_id, kind, source,
+       CASE WHEN source IN ('frame', 'generated') AND dir LIKE '%/art/' AND length(p) > length(dir)
+            THEN 'art/' || substr(p, length(dir) + 1)
+            ELSE path END,
+       url, width, height, blurhash, generated, created_at, attribution, generator, pinned
+  FROM (SELECT *, rtrim(p, replace(p, '/', '')) AS dir
+          FROM (SELECT *, replace(path, '\', '/') AS p FROM art));
+DROP TABLE art;
+ALTER TABLE art_v6 RENAME TO art;
+CREATE INDEX art_item ON art(item_id, kind);
+"#;
+
+/// v7: the `videos` library kind (`LibraryKind::Videos`). SQLite can't
 /// change a CHECK constraint, so `library` is rebuilt the way SQLite's
 /// documentation describes (new table, copy, drop, rename). [`migrate`]
 /// runs migrations with foreign keys off, so dropping the old table
 /// deletes nothing that references it; `root` and `item` keep referring to
 /// `library` by name, which is the new table once it is renamed.
-const V6: &str = r#"
-CREATE TABLE library_v6(
+const V7: &str = r#"
+CREATE TABLE library_v7(
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
     kind        TEXT NOT NULL CHECK(kind IN ('movies','shows','mixed','videos')),
     created_at  INTEGER NOT NULL
 );
-INSERT INTO library_v6(id, name, kind, created_at) SELECT id, name, kind, created_at FROM library;
+INSERT INTO library_v7(id, name, kind, created_at) SELECT id, name, kind, created_at FROM library;
 DROP TABLE library;
-ALTER TABLE library_v6 RENAME TO library;
+ALTER TABLE library_v7 RENAME TO library;
 "#;
 
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
@@ -583,19 +636,96 @@ mod tests {
         assert_eq!((n, attribution), (1, None), "rows kept, new columns empty");
     }
 
-    /// v6 rebuilds `library` to allow the `videos` kind. Roots and items
-    /// refer to it with ON DELETE CASCADE: the rebuild must keep them all,
-    /// and deleting a library must still cascade afterwards.
+    /// Catalogs up to v5 stored flux's own images by the absolute path of
+    /// the data dir they were made in: moving the data dir lost them all.
+    #[test]
+    fn v6_makes_flux_art_paths_relative_and_never_reuses_art_ids() {
+        let (_d, mut c) = open_tmp();
+        for sql in &MIGRATIONS[..5] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute_batch("PRAGMA user_version = 5").unwrap();
+        c.execute_batch(
+            r#"INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0);
+               INSERT INTO item(id, library_id, kind, group_key, title, sort_title, added_at, content_added_at, updated_at)
+               VALUES (1, 1, 'movie', 'heat', 'Heat', 'heat', 0, 0, 0);
+               INSERT INTO art(id, item_id, kind, source, path, url, created_at, pinned) VALUES
+                 (1, 1, 'poster',   'frame',     'D:\old\flux data\art\1-poster-0a1b2c3d.jpg', NULL, 0, 1),
+                 (2, 1, 'backdrop', 'frame',     '/srv/old/art/1-backdrop-00ff00ff.jpg', NULL, 0, 0),
+                 (3, 1, 'poster',   'local',     '/media/Heat (1995)/art/poster.jpg', NULL, 0, 0),
+                 (4, 1, 'poster',   'provider',  NULL, 'https://image.example/p.jpg', 0, 0),
+                 (5, 1, 'thumb',    'frame',     '\\?\D:\data\ART\2-thumb-12345678.jpg', NULL, 0, 0),
+                 (6, 1, 'backdrop', 'frame',     'D:\elsewhere\1-backdrop-0000beef.jpg', NULL, 0, 0),
+                 (7, 1, 'poster',   'generated', '/home/用户/flux/art/1-poster-deadbeef.jpg', NULL, 0, 0);"#,
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        type Row = (i64, Option<String>, i64, Option<i64>, Option<String>);
+        let rows: Vec<Row> = c
+            .prepare("SELECT id, path, pinned, gen_version, gen_title FROM art ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let paths: Vec<Option<&str>> = rows.iter().map(|r| r.1.as_deref()).collect();
+        assert_eq!(
+            paths,
+            [
+                Some("art/1-poster-0a1b2c3d.jpg"),
+                Some("art/1-backdrop-00ff00ff.jpg"),
+                Some("/media/Heat (1995)/art/poster.jpg"), // local art stays where it is
+                None,
+                Some("art/2-thumb-12345678.jpg"),
+                Some(r"D:\elsewhere\1-backdrop-0000beef.jpg"), // not in an art folder
+                Some("art/1-poster-deadbeef.jpg"),
+            ]
+        );
+        assert_eq!(rows[0].2, 1, "pins are kept");
+        assert!(
+            rows.iter().all(|r| r.3.is_none() && r.4.is_none()),
+            "made before versioning"
+        );
+        // The newest image's id is never handed out again.
+        c.execute_batch(
+            "DELETE FROM art WHERE id = 7;
+             INSERT INTO art(item_id, kind, source, created_at) VALUES (1, 'poster', 'provider', 0);",
+        )
+        .unwrap();
+        let max: i64 = c.query_row("SELECT max(id) FROM art", [], |r| r.get(0)).unwrap();
+        assert_eq!(max, 8);
+        let idx: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'art_item'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    /// v7 rebuilds `library` to allow the `videos` kind. Roots and items
+    /// refer to it with ON DELETE CASCADE (and art to items): the rebuild
+    /// must keep them all, and deleting a library must still cascade
+    /// afterwards. Catalogs arrive at v5 (before v6 rebuilt `art`) and at v6.
     #[test]
     fn the_library_rebuild_keeps_what_refers_to_it() {
+        for from in [5, 6] {
+            library_rebuild_from(from);
+        }
+    }
+
+    fn library_rebuild_from(from: usize) {
         let (_d, mut c) = open_tmp();
         configure_writer(&c, 8192, 0, 1000).unwrap();
-        // A v5 catalog, written with foreign keys on as the writer does.
+        // A catalog at `from`, written with foreign keys on as the writer does.
         let fk = c
             .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
             .unwrap();
         assert!(fk);
-        for (i, sql) in MIGRATIONS.iter().take(5).enumerate() {
+        for (i, sql) in MIGRATIONS.iter().take(from).enumerate() {
             c.execute_batch(sql).unwrap();
             c.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
                 .unwrap();
@@ -604,27 +734,38 @@ mod tests {
             "INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0), (2, 'S', 'shows', 0);
              INSERT INTO root(id, library_id, path, created_at) VALUES (1, 1, '/m', 0), (2, 2, '/s', 0);
              INSERT INTO item(id, library_id, kind, group_key, title, sort_title, added_at, content_added_at, updated_at)
-             VALUES (1, 1, 'movie', 'heat', 'Heat', 'heat', 0, 0, 0), (2, 2, 'show', 'x', 'X', 'x', 0, 0, 0);",
+             VALUES (1, 1, 'movie', 'heat', 'Heat', 'heat', 0, 0, 0), (2, 2, 'show', 'x', 'X', 'x', 0, 0, 0);
+             INSERT INTO art(id, item_id, kind, source, path, created_at) VALUES
+               (1, 1, 'poster', 'frame', 'art/1-poster-0a1b2c3d.jpg', 0),
+               (2, 2, 'poster', 'frame', 'art/2-poster-00ff00ff.jpg', 0);",
         )
         .unwrap();
-        assert!(c
-            .execute(
+        assert!(
+            c.execute(
                 "INSERT INTO library(name, kind, created_at) VALUES ('V', 'videos', 0)",
                 []
             )
-            .is_err());
+            .is_err(),
+            "v{from}"
+        );
         migrate(&mut c).unwrap();
         let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
-        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION);
+        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION, "v{from}");
         assert_eq!(
             (
                 count("SELECT count(*) FROM library"),
                 count("SELECT count(*) FROM root"),
-                count("SELECT count(*) FROM item")
+                count("SELECT count(*) FROM item"),
+                count("SELECT count(*) FROM art")
             ),
-            (2, 2, 2)
+            (2, 2, 2, 2),
+            "v{from}"
         );
-        assert_eq!(count("SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        assert_eq!(
+            count("SELECT count(*) FROM pragma_foreign_key_check"),
+            0,
+            "v{from}"
+        );
         assert!(c
             .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, bool>(0))
             .unwrap());
@@ -639,14 +780,23 @@ mod tests {
                 []
             )
             .is_err());
-        // The cascade still reaches roots and items.
+        // v6's art ids are still never reused.
+        c.execute_batch(
+            "DELETE FROM art WHERE id = 2;
+             INSERT INTO art(item_id, kind, source, created_at) VALUES (2, 'poster', 'provider', 0);",
+        )
+        .unwrap();
+        assert_eq!(count("SELECT max(id) FROM art"), 3, "v{from}");
+        // The cascade still reaches roots, items and their art.
         c.execute("DELETE FROM library WHERE id = 1", []).unwrap();
         assert_eq!(
             (
                 count("SELECT count(*) FROM root"),
-                count("SELECT count(*) FROM item")
+                count("SELECT count(*) FROM item"),
+                count("SELECT count(*) FROM art")
             ),
-            (1, 1)
+            (1, 1, 1),
+            "v{from}"
         );
     }
 

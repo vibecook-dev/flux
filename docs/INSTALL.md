@@ -148,7 +148,9 @@ Open <http://127.0.0.1:8096>. Libraries named on the command line are created
 on first run; you can also add them on the Admin screen. The catalog,
 artwork and caches live in `~/Library/Application Support/flux` (macOS) or
 `~/.local/share/flux` (Linux) unless you pass `--data-dir`; the first log
-line and `flux-server --check` name the folder. Every flag, its
+line and `flux-server --check` name the folder. While flux is stopped, the
+folder can be moved or copied as a whole (point `--data-dir` at the new
+place); its artwork moves with it. Every flag, its
 environment variable and the TOML config file are in the
 [README](../README.md#quickstart-build-from-source) and `flux-server --help`.
 
@@ -350,7 +352,9 @@ on the Admin screen. The catalog, artwork and caches live in
 `FLUX_DATA_DIR`); the first log line names the folder. Builds up to
 0.1.0-alpha.2 used `%HOME%\.local\share\flux`, or `flux-data` in the
 working directory: if flux finds a catalog in one of those, it says so at
-startup and in `--check`; pass `--data-dir` to keep using it.
+startup and in `--check`. Pass `--data-dir` to keep using it, or, with flux
+stopped, move that folder's contents into `%LOCALAPPDATA%\flux`; the
+catalog's artwork moves with it.
 
 Stop flux with Ctrl-C; Ctrl-Break and closing its console window also stop
 it gracefully. `taskkill /PID` without `/F` can't stop a console program
