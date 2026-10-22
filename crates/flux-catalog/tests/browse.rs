@@ -245,6 +245,60 @@ fn original_titles_are_stored_and_searchable() {
         .unwrap();
 }
 
+/// After an upgrade the server runs a Deep scan for libraries with files
+/// that an older flux-names parsed or an older flux-probe probed. Missing
+/// files and failed probes don't count: a Deep scan can't bring them up to
+/// date, so they would ask for one at every start.
+#[test]
+fn outdated_files_counts_present_files_of_older_versions() {
+    let e = env(LibraryKind::Movies);
+    let other = env(LibraryKind::Movies);
+    let names = [
+        "A (2001).mkv",
+        "B (2002).mkv",
+        "C (2003).mkv",
+        "D (2004).mkv",
+        "E (2005).mkv",
+    ];
+    let ups = names
+        .iter()
+        .map(|n| upsert(n, movie(&n[..1], None), None))
+        .collect();
+    e.apply(ups);
+    let outdated = |e: &Env| {
+        let id = e.lib.id;
+        e.cat.read_blocking(move |c| read::outdated_files(c, id)).unwrap()
+    };
+    assert_eq!(outdated(&e), 0, "everything is current");
+    e.cat
+        .writer()
+        .exec(|c| {
+            let old_parse = flux_core::PARSER_VERSION - 1;
+            let old_probe = flux_core::PROBE_VERSION - 1;
+            c.execute(
+                "UPDATE file SET parse_version = ?1 WHERE rel_path = 'A (2001).mkv'",
+                [old_parse],
+            )?;
+            c.execute(
+                "UPDATE file SET probe_version = ?1 WHERE rel_path = 'B (2002).mkv'",
+                [old_probe],
+            )?;
+            c.execute(
+                "UPDATE file SET parse_version = ?1, state = 'missing' WHERE rel_path = 'C (2003).mkv'",
+                [old_parse],
+            )?;
+            c.execute(
+                "UPDATE file SET parse_version = ?1, state = 'probe_failed' WHERE rel_path = 'D (2004).mkv'",
+                [old_parse],
+            )?;
+            Ok(())
+        })
+        .wait()
+        .unwrap();
+    assert_eq!(outdated(&e), 2, "A (old parse) and B (old probe)");
+    assert_eq!(outdated(&other), 0, "another library");
+}
+
 #[test]
 fn search_is_prefix_diacritic_insensitive_and_ranked() {
     let e = env(LibraryKind::Mixed);
