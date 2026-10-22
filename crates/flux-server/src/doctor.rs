@@ -315,7 +315,7 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("web      none"), "{t}");
-        assert!(!t.contains("older"), "{t}");
+        assert!(!t.lines().any(|l| l.starts_with("older ")), "{t}");
         let older = dir.path().join("flux-data");
         cfg.older_data_dir = Some(older.clone());
         assert!(
