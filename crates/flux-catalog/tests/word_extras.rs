@@ -157,4 +157,45 @@ fn unclear_extras_folders_stay_films() {
         ),
     ]);
     assert_eq!(e.top().len(), 2);
+
+    // A year in the file's own name says it is a film: a collection folder
+    // with one feature beside a folder of dated shorts keeps three films,
+    // each with its year, whichever comes first.
+    let feature = || {
+        upsert(
+            "Studio/Big Feature (1995).mkv",
+            movie("Big Feature", Some(1995)),
+            None,
+        )
+    };
+    let shorts = || {
+        vec![
+            upsert(
+                "Studio/Studio Shorts/Paper Boat (2000).mkv",
+                movie("Paper Boat", Some(2000)),
+                None,
+            ),
+            upsert(
+                "Studio/Studio Shorts/Desk Light (1986).mkv",
+                movie("Desk Light", Some(1986)),
+                None,
+            ),
+        ]
+    };
+    for order in ["feature first", "shorts first"] {
+        let e = env(LibraryKind::Movies);
+        if order == "feature first" {
+            e.apply(vec![feature()]);
+            e.apply(shorts());
+        } else {
+            e.apply(shorts());
+            e.apply(vec![feature()]);
+        }
+        let top = e.top();
+        assert_eq!(top.len(), 3, "{order}: {top:#?}");
+        assert!(top.iter().all(|i| i.kind == ItemKind::Movie), "{order}");
+        assert_eq!(e.find_top("Paper Boat").year, Some(2000), "{order}");
+        assert_eq!(e.find_top("Desk Light").year, Some(1986), "{order}");
+        assert!(e.children(e.find_top("Big Feature").id).is_empty(), "{order}");
+    }
 }

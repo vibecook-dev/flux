@@ -293,8 +293,9 @@ const EXTRA_FOLDER_WORDS: &[(&[&str], ExtraKind)] = &[
 /// Conservative, because a miss only leaves the file as a film of its own:
 /// never at the root (there is no film folder above), never for a folder
 /// with a year in its name (`Shorts (2009)/` is a film's own folder).
-/// [`crate::Writer::apply`] also requires that the folder above holds the
-/// files of exactly one film directly; otherwise the file stays a film.
+/// [`crate::Writer::apply`] also requires that the file's own name has no
+/// year or provider id, and that the folder above holds the files of
+/// exactly one film directly; otherwise the file stays a film.
 pub fn extras_folder_by_word(rel_path: &str) -> Option<(ExtraKind, &str)> {
     let (dir, _) = rel_path.rsplit_once('/')?;
     let (parent, name) = dir.rsplit_once('/')?;

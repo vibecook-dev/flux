@@ -1294,11 +1294,14 @@ pub(crate) fn attach_fingerprints(
     ap.finish()
 }
 
-/// A film (or unrecognised) guess without provider ids, in an extras-named
-/// folder ([`group::extras_folder_by_word`]): it may be a film's extra.
+/// A film (or unrecognised) guess without provider ids or a year, in an
+/// extras-named folder ([`group::extras_folder_by_word`]): it may be a
+/// film's extra. A year in the name says it is a film of its own
+/// (`Studio/Studio Shorts/Short (2000).mkv`).
 fn word_extra_candidate(guess: &NameGuess, rel_path: &str) -> bool {
     matches!(guess.kind, GuessKind::Movie | GuessKind::Unknown)
         && guess.ids.is_empty()
+        && guess.year.is_none()
         && group::extras_folder_by_word(rel_path).is_some()
 }
 
