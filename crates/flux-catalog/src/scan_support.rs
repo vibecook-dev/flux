@@ -697,6 +697,43 @@ impl Apply<'_> {
         }))
     }
 
+    /// A re-parse (no probe) that would change nothing: the row at this
+    /// path has this stat and identity, is placed (not pending, not missing),
+    /// was parsed by this parser and holds this very guess. The scanner
+    /// re-parses the files of a folder that share a new file's stack or
+    /// series key, and a camera's or phone's files all share one (`VID`,
+    /// `IMG`): most come out as they were, and rewriting each of them would
+    /// cost a write per file in the folder for every file added to it.
+    fn reparse_is_noop(&self, id: Id, f: &FileFacts, guess: &NameGuess) -> Result<bool> {
+        let json = compact_json(guess)?;
+        Ok(self
+            .conn
+            .prepare_cached(
+                "SELECT 1 FROM file f JOIN file_meta m ON m.file_id = f.id
+                  WHERE f.id = ?1 AND f.size = ?2 AND f.mtime_ns = ?3 AND f.dev IS ?4 AND f.ino IS ?5
+                    AND f.btime_ns IS ?6 AND (?7 IS NULL OR f.fp128 IS ?7) AND (?8 IS NULL OR f.oshash IS ?8)
+                    AND f.state IN ('present', 'probe_failed') AND f.tombstone_until IS NULL
+                    AND f.placement <> 'pending' AND f.parse_version IS ?9 AND m.guess IS ?10",
+            )?
+            .query_row(
+                params![
+                    id,
+                    clamp_i64(f.size),
+                    f.mtime_ns,
+                    f.dev.map(u64_to_sql),
+                    f.ino.map(u64_to_sql),
+                    f.btime_ns,
+                    f.fp128.map(fp128_to_blob).as_ref().map(|b| b.as_slice()),
+                    f.oshash.map(u64_to_sql),
+                    PARSER_VERSION,
+                    json,
+                ],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     fn apply_upsert(&mut self, u: &FileUpsert) -> Result<()> {
         let f = &u.facts;
         let (probe, probe_error) = match &u.probe {
@@ -712,6 +749,11 @@ impl Apply<'_> {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?;
+        if let (Some((id, _, _)), ProbeSrc::Keep, Some(g)) = (&existing, &probe, &u.guess) {
+            if self.reparse_is_noop(*id, f, g)? {
+                return Ok(());
+            }
+        }
         let (file_id, asset_id, placement) = match existing {
             Some((id, asset, placement)) => {
                 self.update_file(id, f, probe, probe_error, u.guess.as_ref())?;

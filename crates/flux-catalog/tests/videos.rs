@@ -382,3 +382,52 @@ fn files_that_are_not_media_never_become_items() {
         .unwrap();
     assert_eq!(l.scan.files_seen, 0);
 }
+
+/// The scanner re-parses every file of a folder that shares a new file's
+/// stack or series key, and a camera's files all share one: a re-parse
+/// whose guess is the stored one writes nothing, so adding a file to a big
+/// folder costs no write per file already in it. A new guess, or a new
+/// stat, is still written.
+#[test]
+fn a_reparse_that_changes_nothing_writes_nothing() {
+    let e = env(LibraryKind::Mixed);
+    let clip = upsert(
+        "Camera/VID_20190501_120000.mp4",
+        movie("VID 20190501 120000", None),
+        None,
+    );
+    let out = e.apply(vec![clip.clone()]);
+    assert_eq!(out.files_added, 1);
+    let id = e.file_id("Camera/VID_20190501_120000.mp4");
+    let stamp = || -> i64 {
+        e.cat
+            .read_blocking(move |c| {
+                Ok(c.query_row("SELECT updated_at FROM file WHERE id = ?1", [id], |r| r.get(0))?)
+            })
+            .unwrap()
+    };
+    let before = stamp();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let out = e.apply(vec![clip.clone()]);
+    assert_eq!(
+        (out.files_changed, out.items_added.len(), out.items_updated.len()),
+        (0, 0, 0),
+        "{out:?}"
+    );
+    assert_eq!(stamp(), before);
+    assert_eq!(e.top().len(), 1);
+
+    // Another guess is written, and the file placed by it.
+    let mut renamed = clip.clone();
+    renamed.guess = Some(movie("Beach", None));
+    let out = e.apply(vec![renamed]);
+    assert_eq!(out.files_changed, 1, "{out:?}");
+    assert!(stamp() > before);
+    e.find_top("Beach");
+    // So is a new stat with the guess it has.
+    let mut touched = clip.clone();
+    touched.guess = Some(movie("Beach", None));
+    touched.facts.mtime_ns += 1_000_000_000;
+    let out = e.apply(vec![touched]);
+    assert_eq!(out.files_changed, 1, "{out:?}");
+}

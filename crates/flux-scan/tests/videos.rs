@@ -238,3 +238,64 @@ fn a_series_arriving_later_regroups_the_first_file() {
     assert_eq!(snapshot(&cat, root_id).len(), 2);
     s.shutdown(Duration::from_secs(5));
 }
+
+/// A phone's folder in a mixed library: every `VID_…` file shares the
+/// series key of a new one, so when it arrives the scanner parses them all
+/// again. None of them reads any differently, so none is written: adding a
+/// file to a folder costs no write per file already in it. A numbered
+/// series beside them still takes its new episode.
+#[test]
+fn a_new_clip_rewrites_none_of_its_folder() {
+    let scratch = Scratch::new("phone-folder");
+    let root = scratch.path("Mixed");
+    // Unreadable, and each file its own content.
+    let bytes = |i: u8| [UNREADABLE, &[i]].concat();
+    for i in 0..40 {
+        put(&root, &format!("Phone/VID_20190501_1200{i:02}.mp4"), &bytes(i));
+    }
+    put(&root, "Phone/Clip E01.mp4", &bytes(41));
+    put(&root, "Phone/Clip E02.mp4", &bytes(42));
+    let cat = open_catalog(&scratch.dir);
+    let (lib, _) = add_library(&cat, "Mixed", LibraryKind::Mixed, &root);
+    let s = scanner(&cat);
+    let quick = || {
+        s.scan_library(lib, ScanMode::Quick, Priority::Scheduled)
+            .wait()
+            .expect("scan")
+    };
+    let r = quick();
+    assert_eq!(r.added, 42, "{r:?}");
+    assert!(s.wait_fingerprints(Duration::from_secs(60)));
+    let last_write = || -> i64 {
+        cat.read_blocking(|c| Ok(c.query_row("SELECT max(updated_at) FROM file", [], |r| r.get(0))?))
+            .unwrap()
+    };
+    let before = last_write();
+    std::thread::sleep(Duration::from_millis(5));
+
+    put(&root, "Phone/VID_20190601_120000.mp4", &bytes(43));
+    put(&root, "Phone/Clip E03.mp4", &bytes(44));
+    let r = quick();
+    assert_eq!((r.added, r.changed), (2, 0), "{r:?}");
+    let rewritten: i64 = cat
+        .read_blocking(move |c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM file WHERE updated_at > ?1", [before], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(rewritten, 2, "only the new files are written");
+    let episodes: i64 = cat
+        .read_blocking(move |c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM item WHERE library_id = ?1 AND kind = 'episode' AND state <> 'missing'",
+                [lib],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(episodes, 3);
+    s.shutdown(Duration::from_secs(5));
+}
