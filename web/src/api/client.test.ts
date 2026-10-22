@@ -181,6 +181,25 @@ describe('flux client against the mock server', () => {
     expect((await client.libraryItems(1, { limit: 1, filter: '4k' })).total).toBeLessThan(all.total ?? 0);
   });
 
+  it('GET /libraries/{id}/folders browses a videos library by folder', async () => {
+    const home = db.createLibrary('Home', 'videos', ['/m/Home']);
+    db.addItems(home.id, 30);
+    const top = await client.libraryFolders(home.id);
+    expect(top.at).toEqual({ folder: '', name: 'Home' });
+    expect(top.parents).toEqual([]);
+    const counted = top.folders.reduce((n, f) => n + f.item_count, 0) + top.total;
+    expect(counted).toBeGreaterThanOrEqual(30);
+    const first = top.folders[0];
+    expect(first).toBeDefined();
+    const inside = await client.libraryFolders(home.id, { folder: first.folder, sort: '-date', limit: 1 });
+    expect(inside.at).toEqual({ folder: first.folder, name: first.name });
+    expect(inside.parents).toEqual([top.at]);
+    expect(inside.items.length).toBeLessThanOrEqual(1);
+    await expect(client.libraryFolders(home.id, { folder: `${home.id}/No such folder` })).rejects.toMatchObject({ status: 404 });
+    // Other kinds have no folder view.
+    await expect(client.libraryFolders(1)).rejects.toMatchObject({ status: 400 });
+  });
+
   it('POST /plan previews /play without a session', async () => {
     const [dune] = await client.search('Dune: Part Two');
     const req = { item_id: dune.id, asset_id: null, caps: chromeCaps, audio_track: null, subtitle_track: null, start_ms: null };

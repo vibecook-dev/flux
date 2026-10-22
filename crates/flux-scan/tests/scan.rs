@@ -759,7 +759,8 @@ fn a_part_arriving_later_restacks_the_earlier_one() {
     let root = scratch.path("Movies");
     let dir = root.join("示例片-MP4");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("示例片A.mp4"), b"not really a movie, part one").unwrap();
+    // Binary, so an unreadable video (a text file would not be media).
+    std::fs::write(dir.join("示例片A.mp4"), b"\0not really a movie, part one").unwrap();
     let cat = open_catalog(&scratch.dir);
     let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
     let s = scanner(&cat);
@@ -788,7 +789,7 @@ fn a_part_arriving_later_restacks_the_earlier_one() {
     let a = guess_of("示例片A.mp4");
     assert_eq!((a.title.as_deref(), a.part), (Some("示例片A"), None), "{a:#?}");
 
-    std::fs::write(dir.join("示例片B.mp4"), b"not really a movie, part two").unwrap();
+    std::fs::write(dir.join("示例片B.mp4"), b"\0not really a movie, part two").unwrap();
     let r = quick();
     assert_eq!(r.added, 1, "{r:?}");
     let (a, b) = (guess_of("示例片A.mp4"), guess_of("示例片B.mp4"));

@@ -76,6 +76,12 @@
   scrollbar-width: none;
 }
 
+/* A videos library's Folders / All videos switch: never squeezed (the
+   filter chips beside it scroll instead, on a row of their own on phones). */
+.chips.viewChips {
+  flex: none;
+}
+
 .chip {
   height: 34px;
   padding: 0 14px;
@@ -178,6 +184,100 @@
   color: var(--text-2);
 }
 
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Videos libraries: breadcrumbs and folder tiles above the grid. */
+.crumbs {
+  margin: -8px 0 16px;
+  font-size: 0.92rem;
+}
+
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crumbs li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crumbs li + li::before {
+  content: '/';
+  color: var(--text-3);
+}
+
+.crumbs a {
+  color: var(--text-2);
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.crumbs a:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.crumbs [aria-current='page'] {
+  padding: 2px 6px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.folders {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  margin: 0 0 26px;
+  padding: 0;
+  list-style: none;
+}
+
+.folderTile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg-raised);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.folderTile:hover,
+.folderTile:focus-visible {
+  background: var(--surface-2);
+}
+
+.folderTile svg {
+  grid-row: 1 / 3;
+  width: 26px;
+  height: 26px;
+  color: var(--text-2);
+}
+
+.folderName {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 699px) {
   .toolbar {
     flex-wrap: wrap;
@@ -195,6 +295,15 @@
 
   .chips {
     flex: 1;
+  }
+
+  .viewChips ~ .sort {
+    order: 1;
+  }
+
+  .viewChips ~ .chips {
+    order: 2;
+    flex: 1 1 100%;
   }
 
   .gridWrap {

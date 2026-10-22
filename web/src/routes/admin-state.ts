@@ -48,7 +48,7 @@ export function metadataNote(source: MetadataSource): string | null {
   return 'Titles, years and posters come from the file names and the videos themselves: flux has no TMDB key to look them up. To match them, set TMDB_READ_TOKEN (or TMDB_API_KEY) in flux-server’s environment and restart it.';
 }
 
-const TITLES: Record<LibraryKind, [one: string, many: string]> = { movies: ['film', 'films'], shows: ['show', 'shows'], mixed: ['title', 'titles'] };
+const TITLES: Record<LibraryKind, [one: string, many: string]> = { movies: ['film', 'films'], shows: ['show', 'shows'], mixed: ['title', 'titles'], videos: ['video', 'videos'] };
 
 /** "300 shows", "1 film". */
 function titles(kind: LibraryKind, n: number, count: (n: number) => string): string {

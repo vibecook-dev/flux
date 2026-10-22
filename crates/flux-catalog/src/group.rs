@@ -23,6 +23,10 @@
 //!   re-probed) but it maps to no item.
 //! - **Unknown** files become an "unmatched" movie titled after the cleaned
 //!   filename, so nothing the user added is invisible.
+//! - **Videos libraries** ([`place_in`], [`place_video`]): every file is a
+//!   top-level item of its own, keyed by its path; only the parts of a
+//!   multi-part stack share one. No grouping rule above applies, and the
+//!   items are never matched against a metadata source.
 //!
 //! Year handling: a guess without a year joins the *only* same-titled item;
 //! a guess with a year adopts a same-titled item that has none. This keeps
@@ -35,12 +39,12 @@
 use std::collections::HashMap;
 
 use flux_core::api::Id;
-use flux_core::{ExtraKind, GuessKind, NameGuess, ProviderIds};
+use flux_core::{ExtraKind, GuessKind, LibraryKind, NameGuess, ProviderIds};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::Result;
 use crate::jobs::JOB_MATCH;
-use crate::model::enum_to_text;
+use crate::model::{enum_to_text, parse_library_kind};
 
 // ---- normalisation ----------------------------------------------------------
 
@@ -345,6 +349,10 @@ pub struct WorkTarget {
     /// The other-script half of a bilingual name ([`NameGuess::original_title`]),
     /// stored as the item's `original_title` and indexed for search.
     pub original_title: Option<String>,
+    /// A video of a videos library ([`place_in`]): found by its exact
+    /// `group_key` only (one item per file or stack) and never matched
+    /// against a metadata source.
+    pub standalone: bool,
 }
 
 /// One episode slot within a season.
@@ -418,8 +426,54 @@ fn unmatched(guess: &NameGuess, rel_path: &str) -> Placement {
             unmatched: true,
             folder: None,
             original_title: None,
+            standalone: false,
         },
         edition: guess.edition.clone(),
+        part: guess.part,
+    }
+}
+
+/// Decide where a file of a library of `kind` (under root `root_id`)
+/// belongs (no I/O). In a videos library every file is a video of its own
+/// ([`place_video`]); every other kind follows [`place`].
+pub fn place_in(kind: LibraryKind, root_id: Id, guess: &NameGuess, rel_path: &str) -> Placement {
+    match kind {
+        LibraryKind::Videos => place_video(root_id, guess, rel_path),
+        LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Mixed => place(guess, rel_path),
+    }
+}
+
+/// A file of a videos library: one top-level item of its own, titled by the
+/// guess (the cleaned file name), whatever the guess's kind. The group key
+/// is the file's path in its root, so nothing else ever joins it: no
+/// versions, editions, extras or show. The one exception is a multi-part
+/// stack (the guess has a `part`): the parts in one folder share the key
+/// of their common title.
+pub fn place_video(root_id: Id, guess: &NameGuess, rel_path: &str) -> Placement {
+    let title = non_empty(&guess.title)
+        .map(str::to_string)
+        .unwrap_or_else(|| clean_filename(rel_path));
+    let group_key = match guess.part {
+        Some(_) => {
+            let dir = rel_path.rsplit_once('/').map_or("", |(d, _)| d);
+            format!("v:{root_id}:s:{dir}/{}", normalize_title(&title))
+        }
+        None => format!("v:{root_id}:f:{rel_path}"),
+    };
+    Placement::Movie {
+        work: WorkTarget {
+            title,
+            group_key,
+            year: None,
+            ids: ProviderIds::default(),
+            confidence: 1.0,
+            evidence: guess.evidence.clone(),
+            unmatched: false,
+            folder: None,
+            original_title: None,
+            standalone: true,
+        },
+        edition: None,
         part: guess.part,
     }
 }
@@ -447,6 +501,7 @@ pub fn place(guess: &NameGuess, rel_path: &str) -> Placement {
                     unmatched: false,
                     folder: None,
                     original_title: non_empty(&guess.original_title).map(str::to_string),
+                    standalone: false,
                 },
                 edition: guess.edition.clone(),
                 part: guess.part,
@@ -483,6 +538,7 @@ pub fn place(guess: &NameGuess, rel_path: &str) -> Placement {
                     unmatched: false,
                     folder: show_folder(rel_path),
                     original_title: non_empty(&guess.original_title).map(str::to_string),
+                    standalone: false,
                 },
                 season: season.unwrap_or(1),
                 episodes,
@@ -566,6 +622,9 @@ struct NewItem<'a> {
     match_state: &'a str,
     confidence: Option<f32>,
     evidence: Option<&'a [String]>,
+    /// A top-level item no metadata source matches (a video of a videos
+    /// library): it gets an art job (frames) but no match job.
+    no_match: bool,
 }
 
 fn insert_item(conn: &Connection, r: &mut Resolver, n: NewItem<'_>) -> Result<Id> {
@@ -615,7 +674,9 @@ fn insert_item(conn: &Connection, r: &mut Resolver, n: NewItem<'_>) -> Result<Id
         crate::fts::add(conn, id, &doc)?;
     }
     // flux-meta picks these up: match, then art, for every new top-level work.
-    if n.parent_id.is_none() && r.job_max_attempts > 0 {
+    if n.parent_id.is_none() && r.job_max_attempts > 0 && n.no_match {
+        crate::jobs::enqueue_art_for_new_work(conn, id, r.now, r.job_max_attempts)?;
+    } else if n.parent_id.is_none() && r.job_max_attempts > 0 {
         let key = crate::jobs::match_key(id, n.group_key, n.year, &ids);
         crate::jobs::enqueue_for_new_work(
             conn,
@@ -753,6 +814,7 @@ pub(crate) fn resolve_work(
                 match_state: if w.unmatched { "unmatched" } else { "parsed" },
                 confidence: Some(w.confidence),
                 evidence: Some(&w.evidence),
+                no_match: w.standalone,
             },
         )?,
     };
@@ -805,11 +867,12 @@ pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str,
     Ok(n > 0)
 }
 
-/// An item's files, lowest id first, with the guess stored for each and how
-/// many items its asset is linked to: a movie's or an episode's own files.
+/// An item's files, lowest id first, with the guess stored for each, how
+/// many items its asset is linked to and its root: a movie's or an
+/// episode's own files.
 const FILES_OF_ITEM: &str = "WITH a(id) AS (SELECT asset_id FROM asset_item WHERE item_id = ?1
                        UNION SELECT id FROM asset WHERE item_id = ?1)
-     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id)
+     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id), f.root_id
        FROM a JOIN asset s ON s.id = a.id JOIN file f ON f.id = s.file_id
        LEFT JOIN file_meta m ON m.file_id = f.id
       ORDER BY f.id";
@@ -819,7 +882,7 @@ const FILES_OF_SHOW: &str = "WITH e(id) AS (SELECT ep.id FROM item se JOIN item 
                        WHERE se.parent_id = ?1 AND ep.kind = 'episode'),
           a(id) AS (SELECT asset_id FROM asset_item WHERE item_id IN (SELECT id FROM e)
                     UNION SELECT id FROM asset WHERE item_id IN (SELECT id FROM e))
-     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id)
+     SELECT f.id, f.rel_path, m.guess, (SELECT count(*) FROM asset_item x WHERE x.asset_id = a.id), f.root_id
        FROM a JOIN asset s ON s.id = a.id JOIN file f ON f.id = s.file_id
        LEFT JOIN file_meta m ON m.file_id = f.id
       ORDER BY f.id";
@@ -836,20 +899,33 @@ const FILES_OF_SHOW: &str = "WITH e(id) AS (SELECT ep.id FROM item se JOIN item 
 /// (or air date). A title from a provider or the user (`matched`,
 /// `locked`) stays, and so does a title any of the files gives. Returns
 /// whether the title changed.
+///
+/// Files are placed by their library's kind ([`place_in`]), as
+/// `Apply::place` places them: a videos library's item takes the title its
+/// own file gives.
 pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Result<bool> {
-    type Head = (String, String, String, Option<u16>, Option<String>);
+    type Head = (String, String, String, Option<u16>, Option<String>, String);
     let head: Option<Head> = conn
         .prepare_cached(
-            "SELECT kind, title, group_key, episode_number, air_date FROM item
-              WHERE id = ?1 AND match_state NOT IN ('matched', 'locked')",
+            "SELECT i.kind, i.title, i.group_key, i.episode_number, i.air_date, l.kind
+               FROM item i JOIN library l ON l.id = i.library_id
+              WHERE i.id = ?1 AND i.match_state NOT IN ('matched', 'locked')",
         )?
         .query_row([id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
         })
         .optional()?;
-    let Some((kind, title, group_key, number, date)) = head else {
+    let Some((kind, title, group_key, number, date, library_kind)) = head else {
         return Ok(false);
     };
+    let library_kind = parse_library_kind(&library_kind)?;
     let sql = match kind.as_str() {
         "movie" | "episode" => FILES_OF_ITEM,
         "show" => FILES_OF_SHOW,
@@ -867,8 +943,8 @@ pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Resu
     let mut stmt = conn.prepare_cached(sql)?;
     let mut rows = stmt.query([id])?;
     while let Some(row) = rows.next()? {
-        let (file_id, rel_path, json, links): (Id, String, Option<String>, i64) =
-            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+        let (file_id, rel_path, json, links, root_id): (Id, String, Option<String>, i64, Id) =
+            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
         let Some(guess) = json.and_then(|j| match serde_json::from_str::<NameGuess>(&j) {
             Ok(g) => Some(g),
             Err(e) => {
@@ -878,7 +954,7 @@ pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Resu
         }) else {
             continue;
         };
-        let (given, prefer) = match (kind.as_str(), place(&guess, &rel_path)) {
+        let (given, prefer) = match (kind.as_str(), place_in(library_kind, root_id, &guess, &rel_path)) {
             ("movie", Placement::Movie { work, .. }) | ("show", Placement::Episodes { show: work, .. }) => {
                 let same_work = normalize_title(&work.title) == group_key;
                 (work.title, same_work)
@@ -1069,8 +1145,9 @@ fn find_work(
             return Ok(Some(id));
         }
     }
-    if w.unmatched {
-        // Unmatched files only group with the same path stem.
+    if w.unmatched || w.standalone {
+        // Unmatched files only group with the same path stem, and a
+        // videos library's file only with itself (or its stack).
         return conn
             .prepare_cached(
                 "SELECT id FROM item WHERE library_id = ?1 AND kind = ?2 AND group_key = ?3 AND parent_id IS NULL ORDER BY id LIMIT 1",
@@ -1323,6 +1400,7 @@ fn resolve_child(
                     match_state: "parsed",
                     confidence: None,
                     evidence: None,
+                    no_match: false,
                 },
             )?
         }
@@ -1525,6 +1603,82 @@ mod tests {
         assert!(
             matches!(place(&g, "x"), Placement::Episodes { season: 2024, ref episodes, .. } if episodes == &[EpisodeKey::Date("2024-03-05".into())])
         );
+    }
+
+    #[test]
+    fn a_videos_library_places_every_file_on_its_own() {
+        let key = |p: &Placement| match p {
+            Placement::Movie { work, .. } => work.group_key.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut g = guess(GuessKind::Movie, Some("Clip"));
+        g.year = Some(2019);
+        g.ids.tmdb = Some(603);
+        g.edition = Some("Director's Cut".into());
+        let a = place_in(LibraryKind::Videos, 7, &g, "Trip/Clip.mp4");
+        match &a {
+            Placement::Movie { work, edition, part } => {
+                assert!(work.standalone && !work.unmatched);
+                assert_eq!(
+                    (
+                        work.title.as_str(),
+                        work.year,
+                        work.ids.tmdb,
+                        edition.as_deref(),
+                        *part
+                    ),
+                    ("Clip", None, None, None, None)
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Another folder, another root: another video.
+        assert_ne!(
+            key(&a),
+            key(&place_in(LibraryKind::Videos, 7, &g, "Party/Clip.mp4"))
+        );
+        assert_ne!(
+            key(&a),
+            key(&place_in(LibraryKind::Videos, 8, &g, "Trip/Clip.mp4"))
+        );
+        // Extras, samples, episodes and unknowns are videos too.
+        for kind in [
+            GuessKind::Extra,
+            GuessKind::Sample,
+            GuessKind::Episode,
+            GuessKind::Unknown,
+        ] {
+            let mut x = guess(kind, Some("Making Of"));
+            x.episodes = vec![1];
+            assert!(matches!(
+                place_in(LibraryKind::Videos, 7, &x, "Trip/Featurettes/Making Of.mp4"),
+                Placement::Movie {
+                    work: WorkTarget { standalone: true, .. },
+                    ..
+                }
+            ));
+        }
+        // The parts of a stack share a key; a lone file of that title doesn't.
+        let mut p1 = guess(GuessKind::Movie, Some("Wedding"));
+        p1.part = Some(1);
+        let mut p2 = p1.clone();
+        p2.part = Some(2);
+        let k1 = key(&place_in(LibraryKind::Videos, 7, &p1, "W/Wedding part1.mp4"));
+        assert_eq!(
+            k1,
+            key(&place_in(LibraryKind::Videos, 7, &p2, "W/Wedding part2.mp4"))
+        );
+        let lone = guess(GuessKind::Movie, Some("Wedding"));
+        assert_ne!(k1, key(&place_in(LibraryKind::Videos, 7, &lone, "W/Wedding.mp4")));
+        // No title: named after the file.
+        match place_in(LibraryKind::Videos, 7, &NameGuess::unknown(), "x/My_Clip.mp4") {
+            Placement::Movie { work, .. } => assert_eq!(work.title, "My Clip"),
+            other => panic!("{other:?}"),
+        }
+        // Every other kind groups as before.
+        for kind in [LibraryKind::Movies, LibraryKind::Shows, LibraryKind::Mixed] {
+            assert_eq!(place_in(kind, 7, &g, "Trip/Clip.mp4"), place(&g, "Trip/Clip.mp4"));
+        }
     }
 
     #[test]

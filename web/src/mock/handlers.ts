@@ -10,6 +10,8 @@ import type {
   CreateInvite,
   CreateLibrary,
   FluxEvent,
+  FolderPage,
+  FolderSort,
   Id,
   Invite,
   ItemFilter,
@@ -30,11 +32,12 @@ import type {
   TailnetConnect,
   TailnetInfo,
 } from '../api/types';
-import { ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
+import { FOLDER_SORTS, ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
 import { channelLayout, codecShort, planLabel } from '../api/explain';
 import { addOtherAudioTracks, predictPlan } from '../plan/predict';
 import { hash32, posterSvg, wideSvg } from './art';
 import type { MockDb } from './db';
+import { mockFolderPage } from './folders';
 import { mediaFor, type MockMedia } from './media';
 
 export interface MockOptions {
@@ -273,6 +276,38 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
         total: ids.length,
       };
       return HttpResponse.json(page);
+    }),
+
+    http.get(u('/api/v1/libraries/:id/folders'), async ({ params, request }) => {
+      await wait();
+      const lib = db.libraries.find((l) => l.id === Number(params.id));
+      if (!lib) return notFound('Library');
+      // As the server: only a videos library has a folder view.
+      if (lib.kind !== 'videos') return new HttpResponse(`a ${lib.kind} library has no folder view: folders are browsed in a videos library`, { status: 400 });
+      const url = new URL(request.url);
+      const sort = url.searchParams.get('sort') ?? 'title';
+      if (!(FOLDER_SORTS as readonly string[]).includes(sort)) return new HttpResponse(`Unknown sort ${sort}`, { status: 400 });
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
+      const offset = Number(url.searchParams.get('cursor')?.replace(/^o/, '') ?? 0) || 0;
+      const root = lib.roots[0]?.path ?? '';
+      const files = db.libraryIds(lib.id, 'title').flatMap((id, i) => {
+        const rec = db.get(id);
+        if (!rec) return [];
+        return rec.files
+          .filter((f) => f.path.startsWith(`${root}/`))
+          .map((f) => ({ id, rel: f.path.slice(root.length + 1), mtime: rec.addedAt, sortKey: String(i).padStart(8, '0') }));
+      });
+      const page = mockFolderPage({ name: lib.name, root: lib.id }, files, url.searchParams.get('folder') ?? '', sort as FolderSort, offset, limit);
+      if (!page) return notFound('Folder');
+      const body: FolderPage = {
+        at: page.at,
+        parents: page.parents,
+        folders: page.folders,
+        items: page.ids.flatMap((id) => db.summary(id) ?? []),
+        next: page.next,
+        total: page.total,
+      };
+      return HttpResponse.json(body);
     }),
 
     http.get(u('/api/v1/home'), async () => {

@@ -52,6 +52,11 @@ pub(crate) fn extract(name: &str, ids: &mut ProviderIds, evidence: &mut Vec<Stri
     ID_RE.replace_all(name, " ").into_owned()
 }
 
+/// `true` when `name` carries a provider id tag ([`extract`] would find one).
+pub(crate) fn has_id(name: &str) -> bool {
+    name.contains(['[', '{', '(']) && ID_RE.is_match(name)
+}
+
 fn set_num(slot: &mut Option<u64>, val: &str) -> bool {
     if slot.is_some() {
         return false;

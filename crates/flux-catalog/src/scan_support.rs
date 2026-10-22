@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use flux_core::api::Id;
-use flux_core::{GuessKind, NameGuess, ProbeResult, PARSER_VERSION};
+use flux_core::{GuessKind, LibraryKind, NameGuess, ProbeResult, PARSER_VERSION};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CatalogError, Result};
@@ -220,6 +220,8 @@ enum ProbeSrc<'a> {
     Keep,
     /// A fresh probe (`None` = the probe failed).
     New(Option<&'a ProbeResult>),
+    /// The file is not media ([`ProbeUpdate::NotMedia`]): no asset, no item.
+    NotMedia,
 }
 
 /// Recompute bookkeeping shared by every write that changes file states or
@@ -251,6 +253,9 @@ impl Touched {
 struct Apply<'c> {
     conn: &'c Connection,
     root_id: Id,
+    /// The root's library kind: a videos library places every file on its
+    /// own ([`group::place_in`]).
+    kind: LibraryKind,
     grace_ms: i64,
     r: Resolver,
     t: Touched,
@@ -284,15 +289,23 @@ struct Apply<'c> {
 pub const PROBE_RETRY_BASE_MS: i64 = 60_000;
 /// The longest probe-retry backoff: 1 day.
 pub const PROBE_RETRY_MAX_MS: i64 = 86_400_000;
+/// [`crate::FileRow::probe_retry_at`] of a file that is not media
+/// ([`ProbeUpdate::NotMedia`]): never retried by time. Only a change to the
+/// file (its size or mtime), a Deep scan or a scan the user asked for looks
+/// at it again.
+pub const PROBE_RETRY_NEVER: i64 = i64::MAX;
 
 impl<'c> Apply<'c> {
     /// A job's state for `root_id`; also returns whether the root is
     /// stored as unavailable.
     fn new(conn: &'c Connection, root_id: Id, grace_ms: i64, job_max_attempts: u32) -> Result<(Self, bool)> {
         let now = now_ms();
-        let (library_id, state): (Id, String) = conn
-            .prepare_cached("SELECT library_id, state FROM root WHERE id = ?1")?
-            .query_row([root_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let (library_id, state, kind): (Id, String, String) = conn
+            .prepare_cached(
+                "SELECT r.library_id, r.state, l.kind FROM root r JOIN library l ON l.id = r.library_id
+                  WHERE r.id = ?1",
+            )?
+            .query_row([root_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()?
             .ok_or_else(|| CatalogError::NotFound(format!("root {root_id}")))?;
         let mut resolver = Resolver::new(library_id, now);
@@ -301,6 +314,7 @@ impl<'c> Apply<'c> {
             Apply {
                 conn,
                 root_id,
+                kind: parse_library_kind(&kind)?,
                 grace_ms,
                 r: resolver,
                 t: Touched::default(),
@@ -520,7 +534,8 @@ impl Apply<'_> {
     }
 
     /// Rewrite a file row's location, stat, probe and guess. `probe_error`
-    /// is `Some` only for a failed probe (`ProbeSrc::New(None)`).
+    /// is `Some` only for a failed probe (`ProbeSrc::New(None)`) or a file
+    /// that is not media (`ProbeSrc::NotMedia`).
     ///
     /// A failed probe keeps the last good probe JSON (and so the asset's
     /// playback facts) but clears `probe_version` and schedules a retry
@@ -535,11 +550,13 @@ impl Apply<'_> {
         probe_error: Option<&str>,
         guess: Option<&NameGuess>,
     ) -> Result<()> {
-        // 0 = keep the stored probe, 1 = a fresh probe, 2 = the probe failed.
+        // 0 = keep the stored probe, 1 = a fresh probe, 2 = the probe failed,
+        // 3 = not media (failed for good: never retried by time).
         let (set_probe, probe_json, probe_version) = match probe {
             ProbeSrc::Keep => (0, None, None),
             ProbeSrc::New(Some(p)) => (1, Some(compact_json(p)?), Some(p.probe_version)),
             ProbeSrc::New(None) => (2, None, None),
+            ProbeSrc::NotMedia => (3, None, None),
         };
         let guess_json = guess.map(compact_json).transpose()?;
         self.conn
@@ -552,7 +569,7 @@ impl Apply<'_> {
                     probe_version = CASE ?11 WHEN 0 THEN probe_version ELSE ?12 END,
                     probe_error   = CASE ?11 WHEN 0 THEN probe_error ELSE ?13 END,
                     probe_attempts = CASE ?11 WHEN 0 THEN probe_attempts WHEN 1 THEN 0 ELSE probe_attempts + 1 END,
-                    probe_retry_at = CASE ?11 WHEN 0 THEN probe_retry_at WHEN 1 THEN NULL
+                    probe_retry_at = CASE ?11 WHEN 0 THEN probe_retry_at WHEN 1 THEN NULL WHEN 3 THEN ?17
                                      ELSE ?16 + MIN(60000 * (1 << MIN(probe_attempts, 20)), 86400000) END,
                     parse_version = CASE WHEN ?14 THEN ?15 ELSE parse_version END,
                     state = CASE WHEN (CASE ?11 WHEN 0 THEN probe_error ELSE ?13 END) IS NULL
@@ -577,6 +594,7 @@ impl Apply<'_> {
                 guess_json.is_some(),
                 PARSER_VERSION,
                 self.r.now,
+                PROBE_RETRY_NEVER,
             ])?;
         // A cached playback index of other content is useless now.
         self.conn
@@ -612,6 +630,10 @@ impl Apply<'_> {
         };
         let guess_json = guess.map(compact_json).transpose()?;
         let failed = probe_error.is_some();
+        let retry_at = match probe {
+            ProbeSrc::NotMedia => Some(PROBE_RETRY_NEVER),
+            _ => failed.then(|| self.r.now + PROBE_RETRY_BASE_MS),
+        };
         self.conn
             .prepare_cached(
                 "INSERT INTO file(root_id, rel_path, dev, ino, btime_ns, size, mtime_ns, fp128, oshash, state,
@@ -635,7 +657,7 @@ impl Apply<'_> {
                 guess.map(|_| PARSER_VERSION),
                 self.r.now,
                 i64::from(failed),
-                failed.then(|| self.r.now + PROBE_RETRY_BASE_MS),
+                retry_at,
             ])?;
         let id = self.conn.last_insert_rowid();
         if probe_json.is_some() || guess_json.is_some() {
@@ -692,12 +714,50 @@ impl Apply<'_> {
         }))
     }
 
+    /// A re-parse (no probe) that would change nothing: the row at this
+    /// path has this stat and identity, is placed (not pending, not missing),
+    /// was parsed by this parser and holds this very guess. The scanner
+    /// re-parses the files of a folder that share a new file's stack or
+    /// series key, and a camera's or phone's files all share one (`VID`,
+    /// `IMG`): most come out as they were, and rewriting each of them would
+    /// cost a write per file in the folder for every file added to it.
+    fn reparse_is_noop(&self, id: Id, f: &FileFacts, guess: &NameGuess) -> Result<bool> {
+        let json = compact_json(guess)?;
+        Ok(self
+            .conn
+            .prepare_cached(
+                "SELECT 1 FROM file f JOIN file_meta m ON m.file_id = f.id
+                  WHERE f.id = ?1 AND f.size = ?2 AND f.mtime_ns = ?3 AND f.dev IS ?4 AND f.ino IS ?5
+                    AND f.btime_ns IS ?6 AND (?7 IS NULL OR f.fp128 IS ?7) AND (?8 IS NULL OR f.oshash IS ?8)
+                    AND f.state IN ('present', 'probe_failed') AND f.tombstone_until IS NULL
+                    AND f.placement <> 'pending' AND f.parse_version IS ?9 AND m.guess IS ?10",
+            )?
+            .query_row(
+                params![
+                    id,
+                    clamp_i64(f.size),
+                    f.mtime_ns,
+                    f.dev.map(u64_to_sql),
+                    f.ino.map(u64_to_sql),
+                    f.btime_ns,
+                    f.fp128.map(fp128_to_blob).as_ref().map(|b| b.as_slice()),
+                    f.oshash.map(u64_to_sql),
+                    PARSER_VERSION,
+                    json,
+                ],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     fn apply_upsert(&mut self, u: &FileUpsert) -> Result<()> {
         let f = &u.facts;
         let (probe, probe_error) = match &u.probe {
             ProbeUpdate::Keep => (ProbeSrc::Keep, None),
             ProbeUpdate::Probed(p) => (ProbeSrc::New(Some(p.as_ref())), None),
             ProbeUpdate::Failed(e) => (ProbeSrc::New(None), Some(e.as_str())),
+            ProbeUpdate::NotMedia(e) => (ProbeSrc::NotMedia, Some(e.as_str())),
         };
         let existing: Option<(Id, Option<Id>, String)> = self
             .conn
@@ -706,6 +766,11 @@ impl Apply<'_> {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?;
+        if let (Some((id, _, _)), ProbeSrc::Keep, Some(g)) = (&existing, &probe, &u.guess) {
+            if self.reparse_is_noop(*id, f, g)? {
+                return Ok(());
+            }
+        }
         // What the file's name said before a re-parse: a title taken from it
         // follows the new parse (see `place`).
         let old_guess = match (&existing, &u.guess) {
@@ -738,6 +803,11 @@ impl Apply<'_> {
                 }
             },
         };
+        if let ProbeSrc::NotMedia = probe {
+            // Kept as a row (so it isn't looked at again until it changes),
+            // never as an item; one an older flux placed loses its asset.
+            return self.ignore(file_id, asset_id);
+        }
 
         match (&u.guess, asset_id) {
             (Some(g), _) => self.place(file_id, &f.rel_path, asset_id, g, old_guess.as_ref(), probe),
@@ -763,7 +833,7 @@ impl Apply<'_> {
                     }
                     Ok(())
                 }
-                ProbeSrc::New(None) | ProbeSrc::Keep => Ok(()),
+                ProbeSrc::New(None) | ProbeSrc::Keep | ProbeSrc::NotMedia => Ok(()),
             },
             (None, None) => Ok(()), // ignored file: stat refresh only
         }
@@ -802,20 +872,26 @@ impl Apply<'_> {
         probe: ProbeSrc<'_>,
     ) -> Result<()> {
         let conn = self.conn;
+        if matches!(probe, ProbeSrc::Keep) && self.not_media(file_id)? {
+            // Re-parsed or moved, still not media: it stays no item.
+            return self.ignore(file_id, current);
+        }
         let was = match (old, current) {
-            (Some(g), Some(_)) => Some(group::place(g, rel_path)),
+            (Some(g), Some(_)) => Some(group::place_in(self.kind, self.root_id, g, rel_path)),
             _ => None,
         };
-        match group::place(guess, rel_path) {
-            Placement::Ignore { .. } => {
-                if let Some(a) = current {
-                    self.t.file(conn, file_id)?;
-                    conn.prepare_cached("DELETE FROM asset WHERE id = ?1")?
-                        .execute([a])?;
+        match group::place_in(self.kind, self.root_id, guess, rel_path) {
+            Placement::Ignore { .. } => self.ignore(file_id, current)?,
+            Placement::Movie { work, edition, part } if work.standalone => {
+                // A videos library's file: its own item, nothing else.
+                let item = group::resolve_work(conn, &mut self.r, "movie", &work, None)?;
+                if let Some(Placement::Movie { work: was, .. }) = &was {
+                    self.retitle(item, &was.title, &work.title)?;
                 }
-                conn.prepare_cached("UPDATE file SET placement = 'ignored', asset_id = NULL WHERE id = ?1")?
-                    .execute([file_id])?;
-                self.out.files_ignored += 1;
+                if was.is_some() {
+                    self.reparsed.insert(item);
+                }
+                self.link(file_id, current, &[item], edition.as_deref(), part, guess, probe)?;
             }
             Placement::Movie { work, edition, part } => {
                 if let Some((film, x)) = self.word_extra(guess, rel_path)? {
@@ -920,6 +996,33 @@ impl Apply<'_> {
         Ok(())
     }
 
+    /// The stored row says the file is not media ([`PROBE_RETRY_NEVER`]).
+    fn not_media(&self, file_id: Id) -> Result<bool> {
+        let retry_at: Option<i64> = self
+            .conn
+            .prepare_cached("SELECT probe_retry_at FROM file WHERE id = ?1")?
+            .query_row([file_id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        Ok(retry_at == Some(PROBE_RETRY_NEVER))
+    }
+
+    /// The file maps to no item (a sample, or not media): its asset, if an
+    /// earlier placement made one, goes (an item left without files is
+    /// hidden by the recompute).
+    fn ignore(&mut self, file_id: Id, current: Option<Id>) -> Result<()> {
+        let conn = self.conn;
+        if let Some(a) = current {
+            self.t.file(conn, file_id)?;
+            conn.prepare_cached("DELETE FROM asset WHERE id = ?1")?
+                .execute([a])?;
+        }
+        conn.prepare_cached("UPDATE file SET placement = 'ignored', asset_id = NULL WHERE id = ?1")?
+            .execute([file_id])?;
+        self.out.files_ignored += 1;
+        Ok(())
+    }
+
     fn update_asset_facts(&self, asset_id: Id, f: &AssetFacts) -> Result<()> {
         self.conn
             .prepare_cached(
@@ -964,8 +1067,8 @@ impl Apply<'_> {
             (ProbeSrc::New(Some(p)), _) => Some(asset_facts(Some(p), Some(guess))),
             // A failed re-probe keeps the asset's facts (the stored probe is
             // kept too; the file is retried with backoff).
-            (ProbeSrc::New(None), Some(_)) | (ProbeSrc::Keep, Some(_)) => None,
-            (ProbeSrc::New(None), None) | (ProbeSrc::Keep, None) => {
+            (ProbeSrc::New(None) | ProbeSrc::Keep | ProbeSrc::NotMedia, Some(_)) => None,
+            (ProbeSrc::New(None) | ProbeSrc::Keep | ProbeSrc::NotMedia, None) => {
                 Some(asset_facts(self.load_probe(file_id)?.as_ref(), Some(guess)))
             }
         };
@@ -1193,7 +1296,7 @@ impl Apply<'_> {
             let Some(guess) = guess.and_then(|g| parse_stored::<NameGuess>(id, "guess", &g)) else {
                 continue;
             };
-            if let Placement::Extra(x) = group::place(&guess, &rel_path) {
+            if let Placement::Extra(x) = group::place_in(self.kind, self.root_id, &guess, &rel_path) {
                 if let Some(parent) =
                     group::find_extra_parent(self.conn, self.r.library_id, self.root_id, &x)?
                 {

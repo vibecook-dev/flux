@@ -79,10 +79,14 @@ pub const FALLBACK_AVAILABLE: bool = cfg!(feature = "hunch");
 /// - `rel_path`: path relative to the library root, e.g.
 ///   `Severance (2022)/Season 02/Severance (2022) - S02E10.mkv`.
 /// - `siblings`: file names (not paths) in the same directory; used for
-///   multi-part stacking evidence and the fallback's title invariance. May be
-///   empty.
+///   multi-part stacking evidence, numbered-series evidence (mixed libraries)
+///   and the fallback's title invariance. May be empty.
 /// - `kind`: the library kind, a strong prior (`1917.mkv` in a movie library
-///   is a title; `Show 1x03.mkv` is an episode anywhere).
+///   is a title; `Show 1x03.mkv` is an episode anywhere). In a mixed library
+///   a file needs show evidence (an explicit marker, a TV or season folder,
+///   or a numbered series of files) to be an episode, and in a videos
+///   library ([`LibraryKind::Videos`]) every file is a video of its own,
+///   titled after the file.
 ///
 /// Never panics and never fails: unparseable names come back as
 /// [`GuessKind::Unknown`] with low confidence and evidence saying why.
@@ -90,8 +94,12 @@ pub fn parse(rel_path: &Path, siblings: &[&str], kind: LibraryKind) -> NameGuess
     parse_with(rel_path, siblings, kind, ParseOptions::default())
 }
 
-/// [`parse`] with explicit options.
+/// [`parse`] with explicit options. A videos library never consults the
+/// fallback.
 pub fn parse_with(rel_path: &Path, siblings: &[&str], kind: LibraryKind, opts: ParseOptions) -> NameGuess {
+    if kind == LibraryKind::Videos {
+        return resolve::video(rel_path, siblings);
+    }
     let resolve::Resolved { mut guess, ctx } = resolve::resolve(rel_path, siblings, kind);
     let needs = guess.confidence < resolve::FALLBACK_THRESHOLD || guess.kind == GuessKind::Unknown;
     let run = match opts.fallback {
@@ -103,7 +111,7 @@ pub fn parse_with(rel_path: &Path, siblings: &[&str], kind: LibraryKind, opts: P
         #[cfg(feature = "hunch")]
         {
             let h = fallback::guess(&ctx, siblings);
-            fallback::merge(&mut guess, h, &ctx);
+            fallback::merge(&mut guess, h, &ctx, siblings);
         }
         #[cfg(not(feature = "hunch"))]
         guess
@@ -156,10 +164,25 @@ pub fn stack_key(file_name: &str) -> Option<String> {
     resolve::stack_key(stem)
 }
 
+/// The key a video file shares with every sibling that could make it one of
+/// a numbered series (`Clip 01.mp4` and `Clip 02.mp4` → `clip`), or `None`.
+/// In a mixed library an episode without an explicit marker needs such a
+/// sibling, so, as with [`stack_key`], when a new file arrives the scanner
+/// re-parses the files it already has under that key.
+pub fn series_key(file_name: &str) -> Option<String> {
+    let (stem, ext) = resolve::split_ext(file_name);
+    if !ext.is_some_and(is_video_ext) {
+        return None;
+    }
+    resolve::series_key(stem)
+}
+
 /// `true` for paths a scanner should skip before parsing: hidden files and
 /// folders, NAS metadata folders (`@eaDir`, `#recycle`, `.AppleDouble`),
-/// OS litter (`Thumbs.db`, `.DS_Store`, `desktop.ini`) and partial downloads
-/// (`.part`, `.partial~`, `.!qB`, `.crdownload`).
+/// OS litter (`Thumbs.db`, `.DS_Store`, `desktop.ini`), partial downloads
+/// (`.part`, `.partial~`, `.!qB`, `.crdownload`) and JavaScript package
+/// trees (`node_modules`, full of TypeScript `.ts`/`.mts` sources that share
+/// MPEG-TS's extensions; scoped packages are `@` folders).
 pub fn is_ignored(rel_path: &Path) -> bool {
     rel_path.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
@@ -174,6 +197,7 @@ pub fn is_ignored(rel_path: &Path) -> bool {
                     | "system volume information"
                     | "thumbs.db"
                     | "desktop.ini"
+                    | "node_modules"
             )
             || lower.ends_with('~')
             || [".part", ".partial", ".!qb", ".crdownload", ".tmp"]
@@ -198,6 +222,10 @@ mod tests {
         // Probe-readable captures are video; disc images and URL stubs are not.
         assert!(is_video_file("Match.2024.m2t") && is_video_file("Recording.TP"));
         assert!(!is_video_file("Alien (1979).iso") && !is_video_file("Alien.strm"));
+        // TypeScript sources in a JavaScript project's package tree.
+        assert!(is_ignored(Path::new("site/node_modules/pkg/index.d.ts")));
+        assert!(is_ignored(Path::new("site/Node_Modules")));
+        assert!(!is_ignored(Path::new("node_modules_backup/clip.ts")));
     }
 
     #[test]
@@ -212,5 +240,15 @@ mod tests {
         assert_eq!(stack_key("Plan A.mkv"), None);
         assert_eq!(stack_key("Some Movie (2019).mkv"), None);
         assert_eq!(stack_key("示例片A.srt"), None);
+    }
+
+    #[test]
+    fn series_keys() {
+        assert_eq!(series_key("Clip 01.mp4"), series_key("clip_02.MKV"));
+        assert!(series_key("Clip 01.mp4").is_some());
+        assert_ne!(series_key("Clip 01.mp4"), series_key("Beach 01.mp4"));
+        assert_eq!(series_key("001.mp4"), None);
+        assert_eq!(series_key("Clip.mp4"), None);
+        assert_eq!(series_key("Clip 01.srt"), None);
     }
 }

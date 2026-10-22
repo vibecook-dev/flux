@@ -1,6 +1,8 @@
 //! A file flux-probe finds malformed goes to the ffprobe fallback, as an
 //! unknown container does, and RealMedia `.rm` and Flash `.f4v` files are
-//! walked. Skips, with the reason, without ffmpeg or ffprobe.
+//! walked. A text file named `.rm` is not media (`flux_probe::not_media`):
+//! it is kept, and ffprobe never runs on it. Skips, with the reason,
+//! without ffmpeg or ffprobe.
 
 mod support;
 
@@ -33,7 +35,8 @@ fn malformed_mp4s_go_to_ffprobe_and_rm_f4v_files_are_media() {
     for (rel, data) in [
         ("Padded Header (2001)/Padded Header (2001).mp4", padded),
         ("Flash Video (2002)/Flash Video (2002).f4v", bytes),
-        // Not real RealMedia: ffprobe fails it, but it is walked and kept.
+        // Not real RealMedia, but text: not media, so no ffprobe run, but it
+        // is walked and kept.
         (
             "Real Media (2003)/Real Media (2003).rm",
             b"not a stream".repeat(100),
@@ -47,8 +50,13 @@ fn malformed_mp4s_go_to_ffprobe_and_rm_f4v_files_are_media() {
     let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
     let r = scan(&scanner(&cat), lib);
     assert_eq!(r.media_files, 3, "{r:?}");
-    // The malformed MP4 was a probe failure; ffprobe reads it now.
-    assert_eq!((r.ffprobe_fallbacks, r.probe_failures), (1, 1), "{r:?}");
+    // The malformed MP4 was a probe failure; ffprobe reads it now. The
+    // text `.rm` is not media and fails no probe.
+    assert_eq!(
+        (r.ffprobe_fallbacks, r.probe_failures, r.not_media),
+        (1, 0, 1),
+        "{r:?}"
+    );
     let snap = snapshot(&cat, root_id);
     let state = |ext: &str| {
         snap.iter()

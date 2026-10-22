@@ -16,6 +16,7 @@ import { codecShort, containerName, planLabel, planTone } from '../api/explain';
 import { formatBytes, formatClock, formatRemaining, formatRuntime } from '../api/format';
 import { api } from '../api/client';
 import { keys, recallSummary, rememberSummaries, useChildren, useItem } from '../api/queries';
+import { refreshFolders } from '../api/folder-list';
 import { refreshLibrary } from '../api/library-list';
 import { invalidateQueries, useQuery } from '../api/query';
 import { assetFacts, audioLabel, subtitleChoices, subtitleFileLabel, subtitleLabel, versionNames, videoLabel } from '../api/tracks';
@@ -493,11 +494,12 @@ export default function Item({ params, query }: RouteProps) {
               <WatchedToggle
                 item={detail}
                 onChanged={() => {
-                  // Progress shows on this page, the season list, Home and every library grid.
+                  // Progress shows on this page, the season list, Home, every library grid and folder.
                   void q.refetch();
                   invalidateQueries('children:');
                   invalidateQueries(keys.home);
                   refreshLibrary();
+                  refreshFolders();
                 }}
               />
             )}

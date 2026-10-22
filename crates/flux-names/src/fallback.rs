@@ -10,7 +10,9 @@ use std::sync::LazyLock;
 use flux_core::{ExtraKind, GuessKind, LibraryKind, NameGuess};
 use hunch::{Confidence, MediaType, Property};
 
-use crate::resolve::{split_ext, Context, FALLBACK_THRESHOLD};
+use crate::resolve::{
+    episode_numbers, explicit_episode, numbered_series, split_ext, Context, FALLBACK_THRESHOLD,
+};
 use crate::rules::{self, Origin};
 use crate::stem::title_looks_like_tags;
 use crate::stem::{MAX_YEAR, MIN_YEAR};
@@ -112,8 +114,9 @@ pub(crate) fn guess(ctx: &Context, siblings: &[&str]) -> HunchGuess {
 
 /// Merges a fallback guess into the fast-path guess. The fast path keeps
 /// anything it was confident about; the fallback fills gaps and replaces
-/// weak results it can explain better.
-pub(crate) fn merge(fast: &mut NameGuess, hg: HunchGuess, ctx: &Context) {
+/// weak results it can explain better. `siblings` are the other file names
+/// in the folder.
+pub(crate) fn merge(fast: &mut NameGuess, hg: HunchGuess, ctx: &Context, siblings: &[&str]) {
     let HunchGuess {
         guess: mut h,
         alt_title,
@@ -123,6 +126,12 @@ pub(crate) fn merge(fast: &mut NameGuess, hg: HunchGuess, ctx: &Context) {
     if matches!(fast.kind, GuessKind::Sample | GuessKind::Extra) {
         fast.evidence
             .push("fallback consulted; kept the extra/sample classification".into());
+        return;
+    }
+    if !mixed_episode_ok(ctx, &h, siblings) {
+        fast.evidence.push(
+            "fallback read an episode with no show around it (mixed library); kept the fast path".into(),
+        );
         return;
     }
     let fast_key = fast.title.as_deref().map(norm_key).filter(|k| !k.is_empty());
@@ -171,6 +180,29 @@ pub(crate) fn merge(fast: &mut NameGuess, hg: HunchGuess, ctx: &Context) {
         }
         (_, None) => fast.evidence.push("fallback found no title".into()),
     }
+}
+
+/// In a mixed library with no TV or season folder around the file, an
+/// episode only the fallback sees needs a stronger signal than its reading
+/// of the name: an explicit marker (`S01E02`, `1x02`, `第2集`), or another
+/// video file in the folder of one numbered series with it (`Clip 01`
+/// beside `Clip 02`). A single clip is never a show of one episode, and a
+/// date the fast path did not read (`VID_20190501_123456789`, a camera's
+/// timestamp) is never an air date, so a year never becomes its season.
+fn mixed_episode_ok(ctx: &Context, h: &NameGuess, siblings: &[&str]) -> bool {
+    if ctx.lib != LibraryKind::Mixed || ctx.tv || h.kind != GuessKind::Episode {
+        return true;
+    }
+    if h.air_date.is_some() {
+        return false;
+    }
+    explicit_episode(&ctx.stem)
+        || numbered_series(
+            &ctx.stem,
+            siblings,
+            &episode_numbers(&h.episodes, h.absolute_episode, None),
+            h.title.as_deref(),
+        )
 }
 
 /// In a movie library, never let the fallback turn a movie into an episode

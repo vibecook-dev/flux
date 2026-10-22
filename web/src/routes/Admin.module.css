@@ -266,6 +266,7 @@
 
 .kindPick {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   border: 0;
   padding: 0;

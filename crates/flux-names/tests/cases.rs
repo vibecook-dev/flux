@@ -965,3 +965,306 @@ fn cjk_titles_with_latin_subtitles_stay_whole() {
         (Some("Some Film"), Some("示例片"))
     );
 }
+
+fn videos(path: &str, siblings: &[&str]) -> NameGuess {
+    parse(Path::new(path), siblings, LibraryKind::Videos)
+}
+
+fn mixed(path: &str, siblings: &[&str]) -> NameGuess {
+    parse(Path::new(path), siblings, LibraryKind::Mixed)
+}
+
+#[test]
+fn a_videos_library_keeps_every_file_its_own_video() {
+    let g = videos("Holiday 2019/IMG_1234.MOV", &["IMG_1235.MOV"]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.year, g.part),
+        (GuessKind::Movie, Some("IMG 1234"), None, None),
+        "{g:#?}"
+    );
+    // No extras, samples, shows, years or ids: the name is the title.
+    let g = videos("Trip/Featurettes/Making Of.mp4", &[]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.extra),
+        (GuessKind::Movie, Some("Making Of"), None)
+    );
+    assert_eq!(videos("Party/Sample/sample.mp4", &[]).kind, GuessKind::Movie);
+    assert_eq!(videos("Trip/Others/clip.mp4", &[]).kind, GuessKind::Movie);
+    let g = videos("Show.S01E02.Pilot.mkv", &[]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.season, g.episodes.len()),
+        (GuessKind::Movie, Some("Show S01E02 Pilot"), None, 0)
+    );
+    let g = videos("Alien (1979)/Alien (1979) [tmdbid-348].mkv", &[]);
+    assert_eq!(
+        (g.title.as_deref(), g.year, g.ids.tmdb),
+        (Some("Alien (1979) [tmdbid-348]"), None, None)
+    );
+    // Numbered files are not named after their folder.
+    assert_eq!(
+        videos("Camera/001.mp4", &["002.mp4"]).title.as_deref(),
+        Some("001")
+    );
+    assert_eq!(
+        videos("VID_20190501_123456.mp4", &[]).title.as_deref(),
+        Some("VID 20190501 123456")
+    );
+    assert_eq!(
+        videos("My.Trip.v1.5.mkv", &[]).title.as_deref(),
+        Some("My Trip v1.5")
+    );
+    // Only a true multi-part stack makes parts of one video.
+    let g = videos("Wedding/Wedding part1.mp4", &["Wedding part2.mp4"]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("Wedding"), Some(1)), "{g:#?}");
+    let g = videos("Wedding/Wedding part1.mp4", &["Wedding part2.srt"]);
+    assert_eq!(
+        (g.title.as_deref(), g.part),
+        (Some("Wedding part1"), None),
+        "{g:#?}"
+    );
+    let g = videos("part1.mp4", &["part2.mp4"]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("part1"), None), "{g:#?}");
+}
+
+#[test]
+fn a_videos_library_keeps_lettered_takes_and_angles_apart() {
+    // A last letter is a camera angle or a take in a home video folder, not
+    // a part: every file stays a video of its own, titled after itself.
+    for (path, sibs) in [
+        ("shoot/Interview_A.mp4", &["Interview_B.mp4"][..]),
+        ("shoot/Interview_B.mp4", &["Interview_A.mp4"][..]),
+        ("shoot/Take-a.mp4", &["Take-b.mp4", "Take-c.mp4"][..]),
+        ("shoot/Take-c.mp4", &["Take-a.mp4", "Take-b.mp4"][..]),
+        ("示例A.mp4", &["示例B.mp4"][..]),
+    ] {
+        let g = videos(path, sibs);
+        let stem = path.rsplit('/').next().unwrap().rsplit_once('.').unwrap().0;
+        let want = stem.replace('_', " ");
+        assert_eq!(
+            (g.kind, g.title.as_deref(), g.part),
+            (GuessKind::Movie, Some(want.as_str()), None),
+            "{path}: {g:#?}"
+        );
+    }
+    // Plex's stacking words with a number still make one video of parts.
+    for (path, sib, title) in [
+        ("Party cd1.mp4", "Party cd2.mp4", "Party"),
+        ("Party - disc 2.mp4", "Party - disc 1.mp4", "Party"),
+        ("Party.pt1.mp4", "Party.pt2.mp4", "Party"),
+    ] {
+        let g = videos(path, &[sib]);
+        assert_eq!(g.title.as_deref(), Some(title), "{path}: {g:#?}");
+        assert!(g.part.is_some(), "{path}: {g:#?}");
+    }
+    // A movie library keeps letter stacking for films.
+    let g = parse(Path::new("示例片A.mp4"), &["示例片B.mp4"], LibraryKind::Movies);
+    assert_eq!((g.title.as_deref(), g.part), (Some("示例片"), Some(1)), "{g:#?}");
+}
+
+#[test]
+fn decomposed_names_count_as_a_numbered_series_and_stack() {
+    use unicode_normalization::UnicodeNormalization;
+    let nfd = |s: &str| s.nfd().collect::<String>();
+    // Hangul and accents as macOS writes them: decomposed (NFD), alone or
+    // beside a composed (NFC) sibling.
+    for (a, b, show) in [
+        ("예시 E01.mp4", "예시 E02.mp4", "예시"),
+        ("Café Walk E01.mp4", "Café Walk E02.mp4", "Café Walk"),
+    ] {
+        for (path, sib) in [(nfd(a), nfd(b)), (a.to_string(), nfd(b)), (nfd(a), b.to_string())] {
+            let g = mixed(&path, &[sib.as_str()]);
+            assert_eq!(
+                (g.kind, g.title.as_deref(), g.episodes.as_slice()),
+                (GuessKind::Episode, Some(show), &[1][..]),
+                "{path:?} / {sib:?}: {g:#?}"
+            );
+        }
+        // The scanner's regroup key is the same for both forms.
+        assert_eq!(flux_names::series_key(&nfd(a)), flux_names::series_key(b));
+        assert!(flux_names::series_key(b).is_some());
+    }
+    // A multi-part stack, too.
+    let g = videos(&nfd("Café part1.mp4"), &[nfd("Café part2.mp4").as_str()]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("Café"), Some(1)), "{g:#?}");
+    let g = videos("Café part1.mp4", &[nfd("Café part2.mp4").as_str()]);
+    assert_eq!((g.title.as_deref(), g.part), (Some("Café"), Some(1)), "{g:#?}");
+    assert_eq!(
+        flux_names::stack_key(&nfd("Café part2.mp4")),
+        flux_names::stack_key("Café part1.mp4")
+    );
+}
+
+#[test]
+fn others_folders_hold_extras_only_outside_mixed_libraries() {
+    // A loose folder of miscellaneous files, even beside other videos: its
+    // files are titles of their own in a mixed library.
+    for path in [
+        "2019/others/Beach1234.mp4",
+        "Trip/Others/Beach1234.mp4",
+        "Trip 2019/Other/Beach1234.mp4",
+        "Others/Beach1234.mp4",
+    ] {
+        let g = mixed(path, &[]);
+        assert_eq!(
+            (g.kind, g.title.as_deref()),
+            (GuessKind::Movie, Some("Beach1234")),
+            "{path}: {g:#?}"
+        );
+    }
+    // Right under a folder named as a film or show (a title and a year in
+    // brackets, an id), or in a Movies or TV folder, it holds that work's
+    // extras, as Plex and Jellyfin name them.
+    for (path, work) in [
+        ("film/Some Film (2010)/Other/Making Of.mkv", "Some Film"),
+        ("Some Film (2010)/Other/Making Of.mkv", "Some Film"),
+        ("Some Film [tmdbid-603]/Others/Making Of.mkv", "Some Film"),
+        ("Movies/Some Film/Other/Making Of.mkv", "Some Film"),
+        ("TV/Some Show/Others/Bloopers.mkv", "Some Show"),
+    ] {
+        let g = mixed(path, &[]);
+        assert_eq!(
+            (g.kind, g.extra, g.title.as_deref()),
+            (GuessKind::Extra, Some(ExtraKind::Other), Some(work)),
+            "{path}: {g:#?}"
+        );
+    }
+    // Plex's and Jellyfin's convention still holds in movie and show libraries.
+    let g = movies("Some Film (2010)/Other/Making Of.mkv");
+    assert_eq!(
+        (g.kind, g.extra),
+        (GuessKind::Extra, Some(ExtraKind::Other)),
+        "{g:#?}"
+    );
+    let g = shows("Some Show/Others/Bloopers.mkv");
+    assert_eq!(g.kind, GuessKind::Extra, "{g:#?}");
+    // Other extras folders keep their meaning in a mixed library.
+    assert_eq!(
+        mixed("Some Film (2010)/Featurettes/Making Of.mkv", &[]).kind,
+        GuessKind::Extra
+    );
+}
+
+#[test]
+fn a_dated_recording_in_a_mixed_library_is_no_daily_show() {
+    for path in [
+        "Phone/VID_2019-05-01_12-34-56.mp4",
+        "Screen Recording 2019-05-01 at 12.34.56.mov",
+        "Trip/2019-05-01.mp4",
+        "Trip/2019.05.01 Beach.mp4",
+        "Trip/[2019-05-01] Beach.mp4",
+    ] {
+        let g = mixed(path, &[]);
+        assert_eq!(
+            (g.kind, g.season, g.air_date.as_deref()),
+            (GuessKind::Movie, None, None),
+            "{path}: {g:#?}"
+        );
+    }
+    // A camera's compact timestamp: the fallback reads it as a date.
+    let g = mixed(
+        "Camera/VID_20190501_123456789.mp4",
+        &["VID_20190502_101010123.mp4", "VID_20190503_090909000.mp4"],
+    );
+    assert_eq!(
+        (g.kind, g.air_date.as_deref()),
+        (GuessKind::Movie, None),
+        "{g:#?}"
+    );
+    assert_eq!(g.title.as_deref(), Some("VID 20190501 123456789"), "{g:#?}");
+    // A TV folder, a season folder or a show's own dated name still make episodes.
+    let g = mixed("TV/Some Show/2019-05-01.mp4", &[]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.air_date.as_deref()),
+        (GuessKind::Episode, Some("Some Show"), Some("2019-05-01")),
+        "{g:#?}"
+    );
+    // A release's dated name is a daily show's episode, alone or not…
+    let daily = "The.Daily.Show.2024.03.15.Guest.Name.720p.WEB.h264.mkv";
+    let g = mixed(daily, &["Beach.mp4"]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.air_date.as_deref()),
+        (GuessKind::Episode, Some("The Daily Show"), Some("2024-03-15")),
+        "{g:#?}"
+    );
+    // …but a title and a date are all a home video has, too: without
+    // anything of a release about it, a dated name needs others of its
+    // series beside it, so a lone one keeps no year as a season.
+    let g = mixed("Trip/Beach_Day_2019-05-01.mp4", &["Beach_Day_2019-05-01.srt"]);
+    assert_eq!(
+        (g.kind, g.title.as_deref(), g.air_date.as_deref()),
+        (GuessKind::Movie, Some("Beach Day 2019-05-01"), None),
+        "{g:#?}"
+    );
+    let g = mixed("Trip/Beach_Day_2019-05-01.mp4", &["Beach_Day_2019-05-04.mp4"]);
+    assert_eq!(
+        (g.kind, g.air_date.as_deref()),
+        (GuessKind::Episode, Some("2019-05-01")),
+        "{g:#?}"
+    );
+    let g = shows("Some Show/Some Show 2019-05-01 12-34-56.mkv");
+    assert_eq!(g.kind, GuessKind::Episode, "{g:#?}");
+}
+
+#[test]
+fn a_weakly_numbered_episode_in_a_mixed_library_needs_its_series() {
+    // `E05` and a number after a dash are episode markers the fast path
+    // reads anywhere; in a mixed library without a TV folder a lone file
+    // with one and nothing of a release about it is a video titled after
+    // its name.
+    for (path, sib) in [
+        ("Holiday/Clip E05.mp4", "Clip E06.mp4"),
+        ("Holiday/Beach Walk - 07.mp4", "Beach Walk - 08.mp4"),
+    ] {
+        let alone = mixed(path, &["Beach.mp4"]);
+        assert_eq!(
+            (alone.kind, alone.season, alone.episodes.len()),
+            (GuessKind::Movie, None, 0),
+            "{path}: {alone:#?}"
+        );
+        let stem = path.rsplit('/').next().unwrap().rsplit_once('.').unwrap().0;
+        assert_eq!(alone.title.as_deref(), Some(stem), "{alone:#?}");
+        let series = mixed(path, &[sib]);
+        assert_eq!(series.kind, GuessKind::Episode, "{path}: {series:#?}");
+        // In a shows library, or a mixed library's TV folder, alone is fine.
+        assert_eq!(shows(&format!("Some Show/{path}")).kind, GuessKind::Episode);
+        assert_eq!(
+            mixed(&format!("TV/Some Show/{path}"), &[]).kind,
+            GuessKind::Episode
+        );
+    }
+    // Explicit markers, and release names, need nothing else.
+    assert_eq!(mixed("示例剧 第05集.mp4", &[]).kind, GuessKind::Episode);
+    assert_eq!(mixed("Some Show 1x05.mkv", &[]).kind, GuessKind::Episode);
+    assert_eq!(
+        mixed("[Group] Some Show - 07 [1080p].mkv", &[]).kind,
+        GuessKind::Episode
+    );
+}
+
+#[test]
+fn a_single_clip_in_a_mixed_library_is_no_show_of_one_episode() {
+    // The fallback reads a trailing number as an episode; alone in its
+    // folder, the file stays a video of its own.
+    let g = mixed("Holiday/Holiday Clip 03.mp4", &["notes.txt", "Beach.mp4"]);
+    assert_eq!(g.kind, GuessKind::Movie, "{g:#?}");
+    assert_eq!(g.title.as_deref(), Some("Holiday Clip 03"), "{g:#?}");
+    // A numbered series of files in one folder is evidence of a show.
+    let g = mixed(
+        "Holiday/Holiday Clip 03.mp4",
+        &["Holiday Clip 01.mp4", "Holiday Clip 02.mp4"],
+    );
+    assert_eq!(
+        (g.kind, g.episodes.as_slice()),
+        (GuessKind::Episode, &[3][..]),
+        "{g:#?}"
+    );
+    // A copy of the same clip, or a clip numbered after another name, is not.
+    for sibs in [&["Holiday Clip 03.mov"][..], &["Beach Clip 04.mp4"][..]] {
+        let g = mixed("Holiday/Holiday Clip 03.mp4", sibs);
+        assert_eq!(g.kind, GuessKind::Movie, "{sibs:?}: {g:#?}");
+    }
+    // So are an explicit marker and a TV folder.
+    assert_eq!(mixed("Holiday Clip S01E03.mp4", &[]).kind, GuessKind::Episode);
+    let g = mixed("TV/Holiday Clip/Holiday Clip 03.mp4", &[]);
+    assert_eq!(g.kind, GuessKind::Episode, "{g:#?}");
+}
