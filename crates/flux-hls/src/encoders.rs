@@ -43,7 +43,7 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -230,7 +230,7 @@ pub struct FfmpegCaps {
 
 /// Runs ffmpeg with `args`, returning stdout, or why it failed.
 fn run_capture(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = flux_core::tool::command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

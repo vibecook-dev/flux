@@ -983,7 +983,7 @@ impl VideoTranscoder {
             s.runs += 1;
         }
         let ts = matches!(asset.index.layout, Layout::Ts(_));
-        let mut child = tokio::process::Command::new(&self.ffmpeg)
+        let mut child = tokio::process::Command::from(flux_core::tool::command(&self.ffmpeg))
             .args(&args)
             .stdin(if ts { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())

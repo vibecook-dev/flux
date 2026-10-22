@@ -196,10 +196,8 @@ the final check.
   replaced or re-pointed" checks in flux-hls (`source.rs`) and the scan
   fall back to size and mtime. That needs a Windows identity source
   (volume serial + file index) before flux can be trusted there.
-  Embedded remote access has a gap too: flux-net looks for the Truffle
-  sidecar next to the binary as `sidecar-slim`, without `.exe`, so a
-  Windows build would need `TRUFFLE_SIDECAR_PATH` set (or a resolver fix in
-  `crates/flux-net/src/embedded.rs`). Windows is not a release target.
+  Embedded remote access looks for `sidecar-slim.exe` next to the binary,
+  but no Windows sidecar is packaged. Windows is not a release target.
 
 ## Tests anywhere
 
