@@ -40,6 +40,7 @@ use flux_catalog::{
     ScanBatch,
 };
 use flux_core::api::{Event, Id};
+use flux_core::file_id::FileId;
 use flux_core::{PARSER_VERSION, PROBE_VERSION};
 use mille_core::{
     walk_scan, DirCtx, EntryKind, ErrorCode, FileFilter, FxError, IgnoreMatcher, ScanEntry, ScanOptions,
@@ -457,7 +458,13 @@ fn classify<'a>(
                 return Class::Reparse;
             }
         }
-        if row.state == FileState::Missing || (same_ino == Some(true) && row.dev != f.dev) {
+        // Stat-only refresh: a tombstone is back, a remount renumbered the
+        // device, or the catalog has no identity for a file the walk now
+        // has one for (a file behind a link out of the library, cataloged
+        // on Windows before the scan recorded identities there).
+        let gained_identity = row.ino.is_none() && f.ino.is_some();
+        if row.state == FileState::Missing || (same_ino == Some(true) && row.dev != f.dev) || gained_identity
+        {
             return Class::Keep;
         }
         // A failed probe (unreadable at the time, ffprobe missing or timed
@@ -577,6 +584,13 @@ impl Walk<'_> {
             file_filter: Some(FileFilter::extensions(crate::paths::walk_extensions())),
             cancel: Some(self.ctx.job.cancel.clone()),
             ignore,
+            // Dot-names are delivered so that `visit` can count and log a
+            // hidden media file (Windows doesn't hide `.Name.mp4`, so a user
+            // there can't tell why it is missing). Nothing hidden is
+            // cataloged or walked, as with the media profile's own filter;
+            // OS litter (`.DS_Store`, AppleDouble `._*`) is still dropped by
+            // Mille's default ignores and never reaches `visit`.
+            include_hidden: true,
             ..ScanOptions::media()
         }
     }
@@ -805,7 +819,29 @@ impl Walk<'_> {
         self.external.iter().any(|x| is_under(rel, x))
     }
 
+    /// A name starting with `.`: never cataloged, never walked into. A
+    /// media file is counted (`ScanSummary::hidden_skipped`) and logged, so
+    /// a user can find out why it isn't in the library.
+    fn hidden(&mut self, dir: &DirCtx<'_>, e: &ScanEntry<'_>) -> Visit {
+        if e.is_dir() {
+            return Visit::SkipChildren;
+        }
+        if e.is_file() && decode_name(e.name).is_some_and(is_video_name) {
+            Progress::add(&self.ctx.job.progress.hidden_media, 1);
+            tracing::info!(
+                path = %dir.join(e.name).display(),
+                "skipping a hidden media file: its name starts with '.' (rename it to add it to the library)"
+            );
+        }
+        Visit::Continue
+    }
+
     fn visit(&mut self, dir: &DirCtx<'_>, e: &ScanEntry<'_>) -> Visit {
+        // Before anything else, so a hidden entry changes nothing the walk
+        // decides (an empty listing, the resume snapshot, links).
+        if e.name.as_encoded_bytes().first() == Some(&b'.') {
+            return self.hidden(dir, e);
+        }
         if self.cur.as_ref().is_none_or(|g| g.id != dir.id) {
             self.flush();
             let rel = rel_of(self.root_abs, dir.path);
@@ -862,7 +898,13 @@ impl Walk<'_> {
         }
         if e.is_dir() {
             let descend = self.full || !self.idx.known_dirs.contains(rel.as_str());
-            self.dir_dev.insert(rel.clone(), e.dev);
+            // Mille's dev = ino = 0 (Windows) means "unknown", not device 0:
+            // recorded, it would make every emptied folder of files that do
+            // carry an identity (behind a junction) look like an unmounted
+            // volume's mount point, and keep a deleted file forever.
+            if e.dev != 0 || e.ino != 0 {
+                self.dir_dev.insert(rel.clone(), e.dev);
+            }
             self.seen_dirs.insert(rel.clone());
             return if descend {
                 self.listed.insert(rel);
@@ -879,14 +921,30 @@ impl Walk<'_> {
             group.names.push(name.to_string());
             if is_video_name(name) && !flux_names::is_ignored(Path::new(&rel)) {
                 // Mille reports dev = ino = 0 where the platform has no inode
-                // (Windows); the catalog's "unknown" is None.
-                let known = e.dev != 0 || e.ino != 0;
+                // (Windows); the catalog's "unknown" is None. A file behind a
+                // link that leaves the library is served only if it is the
+                // file the scan recorded (SEC-2), so there the file itself
+                // is asked (volume serial and file id; one open per such
+                // file per scan).
+                let (dev, ino) = if e.dev != 0 || e.ino != 0 {
+                    (Some(e.dev), Some(e.ino))
+                } else if external {
+                    match FileId::of_path(&dir.join(e.name)) {
+                        Ok(id) => (Some(id.dev), Some(id.ino)),
+                        Err(err) => {
+                            tracing::debug!(path = %dir.join(e.name).display(), error = %err, "no file identity");
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
                 group.media.push((
                     name.to_string(),
                     FileFacts {
                         rel_path: rel,
-                        dev: known.then_some(e.dev),
-                        ino: known.then_some(e.ino),
+                        dev,
+                        ino,
                         btime_ns: e.btime_ns,
                         size: e.size,
                         mtime_ns: e.mtime_ns,
@@ -1397,6 +1455,38 @@ mod tests {
         let renum: HashMap<u64, u64> = [(7, 9)].into_iter().collect();
         assert!(!unmounted_rule(9, 7, &renum));
         assert!(unmounted_rule(1, 7, &renum));
+    }
+
+    #[test]
+    fn a_row_without_an_identity_takes_the_walks_without_a_reprobe() {
+        let row = FileRow {
+            id: 1,
+            dev: None,
+            ino: None,
+            size: 10,
+            mtime_ns: 5,
+            btime_ns: None,
+            fp128: Some(1),
+            state: FileState::Present,
+            probe_version: Some(PROBE_VERSION),
+            parse_version: Some(PARSER_VERSION),
+            asset_id: Some(1),
+            probe_retry_at: None,
+        };
+        let snap: HashMap<String, FileRow> = [("Ext/a.mkv".to_string(), row)].into_iter().collect();
+        let facts = |dev, ino| FileFacts {
+            rel_path: "Ext/a.mkv".into(),
+            dev,
+            ino,
+            btime_ns: None,
+            size: 10,
+            mtime_ns: 5,
+            fp128: None,
+            oshash: None,
+        };
+        let c = |f: &FileFacts| classify(&snap, &HashMap::new(), f, ScanMode::Quick, 0, false);
+        assert!(matches!(c(&facts(Some(7), Some(9))), Class::Keep));
+        assert!(matches!(c(&facts(None, None)), Class::Unchanged(false)));
     }
 
     #[test]

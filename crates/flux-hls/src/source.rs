@@ -15,13 +15,14 @@
 use std::fs::File;
 use std::io;
 #[cfg(unix)]
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use bytes::Bytes;
+use flux_core::file_id::FileId;
 use serde::{Deserialize, Serialize};
 
 /// Identity of a source file, used to invalidate cached indexes.
@@ -58,20 +59,16 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// `(dev, ino, nlink)` of a file: what tells "the same file" from "another
-/// file at the same path".
-#[cfg(unix)]
-fn file_ids(m: &std::fs::Metadata) -> (u64, u64, u64) {
-    (m.dev(), m.ino(), m.nlink())
+/// `(dev, ino, links)` of an open file: what tells "the same file" from
+/// "another file at the same path" (`flux_core::file_id`: the inode on
+/// Unix, the volume serial and file id on Windows).
+fn file_ids(f: &File) -> io::Result<(u64, u64, u64)> {
+    FileId::of_file(f).map(|id| (id.dev, id.ino, id.links))
 }
 
-/// Not Unix: std has no stable device/file index (Windows), so every file
-/// reads as `(0, 0, 1)` and identity is the size and mtime alone. flux is
-/// not supported there (docs/ENCODERS.md "Platforms"); this keeps it
-/// compiling.
-#[cfg(not(unix))]
-fn file_ids(_m: &std::fs::Metadata) -> (u64, u64, u64) {
-    (0, 0, 1)
+/// `(dev, ino)` of the file `path` names now.
+fn path_ids(path: &Path) -> io::Result<(u64, u64)> {
+    FileId::of_path(path).map(|id| (id.dev, id.ino))
 }
 
 /// A positioned read of exactly `buf.len()` bytes.
@@ -140,13 +137,9 @@ impl Inner {
         };
         let idle = now.saturating_sub(self.last_used_ms.load(Ordering::Relaxed)) >= limit;
         // Unlinked: the descriptor is the last thing keeping the blocks.
-        let deleted = open.file.metadata().map(|m| file_ids(&m).2 == 0).unwrap_or(true);
+        let deleted = file_ids(&open.file).map(|ids| ids.2 == 0).unwrap_or(true);
         // Replaced (renamed over): the path now names another inode.
-        let replaced = check_path
-            && !std::fs::metadata(&self.id.path).is_ok_and(|m| {
-                let (dev, ino, _) = file_ids(&m);
-                (dev, ino) == (open.dev, open.ino)
-            });
+        let replaced = check_path && !path_ids(&self.id.path).is_ok_and(|ids| ids == (open.dev, open.ino));
         if idle || deleted || replaced {
             // In-flight reads hold their own `Arc<File>`; the descriptor
             // closes when the last of them finishes.
@@ -222,7 +215,7 @@ impl Source {
         let path = path.as_ref();
         let file = File::open(path)?;
         let meta = file.metadata()?;
-        let (dev, ino, _) = file_ids(&meta);
+        let (dev, ino, _) = file_ids(&file)?;
         let inner = Arc::new(Inner {
             id: SourceId {
                 path: path.to_path_buf(),
@@ -249,7 +242,8 @@ impl Source {
         &self.inner.id
     }
 
-    /// The inode of the file this source reads (fixed at [`Source::open`]).
+    /// The inode (Windows: file id) of the file this source reads (fixed at
+    /// [`Source::open`]).
     pub fn ino(&self) -> u64 {
         self.inner.ino
     }
@@ -316,7 +310,7 @@ impl Source {
         }
         let file = File::open(&inner.id.path)?;
         let meta = file.metadata()?;
-        let (dev, ino, _) = file_ids(&meta);
+        let (dev, ino, _) = file_ids(&file)?;
         if ino != inner.ino || meta.len() != inner.id.size || mtime_ns(&meta) != inner.id.mtime_ns {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -449,9 +443,76 @@ impl<'a> Windows<'a> {
     }
 }
 
+/// File identity on every platform (`flux_core::file_id`). Windows used to
+/// read every file as `(0, 0, 1)`: a deleted or replaced file stayed open
+/// until the idle timeout, and a reopen took any file of the same size and
+/// mtime for the one the source was opened as.
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("flux-source-id-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn wait_closed(src: &Source, within: Duration) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < within {
+            if !src.is_open() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn a_deleted_file_is_closed_before_its_idle_timeout() {
+        let dir = scratch("deleted");
+        let path = dir.join("film.ts");
+        std::fs::write(&path, vec![7u8; 1 << 16]).unwrap();
+        let src = Source::open(&path).unwrap();
+        src.set_idle_timeout(Duration::from_secs(600));
+        assert_eq!(src.read_at(100, 4).unwrap(), vec![7u8; 4]);
+        std::fs::remove_file(&path).unwrap();
+        assert!(wait_closed(&src, Duration::from_secs(5)), "still open");
+        assert!(src.read_at(0, 4).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_replaced_at_its_path_is_closed_and_never_read() {
+        let dir = scratch("replaced");
+        let path = dir.join("film.mkv");
+        std::fs::write(&path, vec![1u8; 1 << 16]).unwrap();
+        let src = Source::open(&path).unwrap();
+        src.set_idle_timeout(Duration::from_secs(600));
+        src.read_at(0, 16).unwrap();
+        // Same size and mtime: only the identity tells them apart.
+        let tmp = dir.join("incoming.mkv");
+        std::fs::write(&tmp, vec![2u8; 1 << 16]).unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        File::options()
+            .write(true)
+            .open(&tmp)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+        assert!(wait_closed(&src, Duration::from_secs(5)), "still open");
+        let e = src.read_at(0, 16).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound, "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     /// A scratch directory under `$TMPDIR` (the SSD in the dev setup).
     fn scratch(name: &str) -> PathBuf {

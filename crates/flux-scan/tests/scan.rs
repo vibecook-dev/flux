@@ -657,6 +657,98 @@ fn non_utf8_names_are_skipped_and_counted() {
     assert_eq!(snapshot(&cat, root_id).len(), 1);
 }
 
+/// Names starting with `.` are never cataloged, but Windows doesn't hide
+/// them, so a `.Film.mp4` there just went missing without a word. A hidden
+/// media file is now counted (and logged); OS litter (AppleDouble `._*`) and
+/// files inside hidden folders are not.
+#[test]
+fn hidden_media_files_are_skipped_and_counted() {
+    let scratch = Scratch::new("hidden");
+    let root = scratch.path("Movies");
+    for rel in [
+        "Film (2020)/Film (2020).mkv",
+        "Film (2020)/._Film (2020).mkv",
+        "Film (2020)/.Film (2020).srt",
+        ".Hidden Film (2021).mp4",
+        ".hidden folder/Other (2019).mkv",
+    ] {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"not really a movie").unwrap();
+    }
+    let cat = open_catalog(&scratch.dir);
+    let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
+    let s = scanner(&cat);
+    let r = scan(&s, lib);
+    assert_eq!(r.hidden_skipped, 1, "{r:?}");
+    assert_eq!(r.media_files, 1, "{r:?}");
+    let rows: Vec<String> = snapshot(&cat, root_id).into_keys().collect();
+    assert_eq!(rows, ["Film (2020)/Film (2020).mkv"]);
+    s.shutdown(Duration::from_secs(5));
+}
+
+/// Mille reports no inode on Windows, so a file reached through a folder
+/// junction (or symlink) that leaves the library had no recorded identity,
+/// and the server refused to serve it: listed, never playable. The scan
+/// now asks such a file for its volume serial and file id, which the
+/// server compares before serving it. Files inside the root are not opened
+/// for this.
+#[cfg(windows)]
+#[test]
+fn a_file_behind_a_junction_records_its_identity() {
+    use flux_core::file_id::FileId;
+    let Some(clip) = flux_test_media::clip(flux_test_media::Clip::H264AacMp4) else {
+        return;
+    };
+    let scratch = Scratch::new("junction");
+    let (root, ext) = (scratch.path("Movies"), scratch.path("elsewhere"));
+    for d in [root.join("Inside (2020)"), ext.join("Outside (2021)")] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::copy(&clip, root.join("Inside (2020)/Inside (2020).mp4")).unwrap();
+    std::fs::copy(&clip, ext.join("Outside (2021)/Outside (2021).mp4")).unwrap();
+    let link = root.join("Ext");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&ext)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "mklink /J: {made:?}");
+    let cat = open_catalog(&scratch.dir);
+    let (lib, root_id) = add_library(&cat, "Movies", LibraryKind::Movies, &root);
+    let s = scanner(&cat);
+    let r = scan(&s, lib);
+    assert_eq!(r.links_external, 1, "{r:?}");
+    let snap = snapshot(&cat, root_id);
+    let outside = &snap["Ext/Outside (2021)/Outside (2021).mp4"];
+    assert_eq!(outside.state, FileState::Present);
+    let id = FileId::of_path(&link.join("Outside (2021)/Outside (2021).mp4")).unwrap();
+    assert_eq!((outside.dev, outside.ino), (Some(id.dev), Some(id.ino)));
+    let inside = &snap["Inside (2020)/Inside (2020).mp4"];
+    assert_eq!((inside.dev, inside.ino), (None, None));
+    // The same identity on the next scan: unchanged, not re-probed.
+    let again = scan(&s, lib);
+    assert_eq!(again.unchanged, 2, "{again:?}");
+    // Deleted, its folder left empty: Missing, as inside the root. The
+    // folder's device is unknown on Windows; read as 0, it differed from
+    // the file's volume serial and the folder passed for an unmounted
+    // volume's mount point, keeping the file Present forever.
+    std::fs::remove_file(ext.join("Outside (2021)/Outside (2021).mp4")).unwrap();
+    std::fs::remove_file(root.join("Inside (2020)/Inside (2020).mp4")).unwrap();
+    let gone = scan(&s, lib);
+    assert!(gone.unread_dirs.is_empty(), "{gone:?}");
+    assert_eq!(gone.missing, 2, "{gone:?}");
+    let snap = snapshot(&cat, root_id);
+    assert_eq!(
+        snap["Ext/Outside (2021)/Outside (2021).mp4"].state,
+        FileState::Missing
+    );
+    assert_eq!(snap["Inside (2020)/Inside (2020).mp4"].state, FileState::Missing);
+    s.shutdown(Duration::from_secs(5));
+    std::fs::remove_dir(&link).unwrap();
+}
+
 /// A two-part movie copied in one part at a time (synthetic files, no
 /// corpus): the first part is parsed alone and does not stack; when the
 /// second arrives, the first is re-parsed (no I/O) and both become parts of

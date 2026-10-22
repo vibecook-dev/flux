@@ -88,7 +88,8 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
   - In directory scans, nothing under a known subdirectory that was not re-listed is touched.
 - **Unreachable roots:** a failed root stat or listing marks the root unavailable and is never deleted; restoring the root brings it back.
   - **Empty mount point guard:** a root that now lists empty while the catalog has live files there is treated as unavailable, not as a mass delete.
-- **Identity edge cases:** Mille's `dev = ino = 0` (Windows) becomes `None`. Non-UTF-8 names are skipped, logged and counted in `ScanSummary::non_utf8_skipped`; for a directory, its subtree is skipped.
+- **Identity edge cases:** Mille's `dev = ino = 0` (Windows) becomes `None`, except for a file behind a link or junction that leaves the library: the scan asks that file for its volume serial number and file id (`flux_core::file_id`), because the server serves such a file only while it is the one the scan recorded. Non-UTF-8 names are skipped, logged and counted in `ScanSummary::non_utf8_skipped`; for a directory, its subtree is skipped.
+- **Hidden names** (a leading `.`) are never cataloged or walked into. A hidden media file is counted in `ScanSummary::hidden_skipped` and logged at info, because Windows doesn't hide such a name and the file would otherwise vanish without a word. OS litter (`.DS_Store`, AppleDouble `._*`) is dropped by Mille's default ignores and not counted.
 
 ### Devices, priorities, coalescing, cancellation
 
@@ -98,8 +99,10 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
   - Everything else is **Fast**: `ssd_concurrency`, 16 KiB pages.
   - The call runs on a helper thread with a 2 s cap.
   - `statfs` cannot tell an HDD from an SSD, so local HDDs count as Fast. This is documented in `device.rs`.
+  - Windows: the volume's file system name (`NTFS`, `exFAT`, …). A network drive is Slow, and so is a disk that reports a seek penalty, or that doesn't say and is on USB, FireWire or SD/MMC (USB HDD enclosures often don't answer the query; USB SSDs usually do).
+  - Each device is logged once at info (`storage device`, with its file system, bus, class and concurrency).
   - The corpus volume classifies as `apfs`, Fast, 16.
-- **One `ReadBoundary` per device** (`st_dev`): its deadlines are `first_response` and `stall` from `ScanConfig`, and its concurrency is the device's. File reads take a permit from a per-device priority semaphore with the same width.
+- **One `ReadBoundary` per device** (`st_dev`; the volume serial number on Windows): its deadlines are `first_response` and `stall` from `ScanConfig`, and its concurrency is the device's. File reads take a permit from a per-device priority semaphore with the same width.
 - **Admission:** a root scan waits on its device.
   - It starts when the device is idle, or when its priority is higher than every running scan's. A watcher batch therefore overtakes a long scheduled scan, while two scheduled scans of one disk serialize.
   - Waiters are served by priority, then FIFO.
@@ -129,6 +132,9 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 - **Settle:** a debounce thread maps canonical event paths back to catalog roots and drops hidden paths and NAS/OS litter. It collects parent directories until 150 ms of quiet (1 s cap), then calls `scan_dirs` at `Priority::Watcher`.
 - **Directory scans** list each directory one level deep and walk whole any subdirectory the catalog doesn't know (a new or renamed folder). They apply the `.plexignore`/`.ignore` rules of the directories above.
 - **Returning roots:** a root that couldn't be watched when `watch()` ran (a NAS asleep, a drive unplugged) is watched after the next scan that reaches it. The test fails without this.
+- **Unavailable roots are tried again** every `ScannerOptions::recheck_unavailable` (30 s): a bounded stat of those roots only, and a Quick scan of the library once one answers. A root that answers but whose scan still finds it unusable (an empty mount point) waits twice as long each time, up to an hour.
+  - Renaming a watched root goes unnoticed until the next event: the watch follows the folder, so the next change finds the root's path gone and marks it unavailable, and renaming it back raises no event. The recheck brings it back.
+  - On Windows the *parent* of a watched root can't be renamed or moved while flux runs ("Access is denied"): the open watch handle forbids it. Stop flux, or remove the library, first.
 - **Startup catch-up** runs on the first `watch()` (`ScannerOptions::startup`):
   - `QuickScan` (default).
   - `MilleResume`: the snapshot is written next to the DB as `<db>.scan-resume-root-<id>.bin` after each complete full scan. It is built from entries the walk already delivered, then `events_since` runs and the parents of changed paths are rescanned; a Quick scan runs if there is no snapshot.
@@ -152,7 +158,7 @@ scan_library / scan_dirs ─► registry (coalesce: join an unstarted job / a ru
 | Item | What |
 |---|---|
 | `ScanSummary::{reattached, non_utf8_skipped, stages}` | Re-attach count, skipped names, and worker time per stage (`StageTimes`: fingerprint, probe, parse and cross-root ms; read calls and bytes). Fields are documented. |
-| `ScannerOptions { watch_debounce, watch_settle, startup, read_hook }`, `StartupCatchUp`, `Scanner::with_options` | Kept apart from `ScanConfig`, so `ScanConfig` struct literals in the server stay valid. `read_hook` is a `#[doc(hidden)]` test seam (Mille `ReadHook`). |
+| `ScannerOptions { watch_debounce, watch_settle, startup, recheck_unavailable, read_hook }`, `StartupCatchUp`, `Scanner::with_options` | Kept apart from `ScanConfig`, so `ScanConfig` struct literals in the server stay valid. `read_hook` is a `#[doc(hidden)]` test seam (Mille `ReadHook`). |
 | `ScanHandle::is_finished`, `Scanner::devices() -> Vec<DeviceInfo>`, `DeviceClass`, `classify_fstype`, `fs_type`, `pub mod fingerprint` | Introspection and reuse. |
 | `#[doc(hidden)] Scanner::resume_dirs` | Bench hook for the catch-up comparison. |
 
@@ -276,10 +282,10 @@ FLUX_SCAN_BENCH_NO_FP=1 …/flux-scan-bench --phase cold <corpus> <db> <manifest
 
 ## Known gaps
 
-- **HDDs** are not detected (`statfs` can't tell), so they get the Fast class (16 in flight). Lower `ssd_concurrency` on HDD-only machines. Detecting them needs IOKit, or `/sys/block/*/queue/rotational` on Linux.
+- **HDDs** are not detected on macOS and Linux (`statfs` can't tell), so they get the Fast class (16 in flight). Lower `ssd_concurrency` on HDD-only machines. Detecting them needs IOKit, or `/sys/block/*/queue/rotational` on Linux. Windows asks the disk (seek penalty, bus type).
 - **Slow-device tasks hold workers.** Workers are shared across devices. A worker waiting for a Slow device's I/O permit holds its thread, so a NAS backlog can occupy up to `workers` threads while a Fast device's tasks wait. Priorities still order the queue.
 - **No "growing file" state.** A file still being copied may be probed partially or fail. The next event (its last write) rescans it.
-- **Network shares get no polling fallback.** FSEvents and inotify don't see changes made by other hosts on SMB/NFS, and the catalog's `dir` mtime table (the O(dirs) poll fallback) is not maintained yet. A root that was unreachable when `watch()` ran starts being watched after the next successful scan of it, not by itself.
+- **Network shares get no polling fallback.** FSEvents and inotify don't see changes made by other hosts on SMB/NFS, and the catalog's `dir` mtime table (the O(dirs) poll fallback) is not maintained yet. Only a root's *availability* is polled: while its library is watched, a root marked unavailable is tried again every `recheck_unavailable`, and once it answers it is rescanned and watched again (see *Unavailable roots are tried again*). Changes other hosts make on a share that stays reachable are still not seen.
 - **Cross-volume moves between roots** (new inode) re-attach only if the source root is scanned first, which is the catalog's tombstone re-attach. Same-volume cross-root moves are handled by inode.
 - **`Deep`** re-probes every file. Files are not selected by `probe_version`/`parse_version`.
 - **Multi-root totals:** `files_total` is a running total across a library's roots, known per root as each walk finishes.

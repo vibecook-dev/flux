@@ -46,7 +46,7 @@ mod resume;
 mod scan_root;
 mod watch;
 
-pub use device::{classify as classify_fstype, fs_type, DeviceClass};
+pub use device::{classify as classify_fstype, fs_type, DeviceClass, FsInfo};
 
 use job::{JobKind, JobShared};
 
@@ -175,6 +175,11 @@ pub struct ScanSummary {
     /// Names that are not valid UTF-8, skipped (with a warning) rather than
     /// stored lossily (two such names could alias one catalog path).
     pub non_utf8_skipped: u64,
+    /// Media files skipped because their name starts with `.` (each is
+    /// logged at info). Hidden files are never cataloged; Windows doesn't
+    /// hide such a name, so this tells a user where a file went. OS litter
+    /// (`.DS_Store`, AppleDouble `._*`) is not counted.
+    pub hidden_skipped: u64,
     /// Directories that didn't answer before their deadline (nothing under
     /// them was marked missing). Also: a symlink whose target does not
     /// resolve (an offline disk), and an empty directory whose files lived
@@ -302,6 +307,14 @@ pub struct ScannerOptions {
     /// (bursts are capped at 4× this, minimum 1 s).
     pub watch_settle: Duration,
     pub startup: StartupCatchUp,
+    /// How often a watched library's unavailable roots are tried again (a
+    /// bounded stat of those roots only; a Quick scan once one answers). A
+    /// root renamed and renamed back, a drive plugged in again or a NAS
+    /// that came back then returns by itself instead of waiting for "Scan
+    /// now". A root that answers but still can't be scanned (an empty mount
+    /// point) is tried at doubling intervals, up to an hour. Zero turns it
+    /// off.
+    pub recheck_unavailable: Duration,
     /// Test seam: a Mille read hook installed on every device's
     /// `ReadBoundary` (e.g. to park a directory past its deadline).
     #[doc(hidden)]
@@ -317,6 +330,7 @@ impl Default for ScannerOptions {
             // whole root, so it is no faster than a Quick scan, and keeping
             // its snapshot costs a write after every full scan.
             startup: StartupCatchUp::QuickScan,
+            recheck_unavailable: Duration::from_secs(30),
             read_hook: None,
         }
     }
@@ -328,6 +342,7 @@ impl std::fmt::Debug for ScannerOptions {
             .field("watch_debounce", &self.watch_debounce)
             .field("watch_settle", &self.watch_settle)
             .field("startup", &self.startup)
+            .field("recheck_unavailable", &self.recheck_unavailable)
             .field("read_hook", &self.read_hook.is_some())
             .finish()
     }
