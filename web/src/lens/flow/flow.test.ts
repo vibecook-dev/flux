@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemSummary } from '../../api/types';
+import { coverPose, edgeOpacity, shadeOf } from './core';
 import { ANGLE, measure, metaLine, pose, titleLine, windowAround } from './flow';
 
 const M = { gap1: 200, spacing: 40, depth: 180, lift: 12 };
@@ -110,5 +111,39 @@ describe('measure', () => {
     expect(phone.R).toBeGreaterThanOrEqual(4);
     // The stacks reach past the edge of the window.
     expect(wide.gap1 + (wide.R - 1) * wide.spacing).toBeGreaterThan(wide.W / 2 - wide.cw);
+  });
+});
+
+describe('coverPose', () => {
+  const m = measure(1440, 900, { top: 68, bottom: 84 }, false);
+  const still = { x: 0, y: 0, tx: 0, ty: 0 };
+  const lean = { x: 3, y: -4, tx: 3, ty: -4 };
+
+  it('stands each cover where pose() puts it, from its visual index', () => {
+    const p = coverPose({ id: 1, vi: 7.5, vv: 0 }, 6, m, still, false);
+    const q = pose(1.5, m);
+    expect(p).toMatchObject({ d: 1.5, ad: 1.5, x: q.x, z: q.z, ry: q.ry, rx: 0 });
+  });
+
+  it('leans only the poster in front toward the pointer, and not while dragging', () => {
+    expect(coverPose({ id: 1, vi: 6, vv: 0 }, 6, m, lean, false)).toMatchObject({ rx: 3, ry: -4 });
+    expect(coverPose({ id: 1, vi: 6.25, vv: 0 }, 6, m, lean, false).rx).toBeCloseTo(1.5);
+    expect(coverPose({ id: 1, vi: 7, vv: 0 }, 6, m, lean, false).rx).toBe(0);
+    expect(coverPose({ id: 1, vi: 6, vv: 0 }, 6, m, lean, true)).toMatchObject({ rx: 0, ry: pose(0, m).ry });
+  });
+});
+
+describe('edge fade and haze', () => {
+  it('fades covers out only at the far ends of the stacks', () => {
+    expect(edgeOpacity(0, 12)).toBe(1);
+    expect(edgeOpacity(10.4, 12)).toBe(1);
+    expect(edgeOpacity(11, 12)).toBeCloseTo(0.5);
+    expect(edgeOpacity(11.5, 12)).toBe(0);
+  });
+
+  it('sinks the stacks into the room, up to a limit', () => {
+    expect(shadeOf(0)).toBe(0);
+    expect(shadeOf(1)).toBe(0.36);
+    expect(shadeOf(5)).toBe(0.62);
   });
 });

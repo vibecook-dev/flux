@@ -284,3 +284,41 @@
     font-size: 1.125rem;
   }
 }
+
+/* Flow on the GPU: the covers are drawn on a canvas; the floor, mist and title stay in the DOM. */
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* The covers in view, invisible: for screen readers and keyboard focus. */
+.option {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  opacity: 0;
+  border-radius: var(--flow-r);
+  outline: none;
+  pointer-events: none;
+}
+
+.option[hidden] {
+  display: none;
+}
+
+.gpu.over {
+  cursor: pointer;
+}
+
+.gpu.overCentre {
+  cursor: zoom-in;
+}
+
+.gpu.dragging {
+  cursor: grabbing;
+}
