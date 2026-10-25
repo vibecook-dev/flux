@@ -55,7 +55,7 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 
 - **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64 and on Windows x86_64, where video transcodes use libx264. Windows x86_64 is supported, with a release zip ([docs/INSTALL.md](docs/INSTALL.md#windows)): it was checked against a real library on Windows 11 with NVENC on an NVIDIA GPU. Quick Sync on Windows is detected but untested, and AMD's AMF encoder isn't used, so AMD GPUs transcode with libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs.
 - **Unreleased dependencies.** flux uses Mille (file walking and watching) and Truffle (embedded Tailscale), two libraries by the same maintainer, and needs changes to both that were made for flux. Mille comes as a git dependency from [vibecook-dev/mille](https://github.com/vibecook-dev/mille), pinned to the commit that merged flux's changes. Truffle's `truffle-core` comes from crates.io (0.7.20, the release with flux's changes). To build against local checkouts of either, see [CONTRIBUTING.md](CONTRIBUTING.md#local-mille-and-truffle-checkouts).
-- **Remote access has not run end to end.** Embedded mode has never joined a real tailnet; its serving path is tested with fabricated identities. System mode was tested read-only on one machine (WhoIs identity and network path), never from a second device.
+- **Remote access is partly tested.** System mode serves a Windows 11 machine's library over the tailnet and was used from another device there (WhoIs identity, a direct path, HTTPS on the tailnet). Embedded mode has never joined a real tailnet; its serving path is tested with fabricated identities.
 - **Roles and sharing.** Adding libraries, scanning and switching remote access need Owner or Admin. Beyond that, roles are not enforced: Kid and Guest see everything. LAN callers are anonymous, with no pairing. The web client's invite flow has no server API yet.
 - **Playback.**
   - Video transcodes have one H.264 bitrate (no ABR ladder).
@@ -157,7 +157,7 @@ Browsers offer some features only to secure pages, WebGPU among them (the Wall, 
 
 The setting is remembered in the data dir, like the mode; `--tailnet-https` or `FLUX_TAILNET_HTTPS` wins over it.
 
-On the tailnet, Tailscale tells flux who each caller is. The login that owns the node is the Owner, unless `--owner-login` names another. A `vibecook.dev/cap/flux` capability grant in your tailnet policy (`{"role": "kid"}`, `"viewer"`, `"admin"`, …) sets anyone else's role, and the default is Viewer. Nothing is exposed to the public internet, and flux has no passwords of its own. Neither tailnet mode has run end to end yet (see [Prototype gaps](#prototype-gaps)).
+On the tailnet, Tailscale tells flux who each caller is. The login that owns the node is the Owner, unless `--owner-login` names another. A `vibecook.dev/cap/flux` capability grant in your tailnet policy (`{"role": "kid"}`, `"viewer"`, `"admin"`, …) sets anyone else's role, and the default is Viewer. Nothing is exposed to the public internet, and flux has no passwords of its own. Embedded mode hasn't run end to end yet (see [Prototype gaps](#prototype-gaps)).
 
 ## Architecture
 

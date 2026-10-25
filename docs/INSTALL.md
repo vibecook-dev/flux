@@ -453,7 +453,9 @@ own names and addresses; add others, such as a reverse proxy's, with
 
 `--tailnet system` uses the installed Tailscale for Windows
 (`tailscale.exe`), and `--tailnet embedded` runs the bundled
-`sidecar-slim.exe`. Neither has been tried on Windows yet.
+`sidecar-slim.exe`. System mode runs on Windows 11 with Tailscale 1.102,
+HTTPS on the tailnet included (`--tailnet-https`); embedded mode hasn't
+been tried on Windows yet.
 
 ### Upgrading on Windows
 
