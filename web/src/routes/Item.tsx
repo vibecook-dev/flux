@@ -14,7 +14,8 @@ import { back, navigate, type RouteProps } from '../app/router';
 import { Link } from '../app/Link';
 import { useTitle } from '../app/useTitle';
 import { codecShort, containerName, planLabel, planTone } from '../api/explain';
-import { formatBytes, formatClock, formatRemaining, formatRuntime } from '../api/format';
+import { formatAgo, formatBytes, formatClock, formatRemaining, formatRuntime } from '../api/format';
+import { hostOf, type AgentItemDetail, type FieldSource } from '../api/agent';
 import { api } from '../api/client';
 import { keys, recallSummary, rememberSummaries, useChildren, useFacts, useItem } from '../api/queries';
 import { refreshFolders } from '../api/folder-list';
@@ -41,9 +42,10 @@ const PROVIDER_LINKS: Record<string, (id: string, kind: string) => string> = {
   tmdb: (id, kind) => `https://www.themoviedb.org/${kind === 'show' ? 'tv' : 'movie'}/${id}`,
   imdb: (id) => `https://www.imdb.com/title/${id}/`,
   tvdb: (id) => `https://thetvdb.com/dereferrer/series/${id}`,
+  wikidata: (id) => `https://www.wikidata.org/wiki/${encodeURIComponent(id)}`,
 };
 
-const PROVIDER_NAMES: Record<string, string> = { tmdb: 'TMDB', imdb: 'IMDb', tvdb: 'TheTVDB' };
+const PROVIDER_NAMES: Record<string, string> = { tmdb: 'TMDB', imdb: 'IMDb', tvdb: 'TheTVDB', wikidata: 'Wikidata', anidb: 'AniDB' };
 
 /** "Poster from TMDB" / "Poster: a frame from the video (no AI)" / "Poster: AI-generated on this server". */
 function artCredit(kind: string, art: ItemSummary['poster']): string | null {
@@ -77,25 +79,54 @@ function Meter({ value }: { value: number }) {
   );
 }
 
-function MatchPanel({ item }: { item: ItemDetail }) {
-  if (item.match_confidence === null && item.match_evidence.length === 0) return null;
+/**
+ * Who settled what an item is, if a person or an agent did (its title or an
+ * id) where no provider had confirmed it: a provider's match stays the match,
+ * whatever an agent adds to it.
+ */
+function identifiedBy(facts: AgentItemDetail | undefined): FieldSource | null {
+  if (!facts || facts.match_state === 'matched') return null;
+  const set = Object.entries(facts.sources).filter(([f, s]) => (f === 'title' || f.startsWith('ids.')) && (s.source === 'agent' || s.source === 'user'));
+  return set.map(([, s]) => s).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0] ?? null;
+}
+
+function MatchPanel({ item, facts }: { item: ItemDetail; facts: AgentItemDetail | undefined }) {
+  const by = identifiedBy(facts);
+  if (item.match_confidence === null && item.match_evidence.length === 0 && !by) return null;
   const aiAssisted = item.match_evidence.some((e) => /\bAI\b/.test(e));
   const credits = [artCredit('Poster', item.poster), artCredit('Backdrop', item.backdrop)].filter(Boolean) as string[];
   const usesTmdb = item.external_ids.some(([p]) => p === 'tmdb');
+  const who = by ? (by.source === 'agent' ? (by.agent ?? 'an agent') : (by.by ?? 'a person')) : null;
+  const from = by ? by.sources.map((l) => hostOf(l.url)).filter((h, i, a) => a.indexOf(h) === i) : [];
   return (
     <section className={styles.panel} aria-labelledby="matched-as">
       <h2 id="matched-as" className={`edge ${styles.panelTitle}`}>
-        Matched as
+        {by ? 'Identified as' : 'Matched as'}
       </h2>
       <p className={styles.matchTitle}>
         {item.title}
         {item.year ? ` (${item.year})` : ''}
         {aiAssisted && <span className={styles.aiTag}>AI-assisted</span>}
       </p>
-      {item.match_confidence !== null && <Meter value={item.match_confidence} />}
+      {by ? (
+        // A person or an agent settled it; the parse's own confidence no longer applies.
+        <p className={styles.identified}>
+          By <b>{who}</b>
+          {by.at ? `, ${formatAgo(by.at)}` : ''}
+          {from.length > 0 ? `, from ${from.join(', ')}` : ''}
+          {by.changeset && (
+            <>
+              {' · '}
+              <Link to={`/changes?open=${by.changeset}`}>Review</Link>
+            </>
+          )}
+        </p>
+      ) : (
+        item.match_confidence !== null && <Meter value={item.match_confidence} />
+      )}
       {item.match_evidence.length > 0 && (
         <>
-          <h3 className={styles.subhead}>How flux decided</h3>
+          <h3 className={styles.subhead}>{by ? 'What the file name said' : 'How flux decided'}</h3>
           <ul className={styles.evidence}>
             {item.match_evidence.map((e) => (
               <li key={e} data-ai={/\bAI\b/.test(e) || undefined}>
@@ -609,7 +640,7 @@ export default function Item({ params, query }: RouteProps) {
       {detail && (
         <div className={styles.panels}>
           <AboutPanel item={detail} facts={about} />
-          <MatchPanel item={detail} />
+          <MatchPanel item={detail} facts={about.data} />
           {!isShow && <FilesPanel assets={assets} />}
         </div>
       )}

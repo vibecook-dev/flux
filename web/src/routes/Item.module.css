@@ -558,6 +558,24 @@
   letter-spacing: -0.015em;
 }
 
+.identified {
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.identified b {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--stream);
+}
+
+.identified a {
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
 .aiTag {
   font-family: var(--font-mono);
   font-size: 0.62rem;

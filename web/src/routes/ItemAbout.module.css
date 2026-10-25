@@ -41,16 +41,16 @@
 
 .facts dd {
   margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
   font-size: 0.9375rem;
   line-height: 1.4;
 }
 
-.markLink {
-  display: inline-flex;
+/* The mark follows the value's last word, wrapped or not. */
+.markLink,
+.facts dd > span[title] {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: -3px;
 }
 
 .mark {
