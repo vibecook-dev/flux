@@ -290,7 +290,8 @@ fn main() -> ExitCode {
         }
         Ok(None) => ExitCode::SUCCESS,
         Err(f) => {
-            eprintln!("{}", json!({ "error": { "code": f.code, "message": f.message } }));
+            let e = json!({ "error": { "code": f.code, "message": f.message } }).to_string();
+            eprintln!("{}", for_pipe(e, std::io::stderr().is_terminal()));
             ExitCode::from(f.exit)
         }
     }
@@ -302,7 +303,40 @@ fn print_json(v: &Value, pretty: bool) {
     } else {
         serde_json::to_string(v)
     };
-    println!("{}", s.unwrap_or_default());
+    println!(
+        "{}",
+        for_pipe(s.unwrap_or_default(), std::io::stdout().is_terminal())
+    );
+}
+
+/// JSON as it should leave through a pipe. On Windows, PowerShell (5.1)
+/// decodes a program's piped output with the console's legacy code page,
+/// which garbles UTF-8 (a CJK title) and breaks the JSON; written as `\u`
+/// escapes, every character survives any decoding. A console gets UTF-16
+/// from Rust, and other systems pipe UTF-8 untouched.
+fn for_pipe(json: String, terminal: bool) -> String {
+    if cfg!(windows) && !terminal {
+        ascii_json(&json)
+    } else {
+        json
+    }
+}
+
+/// `json` with every non-ASCII character as a JSON `\u` escape (still the
+/// same JSON: outside strings JSON is ASCII).
+fn ascii_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for u in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{u:04x}"));
+            }
+        }
+    }
+    out
 }
 
 /// The agent this runs as: the flag or FLUX_AGENT, else one detected from
@@ -600,4 +634,18 @@ fn art(c: &Client, cmd: &ArtCmd) -> Result<Value, Failure> {
             }
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_json_is_the_same_json() {
+        let v = json!({ "title": "拾荒者 · Café 🎬", "n": 1 });
+        let a = ascii_json(&v.to_string());
+        assert!(a.is_ascii(), "{a}");
+        assert!(a.contains("\\u62fe"));
+        assert_eq!(serde_json::from_str::<Value>(&a).unwrap(), v);
+    }
 }
