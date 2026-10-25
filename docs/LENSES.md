@@ -62,7 +62,7 @@ With thousands of posters, the DOM is the bottleneck: every tile is a little tre
 
 Each GPU lens keeps its DOM version (`wall.ts`, `flow.ts`, `shelf.ts`; the lens's `load.ts` picks one). It is used in browsers without WebGPU (and TV browsers), if the pipeline doesn't compile, and if the GPU is lost mid-session (the view carries on as the DOM version). Set `flux.render` to `"dom"` in localStorage to use it anyway.
 
-Browsers offer WebGPU only to secure pages: HTTPS, or `localhost` on the machine itself. Opened over plain HTTP from another device (a tailnet or LAN address), flux uses the DOM lenses.
+Browsers offer WebGPU only to secure pages: HTTPS, or `localhost` on the machine itself. Opened over plain HTTP from another device (a tailnet or LAN address), flux uses the DOM lenses. With HTTPS on the tailnet switched on ([README, HTTPS](../README.md#https)), tailnet devices get the GPU lenses, and a page opened over plain HTTP there moves to the HTTPS address by itself.
 
 Measured in headless Chrome on an M1 Max at 2× (`vite preview` of the mock build, the 10,000-title library), same build, DOM vs GPU:
 

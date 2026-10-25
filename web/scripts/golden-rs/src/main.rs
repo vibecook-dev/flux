@@ -355,11 +355,13 @@ fn tailnet_running() -> TailnetInfo {
         approve_url: None,
         tailnet_name: Some("tail1234.ts.net".into()),
         dns_name: Some("flux.tail1234.ts.net".into()),
-        url: Some("http://flux.tail1234.ts.net:8096".into()),
+        url: Some("https://flux.tail1234.ts.net:8096".into()),
         owner_login: Some("james@example.com".into()),
         key_expiry: None,
         system_tailscale: true,
         last_error: None,
+        https: true,
+        https_error: None,
     }
 }
 
@@ -372,6 +374,7 @@ fn tailnet_login() -> TailnetInfo {
         url: None,
         owner_login: None,
         system_tailscale: false,
+        https: false,
         ..tailnet_running()
     }
 }
@@ -538,6 +541,7 @@ fn main() {
             path: "tailnet-direct".into(),
             tailnet_name: Some("flux.tail1234.ts.net".into()),
             metadata: MetadataInfo { source: MetadataSource::Tmdb },
+            https_url: Some("https://flux.tail1234.ts.net:8096".into()),
         }),
         "CreateLibrary": v(&CreateLibrary { name: "Movies".into(), kind: LibraryKind::Movies, roots: vec!["/m".into()] }),
         "Library": v(&Library {
@@ -604,7 +608,7 @@ fn main() {
         "PlanPreview": v(&PlanPreview::new(70, plans()[2].clone())),
         "MarkWatched": v(&MarkWatched { watched: true }),
         "TailnetInfo": v(&tailnet_running()),
-        "TailnetConnect": v(&TailnetConnect { mode: TailnetMode::Embedded }),
+        "TailnetConnect": v(&TailnetConnect { mode: TailnetMode::System, https: Some(true) }),
         "ProgressReport": v(&progress),
         "SessionDiagnostics": v(&SessionDiagnostics {
             session_id: "s1".into(),

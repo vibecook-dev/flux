@@ -355,6 +355,97 @@ async fn real_socket_refuses_foreign_hosts() {
     server.shutdown(Duration::from_secs(5)).await;
 }
 
+/// HTTPS on the tailnet is a setting of its own: switched through the API,
+/// remembered in the data dir (not the mode, which didn't change), and
+/// picked up at the next start. Without a running tailnet nothing serves
+/// HTTPS, so no `https_url` is offered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn https_on_the_tailnet_is_switched_and_remembered() {
+    use flux_core::api::{TailnetInfo, TailnetMode};
+    let dir = scratch("socket-https");
+    let server = flux_server::start(Config::for_tests(dir.path())).await.unwrap();
+    let base = format!("http://{}", server.local_addr);
+    let c = client();
+    let connect = |body: serde_json::Value| {
+        let c = c.clone();
+        let url = format!("{base}/api/v1/tailnet/connect");
+        async move {
+            c.post(url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .json::<TailnetInfo>()
+                .await
+                .unwrap()
+        }
+    };
+    let tailnet = || {
+        let c = c.clone();
+        let url = format!("{base}/api/v1/tailnet");
+        async move {
+            c.get(url)
+                .send()
+                .await
+                .unwrap()
+                .json::<TailnetInfo>()
+                .await
+                .unwrap()
+        }
+    };
+    let https_file = dir.path().join("tailnet-https");
+
+    assert!(!tailnet().await.https);
+    let t = connect(serde_json::json!({"mode": "off", "https": true})).await;
+    assert!(t.https && t.https_error.is_none());
+    assert_eq!(t.mode, TailnetMode::Off);
+    assert_eq!(std::fs::read_to_string(&https_file).unwrap(), "on");
+    assert!(
+        !dir.path().join("tailnet-mode").exists(),
+        "the mode didn't change"
+    );
+    assert!(tailnet().await.https);
+    // Omitting `https` leaves it as it is.
+    assert!(connect(serde_json::json!({"mode": "off"})).await.https);
+    let info: ServerInfo = c
+        .get(format!("{base}/api/v1/server"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info.https_url, None, "no tailnet, so nothing serves HTTPS");
+    server.shutdown(Duration::from_secs(5)).await;
+
+    // The next start takes the remembered setting, unless the command line says otherwise.
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.tailnet_https_explicit = false;
+    let server = flux_server::start(cfg).await.unwrap();
+    let base = format!("http://{}", server.local_addr);
+    let t: TailnetInfo = c
+        .get(format!("{base}/api/v1/tailnet"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(t.https);
+    let t: TailnetInfo = c
+        .post(format!("{base}/api/v1/tailnet/connect"))
+        .json(&serde_json::json!({"mode": "off", "https": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!t.https);
+    assert_eq!(std::fs::read_to_string(&https_file).unwrap(), "off");
+    server.shutdown(Duration::from_secs(5)).await;
+}
+
 /// Records what the server asks of the scanner.
 #[derive(Default)]
 struct RecordingScanner {

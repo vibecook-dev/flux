@@ -1,6 +1,6 @@
 [package]
 name = "flux-net"
-description = "Networking: embedded Tailscale via Truffle (WhoIs identity), LAN listener, hyper serving"
+description = "Networking: embedded Tailscale via Truffle (WhoIs identity), LAN listener, hyper serving, HTTPS on the tailnet"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 # Paused-clock tests of the write timeout.
@@ -39,6 +41,8 @@ tracing-subscriber.workspace = true
 bytes.workspace = true
 futures.workspace = true
 libc = "0.2"
+# Self-signed certificates for the HTTPS tests (already a Truffle dependency).
+rcgen = "0.14"
 
 [[example]]
 name = "embedded"

@@ -89,6 +89,8 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
     key_expiry: running ? db.now + 179 * 86_400_000 : null,
     system_tailscale: true,
     last_error: null,
+    https: false,
+    https_error: null,
   };
 
   const broadcast = (evt: FluxEvent) => {
@@ -113,6 +115,7 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
     // ServerInfo.tailnet_name is the server's MagicDNS name.
     tailnet_name: tailnet.dns_name,
     metadata: { source: opts.metadata ?? 'tmdb' },
+    https_url: tailnet.state === 'running' && tailnet.url?.startsWith('https://') ? tailnet.url : null,
   });
 
   const tailnetChanged = () => broadcast({ type: 'tailnet', info: { ...tailnet } });
@@ -500,6 +503,12 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
         const code = (hash32(String(Date.now())) >>> 0).toString(16).padStart(8, '0');
         tailnet.auth_url = `https://login.tailscale.com/a/${code}${code.slice(0, 4)}`;
       }
+      if (body.https !== undefined && body.https !== tailnet.https) {
+        // The real server restarts its tailnet listener and fetches the certificate.
+        tailnet.https = body.https;
+        tailnet.https_error = null;
+        if (tailnet.state === 'running') tailnet.url = `${body.https ? 'https' : 'http'}://${DNS_NAME}:8096`;
+      }
       tailnetChanged();
       return HttpResponse.json(tailnet);
     }),
@@ -510,7 +519,7 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
       tailnet.auth_url = null;
       tailnet.tailnet_name = 'tail4e2b1.ts.net';
       tailnet.dns_name = DNS_NAME;
-      tailnet.url = `http://${DNS_NAME}:8096`;
+      tailnet.url = `${tailnet.https ? 'https' : 'http'}://${DNS_NAME}:8096`;
       tailnet.owner_login = 'james@example.com';
       tailnet.key_expiry = Date.now() + 180 * 86_400_000;
       tailnetChanged();

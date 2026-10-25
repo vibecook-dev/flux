@@ -16,7 +16,7 @@ use flux_core::api::{
 };
 use serde::Deserialize;
 
-use crate::config::{tailnet_choice_path, TailnetChoice};
+use crate::config::{tailnet_choice_path, tailnet_https_path, tailnet_https_word, TailnetChoice};
 use crate::error::{ApiError, ApiResult};
 use crate::scan::{Priority, ScanMode};
 use crate::state::{AppState, Caller};
@@ -71,6 +71,7 @@ async fn server_info(State(st): State<Arc<AppState>>, caller: Caller) -> Json<Se
             .clone()
             .or_else(|| st.tailnet.info().dns_name),
         metadata: crate::metadata::info(&st.cfg.tmdb_exports),
+        https_url: st.tailnet.https_url(),
     })
 }
 
@@ -371,32 +372,50 @@ async fn tailnet(State(st): State<Arc<AppState>>) -> Json<TailnetInfo> {
     Json(st.tailnet.info())
 }
 
-/// `POST /api/v1/tailnet/connect` (owner/admin): switch remote access mode.
-/// The tailnet listener restarts in the new mode in the background (local
-/// and LAN connections are untouched); follow the `tailnet` SSE events (or
-/// poll) for the login URL and the final state.
+/// `POST /api/v1/tailnet/connect` (owner/admin): switch remote access mode,
+/// or HTTPS on the tailnet. The tailnet listener restarts in the background
+/// (local and LAN connections are untouched); follow the `tailnet` SSE
+/// events (or poll) for the login URL, the certificate and the final state.
 async fn tailnet_connect(
     State(st): State<Arc<AppState>>,
     caller: Caller,
     body: Result<Json<TailnetConnect>, JsonRejection>,
 ) -> ApiResult<Json<TailnetInfo>> {
     caller.require_admin()?;
-    let Json(TailnetConnect { mode }) = body?;
-    if mode == st.tailnet.mode() {
+    let Json(TailnetConnect { mode, https }) = body?;
+    let https = https.unwrap_or_else(|| st.tailnet.https());
+    let mode_changed = mode != st.tailnet.mode();
+    let https_changed = https != st.tailnet.https();
+    if !mode_changed && !https_changed {
         return Ok(Json(st.tailnet.info()));
     }
     let choice = TailnetChoice::from_api(mode);
-    if !st.tailnet.request_mode(choice) {
+    if !st.tailnet.request(choice, https) {
         return Err(ApiError::unavailable(
             "The server can't change its listeners right now",
         ));
     }
-    // Remembered for the next start (unless --tailnet/FLUX_TAILNET says otherwise).
-    if let Err(e) = std::fs::write(tailnet_choice_path(&st.cfg.data_dir), choice.as_str()) {
-        tracing::warn!(error = %e, "could not remember the tailnet mode");
+    // Remembered for the next start (unless the command line or the
+    // environment says otherwise: --tailnet, --tailnet-https).
+    let data_dir = &st.cfg.data_dir;
+    if mode_changed {
+        if let Err(e) = std::fs::write(tailnet_choice_path(data_dir), choice.as_str()) {
+            tracing::warn!(error = %e, "could not remember the tailnet mode");
+        }
+    }
+    if https_changed {
+        if let Err(e) = std::fs::write(tailnet_https_path(data_dir), tailnet_https_word(https)) {
+            tracing::warn!(error = %e, "could not remember HTTPS on the tailnet");
+        }
     }
     let mut info = st.tailnet.info();
     info.mode = mode;
+    info.https = https;
+    info.https_error = None;
+    if https_changed {
+        // The new listener reports its address once it serves.
+        info.url = None;
+    }
     info.state = if mode == flux_core::api::TailnetMode::Off {
         flux_core::api::TailnetState::Off
     } else {

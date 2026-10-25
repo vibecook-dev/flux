@@ -3,6 +3,7 @@
 import type { ServerInfo, CreateLibrary, Library, Page, ItemDetail, Home, PlayRequest, PlayResponse, ProgressReport, SessionDiagnostics, FluxEvent, NameGuess, ItemsParams, FolderParams, FolderPage, PlanPreview, MarkWatched, TailnetInfo, TailnetConnect, ItemSummary, PlaybackPlan, Reason } from '../types';
 
 export const goldenServerInfo = {
+  "https_url": "https://flux.tail1234.ts.net:8096",
   "metadata": {
     "source": "tmdb"
   },
@@ -712,6 +713,8 @@ export const goldenEvents = [
       "approve_url": null,
       "auth_url": "https://login.tailscale.com/a/abc123",
       "dns_name": null,
+      "https": false,
+      "https_error": null,
       "key_expiry": null,
       "last_error": null,
       "mode": "embedded",
@@ -892,6 +895,8 @@ export const goldenTailnetInfo = {
   "approve_url": null,
   "auth_url": null,
   "dns_name": "flux.tail1234.ts.net",
+  "https": true,
+  "https_error": null,
   "key_expiry": null,
   "last_error": null,
   "mode": "embedded",
@@ -899,11 +904,12 @@ export const goldenTailnetInfo = {
   "state": "running",
   "system_tailscale": true,
   "tailnet_name": "tail1234.ts.net",
-  "url": "http://flux.tail1234.ts.net:8096"
+  "url": "https://flux.tail1234.ts.net:8096"
 } satisfies TailnetInfo;
 
 export const goldenTailnetConnect = {
-  "mode": "embedded"
+  "https": true,
+  "mode": "system"
 } satisfies TailnetConnect;
 
 export const goldenPlans = [

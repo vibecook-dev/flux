@@ -385,6 +385,14 @@ async fn pipelined_requests_are_answered_in_order() {
 /// the tailnet listener's bookkeeping runs without any Tailscale.
 #[cfg(unix)]
 fn fake_tailscale() -> std::path::PathBuf {
+    fake_tailscale_with(None)
+}
+
+/// [`fake_tailscale`], and with `cert_pem` the tailnet issues certificates:
+/// `status` lists the node's name in `CertDomains` and `cert … <name>`
+/// prints `cert_pem`, as `tailscale cert --cert-file - --key-file -` does.
+#[cfg(unix)]
+fn fake_tailscale_with(cert_pem: Option<&str>) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -393,14 +401,78 @@ fn fake_tailscale() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("flux-net-fake-ts-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cli = dir.join("tailscale");
-    let status = r#"{"BackendState":"Running","TailscaleIPs":["127.0.0.1"],"Self":{"DNSName":"fake.tail0000.ts.net.","TailscaleIPs":["127.0.0.1"],"UserID":1},"User":{"1":{"LoginName":"owner@example.com"}}}"#;
+    let domains = if cert_pem.is_some() {
+        r#"["fake.tail0000.ts.net"]"#
+    } else {
+        "null"
+    };
+    let status = format!(
+        r#"{{"BackendState":"Running","TailscaleIPs":["127.0.0.1"],"Self":{{"DNSName":"fake.tail0000.ts.net.","TailscaleIPs":["127.0.0.1"],"UserID":1}},"User":{{"1":{{"LoginName":"owner@example.com"}}}},"CertDomains":{domains}}}"#
+    );
+    std::fs::write(dir.join("cert.pem"), cert_pem.unwrap_or_default()).unwrap();
     std::fs::write(
         &cli,
-        format!("#!/bin/sh\ncase \"$1\" in\n  status) echo '{status}' ;;\n  *) echo 'peer not found' >&2; exit 1 ;;\nesac\n"),
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  status) echo '{status}' ;;\n  cert) [ \"$6\" = fake.tail0000.ts.net ] && cat '{pem}' ;;\n  *) echo 'peer not found' >&2; exit 1 ;;\nesac\n",
+            pem = dir.join("cert.pem").display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
     cli
+}
+
+/// The running tailnet's info once it satisfies `ready`.
+#[cfg(unix)]
+async fn running_when(
+    net: &FluxNet,
+    ready: impl Fn(&flux_net::TailnetInfo) -> bool,
+) -> flux_net::TailnetInfo {
+    let mut rx = net.tailnet_status();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let TailnetStatus::Running(info) = &*rx.borrow_and_update() {
+                if ready(info) {
+                    return info.clone();
+                }
+            }
+            rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the tailnet listener gets there")
+}
+
+/// `GET /whoami` over TLS to `name` at `addr`, trusting only `cert`.
+#[cfg(unix)]
+async fn https_whoami(
+    addr: SocketAddr,
+    name: &str,
+    cert: &rustls::pki_types::CertificateDer<'static>,
+) -> std::io::Result<serde_json::Value> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.clone()).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(flux_net::tls::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tcp = TcpStream::connect(addr).await?;
+    let server_name = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
+    let mut tls = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+        .connect(server_name, tcp)
+        .await?;
+    tls.write_all(format!("GET /whoami HTTP/1.1\r\nHost: {name}\r\nConnection: close\r\n\r\n").as_bytes())
+        .await?;
+    let mut raw = Vec::new();
+    match tls.read_to_end(&mut raw).await {
+        Err(e) if e.kind() != std::io::ErrorKind::UnexpectedEof => return Err(e),
+        _ => {}
+    }
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    let body = text.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    Ok(serde_json::from_str(body).unwrap())
 }
 
 /// The tailnet listener's address once its status says Running.
@@ -420,6 +492,52 @@ async fn running_at(net: &FluxNet) -> SocketAddr {
     })
     .await
     .expect("the tailnet listener starts")
+}
+
+/// HTTPS on the tailnet with this machine's Tailscale, end to end: the
+/// certificate comes from `tailscale cert`, the tailnet port then speaks
+/// HTTPS and plain HTTP, the status gives the `https://` address, and the
+/// caller is the same person either way. Switching HTTPS off replaces the
+/// listener with one that speaks plain HTTP only.
+#[cfg(unix)]
+#[tokio::test]
+async fn system_mode_https_serves_tailscales_certificate_beside_http() {
+    let issued = rcgen::generate_simple_self_signed(vec!["fake.tail0000.ts.net".to_string()]).unwrap();
+    let pem = format!("{}{}", issued.cert.pem(), issued.signing_key.serialize_pem());
+    let cert = issued.cert.der().clone();
+    let cli = fake_tailscale_with(Some(&pem));
+    let system = |https| {
+        TailnetConfig::System(SystemConfig {
+            port: 0,
+            cli: Some(cli.clone()),
+            https,
+            ..Default::default()
+        })
+    };
+    let mut net = FluxNet::start(local_config(), router()).await.unwrap();
+
+    net.set_tailnet(system(true), Duration::from_secs(1)).await;
+    let info = running_when(&net, |t| t.tls).await;
+    let addr = info.addrs[0];
+    assert_eq!(info.tls_error, None);
+    let https_url = format!("https://fake.tail0000.ts.net:{}", addr.port());
+    assert_eq!(net.tailnet_info().url.as_deref(), Some(https_url.as_str()));
+    assert!(net.tailnet_info().https);
+    let over_tls = https_whoami(addr, "fake.tail0000.ts.net", &cert).await.unwrap();
+    let plain = whoami(addr).await;
+    assert_eq!(over_tls, plain, "the same caller over either protocol");
+    assert_eq!(
+        over_tls["you"]["role"],
+        serde_json::to_value(Role::Owner).unwrap()
+    );
+
+    net.set_tailnet(system(false), Duration::from_secs(1)).await;
+    let addr = running_at(&net).await;
+    assert!(https_whoami(addr, "fake.tail0000.ts.net", &cert).await.is_err());
+    assert_eq!(whoami(addr).await["path"], "localhost");
+    assert!(net.tailnet_info().url.unwrap().starts_with("http://"));
+    net.shutdown(Duration::from_secs(2)).await;
+    let _ = std::fs::remove_dir_all(cli.parent().unwrap());
 }
 
 /// `FluxNet::set_tailnet` replaces only the tailnet listener: the local

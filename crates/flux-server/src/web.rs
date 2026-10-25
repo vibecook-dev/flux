@@ -4,9 +4,12 @@
 //! - Unknown non-API paths get `index.html` (client-side routing).
 //! - `index.html` carries a strict Content-Security-Policy whose `script-src`
 //!   allows exactly the inline theme script, by its SHA-256 (computed when
-//!   the UI is loaded, so a rebuilt `index.html` stays covered).
+//!   the UI is loaded, so a rebuilt `index.html` stays covered). While HTTPS
+//!   serves on the tailnet, `connect-src` also names that `https://` origin,
+//!   so a page opened over plain HTTP can check it is reachable and move there.
 //! - Text assets are gzipped once on first request and kept in memory.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -164,9 +167,32 @@ fn resolve(root: &Path, uri_path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-fn html_response(ui: &WebUi, headers: &HeaderMap) -> Response {
+/// `csp` with this server's own HTTPS address (`https_origin`, e.g.
+/// `https://flux.tail1234.ts.net:8096`) added to `connect-src`, so a page
+/// opened over plain HTTP can check that address before moving there.
+/// Anything that isn't a plain `https://host[:port]` is ignored.
+pub fn csp_with_https<'a>(csp: &'a str, https_origin: Option<&str>) -> Cow<'a, str> {
+    let plain = |o: &&str| {
+        o.strip_prefix("https://").is_some_and(|rest| {
+            !rest.is_empty()
+                && rest.len() <= 300
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        })
+    };
+    match https_origin.filter(plain) {
+        Some(origin) => {
+            Cow::Owned(csp.replacen("connect-src 'self'", &format!("connect-src 'self' {origin}"), 1))
+        }
+        None => Cow::Borrowed(csp),
+    }
+}
+
+fn html_response(ui: &WebUi, headers: &HeaderMap, https_origin: Option<&str>) -> Response {
     let mut resp = file_response(ui, Path::new("index.html"), ui.index.clone(), REVALIDATE, headers);
-    if let Ok(v) = HeaderValue::from_str(&ui.csp) {
+    // On a 304 too: the browser keeps the headers of the copy it revalidated.
+    if let Ok(v) = HeaderValue::from_str(&csp_with_https(&ui.csp, https_origin)) {
         resp.headers_mut().insert(header::CONTENT_SECURITY_POLICY, v);
     }
     let h = resp.headers_mut();
@@ -235,8 +261,9 @@ pub async fn fallback(
     let Some(ui) = st.web.as_ref() else {
         return ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], NO_UI).into_response();
     };
+    let https = st.tailnet.https_url();
     if path == "/" || path == "/index.html" {
-        return html_response(ui, &headers);
+        return html_response(ui, &headers, https.as_deref());
     }
     let Some(file) = resolve(&ui.root, path) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -253,13 +280,36 @@ pub async fn fallback(
         Err(_) if is_asset || path.rsplit('/').next().is_some_and(|l| l.contains('.')) => {
             StatusCode::NOT_FOUND.into_response()
         }
-        Err(_) => html_response(ui, &headers),
+        Err(_) => html_response(ui, &headers, https.as_deref()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csp_names_the_https_address_for_connections_only() {
+        let csp = csp_for("<script>x</script>");
+        assert_eq!(csp_with_https(&csp, None), csp);
+        let with = csp_with_https(&csp, Some("https://flux.tail1234.ts.net:8096"));
+        assert!(
+            with.contains("connect-src 'self' https://flux.tail1234.ts.net:8096;"),
+            "{with}"
+        );
+        assert_eq!(with.matches("tail1234").count(), 1, "nowhere else: {with}");
+        assert!(with.contains("default-src 'self';") && with.contains("img-src 'self' data: blob:;"));
+        // Never anything that could change the policy's meaning.
+        for bad in [
+            "http://flux.tail1234.ts.net",
+            "https://",
+            "https://x; script-src *",
+            "https://x 'unsafe-inline'",
+            "https://x/path",
+        ] {
+            assert_eq!(csp_with_https(&csp, Some(bad)), csp, "{bad}");
+        }
+    }
 
     #[test]
     fn csp_hashes_exactly_the_inline_scripts() {

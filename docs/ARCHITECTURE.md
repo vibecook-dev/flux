@@ -38,7 +38,7 @@ crates/
                 + ffmpeg-backed audio/video transcode segments
   flux-meta     TMDB client + offline TMDB export index, matcher, AI hypothesis trait,
                 artwork: frame posters (no AI) and opt-in genAI posters
-  flux-net      Truffle node (embedded Tailscale), tailnet + LAN listeners, WhoIs identity, hyper serving
+  flux-net      Truffle node (embedded Tailscale), tailnet + LAN listeners, WhoIs identity, hyper serving, tailnet HTTPS
   flux-server   the binary: axum routes (flux_core::api), sessions, jobs, SSE, static web UI
 web/            React 19 + TypeScript + Vite web client (hls.js), talks flux_core::api
 tools/          corpus generators and benchmark harnesses (Jellyfin baselines)
@@ -125,6 +125,7 @@ Dependencies point strictly downward, with no cycles:
 - Serve with hyper `http1::Builder::new().half_close(true)`. This is required to survive Truffle's per-direction idle reap (research/06 §3.4).
 - WhoIs identity is attached to each request (`Extension<Option<Identity>>`).
 - Connections are admitted per remote IP and in total (loopback has its own budget); over a limit a connection gets an immediate 503. A response that makes no write progress for 60 s is aborted.
+- HTTPS on the tailnet (system mode): rustls with tailscaled's MagicDNS certificate (`tailscale cert`), on the same port as plain HTTP. The first byte of a connection (a TLS handshake record is `0x16`) picks the protocol. TLS ends in flux, so WhoIs still sees the caller's own address. The certificate is fetched again every 12 hours and swapped in for new handshakes; a replaced tailnet listener takes its TLS along.
 
 ### flux-server
 

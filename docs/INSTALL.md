@@ -158,7 +158,8 @@ flux is private by default: it listens on 127.0.0.1 only, where callers are
 the Owner. `--lan 0.0.0.0:8097` adds a LAN listener whose callers are
 anonymous (they can browse and play, but not add libraries, scan or change
 remote access). Remote access with identities goes through Tailscale
-(`--tailnet system|embedded`, README §Remote access).
+(`--tailnet system|embedded`, README §Remote access), and can add HTTPS with
+the tailnet's certificate (`--tailnet-https`, README §HTTPS).
 
 ### As a service (Linux, systemd)
 

@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::art::ArtStore;
-use crate::config::{persisted_tailnet, Config, LibrarySpec};
+use crate::config::{persisted_tailnet, persisted_tailnet_https, Config, LibrarySpec};
 use crate::events::EventBus;
 use crate::guard::HostAllowlist;
 use crate::net::{NetControl, TailnetView};
@@ -120,12 +120,17 @@ pub async fn start_with(
     } else {
         persisted_tailnet(&cfg.data_dir).unwrap_or(cfg.tailnet)
     };
+    let https = if cfg.tailnet_https_explicit {
+        cfg.tailnet_https
+    } else {
+        persisted_tailnet_https(&cfg.data_dir).unwrap_or(cfg.tailnet_https)
+    };
     let mut tasks = Vec::new();
     if let Some(rx) = scan_events {
         tasks.push(state.events.forward(rx));
     }
     let router = api::router(state.clone());
-    let net = net::start(&cfg, choice, router, state.clone())
+    let net = net::start(&cfg, choice, https, router, state.clone())
         .await
         .context("starting the listeners")?;
     let ready_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -133,6 +138,7 @@ pub async fn start_with(
         url = %format!("http://{}", net.local_addr),
         lan = ?net.lan_addr,
         tailnet = choice.as_str(),
+        tailnet_https = https,
         ready_ms = format!("{ready_ms:.1}"),
         "flux is ready"
     );

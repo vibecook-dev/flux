@@ -352,6 +352,11 @@ export interface ServerInfo {
   tailnet_name: string | null;
   /** Where titles and artwork come from. */
   metadata: MetadataInfo;
+  /**
+   * The server's HTTPS address on the tailnet while HTTPS serves there. A page
+   * opened over plain HTTP on the tailnet moves there (`app/secure.ts`).
+   */
+  https_url: string | null;
 }
 
 export const METADATA_SOURCES = ['none', 'tmdb', 'exports'] as const;
@@ -688,11 +693,20 @@ export interface TailnetInfo {
   /** A system tailscaled is available on this machine. */
   system_tailscale: boolean;
   last_error: string | null;
+  /**
+   * HTTPS on the tailnet is switched on (with its MagicDNS certificate). `url`
+   * is the `https://` address once the certificate is loaded.
+   */
+  https: boolean;
+  /** Why HTTPS is on but not serving yet (e.g. the tailnet issues no certificates). */
+  https_error: string | null;
 }
 
 /** `POST /api/v1/tailnet/connect` body. */
 export interface TailnetConnect {
   mode: TailnetMode;
+  /** Switch HTTPS on the tailnet on or off; left as it is when omitted. */
+  https?: boolean;
 }
 
 // ─────────────── web-only (proposed; NOT in flux-core yet) ───────────────

@@ -31,6 +31,10 @@ const MACOS_APP_CLI: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscal
 /// Bound on any one CLI call; tailscaled answers in milliseconds.
 const CLI_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Bound on `tailscale cert`: a new certificate takes a Let's Encrypt DNS
+/// challenge, usually under a minute.
+const CERT_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// Age after which a `status --json` snapshot is refreshed (in the
 /// background: classification keeps using the previous one meanwhile).
 const STATUS_TTL: Duration = Duration::from_secs(10);
@@ -69,6 +73,9 @@ pub struct SystemStatus {
     pub auth_url: Option<String>,
     /// Per-peer path, by every tailnet IP of each peer.
     pub peer_paths: HashMap<IpAddr, NetPath>,
+    /// Names this machine can get an HTTPS certificate for (`tailscale
+    /// cert`); empty when HTTPS certificates are off for the tailnet.
+    pub cert_domains: Vec<String>,
 }
 
 impl SystemStatus {
@@ -106,6 +113,8 @@ struct RawStatus {
     peer: HashMap<String, RawPeer>,
     #[serde(default)]
     user: HashMap<String, RawUser>,
+    #[serde(default)]
+    cert_domains: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -171,7 +180,29 @@ pub fn parse_status(json: &[u8]) -> Result<SystemStatus, NetError> {
         owner_login,
         auth_url: non_empty(raw.auth_url),
         peer_paths,
+        cert_domains: raw
+            .cert_domains
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(non_empty)
+            .collect(),
     })
+}
+
+/// The domain to get a certificate for: this machine's MagicDNS name, if
+/// the tailnet issues certificates for it.
+pub fn cert_domain(status: &SystemStatus) -> Result<String, String> {
+    if status.cert_domains.is_empty() {
+        return Err(
+            "HTTPS certificates are off for this tailnet. Turn them on in the Tailscale admin \
+                    console (DNS, HTTPS Certificates), and flux will pick them up."
+                .into(),
+        );
+    }
+    match &status.dns_name {
+        Some(name) if status.cert_domains.iter().any(|d| d.eq_ignore_ascii_case(name)) => Ok(name.clone()),
+        _ => Ok(status.cert_domains[0].clone()),
+    }
 }
 
 // ── `tailscale whois --json` (apitype.WhoIsResponse) ─────────────────────────
@@ -263,15 +294,38 @@ impl SystemTailscale {
     }
 
     async fn run(&self, args: &[&str]) -> Result<std::process::Output, NetError> {
+        self.run_for(args, CLI_TIMEOUT).await
+    }
+
+    async fn run_for(&self, args: &[&str], timeout: Duration) -> Result<std::process::Output, NetError> {
         let child = Command::from(flux_core::tool::command(&self.cli))
             .args(args)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output();
-        tokio::time::timeout(CLI_TIMEOUT, child)
+        tokio::time::timeout(timeout, child)
             .await
             .map_err(|_| NetError::System(format!("`{} {}` timed out", self.cli.display(), args.join(" "))))?
             .map_err(|e| NetError::System(format!("cannot run {}: {e}", self.cli.display())))
+    }
+
+    /// The HTTPS certificate and key for `domain`, as PEM (`tailscale cert
+    /// --cert-file - --key-file -`). tailscaled keeps the certificate and
+    /// renews it before it expires; the first one takes a DNS challenge.
+    pub async fn cert(&self, domain: &str) -> Result<Vec<u8>, NetError> {
+        let out = self
+            .run_for(
+                &["cert", "--cert-file", "-", "--key-file", "-", domain],
+                CERT_TIMEOUT,
+            )
+            .await?;
+        if out.status.success() && !out.stdout.is_empty() {
+            return Ok(out.stdout);
+        }
+        Err(NetError::System(format!(
+            "tailscale cert {domain} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
     }
 
     /// A fresh `tailscale status --json`.
@@ -397,7 +451,8 @@ mod tests {
                       "CurAddr": "", "Relay": "fra", "PeerRelay": "", "UserID": 2}
       },
       "User": {"1": {"ID": 1, "LoginName": "owner@example.com"},
-               "2": {"ID": 2, "LoginName": "friend@example.com"}}
+               "2": {"ID": 2, "LoginName": "friend@example.com"}},
+      "CertDomains": ["mac.tail1234.ts.net"]
     }"#;
 
     #[test]
@@ -420,6 +475,20 @@ mod tests {
         assert_eq!(s.path_to("100.64.0.6".parse().unwrap()), NetPath::TailnetRelay);
         assert_eq!(s.path_to("100.64.0.1".parse().unwrap()), NetPath::TailnetDirect);
         assert_eq!(s.path_to("100.64.9.9".parse().unwrap()), NetPath::Tailnet);
+    }
+
+    #[test]
+    fn certificates_are_for_this_machines_name() {
+        let s = parse_status(STATUS.as_bytes()).unwrap();
+        assert_eq!(s.cert_domains, vec!["mac.tail1234.ts.net"]);
+        assert_eq!(cert_domain(&s).unwrap(), "mac.tail1234.ts.net");
+        // HTTPS certificates off for the tailnet: `CertDomains` is null.
+        let off = parse_status(
+            br#"{"BackendState":"Running","Self":{"DNSName":"mac.ts.net."},"CertDomains":null}"#,
+        )
+        .unwrap();
+        assert!(off.cert_domains.is_empty());
+        assert!(cert_domain(&off).unwrap_err().contains("admin console"));
     }
 
     #[test]

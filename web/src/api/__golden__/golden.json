@@ -594,6 +594,8 @@
           "approve_url": null,
           "auth_url": "https://login.tailscale.com/a/abc123",
           "dns_name": null,
+          "https": false,
+          "https_error": null,
           "key_expiry": null,
           "last_error": null,
           "mode": "embedded",
@@ -1363,6 +1365,7 @@
       "ttff_ms": 240
     },
     "ServerInfo": {
+      "https_url": "https://flux.tail1234.ts.net:8096",
       "metadata": {
         "source": "tmdb"
       },
@@ -1417,12 +1420,15 @@
       "session_id": "s1"
     },
     "TailnetConnect": {
-      "mode": "embedded"
+      "https": true,
+      "mode": "system"
     },
     "TailnetInfo": {
       "approve_url": null,
       "auth_url": null,
       "dns_name": "flux.tail1234.ts.net",
+      "https": true,
+      "https_error": null,
       "key_expiry": null,
       "last_error": null,
       "mode": "embedded",
@@ -1430,7 +1436,7 @@
       "state": "running",
       "system_tailscale": true,
       "tailnet_name": "tail1234.ts.net",
-      "url": "http://flux.tail1234.ts.net:8096"
+      "url": "https://flux.tail1234.ts.net:8096"
     }
   }
 }

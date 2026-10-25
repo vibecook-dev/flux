@@ -235,7 +235,8 @@ export function createFluxClient(opts: FluxClientOptions) {
      * `needs_login` with an auth URL), `system` uses this machine's
      * tailscaled, `off` disconnects.
      */
-    connectTailnet: (mode: TailnetMode = 'embedded') => post<TailnetInfo>('/api/v1/tailnet/connect', { mode } satisfies TailnetConnect),
+    connectTailnet: (mode: TailnetMode = 'embedded', https?: boolean) =>
+      post<TailnetInfo>('/api/v1/tailnet/connect', (https === undefined ? { mode } : { mode, https }) satisfies TailnetConnect),
 
     // Proposed (not in flux-core yet).
     /** GET /api/v1/invites */

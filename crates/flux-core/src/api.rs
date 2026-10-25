@@ -115,6 +115,13 @@ pub struct ServerInfo {
     pub tailnet_name: Option<String>,
     /// Where titles and artwork come from.
     pub metadata: MetadataInfo,
+    /// The server's HTTPS address on the tailnet, e.g.
+    /// `https://flux.tail1234.ts.net:8096`, while HTTPS is on and its
+    /// certificate is loaded ([`TailnetInfo::https`]). A browser that opened
+    /// flux over plain HTTP on the tailnet can move there: browsers offer
+    /// some features (WebGPU) only to secure pages.
+    #[serde(default)]
+    pub https_url: Option<String>,
 }
 
 /// [`ServerInfo::metadata`]: what the server can match titles against.
@@ -689,6 +696,17 @@ pub struct TailnetInfo {
     pub system_tailscale: bool,
     /// Why the state is `unavailable` or `error`.
     pub last_error: Option<String>,
+    /// HTTPS on the tailnet is switched on: tailnet devices can open flux at
+    /// `https://` with the tailnet's MagicDNS certificate (needs HTTPS
+    /// certificates enabled for the tailnet). [`url`](Self::url) is the
+    /// `https://` address once the certificate is loaded. With this
+    /// machine's Tailscale, plain HTTP keeps working on the same port.
+    #[serde(default)]
+    pub https: bool,
+    /// Why HTTPS is on but not serving yet, e.g. the tailnet has no HTTPS
+    /// certificates.
+    #[serde(default)]
+    pub https_error: Option<String>,
 }
 
 /// `POST /api/v1/tailnet/connect` body.
@@ -697,6 +715,10 @@ pub struct TailnetConnect {
     /// `embedded` = "Connect with Tailscale", `system` = use this machine's
     /// tailscaled, `off` = disconnect.
     pub mode: TailnetMode,
+    /// Switch HTTPS on the tailnet on or off ([`TailnetInfo::https`]); left
+    /// as it is when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https: Option<bool>,
 }
 
 #[cfg(test)]
@@ -806,6 +828,8 @@ mod tests {
             key_expiry: None,
             system_tailscale: false,
             last_error: None,
+            https: false,
+            https_error: None,
         };
         let v = serde_json::to_value(Event::Tailnet { info: info.clone() }).unwrap();
         assert_eq!(v["type"], "tailnet");
@@ -814,9 +838,28 @@ mod tests {
         // Option fields are present as null, never omitted.
         assert!(v["info"].as_object().unwrap().contains_key("dns_name"));
         let back: Event = serde_json::from_value(v).unwrap();
-        assert_eq!(back, Event::Tailnet { info });
+        assert_eq!(back, Event::Tailnet { info: info.clone() });
         let c: TailnetConnect = serde_json::from_str(r#"{"mode":"system"}"#).unwrap();
-        assert_eq!(c.mode, TailnetMode::System);
+        assert_eq!((c.mode, c.https), (TailnetMode::System, None));
+        let c: TailnetConnect = serde_json::from_str(r#"{"mode":"system","https":true}"#).unwrap();
+        assert_eq!(c.https, Some(true));
+        // `https` is left out when not changing it, so older servers accept the body.
+        let wire = serde_json::to_value(TailnetConnect {
+            mode: TailnetMode::Off,
+            https: None,
+        })
+        .unwrap();
+        assert!(!wire.as_object().unwrap().contains_key("https"));
+        // A server from before HTTPS: the new fields default.
+        let old: TailnetInfo = serde_json::from_value({
+            let mut v = serde_json::to_value(&info).unwrap();
+            let o = v.as_object_mut().unwrap();
+            o.remove("https");
+            o.remove("https_error");
+            v
+        })
+        .unwrap();
+        assert!(!old.https && old.https_error.is_none());
     }
 
     #[test]

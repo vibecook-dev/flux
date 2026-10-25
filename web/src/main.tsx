@@ -18,6 +18,12 @@ if (!import.meta.env.VITE_FLUX_API || import.meta.env.VITE_FLUX_API === 'mock') 
   setRequestGate(import('./mock/browser').then((m) => m.startMock()));
 }
 
+// Opened over plain HTTP on the tailnet: move to the server's HTTPS address when
+// it has one (browsers keep WebGPU, and so the GPU lenses, for secure pages).
+if (!window.isSecureContext && import.meta.env.VITE_FLUX_API && import.meta.env.VITE_FLUX_API !== 'mock') {
+  void import('./app/secure').then((m) => m.upgradeToHttps());
+}
+
 // Detect playback capabilities while the user browses, so Play needs no probing.
 const idle = (cb: () => void) => ('requestIdleCallback' in window ? requestIdleCallback(cb, { timeout: 1500 }) : setTimeout(cb, 300));
 idle(() => void getClientCaps());

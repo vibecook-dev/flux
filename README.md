@@ -115,6 +115,7 @@ Open <http://127.0.0.1:8096>. Libraries named on the command line are created on
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |
 | `--tailnet off\|embedded\|system` | `FLUX_TAILNET` | `off`. See [Remote access](#remote-access). |
+| `--tailnet-https[=BOOL]` | `FLUX_TAILNET_HTTPS` | Off. Also serve HTTPS on the tailnet, with its MagicDNS certificate. See [HTTPS](#https). |
 | `--allow-host HOST` | `FLUX_ALLOW_HOSTS` (`,`-separated) | Extra host names the server answers to, e.g. a reverse proxy's (repeatable). Other hosts get 421. |
 | `--localhost-role ROLE` | `FLUX_LOCALHOST_ROLE` | `owner`. Use `none` on a machine other people can log in to. |
 | `--owner-login LOGIN` | `FLUX_OWNER_LOGIN` | The tailnet login that owns the server. Default: learned when the tailnet starts. |
@@ -131,6 +132,7 @@ In the TOML file, keys are the long flag names with `_`. `--no-scan`, `--no-jobs
 ```toml
 data_dir = "/srv/flux"
 tailnet = "off"                  # off | embedded | system
+tailnet_https = false            # HTTPS on the tailnet
 allow_host = ["media.example.com"]
 [[library]]
 name = "Movies"
@@ -145,6 +147,15 @@ path = "/Volumes/NAS/Movies"
 - **`off`** (the default): only 127.0.0.1, plus `--lan` if you set it. flux runs `tailscale status` once at startup so the Connect screen can offer this machine's Tailscale, unless `--tailnet off` or `FLUX_TAILNET=off` is given explicitly.
 - **`system`**: uses this machine's running Tailscale. flux binds the machine's Tailscale addresses on its port and identifies each caller with `tailscale whois`.
 - **`embedded`**: flux runs its own Tailscale node through Truffle. It needs Truffle's Go `sidecar-slim`, found through `TRUFFLE_SIDECAR_PATH` or next to the binary. On first start, the Connect screen (or `GET /api/v1/tailnet`) shows a login link and QR code. After you sign in, the server is on your tailnet as `http://truffle-flux-<name>.<tailnet>.ts.net:8096`.
+
+#### HTTPS
+
+Browsers offer some features only to secure pages, WebGPU among them (the Wall, Flow and Shelf draw with it), and plain HTTP from another device isn't one, even inside the tailnet's encrypted tunnel. Switch on **Secure link (HTTPS)** on the Remote access screen, or pass `--tailnet-https`, and tailnet devices can open flux at `https://<machine>.<tailnet>.ts.net:<port>` with the tailnet's own Let's Encrypt certificate. It needs MagicDNS and HTTPS certificates turned on for the tailnet (Tailscale admin console, DNS page). Like any public certificate, it puts the machine's name in public Certificate Transparency logs.
+
+- **`system`**: flux gets this machine's certificate from tailscaled (`tailscale cert`) and serves HTTPS and plain HTTP on the same port: the first byte of a connection tells them apart, so `http://` links keep working. It asks again every 12 hours; tailscaled renews the certificate before it expires. A page opened over plain HTTP on the tailnet moves to the same route at the HTTPS address once it has checked it can reach it from that device. Until the certificate arrives, or if the tailnet issues none, the Remote access screen says why.
+- **`embedded`**: Truffle's node serves HTTPS only, on the same port.
+
+The setting is remembered in the data dir, like the mode; `--tailnet-https` or `FLUX_TAILNET_HTTPS` wins over it.
 
 On the tailnet, Tailscale tells flux who each caller is. The login that owns the node is the Owner, unless `--owner-login` names another. A `vibecook.dev/cap/flux` capability grant in your tailnet policy (`{"role": "kid"}`, `"viewer"`, `"admin"`, …) sets anyone else's role, and the default is Viewer. Nothing is exposed to the public internet, and flux has no passwords of its own. Neither tailnet mode has run end to end yet (see [Prototype gaps](#prototype-gaps)).
 
