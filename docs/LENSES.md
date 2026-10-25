@@ -41,36 +41,45 @@ Every lens follows the same rules:
 | Lens | What it is |
 | --- | --- |
 | Wall (`src/lens/wall`) | Everything at once, like a photo library: four densities from a mosaic of decades to posters with captions, anchored where you point. Drawn with WebGPU (below): a pinch follows your fingers live and settles on the nearest density, and a zoom morphs every tile on screen. Held arrow keys scroll with the focus. |
-| Flow (`src/lens/flow`) | Cover Flow: one poster faces you, the rest wait in two stacks. |
-| Shelf (`src/lens/shelf`) | VHS tapes on shelves, spines painted from each poster's colours; point at one to pull it out. |
+| Flow (`src/lens/flow`) | Cover Flow: one poster faces you, the rest wait in two stacks. Drawn with WebGPU. |
+| Shelf (`src/lens/shelf`) | VHS tapes on shelves, spines painted from each poster's colours; point at one to pull it out. Drawn with WebGPU. |
 | Gallery (`src/lens/gallery`) | An exhibition you walk through: framed posters, wall labels, a room per section. |
 
 To add one: write the module, then add an entry (id, name, icon, blurb, `load`) to `FIRST_PARTY` in `src/lens/registry.ts`. The module loads on demand, in its own chunk.
 
-## The Wall on the GPU
+## Drawing on the GPU
 
-With thousands of posters, the DOM is the bottleneck: every tile is a little tree of elements to create, style, lay out, paint and composite, and a zoom animates hundreds of them. So the Wall draws with WebGPU (`src/lens/wall/gpu-wall.ts`, on the small engine in `src/lens/gpu`):
+With thousands of posters, the DOM is the bottleneck: every tile is a little tree of elements to create, style, lay out, paint and composite, and a zoom or a flick animates hundreds of them. So the Wall, Flow and the Shelf draw with WebGPU, on a small engine in `src/lens/gpu`:
 
-- **One draw call a frame.** Every poster, shadow, mark, label and caption is an instance of one rounded-rectangle shader (signed-distance edges, antialiased to the device pixel). The quads live in content coordinates, so scrolling changes one uniform.
-- **Native scrolling.** A transparent scroller sits over the canvas: momentum, scroll chaining and keyboard scrolling are the browser's own; the canvas redraws at the scroll position each frame.
-- **Posters as textures.** Four size classes (128 to 640 pixels wide, mipmapped texture arrays) keep each density sharp without wasting memory; a class grows with demand and is freed after 20 seconds unused. Images are fetched nearest-first, decoded off the main thread (`createImageBitmap`) and uploaded within 3 ms a frame. Until a poster arrives its average colour shows, and it fades in once.
+- **One draw call a frame.** Every poster, shadow, mark, label and caption is an instance of one rounded-rectangle shader (signed-distance edges, antialiased to the device pixel). The Wall's quads are flat and live in content coordinates, so scrolling changes one uniform (`quads.ts`).
+- **Perspective without the DOM.** Flow's covers and the Shelf's tapes are the same quads placed in 3D (`scene3d.ts`) with CSS's own transform maths (translate, then rotate about an origin, seen through the CSS perspective camera), so each GPU lens lines up with its DOM version to the pixel. Reflections are mirrored copies, posters are sampled anisotropically so a face seen at a steep angle stays sharp, and edges antialias at the rate the face is seen. There is no depth buffer: quads are drawn back to front.
+- **Native scrolling.** The Wall keeps a transparent scroller over the canvas: momentum, scroll chaining and keyboard scrolling are the browser's own, and the canvas redraws at the scroll position each frame. Flow and the Shelf move with their own springs and momentum, as their DOM versions do.
+- **Posters as textures** (`posters.ts`, one cache shared by every GPU lens). Four size classes (128 to 640 pixels wide, mipmapped texture arrays) keep each size sharp without wasting memory; a class grows with demand and is freed after 20 seconds unused. Images are fetched nearest-first and decoded off the main thread (`createImageBitmap`), and the GPU scales each one to its slot: in Chrome, resizing on the CPU would run on the main thread. Uploads take at most 3 ms a frame. Until a poster arrives its average colour shows, and it fades in once.
+- **Painted sprites** (`sprites.ts`). Artwork a lens paints itself, like the Shelf's spines (six treatments, condensed titles, stickers, the progress stripe), is drawn once with Canvas 2D into the layers of a texture array, a few new ones a frame, and kept while it is on screen.
 - **Text** (section labels, captions, the frame/AI labels and other marks) is drawn once per string with Canvas 2D in the page's own fonts, kept in a glyph atlas, and drawn on whole device pixels.
 - **Motion on the GPU.** A zoom morphs every tile from where it was to where it goes (with the app's `SOFT` curve); hover lifts use the CSS spring; a search reflow slides titles and shrinks away the ones that left.
-- **Still a page.** The titles on screen are mirrored as invisible links (and the sections as row headers), synced when scrolling rests rather than every frame: screen readers browse the wall, middle-click and "open in new tab" work, and the e2e tests find titles as before. One more link carries keyboard focus to the focused title.
+- **Still a page.** What is on screen is mirrored as invisible elements, synced when motion rests rather than every frame: the Wall's titles as links (and its sections as row headers), Flow's covers as a listbox, the Shelf's tapes as buttons. Screen readers browse them, middle-click and "open in new tab" work on the Wall, and the e2e tests find titles as before. One more element carries keyboard focus to the focused title.
 
-The DOM Wall (`wall.ts`) stays for browsers without WebGPU (and TV browsers), if the pipeline doesn't compile, and if the GPU is lost mid-session (the view carries on as the DOM Wall). Set `flux.render` to `"dom"` in localStorage to use it anyway.
+Each GPU lens keeps its DOM version (`wall.ts`, `flow.ts`, `shelf.ts`; the lens's `load.ts` picks one). It is used in browsers without WebGPU (and TV browsers), if the pipeline doesn't compile, and if the GPU is lost mid-session (the view carries on as the DOM version). Set `flux.render` to `"dom"` in localStorage to use it anyway.
 
-Measured in headless Chrome on an M1 Max at 2× (`vite preview` of the mock build, the 10,000-title library), same build, DOM Wall vs GPU Wall:
+Browsers offer WebGPU only to secure pages: HTTPS, or `localhost` on the machine itself. Opened over plain HTTP from another device (a tailnet or LAN address), flux uses the DOM lenses.
 
-| | DOM Wall | GPU Wall |
+Measured in headless Chrome on an M1 Max at 2× (`vite preview` of the mock build, the 10,000-title library), same build, DOM vs GPU:
+
+| | DOM | GPU |
 | --- | --- | --- |
-| Zoom in and out (6 steps) | 23 dropped frames, worst 117 ms, 8.8 ms of main thread a frame | 0 dropped, worst 16.8 ms, 3.6 ms a frame |
-| Overview (the densest), slow scroll | 5 dropped, worst 83 ms, 7.5 ms a frame | 0 dropped, 5.8 ms a frame (mostly decoding the mock's SVG posters; real art decodes off the main thread) |
-| Grid, fast scroll | 3 dropped, worst 50 ms, 4.4 ms a frame | 0 dropped, 1.8 ms a frame |
-| Posters, scroll | 0 dropped, 1.4 ms a frame | 0 dropped, 0.7 ms a frame |
-| `pnpm bench:grid` | worst frame 33.3 ms, 467 DOM nodes | worst frame 16.8 ms, 0 janky frames, 193 DOM nodes |
+| Wall: zoom in and out (6 steps) | 23 dropped frames, worst 117 ms, 8.8 ms of main thread a frame | 0 dropped, worst 16.8 ms, 3.6 ms a frame |
+| Wall: overview (the densest), slow scroll | 5 dropped, worst 83 ms, 7.5 ms a frame | 0 dropped, 5.8 ms a frame (mostly decoding the mock's SVG posters; real art decodes off the main thread) |
+| Wall: grid, fast scroll | 3 dropped, worst 50 ms, 4.4 ms a frame | 0 dropped, 1.8 ms a frame |
+| Wall: posters, scroll | 0 dropped, 1.4 ms a frame | 0 dropped, 0.7 ms a frame |
+| Wall: `pnpm bench:grid` | worst frame 33.3 ms, 467 DOM nodes | worst frame 16.8 ms, 0 janky frames, 193 DOM nodes |
+| Flow: wheel through the stacks | 0 dropped, 2.8–4.6 ms a frame | 0 dropped, 1.8–2.6 ms a frame |
+| Flow: a steady flick, compositor | 10 ms a frame (two dozen 3D layers with reflections) | 1.1 ms a frame |
+| Shelf: scroll | 0 dropped, 3.1–3.7 ms a frame, 2,420 DOM nodes | 0 dropped, 0.9–1.2 ms a frame, 218 DOM nodes |
+| Shelf: search reflow | 2–3 dropped, worst 83 ms, 6.6–7.2 ms a frame | 0 dropped, 2.9 ms a frame |
+| Shelf: open a tape | 0–2 dropped, 1.8–2.1 ms a frame | 0 dropped, 1.1–1.4 ms a frame |
 
-Headless Chrome runs at 60 Hz; on a 120 Hz display the budget is 8.3 ms a frame, which the GPU Wall stays well inside.
+Headless Chrome runs at 60 Hz; on a 120 Hz display the budget is 8.3 ms a frame, which every GPU lens stays inside. Flow shows why the main thread isn't the whole story: a flick costs it about 2 ms either way, but the DOM Flow also gives the compositor 10 ms of work a frame, more than a 120 Hz frame has.
 
 ## The lens kit
 

@@ -231,7 +231,7 @@ Reported via `POST /sessions/{id}/progress`:
 
 `LibraryList` loads a first page of 120 so the grid paints immediately, then pages of 1,000 in the background. `Page.total` sizes the scrollbar from the start, and unloaded cells are skeletons. SSE `items_changed` refreshes in place, keeping old items on screen until the new first page lands.
 
-> **Update:** for films and shows the grid is now the Wall lens (`src/lens/wall`), at four zoom levels with section headings and skeleton rows. It draws with WebGPU, one draw call a frame (posters as mipmapped textures, text from a glyph atlas), over a transparent native scroller; the titles on screen are mirrored as invisible links for screen readers and tests. A DOM version, virtualised as this grid was, stands in where WebGPU isn't available ([LENSES.md](../LENSES.md#the-wall-on-the-gpu)). `VirtualGrid` remains for a videos library's folders. "All" merges every film and show library's `LibraryList` and shows only the merged titles that can no longer move while other libraries load (`api/space-list.ts`). The background pages wait while the library is hidden (an item page, a sheet, the player), so they don't compete with what you opened; first pages still load. `pnpm bench:grid` measures the Wall:
+> **Update:** for films and shows the grid is now the Wall lens (`src/lens/wall`), at four zoom levels with section headings and skeleton rows. It draws with WebGPU, one draw call a frame (posters as mipmapped textures, text from a glyph atlas), over a transparent native scroller; the titles on screen are mirrored as invisible links for screen readers and tests. A DOM version, virtualised as this grid was, stands in where WebGPU isn't available ([LENSES.md](../LENSES.md#drawing-on-the-gpu)). `VirtualGrid` remains for a videos library's folders. "All" merges every film and show library's `LibraryList` and shows only the merged titles that can no longer move while other libraries load (`api/space-list.ts`). The background pages wait while the library is hidden (an item page, a sheet, the player), so they don't compete with what you opened; first pages still load. `pnpm bench:grid` measures the Wall:
 >
 > - home ready is the first wall tile;
 > - "fully loaded" is the last page response;
@@ -316,7 +316,7 @@ Measured with Google Chrome (headless) via `playwright-core`, against `vite prev
 > - 42 MB JS heap;
 > - 25 ArrowDowns land on title 1,708.
 >
-> Zooming, the DOM Wall's worst case, went from 23 dropped frames (worst 117 ms) to none; see [LENSES.md](../LENSES.md#the-wall-on-the-gpu) for the full comparison.
+> Zooming, the DOM Wall's worst case, went from 23 dropped frames (worst 117 ms) to none; see [LENSES.md](../LENSES.md#drawing-on-the-gpu) for the full comparison.
 
 ### Library grid, 10,000 items (`pnpm bench:grid` → `bench/results/flux-web-grid-scroll.json`)
 
