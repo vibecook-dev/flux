@@ -90,8 +90,13 @@ export interface LensDef {
   blurb: string;
   /** Wants the scroll-edge blur under the chrome (lenses that scroll art beneath the bars). */
   edges?: boolean;
-  /** Who made it: flux itself, the lens kit examples, or you. */
-  author: 'flux' | 'kit' | 'you';
+  /** Who made it: flux itself, the lens kit examples, you on this device, or a
+   * lens kept on the server (`lens.add`, often by an agent) for every device. */
+  author: 'flux' | 'kit' | 'you' | 'server';
+  /** For a server lens: the agent that added it, if one did. */
+  by?: string | null;
+  /** For a server lens: kept for everyone, not just you. */
+  everyone?: boolean;
   /** Library kinds it suits; the lens bar hides it elsewhere. Default: all but `videos`. */
   kinds?: readonly ('movies' | 'shows' | 'mixed' | 'videos' | 'all')[];
   load(): Promise<LensModule>;

@@ -1,0 +1,146 @@
+.tagline {
+  font-weight: 300;
+  font-size: 1.15rem;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  text-wrap: balance;
+}
+
+.skeleton {
+  width: 100%;
+  height: 96px;
+  border-radius: var(--r);
+}
+
+.empty {
+  color: var(--text-2);
+  font-size: 0.9rem;
+}
+
+.facts {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(96px, 128px) 1fr;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.facts dt {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.facts dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+
+.markLink {
+  display: inline-flex;
+}
+
+.mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--stream);
+  transition: background var(--t-fast) var(--ease);
+}
+
+.mark[data-source='user'] {
+  color: var(--text-3);
+}
+
+.mark :global(svg) {
+  width: 12px;
+  height: 12px;
+}
+
+.markLink:hover .mark,
+.markLink:focus-visible .mark {
+  background: color-mix(in srgb, var(--stream) 18%, transparent);
+}
+
+.origins {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin-top: -4px;
+}
+
+.origins li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+
+.origins b {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.origins li[data-source='agent'] b {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--stream);
+}
+
+.from {
+  color: var(--text-3);
+}
+
+.review {
+  flex: none;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.review:hover {
+  color: var(--text);
+}
+
+.fix {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.hint a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .facts > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

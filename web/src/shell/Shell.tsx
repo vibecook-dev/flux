@@ -13,14 +13,14 @@ import { back, matchRoute, navigateWhenLoaded, preloadRoute, type Location } fro
 import { useTheme } from '../app/theme';
 import { guardRefusal } from '../api/client';
 import { holdPaging } from '../api/library-list';
-import { prefetchItem, useLibraries } from '../api/queries';
+import { prefetchItem, useLibraries, useServer, useServerLenses } from '../api/queries';
 import { useSpaceList } from '../api/space-list';
 import type { Id, ItemSummary, LibraryKind } from '../api/types';
 import { LensHost } from '../lens/LensHost';
 import { activeLens, lensFocus, setLensFocus } from '../lens/bridge';
 import { prefs } from '../lens/dom';
 import { rememberOrigin } from '../lens/flight';
-import { allLenses, DEFAULT_PINS, FOLDERS_LENS, lensById, suits } from '../lens/registry';
+import { allLenses, DEFAULT_PINS, FOLDERS_LENS, lensById, setServerLenses, suits } from '../lens/registry';
 import { sectionOf, serverSort, visibleItems } from '../lens/sections';
 import type { Dir, LensDef } from '../lens/types';
 import { preloadPlayer, startPlay } from '../player/start';
@@ -35,7 +35,7 @@ import styles from './Shell.module.css';
 import { goToSpace, setSpaceQuery, spaceFor, spaceKey } from './space';
 import { useInsets, usePhone } from './viewport';
 
-const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access' };
+const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access', changes: 'Agents & changes' };
 
 const toldOffline = new Set<string>();
 
@@ -78,11 +78,18 @@ export function Shell({ loc }: { loc: Location }) {
   const [pins, setPins] = useState<string[]>(() => prefs.get('lens.pins', DEFAULT_PINS));
   // Bumped when you add or remove a lens of your own.
   const [lensVersion, setLensVersion] = useState(0);
+  // Lenses kept on the server (an agent's `lens.add`): every device has them.
+  const server = useServer();
+  const serverLensList = useServerLenses(Boolean(server.data?.you)).data?.lenses;
   const lenses = useMemo(
-    () => [...(kind === 'videos' ? [FOLDERS_LENS] : []), ...allLenses().filter((d) => suits(d, kind) || (d.id === 'wall' && kind === 'videos'))],
+    () => {
+      // The registry keeps the server's list, so lensById finds them too.
+      setServerLenses(serverLensList ?? []);
+      return [...(kind === 'videos' ? [FOLDERS_LENS] : []), ...allLenses().filter((d) => suits(d, kind) || (d.id === 'wall' && kind === 'videos'))];
+    },
     // lensVersion: your lenses live in prefs, read again when they change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [kind, lensVersion],
+    [kind, lensVersion, serverLensList],
   );
   const key = spaceKey(space.id);
   const fallback = kind === 'videos' ? 'folders' : 'wall';

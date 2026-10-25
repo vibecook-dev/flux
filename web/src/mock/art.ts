@@ -297,7 +297,7 @@ export interface ArtSpec {
   seed: string;
   title: string;
   year: number | null;
-  source: 'provider' | 'local' | 'frame' | 'generated';
+  source: 'provider' | 'local' | 'frame' | 'generated' | 'custom';
 }
 
 /** 2:3 poster SVG. */

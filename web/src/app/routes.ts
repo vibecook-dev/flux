@@ -14,4 +14,5 @@ defineRoutes([
   { name: 'play', path: '/play/:id', load: () => import('../routes/Player'), bare: true },
   { name: 'connect', path: '/connect', layer: 'overlay', load: () => import('../routes/Connect') },
   { name: 'admin', path: '/admin', layer: 'overlay', load: () => import('../routes/Admin') },
+  { name: 'changes', path: '/changes', layer: 'overlay', load: () => import('../routes/Changes') },
 ]);

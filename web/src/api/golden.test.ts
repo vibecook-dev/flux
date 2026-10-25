@@ -27,6 +27,19 @@ import {
   TAILNET_STATES,
   TRACK_KINDS,
 } from './types';
+import {
+  ART_KINDS,
+  ART_ORIGINS,
+  CHANGE_STATES,
+  CHANGESET_STATES,
+  EDIT_MODES,
+  EFFECTS,
+  ERROR_CODES,
+  GAPS,
+  LENS_INPUTS,
+  MATCH_STATES,
+  SOURCES,
+} from './agent';
 
 describe('enum strings match serde', () => {
   const cases: [string, readonly string[]][] = [
@@ -49,6 +62,17 @@ describe('enum strings match serde', () => {
     ['TailnetMode', TAILNET_MODES],
     ['TailnetState', TAILNET_STATES],
     ['MetadataSource', METADATA_SOURCES],
+    ['Gap', GAPS],
+    ['MatchState', MATCH_STATES],
+    ['Source', SOURCES],
+    ['ChangesetState', CHANGESET_STATES],
+    ['ChangeState', CHANGE_STATES],
+    ['ArtKind', ART_KINDS],
+    ['ArtOrigin', ART_ORIGINS],
+    ['EditMode', EDIT_MODES],
+    ['ErrorCode', ERROR_CODES],
+    ['LensInput', LENS_INPUTS],
+    ['Effect', EFFECTS],
   ];
   for (const [name, values] of cases) {
     it(name, () => {

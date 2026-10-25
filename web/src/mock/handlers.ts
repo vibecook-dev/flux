@@ -35,6 +35,7 @@ import type {
 import { FOLDER_SORTS, ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
 import { channelLayout, codecShort, planLabel } from '../api/explain';
 import { addOtherAudioTracks, predictPlan } from '../plan/predict';
+import { agentHandlers } from './agent';
 import { hash32, posterSvg, wideSvg } from './art';
 import type { MockDb } from './db';
 import { mockFolderPage } from './folders';
@@ -551,5 +552,8 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
       invites.unshift(inv);
       return HttpResponse.json(inv, { status: 201 });
     }),
+
+    // ── flux for agents: the operations the web client uses (agent.ts) ──
+    ...agentHandlers({ db, u, latencyMs: latency, broadcast }),
   ];
 }

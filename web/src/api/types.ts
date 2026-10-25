@@ -17,6 +17,7 @@
  * `src/api/golden.test.ts`), and `src/api/__golden__/golden.check.ts` makes tsc
  * check full sample payloads against these interfaces.
  */
+import type { ChangesetSummary } from './agent';
 
 /** Database id (Rust `i64`). */
 export type Id = number;
@@ -483,8 +484,8 @@ export interface FolderPage {
 export const ITEM_KINDS = ['movie', 'show', 'season', 'episode', 'extra'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 
-export const ART_SOURCES = ['provider', 'local', 'frame', 'generated'] as const;
-/** The UI must label `frame` and `generated` art. */
+export const ART_SOURCES = ['provider', 'local', 'frame', 'generated', 'custom'] as const;
+/** The UI must label `frame` and `generated` art; `custom` is an image a person or an agent chose (credited in `attribution`). */
 export type ArtSource = (typeof ART_SOURCES)[number];
 
 /** Image reference; append `?w=` to `url` to resize. */
@@ -662,7 +663,11 @@ export type FluxEvent =
   | { type: 'scan_progress'; library_id: Id; status: ScanStatus }
   | { type: 'items_changed'; library_id: Id; added: Id[]; updated: Id[]; removed: Id[] }
   | { type: 'source_availability'; library_id: Id; root: string; available: boolean }
-  | { type: 'tailnet'; info: TailnetInfo };
+  | { type: 'tailnet'; info: TailnetInfo }
+  /** A changeset was made, applied, undone or turned down (agents' and people's edits). */
+  | { type: 'changes'; changeset: ChangesetSummary }
+  /** The lenses kept on the server changed. */
+  | { type: 'lenses' };
 
 export const TAILNET_MODES = ['off', 'embedded', 'system'] as const;
 /** How flux reaches the tailnet: not at all, its own node (Truffle), or this machine's tailscaled. */

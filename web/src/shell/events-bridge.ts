@@ -91,6 +91,11 @@ export function useEventsBridge(): void {
           break;
         }
         case 'items_changed': {
+          // An agent's edit (or a match) renamed or filled in these: open pages refetch.
+          for (const id of e.updated) {
+            invalidateQueries(keys.item(id));
+            invalidateQueries(keys.facts(id));
+          }
           if (e.added.length) added.set(e.library_id, [...(added.get(e.library_id) ?? []), ...e.added]);
           if (!timers.has(e.library_id)) timers.set(e.library_id, setTimeout(() => flushAdded(e.library_id), 1500));
           break;
@@ -105,6 +110,23 @@ export function useEventsBridge(): void {
               : { id: `root:${e.root}`, icon: 'archive', title: `${where} isn’t answering`, detail: `${lib?.name ?? 'Its titles'} stay here and play again when it’s back. Nothing was removed.`, ms: 7000 },
           );
           refreshLibrary(e.library_id);
+          break;
+        }
+        case 'changes': {
+          invalidateQueries(keys.changes);
+          const cs = e.changeset;
+          const n = plural(cs.change_count, 'change', 'changes');
+          const review = { label: 'Review', run: () => navigate(`/changes?open=${cs.id}`) };
+          // An agent's own work, said where you are; a person's decisions stay quiet.
+          if (cs.state === 'applied' && cs.agent && cs.decided_by === cs.by) {
+            postActivity({ id: `changes:${cs.id}`, icon: 'agent', title: `${cs.agent} made ${n}`, detail: cs.summary, action: review, ms: 7000 });
+          } else if (cs.state === 'proposed') {
+            postActivity({ id: `changes:${cs.id}`, icon: 'agent', title: `${cs.agent ?? cs.by} suggests ${n}`, detail: cs.summary, action: review, ms: 8000 });
+          }
+          break;
+        }
+        case 'lenses': {
+          invalidateQueries(keys.serverLenses);
           break;
         }
         case 'tailnet': {

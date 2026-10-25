@@ -3,6 +3,7 @@
  * added (kit specs kept on this device). Names, icons and blurbs are here so the
  * lens bar and the gallery can show them; the code loads only when a lens is used.
  */
+import type { StoredLens as StoredServerLens } from '../api/agent';
 import type { LibraryKind } from '../api/types';
 import { prefs } from './dom';
 import type { LensDef, LensModule } from './types';
@@ -115,8 +116,27 @@ export function yourLenses(): LensDef[] {
     }));
 }
 
+/** Lenses kept on the server (`lenses.list`), on every device; the shell sets them. */
+let serverLenses: LensDef[] = [];
+
+export function setServerLenses(list: readonly StoredServerLens[]): void {
+  serverLenses = list.map((l) => ({
+    id: l.id,
+    name: l.spec.name,
+    icon: LENS_ICONS.sparkle,
+    blurb: l.spec.blurb,
+    edges: true,
+    author: 'server' as const,
+    by: l.agent,
+    everyone: l.everyone,
+    // The browser checks, sanitises and sandboxes it like any kit lens.
+    load: (): Promise<LensModule> => import('./kit/runtime').then((m) => m.kitModule(l.spec, l.id)),
+  }));
+}
+
 export function allLenses(): LensDef[] {
-  return [...FIRST_PARTY, ...KIT_LENSES, ...yourLenses()];
+  const local = yourLenses();
+  return [...FIRST_PARTY, ...KIT_LENSES, ...serverLenses.filter((s) => !local.some((l) => l.id === s.id)), ...local];
 }
 
 export function lensById(id: string): LensDef | undefined {

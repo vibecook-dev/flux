@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from '../app/Link';
 import { setTheme, useTheme, type ThemeSetting } from '../app/theme';
-import { useServer, useTailnet } from '../api/queries';
+import { useChanges, useServer, useTailnet } from '../api/queries';
 import { Icon, type IconName } from '../components/Icon';
 import { MOCK } from '../config';
 import styles from './Corner.module.css';
@@ -17,6 +17,9 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
   const menu = useRef<HTMLDivElement>(null);
   const server = useServer();
   const tailnet = useTailnet();
+  // Proposals waiting for a decision (Owners and Admins decide them).
+  const admin = server.data?.you?.role === 'owner' || server.data?.you?.role === 'admin';
+  const changes = useChanges(admin);
   const { setting } = useTheme();
   const you = server.data?.you ?? null;
   const name = you?.display_name || you?.login_name || 'This device';
@@ -83,6 +86,15 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
         <Link to="/admin" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>
           <Icon name="settings" />
           <span>Libraries &amp; scanning</span>
+        </Link>
+        <Link to="/changes" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>
+          <Icon name="agent" />
+          <span>Agents &amp; changes</span>
+          {(changes.data?.proposed ?? 0) > 0 && (
+            <span className={styles.meta} data-tone="warn">
+              {changes.data?.proposed} waiting
+            </span>
+          )}
         </Link>
         <Link to="/connect" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>
           <Icon name="tailscale" />

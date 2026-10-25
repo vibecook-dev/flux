@@ -10,6 +10,9 @@ import { Icon } from '../components/Icon';
 import { clamp, reducedMotion, SOFT } from '../lens/dom';
 import { makePrompt, parseLensReply } from '../lens/kit/prompt';
 import { kitFailure, kitModule, onKitFailure, validateSpec, type KitSpec } from '../lens/kit/runtime';
+import { op } from '../api/agent';
+import { keys } from '../api/queries';
+import { invalidateQueries } from '../api/query';
 import { keepLens, removeLens } from '../lens/kit/store';
 import { mountMini, type MiniLens } from '../lens/mini';
 import { LENS_ICONS } from '../lens/registry';
@@ -33,7 +36,7 @@ export interface LensGalleryProps {
   onClose: () => void;
 }
 
-const AUTHOR: Record<LensDef['author'], string> = { flux: 'flux', kit: 'Lens kit', you: 'Yours' };
+const AUTHOR: Record<LensDef['author'], string> = { flux: 'flux', kit: 'Lens kit', you: 'Yours', server: 'On the server' };
 const IDEAS = ['A 1990s video shop window', 'Airport departure board', 'Polaroids on a fridge', 'Vinyl crate to flip through', 'Constellations in a night sky', 'Festival laurels wall'];
 
 interface Slot {
@@ -266,8 +269,15 @@ export function LensGallery(props: LensGalleryProps) {
               pinned={pins.includes(l.id)}
               onPin={onPin}
               onRemove={() => {
-                removeLens(l.id);
                 onPin(l.id, false);
+                if (l.author === 'server') {
+                  // Kept on the server: gone from every device.
+                  void op('lens.remove', { id: l.id, everyone: l.everyone ?? false })
+                    .then(() => invalidateQueries(keys.serverLenses))
+                    .catch(() => undefined);
+                  return;
+                }
+                removeLens(l.id);
                 onLensesChanged();
               }}
             />
@@ -323,7 +333,9 @@ function Meta({ def, pinned, onPin, onRemove }: { def: LensDef; pinned: boolean;
       <div className={styles.name}>
         <span className={styles.icon} dangerouslySetInnerHTML={{ __html: def.icon }} />
         <b>{def.name}</b>
-        <span className={`${styles.tag} mono`}>{AUTHOR[def.author]}</span>
+        <span className={`${styles.tag} mono`} title={def.author === 'server' ? 'Kept on the server: on all your devices' : undefined}>
+          {def.author === 'server' && def.by ? `By ${def.by}` : AUTHOR[def.author]}
+        </span>
       </div>
       <p>{def.blurb}</p>
       <div className={styles.actions}>
@@ -331,7 +343,7 @@ function Meta({ def, pinned, onPin, onRemove }: { def: LensDef; pinned: boolean;
           <Icon name={pinned ? 'check' : 'plus'} />
           {pinned ? 'In the bar' : 'Add to the bar'}
         </button>
-        {def.author === 'you' &&
+        {(def.author === 'you' || def.author === 'server') &&
           (confirm ? (
             <span className={styles.confirm}>
               Remove this lens?
