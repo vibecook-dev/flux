@@ -43,7 +43,7 @@ export const FIRST_PARTY: LensDef[] = [
     icon: LENS_ICONS.flow,
     blurb: 'One poster faces you and the rest wait in two stacks you flick through, like an iPod.',
     author: 'flux',
-    load: () => import('./flow/flow').then((m) => m.flow),
+    load: () => import('./flow/load').then((m) => m.loadFlow()),
   },
   {
     id: 'shelf',
@@ -51,7 +51,7 @@ export const FIRST_PARTY: LensDef[] = [
     icon: LENS_ICONS.shelf,
     blurb: 'Tapes on a shelf, the way a video shop kept them. Point at one to pull it out.',
     author: 'flux',
-    load: () => import('./shelf/shelf').then((m) => m.shelf),
+    load: () => import('./shelf/load').then((m) => m.loadShelf()),
   },
   {
     id: 'gallery',

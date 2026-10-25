@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bezier, lerpRect, soft, spring, Tween } from './motion';
 import { classFor, CLASSES } from './posters';
 import { QUAD_FLOATS, QuadBatch } from './quads';
+import { corners, inside, project, QUAD3D_FLOATS, Quad3DBatch, SCENE3D_WGSL } from './scene3d';
 import { QUAD_WGSL } from './shaders';
 import { Slots } from './slots';
 import { ellipsize, wrap } from './text';
@@ -127,5 +128,48 @@ describe('quads', () => {
     const d = Array.from(b.data.slice(0, QUAD_FLOATS)).map((v) => Math.round(v * 1000) / 1000);
     // rect, start (unset), colour (alpha × 0.5), uv, radius/kind/texture/opacity, ready/–/extra/flags
     expect(d).toEqual([1, 2, 3, 4, 0, 0, 0, 0, 0.1, 0.2, 0.3, 0.5, 0, 0, 0, 0, 6, 5, 4097, 1, 1.5, 0, 128, 3]);
+  });
+});
+
+describe('scene3d', () => {
+  const cam = { persp: 900, originX: 400, originY: 230 };
+
+  it('projects like CSS perspective', () => {
+    const far = project(400, 230, -500, cam);
+    expect(far?.x).toBe(400);
+    expect(far?.y).toBe(230);
+    expect(far?.scale).toBeCloseTo(900 / 1400, 10);
+    const p = project(500, 230, 300, cam);
+    expect(p?.x).toBeCloseTo(400 + 100 * 1.5);
+    expect(p?.scale).toBeCloseTo(1.5);
+    expect(project(0, 0, 900, cam)).toBeNull();
+    expect(project(10, 20, 50, { persp: 0, originX: 0, originY: 0 })).toEqual({ x: 10, y: 20, scale: 1 });
+  });
+
+  it('places a rotated quad where CSS does (rotateY(35deg) rotateX(10deg), measured in Chrome)', () => {
+    const c = corners({ x: 300, y: 250, z: -60, w: 200, h: 300, rx: (10 * Math.PI) / 180, ry: (35 * Math.PI) / 180 }, cam);
+    const xs = c.map((p) => p?.x ?? NaN);
+    const ys = c.map((p) => p?.y ?? NaN);
+    expect(Math.min(...xs)).toBeCloseTo(208.3, 0);
+    expect(Math.min(...ys)).toBeCloseTo(105.6, 0);
+    expect(Math.max(...xs)).toBeCloseTo(397.2, 0);
+    expect(Math.max(...ys)).toBeCloseTo(401.3, 0);
+    expect(inside(300, 250, c)).toBe(true);
+    expect(inside(20, 20, c)).toBe(false);
+  });
+
+  it('lays a quad out as the shader reads it (eight vec4s)', () => {
+    expect(QUAD3D_FLOATS).toBe(32);
+    const fields = /struct Q \{([^}]*)\}/.exec(SCENE3D_WGSL)?.[1] ?? '';
+    expect(fields.match(/: vec4f/g)).toHaveLength(8);
+    const b = new Quad3DBatch(1);
+    const o = b.add(1, 2, 3, 4, 5, 6, 7);
+    b.rotate(o, 0.1, 0.2, 0.3);
+    b.mirror(o, 400, 0.5);
+    b.add(0, 0, 0, 1, 1, 0);
+    const d = Array.from(b.data.slice(0, QUAD3D_FLOATS)).map((v) => Math.round(v * 1000) / 1000);
+    expect(d.slice(0, 11)).toEqual([1, 2, 3, 0, 4, 5, 7, 6, 0.1, 0.2, 0.3]);
+    // texture none (ready-at -1), opacity 1, mirror flag 16 with its line and strength
+    expect(d.slice(24, 31)).toEqual([0, 0, -1, 1, 16, 400, 0.5]);
   });
 });
