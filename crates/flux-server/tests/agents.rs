@@ -652,6 +652,13 @@ async fn mcp_serves_the_operations_as_tools() {
         .status,
         StatusCode::METHOD_NOT_ALLOWED
     );
+    // No OAuth here: discovery finds nothing (rather than the app's page).
+    for p in [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server/mcp",
+    ] {
+        assert_eq!(get(&app, p).await.status, StatusCode::NOT_FOUND, "{p}");
+    }
     let del = call_raw(
         &app,
         Method::DELETE,

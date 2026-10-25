@@ -255,6 +255,12 @@ pub async fn fallback(
     if path.starts_with("/api/") || path.starts_with("/media/") || path == "/api" || path == "/media" {
         return crate::error::ApiError::not_found(format!("No route {path}")).into_response();
     }
+    // No page lives under /.well-known: an MCP client looking for OAuth
+    // metadata there must hear "none" (flux signs nobody in; the tailnet
+    // identity is the authentication), not get the app's HTML.
+    if path.starts_with("/.well-known/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if method != Method::GET && method != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }

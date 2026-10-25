@@ -296,9 +296,9 @@ fn tools(protocol: &str) -> Vec<Value> {
                 "description".into(),
                 Value::String(format!("{} Who may call it: {}.", i.description, i.who)),
             );
-            t.insert("inputSchema".into(), i.input.clone());
+            t.insert("inputSchema".into(), tool_schema(&i.input));
             if modern && i.name != "art.view" {
-                t.insert("outputSchema".into(), i.output.clone());
+                t.insert("outputSchema".into(), tool_schema(&i.output));
             }
             t.insert(
                 "annotations".into(),
@@ -313,6 +313,46 @@ fn tools(protocol: &str) -> Vec<Value> {
             Value::Object(t)
         })
         .collect()
+}
+
+/// A schema as tool loaders take it: without `$schema` (the dialect is
+/// MCP's default, 2020-12) and without the numeric `format`s schemars adds
+/// (`int64`, `uint32`, …), which JSON Schema leaves undefined and some
+/// clients refuse. The ranges (`minimum`) stay.
+fn tool_schema(v: &Value) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                if m.get("format").and_then(Value::as_str).is_some_and(|f| {
+                    matches!(
+                        f,
+                        "int8"
+                            | "int16"
+                            | "int32"
+                            | "int64"
+                            | "uint"
+                            | "uint8"
+                            | "uint16"
+                            | "uint32"
+                            | "uint64"
+                            | "float"
+                            | "double"
+                    )
+                }) {
+                    m.remove("format");
+                }
+                m.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v = v.clone();
+    if let Value::Object(m) = &mut v {
+        m.remove("$schema");
+    }
+    strip(&mut v);
+    v
 }
 
 /// `tools/call`: a tool's failure is a result with `isError`, not a
@@ -564,6 +604,10 @@ mod tests {
         assert!(old
             .iter()
             .all(|t| t.get("outputSchema").is_none() && t.get("title").is_none()));
+        // What tool loaders take: no dialect line, no numeric formats.
+        assert_eq!(find["inputSchema"]["type"], "object");
+        let text = Value::Array(new.clone()).to_string();
+        assert!(!text.contains("$schema") && !text.contains("\"int64\"") && !text.contains("\"uint32\""));
     }
 
     #[test]
