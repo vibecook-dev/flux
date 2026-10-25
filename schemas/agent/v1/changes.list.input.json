@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`changes.list` input.",
+  "properties": {
+    "before": {
+      "description": "`next` from the previous page: changesets older than this one.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "item": {
+      "description": "Only changesets that change this item.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "1–200, default 50.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "enum": [
+                "applied"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "proposed",
+              "description": "Waiting for an Owner or Admin.",
+              "type": "string"
+            },
+            {
+              "const": "reverted",
+              "description": "Undone.",
+              "type": "string"
+            },
+            {
+              "const": "rejected",
+              "description": "A proposal turned down.",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "ChangesListInput",
+  "type": "object"
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`art.view` output: the image.",
+  "properties": {
+    "art": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "data_base64": {
+      "type": "string"
+    },
+    "mime": {
+      "description": "`image/jpeg`, `image/png` or `image/webp`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "art",
+    "mime",
+    "data_base64"
+  ],
+  "title": "ArtImage",
+  "type": "object"
+}

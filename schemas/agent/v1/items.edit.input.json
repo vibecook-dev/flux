@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`items.edit` input: one changeset over up to 100 items.",
+  "properties": {
+    "dry_run": {
+      "default": false,
+      "description": "Report what would change, and change nothing.",
+      "type": "boolean"
+    },
+    "edits": {
+      "items": {
+        "additionalProperties": false,
+        "description": "One item's edit.",
+        "properties": {
+          "clear": {
+            "description": "Fields to empty, or to hand back to flux (`ids.tmdb` for one id).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "item": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "set": {
+            "additionalProperties": false,
+            "description": "The values to set.",
+            "properties": {
+              "air_date": {
+                "description": "Episodes: when it first aired, `YYYY-MM-DD`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cast": {
+                "description": "Top-billed cast, in billing order (at most 100).",
+                "items": {
+                  "description": "One credited performer.",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "description": "The part they play, or what they do (\"Narrator\", \"Herself\").",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "content_rating": {
+                "description": "A rating such as `PG-13`, `12`, `TV-MA`, with no country prefix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "countries": {
+                "description": "Countries of production, as ISO 3166-1 alpha-2 codes (`JP`, `FR`).",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "directors": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "genres": {
+                "description": "Genres, in English, capitalised: `[\"Documentary\", \"Music\"]`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "ids": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Ids in other databases, by provider: `tmdb` (number), `imdb` (`tt…`), `tvdb` (number), `wikidata` (`Q…`), or any other (`anidb`, `musicbrainz`, `letterboxd`, …). In `items.edit` the ids given are added or replaced; the others stay. With a metadata provider configured, ids you set make flux match by id instead of by title.",
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "languages": {
+                "description": "Spoken languages, as ISO 639-1 codes where one exists (`ja`, `en`, `zh-Hant`).",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "links": {
+                "description": "Pages worth keeping with it: official site, encyclopaedia entries, an archive page, the festival listing.",
+                "items": {
+                  "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+                  "properties": {
+                    "title": {
+                      "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "url": {
+                      "description": "An `http` or `https` URL.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "original_title": {
+                "description": "The title in its original language and script (`千と千尋の神隠し`), when it differs. Search finds both.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "overview": {
+                "description": "What it's about, two to five sentences, in your own words: never copied from a provider (and never from TMDB).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "release_date": {
+                "description": "First release: `YYYY-MM-DD`, `YYYY-MM` or `YYYY`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "studios": {
+                "description": "Studios, labels or (for shows) networks.",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "tagline": {
+                "description": "A one-line hook, if it has a well-known one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tags": {
+                "description": "Your own labels, for collections and search: `[\"Studio Ghibli\", \"Concert\", \"Festival short\"]`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The title to show: the film's or show's best-known title in the library's language, the season's name, the episode's title.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "writers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "year": {
+                "description": "The year of first release (a show's first season).",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "sources": {
+            "description": "The pages that support these values (a value should have at least one, unless it comes from the file itself).",
+            "items": {
+              "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+              "properties": {
+                "title": {
+                  "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "description": "An `http` or `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "force": {
+      "default": false,
+      "description": "Also replace values a person set. Only when they asked you to.",
+      "type": "boolean"
+    },
+    "mode": {
+      "default": "apply",
+      "description": "Apply now, or leave for an Owner or Admin to review.",
+      "oneOf": [
+        {
+          "const": "apply",
+          "description": "Change it now (Owner or Admin; anyone else's edit is proposed).",
+          "type": "string"
+        },
+        {
+          "const": "propose",
+          "description": "Make a proposal: nothing changes until it's applied in the app or with `changes.apply`.",
+          "type": "string"
+        }
+      ]
+    },
+    "summary": {
+      "description": "What these changes are and why, in a sentence or two, for the person reviewing them (\"Identified 3 Ghibli films from their Japanese file names\").",
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "edits"
+  ],
+  "title": "EditInput",
+  "type": "object"
+}

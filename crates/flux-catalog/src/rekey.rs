@@ -207,6 +207,9 @@ pub(crate) fn rekey_episodes(
     let mut resolvers: HashMap<Id, Resolver> = HashMap::new();
     let mut touched = Touched::default();
     let mut emptied: BTreeSet<Id> = BTreeSet::new();
+    // Where an old episode's file went: what a person or an agent set on
+    // it follows, if nothing is left on it.
+    let mut carry_to: std::collections::BTreeMap<Id, Id> = std::collections::BTreeMap::new();
     let mut created_meta = HashMap::new();
     for rk in list {
         let mut episodes = rk.episodes.clone();
@@ -275,6 +278,7 @@ pub(crate) fn rekey_episodes(
             for &t in &targets {
                 out.user_states_moved += merge_user_state(c, o, t)?;
             }
+            carry_to.entry(o).or_insert(targets[0]);
             touched.leaves.insert(o);
             touched.linked.insert(o);
             emptied.insert(o);
@@ -293,6 +297,17 @@ pub(crate) fn rekey_episodes(
     // Old episodes with nothing left go away (their state was carried over).
     let mut removed: BTreeSet<Id> = BTreeSet::new();
     for o in emptied {
+        if let Some(&to) = carry_to.get(&o) {
+            let empty = c
+                .prepare_cached(
+                    "SELECT NOT EXISTS (SELECT 1 FROM asset_item WHERE item_id = ?1)
+                        AND NOT EXISTS (SELECT 1 FROM asset WHERE item_id = ?1)",
+                )?
+                .query_row([o], |r| r.get::<_, bool>(0))?;
+            if empty {
+                crate::fields::carry(c, o, to, now)?;
+            }
+        }
         let (gone, kept) = delete_if_empty(c, o)?;
         removed.extend(gone);
         touched.parents.extend(kept);

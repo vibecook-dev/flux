@@ -39,6 +39,8 @@ pub struct AppState {
     /// The host names this server answers to (`guard`).
     pub hosts: HostAllowlist,
     pub activity: Activity,
+    /// MCP sessions (`/mcp`): which agent each client is.
+    pub mcp: crate::agent::mcp::Sessions,
     pub started: Instant,
     /// Cancelled on shutdown: ends SSE streams and background loops.
     pub shutdown: CancellationToken,

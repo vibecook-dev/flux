@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`art.view` input.",
+  "properties": {
+    "art": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "width": {
+      "description": "Scale down to this width (default 480; 0 = full size).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "art"
+  ],
+  "title": "ArtViewInput",
+  "type": "object"
+}

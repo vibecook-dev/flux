@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`library.gaps` input.",
+  "properties": {
+    "library": {
+      "description": "One library; `null`: every library.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "title": "GapsInput",
+  "type": "object"
+}

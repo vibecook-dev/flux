@@ -20,7 +20,7 @@ use crate::config::{tailnet_choice_path, tailnet_https_path, tailnet_https_word,
 use crate::error::{ApiError, ApiResult};
 use crate::scan::{Priority, ScanMode};
 use crate::state::{AppState, Caller};
-use crate::{art, events, guard, media, play, web};
+use crate::{agent, art, events, guard, media, play, web};
 
 /// The whole HTTP surface, behind the cross-site guard (`guard`: Host
 /// allowlist, `X-Flux-Request` on unsafe `/api/` calls), which also covers
@@ -46,6 +46,16 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/tailnet/connect", post(tailnet_connect))
         .route("/api/v1/events", get(events::sse))
         .route("/api/v1/art/{id}", get(art::get))
+        .route("/api/v1/agent", get(agent::http_manifest))
+        .route("/api/v1/agent/skills/{name}", get(agent::http_skill))
+        .route("/api/v1/ops/{name}", post(agent::http_op))
+        .route("/api/v1/schemas/{name}", get(agent::http_schema))
+        .route(
+            "/mcp",
+            post(agent::mcp::post)
+                .get(agent::mcp::get)
+                .delete(agent::mcp::delete),
+        )
         .route("/media/{id}/{*rest}", get(media::media))
         .fallback(web::fallback)
         // After every route and the fallback, so it wraps them all.

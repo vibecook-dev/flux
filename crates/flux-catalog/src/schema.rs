@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -461,6 +461,122 @@ DROP TABLE library;
 ALTER TABLE library_v7 RENAME TO library;
 "#;
 
+/// v8: agents (docs/AGENT-NATIVE.md).
+///
+/// - `item_field`: where a field's value came from (a provider match, a
+///   person, an agent, with its sources); a person's or agent's row locks
+///   the field against the matcher and the scanner (`fields.rs`).
+/// - `changeset` and `change`: every edit, journaled so it can be reviewed
+///   and undone (`changes.rs`). `change.item_id` has no foreign key: the
+///   history outlives an item.
+/// - `item.details`: what agents dig out beyond the columns (directors,
+///   cast, languages, links…), a JSON object.
+/// - `art`: rebuilt to allow the `custom` source (an image a person or an
+///   agent chose), with `found_at`, the page it came from. AUTOINCREMENT's
+///   high-water mark carries over, so an id is still never reused.
+/// - `lens`: lenses kept on the server, per person (`owner` = user id) or
+///   for everyone (`owner` 0).
+/// - What earlier online TMDB matches filled in (a description only ever
+///   came from one) is recorded as the provider's, so agents are never
+///   shown it.
+const V8: &str = r#"
+ALTER TABLE item ADD COLUMN details TEXT;
+
+CREATE TABLE item_field(
+    item_id       INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    field         TEXT NOT NULL,
+    source        TEXT NOT NULL CHECK(source IN ('provider','user','agent')),
+    provider      TEXT,
+    agent         TEXT,
+    actor         TEXT,
+    changeset_id  INTEGER,
+    sources       TEXT,
+    at            INTEGER NOT NULL,
+    PRIMARY KEY(item_id, field)
+) WITHOUT ROWID;
+
+CREATE TABLE changeset(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor        TEXT NOT NULL,
+    agent        TEXT,
+    summary      TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK(state IN ('proposed','applied','reverted','rejected')),
+    created_at   INTEGER NOT NULL,
+    decided_at   INTEGER,
+    decided_by   TEXT,
+    reverted_at  INTEGER,
+    reverted_by  TEXT
+);
+CREATE INDEX changeset_proposed ON changeset(id) WHERE state = 'proposed';
+
+CREATE TABLE change(
+    changeset_id   INTEGER NOT NULL REFERENCES changeset(id) ON DELETE CASCADE,
+    seq            INTEGER NOT NULL,
+    item_id        INTEGER NOT NULL,
+    field          TEXT NOT NULL,
+    op             TEXT NOT NULL DEFAULT 'set' CHECK(op IN ('set','clear')),
+    before         TEXT,
+    after          TEXT,
+    before_source  TEXT,
+    sources        TEXT,
+    state          TEXT NOT NULL CHECK(state IN ('pending','applied','skipped','reverted','kept')),
+    PRIMARY KEY(changeset_id, seq)
+) WITHOUT ROWID;
+CREATE INDEX change_item ON change(item_id, changeset_id);
+
+CREATE TABLE lens(
+    owner       INTEGER NOT NULL,
+    id          TEXT NOT NULL,
+    spec        TEXT NOT NULL,
+    added_by    TEXT NOT NULL,
+    agent       TEXT,
+    added_at    INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY(owner, id)
+) WITHOUT ROWID;
+
+CREATE TABLE art_v8(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id      INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL CHECK(kind IN ('poster','backdrop','thumb','logo')),
+    source       TEXT NOT NULL CHECK(source IN ('provider','local','frame','generated','custom')),
+    path         TEXT,
+    url          TEXT,
+    width        INTEGER,
+    height       INTEGER,
+    blurhash     TEXT,
+    generated    INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    attribution  TEXT,
+    generator    TEXT,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    gen_version  INTEGER,
+    gen_title    TEXT,
+    found_at     TEXT
+);
+INSERT INTO art_v8(id, item_id, kind, source, path, url, width, height, blurhash, generated, created_at,
+                   attribution, generator, pinned, gen_version, gen_title)
+SELECT id, item_id, kind, source, path, url, width, height, blurhash, generated, created_at,
+       attribution, generator, pinned, gen_version, gen_title FROM art;
+DELETE FROM sqlite_sequence WHERE name = 'art_v8';
+INSERT INTO sqlite_sequence(name, seq)
+SELECT 'art_v8', max(COALESCE((SELECT max(seq) FROM sqlite_sequence WHERE name = 'art'), 0),
+                     COALESCE((SELECT max(id) FROM art_v8), 0));
+DROP TABLE art;
+ALTER TABLE art_v8 RENAME TO art;
+CREATE INDEX art_item ON art(item_id, kind);
+
+INSERT OR IGNORE INTO item_field(item_id, field, source, provider, at)
+SELECT id, 'title', 'provider', 'tmdb', updated_at FROM item
+ WHERE match_state = 'matched' AND tmdb_id IS NOT NULL AND overview IS NOT NULL;
+INSERT OR IGNORE INTO item_field(item_id, field, source, provider, at)
+SELECT id, 'overview', 'provider', 'tmdb', updated_at FROM item
+ WHERE match_state = 'matched' AND tmdb_id IS NOT NULL AND overview IS NOT NULL;
+INSERT OR IGNORE INTO item_field(item_id, field, source, provider, at)
+SELECT id, 'genres', 'provider', 'tmdb', updated_at FROM item
+ WHERE match_state = 'matched' AND tmdb_id IS NOT NULL AND overview IS NOT NULL AND genres IS NOT NULL;
+"#;
+
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
 ///
 /// Foreign keys are off while migrations run (a migration may rebuild a
@@ -798,6 +914,63 @@ mod tests {
             (1, 1, 1),
             "v{from}"
         );
+    }
+
+    /// v8 rebuilds `art` to allow chosen (`custom`) images: rows, pins and
+    /// AUTOINCREMENT's high-water mark carry over (an id once used is never
+    /// used again), and what an online TMDB match filled in is recorded as
+    /// TMDB's.
+    #[test]
+    fn v8_keeps_art_ids_and_records_tmdb_fields() {
+        let (_d, mut c) = open_tmp();
+        configure_writer(&c, 8192, 0, 1000).unwrap();
+        for (i, sql) in MIGRATIONS.iter().take(7).enumerate() {
+            c.execute_batch(sql).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0);
+             INSERT INTO item(id, library_id, kind, group_key, title, sort_title, added_at, content_added_at, updated_at,
+                              match_state, tmdb_id, overview, genres)
+             VALUES (1, 1, 'movie', 'a', 'Parasite', 'parasite', 0, 0, 5, 'matched', 496243, 'TMDB text', '[\"Thriller\"]'),
+                    (2, 1, 'movie', 'b', 'B', 'b', 0, 0, 5, 'matched', 7, NULL, NULL),
+                    (3, 1, 'movie', 'c', 'C', 'c', 0, 0, 5, 'parsed', NULL, NULL, NULL);
+             INSERT INTO art(id, item_id, kind, source, path, created_at, pinned) VALUES
+               (1, 1, 'poster', 'frame', 'art/1-poster-0a1b2c3d.jpg', 0, 1),
+               (2, 1, 'poster', 'frame', 'art/1-poster-0a1b2c3e.jpg', 0, 0),
+               (3, 2, 'poster', 'frame', 'art/2-poster-0a1b2c3f.jpg', 0, 0);
+             DELETE FROM art WHERE id = 3;",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("PRAGMA user_version"), SCHEMA_VERSION);
+        assert_eq!(count("SELECT count(*) FROM art"), 2);
+        assert_eq!(count("SELECT pinned FROM art WHERE id = 1"), 1);
+        c.execute(
+            "INSERT INTO art(item_id, kind, source, path, created_at) VALUES (1, 'poster', 'custom', 'art/1-customposter-00000001.jpg', 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            count("SELECT max(id) FROM art"),
+            4,
+            "id 3 was used once: never again"
+        );
+        assert_eq!(count("SELECT count(*) FROM pragma_foreign_key_check"), 0);
+        let fields: Vec<String> = c
+            .prepare("SELECT item_id || ':' || field || ':' || provider FROM item_field ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(fields, ["1:genres:tmdb", "1:overview:tmdb", "1:title:tmdb"]);
+        // Deleting an item still takes its art and its sources with it.
+        c.execute("DELETE FROM item WHERE id = 1", []).unwrap();
+        assert_eq!(count("SELECT count(*) FROM art"), 0);
+        assert_eq!(count("SELECT count(*) FROM item_field"), 0);
     }
 
     #[test]

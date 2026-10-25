@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`art.pin` output.",
+  "properties": {
+    "changeset": {
+      "description": "`null` when nothing changed.",
+      "properties": {
+        "agent": {
+          "description": "The agent that made it; `null` for a person.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by": {
+          "description": "The person it was made by, or for (a login).",
+          "type": "string"
+        },
+        "change_count": {
+          "description": "How many changes it holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "decided_at": {
+          "description": "Applied or rejected.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "decided_by": {
+          "description": "Who applied or rejected a proposal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "item_count": {
+          "description": "How many items it changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reverted_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reverted_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "applied"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "proposed",
+              "description": "Waiting for an Owner or Admin.",
+              "type": "string"
+            },
+            {
+              "const": "reverted",
+              "description": "Undone.",
+              "type": "string"
+            },
+            {
+              "const": "rejected",
+              "description": "A proposal turned down.",
+              "type": "string"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "summary",
+        "by",
+        "created_at",
+        "item_count",
+        "change_count"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "shown": {
+      "description": "The image the item shows now.",
+      "properties": {
+        "credit": {
+          "description": "Who it's credited to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "found_at": {
+          "description": "The page it came from.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generator": {
+          "description": "The AI model that made it (for `generated`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Image kinds.",
+          "oneOf": [
+            {
+              "const": "poster",
+              "description": "2:3, with the title.",
+              "type": "string"
+            },
+            {
+              "const": "backdrop",
+              "description": "16:9, without text.",
+              "type": "string"
+            },
+            {
+              "const": "thumb",
+              "description": "An episode's still, 16:9.",
+              "type": "string"
+            },
+            {
+              "const": "logo",
+              "description": "The title as a transparent logo.",
+              "type": "string"
+            }
+          ]
+        },
+        "pinned": {
+          "description": "Chosen by hand: it shows until unpinned.",
+          "type": "boolean"
+        },
+        "shown": {
+          "description": "The image the item shows for its kind.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "`frame` and `generated` are flux's own (a frame of the video; AI art); `custom` was chosen by you or an agent; `provider` and `local` came from a provider or a file beside the video.",
+          "oneOf": [
+            {
+              "const": "provider",
+              "description": "From a metadata provider (TMDB, fanart.tv…), with attribution.",
+              "type": "string"
+            },
+            {
+              "const": "local",
+              "description": "A poster/thumb file next to the media.",
+              "type": "string"
+            },
+            {
+              "const": "frame",
+              "description": "A frame picked from the video plus typeset title (no AI).",
+              "type": "string"
+            },
+            {
+              "const": "generated",
+              "description": "AI-generated; always labelled as such in the UI.",
+              "type": "string"
+            },
+            {
+              "const": "custom",
+              "description": "Chosen by you or your agent (`art.add`): found elsewhere and credited ([`ArtRef::attribution`]), or made without AI. Shown over every other image of its kind.",
+              "type": "string"
+            }
+          ]
+        },
+        "url": {
+          "description": "Where to fetch it (or use `art.view`); `null` when withheld.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "withheld": {
+          "description": "The provider it's withheld for (its terms forbid use with AI).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "source",
+        "shown",
+        "pinned"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "title": "ArtPinOutput",
+  "type": "object"
+}

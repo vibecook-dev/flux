@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`changes.list` output.",
+  "properties": {
+    "changesets": {
+      "items": {
+        "description": "A changeset, briefly.",
+        "properties": {
+          "agent": {
+            "description": "The agent that made it; `null` for a person.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "description": "The person it was made by, or for (a login).",
+            "type": "string"
+          },
+          "change_count": {
+            "description": "How many changes it holds.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "decided_at": {
+            "description": "Applied or rejected.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "description": "Who applied or rejected a proposal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "item_count": {
+            "description": "How many items it changes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reverted_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reverted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "enum": [
+                  "applied"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "proposed",
+                "description": "Waiting for an Owner or Admin.",
+                "type": "string"
+              },
+              {
+                "const": "reverted",
+                "description": "Undone.",
+                "type": "string"
+              },
+              {
+                "const": "rejected",
+                "description": "A proposal turned down.",
+                "type": "string"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "summary",
+          "by",
+          "created_at",
+          "item_count",
+          "change_count"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "next": {
+      "description": "Pass as `before` for older ones; `null` at the end.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "proposed": {
+      "description": "Proposals waiting for a decision (all of them, not just this page).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "changesets",
+    "proposed"
+  ],
+  "title": "ChangesListOutput",
+  "type": "object"
+}

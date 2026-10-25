@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`library.scan` output: the scan's state as it starts. Follow it with `status` (or the `/api/v1/events` stream).",
+  "properties": {
+    "library": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "scan": {
+      "properties": {
+        "dirs_unavailable": {
+          "description": "Directories that didn't answer before their deadline in the last scan (Mille `ScanReport::unread`). Nothing under them was marked missing; the UI says \"N folders didn't respond\".",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_probed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_seen": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_total": {
+          "description": "Files the current scan will look at, known once the directory walk is done (`None` while walking). With `files_seen` it gives a progress fraction. For a library at rest it equals `files_seen`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "finished_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "items_added": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_removed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_updated": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "idle",
+                "scanning",
+                "watching",
+                "error"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "A root is unreachable (NAS asleep, drive unplugged). Items are kept.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "files_seen",
+        "files_probed",
+        "items_added",
+        "items_updated",
+        "items_removed",
+        "dirs_unavailable"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "library",
+    "scan"
+  ],
+  "title": "ScanOutput",
+  "type": "object"
+}

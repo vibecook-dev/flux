@@ -26,6 +26,10 @@
 //!    grants), and a body-less form or `no-cors` POST doesn't carry it.
 //! 3. `GET`s of media, HLS, SSE and art need nothing extra (`<video>`,
 //!    hls.js segment loads and `EventSource` can't set headers).
+//! 4. `/mcp` (MCP, for agents): a `POST` needs `Content-Type:
+//!    application/json` (or the header of rule 2), and a present `Origin`
+//!    must be allowed. A cross-site page can send neither without a CORS
+//!    preflight.
 //!
 //! A request without any `Host` (HTTP/1.0 tools; never a browser) passes
 //! (1): DNS rebinding needs a browser, and browsers always send one.
@@ -218,6 +222,35 @@ impl HostAllowlist {
             *req.method(),
             Method::POST | Method::PUT | Method::PATCH | Method::DELETE
         );
+        if unsafe_method && req.uri().path() == "/mcp" {
+            // MCP clients send JSON-RPC as application/json, which a page
+            // on another site can't send without a preflight flux never
+            // grants (the X-Flux-Request header works too).
+            let json = req
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(';').next())
+                .is_some_and(|t| t.trim().eq_ignore_ascii_case("application/json"));
+            let marked = req
+                .headers()
+                .get(REQUEST_HEADER)
+                .is_some_and(|v| v.as_bytes().trim_ascii() == b"1");
+            if *req.method() == Method::POST && !json && !marked {
+                return Err(ApiError::forbidden(
+                    "MCP requests are JSON: send Content-Type: application/json",
+                )
+                .into_response());
+            }
+            if let Some(origin) = req.headers().get(header::ORIGIN) {
+                if !origin.to_str().is_ok_and(|o| self.allows_origin(o)) {
+                    return Err(
+                        ApiError::forbidden("flux doesn't accept changes from pages on other sites")
+                            .into_response(),
+                    );
+                }
+            }
+        }
         if unsafe_method && req.uri().path().starts_with("/api/") {
             let marked = req
                 .headers()

@@ -121,6 +121,8 @@ impl Merge<'_> {
              WHERE id = ?2",
         )?
         .execute(params![from, into])?;
+        // What a person or an agent set on `from` (and the history of it).
+        crate::fields::carry(c, from, into, self.now)?;
         if let Some(doc) = crate::fts::doc(c, from)? {
             crate::fts::remove(c, from, &doc)?;
         }

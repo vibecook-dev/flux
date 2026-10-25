@@ -455,8 +455,11 @@ fn episodes_of_i(kind_is_show: bool, cond: &str) -> String {
 
 /// The order that picks an item's image of a kind: the user's pin, then
 /// provider > local > frame > generated, then the newest.
-const ART_ORDER: &str = "pinned DESC,
-    CASE source WHEN 'provider' THEN 0 WHEN 'local' THEN 1 WHEN 'frame' THEN 2 ELSE 3 END, id DESC";
+/// Which image of a kind an item shows: a pinned one, else one chosen by a
+/// person or an agent (`custom`), then a provider's, a local file, flux's
+/// frame, AI art; newest first.
+pub(crate) const ART_ORDER: &str = "pinned DESC,
+    CASE source WHEN 'custom' THEN 0 WHEN 'provider' THEN 1 WHEN 'local' THEN 2 WHEN 'frame' THEN 3 ELSE 4 END, id DESC";
 
 fn art_ref(c: &Connection, item_id: Id, kind: &str) -> Result<Option<ArtRef>> {
     let mut stmt = c.prepare_cached(&format!(
@@ -1973,11 +1976,13 @@ pub struct ArtRow {
     pub gen_version: Option<u32>,
     /// The caption typeset into a frame or generated poster.
     pub gen_title: Option<String>,
+    /// The page a custom image was found on.
+    pub found_at: Option<String>,
 }
 
 const ART_COLS: &str = concat!(
     "id, item_id, kind, source, path, url, width, height, blurhash, attribution, generator, pinned, ",
-    "gen_version, gen_title"
+    "gen_version, gen_title, found_at"
 );
 
 fn art_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ArtRow, String)> {
@@ -1997,6 +2002,7 @@ fn art_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ArtRow, String)> {
             pinned: r.get(11)?,
             gen_version: r.get(12)?,
             gen_title: r.get(13)?,
+            found_at: r.get(14)?,
         },
         r.get(3)?,
     ))

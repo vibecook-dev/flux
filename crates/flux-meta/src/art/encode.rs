@@ -118,6 +118,7 @@ fn art_source_str(s: ArtSource) -> &'static str {
         ArtSource::Local => "local",
         ArtSource::Frame => "frame",
         ArtSource::Generated => "generated",
+        ArtSource::Custom => "custom",
     }
 }
 

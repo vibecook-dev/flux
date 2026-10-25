@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`art.pin` input: show `art`, or (with `item` and `kind`, no `art`) go back to flux's own choice.",
+  "properties": {
+    "art": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "item": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "description": "Image kinds.",
+          "oneOf": [
+            {
+              "const": "poster",
+              "description": "2:3, with the title.",
+              "type": "string"
+            },
+            {
+              "const": "backdrop",
+              "description": "16:9, without text.",
+              "type": "string"
+            },
+            {
+              "const": "thumb",
+              "description": "An episode's still, 16:9.",
+              "type": "string"
+            },
+            {
+              "const": "logo",
+              "description": "The title as a transparent logo.",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ArtPinInput",
+  "type": "object"
+}

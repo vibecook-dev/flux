@@ -248,7 +248,9 @@ fn name_in_art_folder(p: &str) -> Option<&str> {
 
 /// A name flux gives its images: `<item>-<kind>-<8 hex digits>.jpg`.
 fn is_art_file_name(name: &str) -> bool {
-    let Some(stem) = name.strip_suffix(".jpg") else {
+    // `.png`: logos a person or an agent added (agent::fetch keeps their
+    // transparency).
+    let Some(stem) = name.strip_suffix(".jpg").or_else(|| name.strip_suffix(".png")) else {
         return false;
     };
     let mut parts = stem.splitn(3, '-');

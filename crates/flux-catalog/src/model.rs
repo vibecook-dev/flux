@@ -356,6 +356,10 @@ pub struct ItemMetadata {
     pub match_evidence: Option<Vec<String>>,
     /// `true` marks the item `matched` (a provider confirmed it).
     pub matched: bool,
+    /// The provider these values came from (`tmdb`): recorded per field
+    /// (`item_field`), so agents are never shown it if its terms forbid
+    /// that. `None`: flux's own matcher, from the file's evidence.
+    pub provider: Option<String>,
 }
 
 /// Image kinds stored in `art`.
@@ -517,6 +521,7 @@ pub(crate) fn art_source_str(s: ArtSource) -> &'static str {
         ArtSource::Local => "local",
         ArtSource::Frame => "frame",
         ArtSource::Generated => "generated",
+        ArtSource::Custom => "custom",
     }
 }
 
@@ -526,6 +531,7 @@ pub(crate) fn parse_art_source(s: &str) -> Result<ArtSource> {
         "local" => Ok(ArtSource::Local),
         "frame" => Ok(ArtSource::Frame),
         "generated" => Ok(ArtSource::Generated),
+        "custom" => Ok(ArtSource::Custom),
         other => Err(CatalogError::Corrupt(format!("art.source = {other:?}"))),
     }
 }

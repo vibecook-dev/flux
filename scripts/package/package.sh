@@ -3,6 +3,7 @@
 #
 #   flux-<version>-<target>/
 #     bin/flux-server
+#     bin/flux                    (with --cli: the command line, for people and agents)
 #     bin/sidecar-slim            (with --sidecar: Truffle's Tailscale sidecar)
 #     share/flux/web/             (the web client; flux-server finds it at
 #                                  <exe dir>/../share/flux/web)
@@ -13,6 +14,7 @@
 #
 #   flux-<version>-<target>/
 #     flux-server.exe
+#     flux.exe                    (with --cli)
 #     sidecar-slim.exe            (with --sidecar)
 #     web/                        (flux-server finds it at <exe dir>/web)
 #     LICENSE.txt  README.txt  THIRD_PARTY_LICENSES.txt
@@ -20,7 +22,7 @@
 # Usage:
 #   scripts/package/package.sh --target aarch64-apple-darwin --version 0.1.0 \
 #     --bin target/aarch64-apple-darwin/release/flux-server \
-#     --web web/dist --third-party THIRD_PARTY_LICENSES [--sidecar FILE] \
+#     --web web/dist --third-party THIRD_PARTY_LICENSES [--cli FILE] [--sidecar FILE] \
 #     [--license FILE] [--readme FILE] [--out DIR]
 #
 # SOURCE_DATE_EPOCH, when set, fixes the file times in the archive. A zip
@@ -30,7 +32,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../.." && pwd)
 
-target="" version="" bin="" web="" third_party="" sidecar=""
+target="" version="" bin="" web="" third_party="" sidecar="" cli=""
 license="$root/LICENSE" readme="" out="$root/dist"
 
 die() { echo "package.sh: $*" >&2; exit 1; }
@@ -43,10 +45,11 @@ while [ $# -gt 0 ]; do
     --web) web=${2:?}; shift 2 ;;
     --third-party) third_party=${2:?}; shift 2 ;;
     --sidecar) sidecar=${2:?}; shift 2 ;;
+    --cli) cli=${2:?}; shift 2 ;;
     --license) license=${2:?}; shift 2 ;;
     --readme) readme=${2:?}; shift 2 ;;
     --out) out=${2:?}; shift 2 ;;
-    -h | --help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,31p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -71,6 +74,7 @@ if [ ! -f "$bin" ] || [ ! -x "$bin" ]; then die "--bin: not an executable file: 
 [ -f "$license" ] || die "no LICENSE at $license"
 [ -f "$readme" ] || die "no README at $readme"
 if [ -n "$sidecar" ]; then [ -f "$sidecar" ] || die "--sidecar: no such file: $sidecar"; fi
+if [ -n "$cli" ]; then { [ -f "$cli" ] && [ -x "$cli" ]; } || die "--cli: not an executable file: $cli"; fi
 
 # sidecar-NOTICE.txt has the licences of the Go modules in the pinned
 # sidecars. Every module this sidecar was built from (its build info, as
@@ -107,6 +111,10 @@ stage="$work/$name"
 mkdir -p "$stage/${bindir}" "$(dirname "$stage/$webdir")"
 cp "$bin" "$stage/${bindir}flux-server$exe"
 chmod 0755 "$stage/${bindir}flux-server$exe"
+if [ -n "$cli" ]; then
+  cp "$cli" "$stage/${bindir}flux$exe"
+  chmod 0755 "$stage/${bindir}flux$exe"
+fi
 if [ -n "$sidecar" ]; then
   cp "$sidecar" "$stage/${bindir}sidecar-slim$exe"
   chmod 0755 "$stage/${bindir}sidecar-slim$exe"

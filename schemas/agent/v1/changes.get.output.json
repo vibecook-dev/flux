@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`changes.get` output.",
+  "properties": {
+    "agent": {
+      "description": "The agent that made it; `null` for a person.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "by": {
+      "description": "The person it was made by, or for (a login).",
+      "type": "string"
+    },
+    "change_count": {
+      "description": "How many changes it holds.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "changes": {
+      "items": {
+        "description": "One change of a changeset.",
+        "properties": {
+          "after": true,
+          "before": true,
+          "field": {
+            "description": "A field name, or `art.<kind>` for the image an item shows.",
+            "type": "string"
+          },
+          "item": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+              "properties": {
+                "title": {
+                  "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "description": "An `http` or `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "What became of one change.",
+            "oneOf": [
+              {
+                "enum": [
+                  "applied",
+                  "reverted"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "pending",
+                "description": "Proposed, not applied.",
+                "type": "string"
+              },
+              {
+                "const": "skipped",
+                "description": "Not applied: the field had changed since it was proposed.",
+                "type": "string"
+              },
+              {
+                "const": "kept",
+                "description": "Not undone: the field had changed again since.",
+                "type": "string"
+              }
+            ]
+          },
+          "title": {
+            "description": "The item's title now, as you may see it (`null` once it's gone).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "withheld": {
+            "description": "The provider the value before is withheld for.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item",
+          "field",
+          "sources",
+          "state"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "created_at": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "decided_at": {
+      "description": "Applied or rejected.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "decided_by": {
+      "description": "Who applied or rejected a proposal.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "item_count": {
+      "description": "How many items it changes.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reverted_at": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "reverted_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "oneOf": [
+        {
+          "enum": [
+            "applied"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "proposed",
+          "description": "Waiting for an Owner or Admin.",
+          "type": "string"
+        },
+        {
+          "const": "reverted",
+          "description": "Undone.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "A proposal turned down.",
+          "type": "string"
+        }
+      ]
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "state",
+    "summary",
+    "by",
+    "created_at",
+    "item_count",
+    "change_count",
+    "changes"
+  ],
+  "title": "Changeset",
+  "type": "object"
+}

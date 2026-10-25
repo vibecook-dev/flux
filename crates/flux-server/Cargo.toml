@@ -26,7 +26,7 @@ default = ["jemalloc"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:rusqlite"]
 
 [dependencies]
-flux-core.workspace = true
+flux-core = { workspace = true, features = ["schema"] }
 flux-catalog.workspace = true
 flux-scan.workspace = true
 flux-hls.workspace = true
@@ -56,7 +56,12 @@ flate2 = "1.1"
 httpdate = "1.0"
 libc = "0.2"
 # Art resizing (/api/v1/art/{id}?w=); flux-meta already builds this crate.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# WebP: images agents add (art.add) often are.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# The agent contract's JSON Schemas (agent), lens checks, lens ids.
+schemars.workspace = true
+regex = "1.12"
+unicode-normalization = "0.1.26"
 # Only to point SQLite's allocator at jemalloc (same crate as flux-catalog's).
 rusqlite = { workspace = true, optional = true }
 

@@ -92,6 +92,7 @@ pub struct Identity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Role {
     Owner,
     Admin,
@@ -133,6 +134,7 @@ pub struct MetadataInfo {
 /// The metadata source background matching uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MetadataSource {
     /// None: titles and years come from file and folder names, artwork from
     /// frames of the video.
@@ -178,6 +180,7 @@ pub struct RootStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScanStatus {
     pub state: ScanState,
     pub files_seen: u64,
@@ -200,6 +203,7 @@ pub struct ScanStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ScanState {
     Idle,
     Scanning,
@@ -359,6 +363,7 @@ pub struct FolderPage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ItemKind {
     Movie,
     Show,
@@ -387,6 +392,7 @@ pub struct ArtRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ArtSource {
     /// From a metadata provider (TMDB, fanart.tv…), with attribution.
     Provider,
@@ -396,6 +402,10 @@ pub enum ArtSource {
     Frame,
     /// AI-generated; always labelled as such in the UI.
     Generated,
+    /// Chosen by you or your agent (`art.add`): found elsewhere and credited
+    /// ([`ArtRef::attribution`]), or made without AI. Shown over every
+    /// other image of its kind.
+    Custom,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -637,6 +647,13 @@ pub enum Event {
     Tailnet {
         info: TailnetInfo,
     },
+    /// A changeset was made, applied, undone or turned down (an agent's or
+    /// a person's edits; the app's Changes screen follows these).
+    Changes {
+        changeset: crate::agent::ChangesetSummary,
+    },
+    /// The lenses kept on the server changed (`lens.add`, `lens.remove`).
+    Lenses,
 }
 
 /// How flux reaches the tailnet.

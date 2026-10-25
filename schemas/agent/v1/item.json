@@ -1,0 +1,1310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`item.get`: one item as an agent sees it.",
+  "properties": {
+    "art": {
+      "items": {
+        "description": "One image of an item.",
+        "properties": {
+          "credit": {
+            "description": "Who it's credited to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "found_at": {
+            "description": "The page it came from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generator": {
+            "description": "The AI model that made it (for `generated`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Image kinds.",
+            "oneOf": [
+              {
+                "const": "poster",
+                "description": "2:3, with the title.",
+                "type": "string"
+              },
+              {
+                "const": "backdrop",
+                "description": "16:9, without text.",
+                "type": "string"
+              },
+              {
+                "const": "thumb",
+                "description": "An episode's still, 16:9.",
+                "type": "string"
+              },
+              {
+                "const": "logo",
+                "description": "The title as a transparent logo.",
+                "type": "string"
+              }
+            ]
+          },
+          "pinned": {
+            "description": "Chosen by hand: it shows until unpinned.",
+            "type": "boolean"
+          },
+          "shown": {
+            "description": "The image the item shows for its kind.",
+            "type": "boolean"
+          },
+          "source": {
+            "description": "`frame` and `generated` are flux's own (a frame of the video; AI art); `custom` was chosen by you or an agent; `provider` and `local` came from a provider or a file beside the video.",
+            "oneOf": [
+              {
+                "const": "provider",
+                "description": "From a metadata provider (TMDB, fanart.tv…), with attribution.",
+                "type": "string"
+              },
+              {
+                "const": "local",
+                "description": "A poster/thumb file next to the media.",
+                "type": "string"
+              },
+              {
+                "const": "frame",
+                "description": "A frame picked from the video plus typeset title (no AI).",
+                "type": "string"
+              },
+              {
+                "const": "generated",
+                "description": "AI-generated; always labelled as such in the UI.",
+                "type": "string"
+              },
+              {
+                "const": "custom",
+                "description": "Chosen by you or your agent (`art.add`): found elsewhere and credited ([`ArtRef::attribution`]), or made without AI. Shown over every other image of its kind.",
+                "type": "string"
+              }
+            ]
+          },
+          "url": {
+            "description": "Where to fetch it (or use `art.view`); `null` when withheld.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "withheld": {
+            "description": "The provider it's withheld for (its terms forbid use with AI).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "shown",
+          "pinned"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "available": {
+      "description": "`false` when none of its files is on a drive that answers.",
+      "type": "boolean"
+    },
+    "changes": {
+      "description": "The latest changesets that changed it, newest first.",
+      "items": {
+        "description": "A changeset, briefly.",
+        "properties": {
+          "agent": {
+            "description": "The agent that made it; `null` for a person.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "description": "The person it was made by, or for (a login).",
+            "type": "string"
+          },
+          "change_count": {
+            "description": "How many changes it holds.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "decided_at": {
+            "description": "Applied or rejected.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "description": "Who applied or rejected a proposal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "item_count": {
+            "description": "How many items it changes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reverted_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reverted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "oneOf": [
+              {
+                "enum": [
+                  "applied"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "proposed",
+                "description": "Waiting for an Owner or Admin.",
+                "type": "string"
+              },
+              {
+                "const": "reverted",
+                "description": "Undone.",
+                "type": "string"
+              },
+              {
+                "const": "rejected",
+                "description": "A proposal turned down.",
+                "type": "string"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "summary",
+          "by",
+          "created_at",
+          "item_count",
+          "change_count"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "children": {
+      "description": "A show's seasons, a season's episodes, a film's extras.",
+      "items": {
+        "description": "An item, briefly: what lists return.",
+        "properties": {
+          "available": {
+            "description": "`false` when none of its files is on a drive that answers.",
+            "type": "boolean"
+          },
+          "gaps": {
+            "description": "What it lacks; empty when nothing is missing.",
+            "items": {
+              "description": "Something an item lacks: what `library.gaps` counts and `items.find` filters by.",
+              "oneOf": [
+                {
+                  "const": "identity",
+                  "description": "Not identified: no provider match, and neither you nor an agent set its title or ids. Films and shows.",
+                  "type": "string"
+                },
+                {
+                  "const": "year",
+                  "description": "No year. Films and shows.",
+                  "type": "string"
+                },
+                {
+                  "const": "overview",
+                  "description": "No description. Films and shows.",
+                  "type": "string"
+                },
+                {
+                  "const": "poster",
+                  "description": "No poster but flux's own (a frame of the video, or AI art), or none. Films and shows.",
+                  "type": "string"
+                },
+                {
+                  "const": "backdrop",
+                  "description": "No backdrop but flux's own, or none. Films and shows.",
+                  "type": "string"
+                },
+                {
+                  "const": "episode_titles",
+                  "description": "Episodes still titled \"Episode N\": shows that have some, and those episodes.",
+                  "type": "string"
+                },
+                {
+                  "const": "offline",
+                  "description": "No file on a drive that answers.",
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "movie",
+              "show",
+              "season",
+              "episode",
+              "extra"
+            ],
+            "type": "string"
+          },
+          "library": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "match_state": {
+            "description": "How flux identified an item.",
+            "oneOf": [
+              {
+                "const": "unmatched",
+                "description": "Not even the name could be read.",
+                "type": "string"
+              },
+              {
+                "const": "parsed",
+                "description": "Named from the file only (or offline suggestions): nobody has confirmed what it is.",
+                "type": "string"
+              },
+              {
+                "const": "matched",
+                "description": "A metadata provider confirmed it.",
+                "type": "string"
+              },
+              {
+                "const": "locked",
+                "description": "Settled by hand (flux matches it no more).",
+                "type": "string"
+              }
+            ]
+          },
+          "parent": {
+            "description": "A season's show, an episode's season, an extra's film or show.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "The first file's path (films, episodes, videos), or the show's first folder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "poster": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "const": "provider",
+                    "description": "From a metadata provider (TMDB, fanart.tv…), with attribution.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "local",
+                    "description": "A poster/thumb file next to the media.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "frame",
+                    "description": "A frame picked from the video plus typeset title (no AI).",
+                    "type": "string"
+                  },
+                  {
+                    "const": "generated",
+                    "description": "AI-generated; always labelled as such in the UI.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "custom",
+                    "description": "Chosen by you or your agent (`art.add`): found elsewhere and credited ([`ArtRef::attribution`]), or made without AI. Shown over every other image of its kind.",
+                    "type": "string"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the poster it shows comes from; `null`: it has none."
+          },
+          "subtitle": {
+            "description": "`S01E03` for episodes, the season's name for seasons.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "The title as you may see it: one from a withheld provider is replaced by the title the file gives.",
+            "type": "string"
+          },
+          "year": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "library",
+          "title",
+          "match_state",
+          "gaps",
+          "available"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "episode_numbers": {
+      "items": {
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "fields": {
+      "additionalProperties": false,
+      "description": "Every field you can set, with its value now (`null`: empty, or withheld).",
+      "properties": {
+        "air_date": {
+          "description": "Episodes: when it first aired, `YYYY-MM-DD`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cast": {
+          "description": "Top-billed cast, in billing order (at most 100).",
+          "items": {
+            "description": "One credited performer.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "description": "The part they play, or what they do (\"Narrator\", \"Herself\").",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "content_rating": {
+          "description": "A rating such as `PG-13`, `12`, `TV-MA`, with no country prefix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "countries": {
+          "description": "Countries of production, as ISO 3166-1 alpha-2 codes (`JP`, `FR`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "directors": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "genres": {
+          "description": "Genres, in English, capitalised: `[\"Documentary\", \"Music\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "ids": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Ids in other databases, by provider: `tmdb` (number), `imdb` (`tt…`), `tvdb` (number), `wikidata` (`Q…`), or any other (`anidb`, `musicbrainz`, `letterboxd`, …). In `items.edit` the ids given are added or replaced; the others stay. With a metadata provider configured, ids you set make flux match by id instead of by title.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "languages": {
+          "description": "Spoken languages, as ISO 639-1 codes where one exists (`ja`, `en`, `zh-Hant`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "links": {
+          "description": "Pages worth keeping with it: official site, encyclopaedia entries, an archive page, the festival listing.",
+          "items": {
+            "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+            "properties": {
+              "title": {
+                "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "url": {
+                "description": "An `http` or `https` URL.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "original_title": {
+          "description": "The title in its original language and script (`千と千尋の神隠し`), when it differs. Search finds both.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overview": {
+          "description": "What it's about, two to five sentences, in your own words: never copied from a provider (and never from TMDB).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_date": {
+          "description": "First release: `YYYY-MM-DD`, `YYYY-MM` or `YYYY`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "studios": {
+          "description": "Studios, labels or (for shows) networks.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tagline": {
+          "description": "A one-line hook, if it has a well-known one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "Your own labels, for collections and search: `[\"Studio Ghibli\", \"Concert\", \"Festival short\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "The title to show: the film's or show's best-known title in the library's language, the season's name, the episode's title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writers": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "year": {
+          "description": "The year of first release (a show's first season).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "files": {
+      "description": "The item's own files (films, episodes, videos, extras; a show's and a season's files are on their episodes).",
+      "items": {
+        "description": "One file of an item and what flux read from it: the evidence to identify it by.",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "chapters": {
+            "description": "Chapter names, when the file names its chapters (at most 50).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "container": {
+            "description": "\"Matroska\", \"MP4\"…",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "container_title": {
+            "description": "The title stored inside the file, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "edition": {
+            "description": "Edition flux read from the name (\"Director's Cut\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modified": {
+            "description": "Last modified (Unix ms): for home videos, often when it was filmed.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parsed": {
+            "description": "What flux read from the file's name and folders.",
+            "properties": {
+              "absolute_episode": {
+                "description": "Anime-style absolute episode number.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "air_date": {
+                "description": "Date-based shows, `YYYY-MM-DD`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confidence": {
+                "description": "0.0–1.0. Below ~0.5 the item is queued for AI-assisted matching.",
+                "format": "float",
+                "type": "number"
+              },
+              "edition": {
+                "description": "\"Director's Cut\", \"Extended Edition\", …",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "episode_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "episodes": {
+                "description": "One entry normally; several for multi-episode files (S01E01-E02).",
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "evidence": {
+                "description": "Which rules fired, for explainability (\"fast path: Show/Season NN/…\").",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "extra": {
+                "enum": [
+                  "trailer",
+                  "featurette",
+                  "behind_the_scenes",
+                  "deleted_scene",
+                  "interview",
+                  "short",
+                  "scene",
+                  "other",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ids": {
+                "description": "External ids embedded in paths, e.g. `[tmdbid-603]`, `{imdb-tt0133093}`.",
+                "properties": {
+                  "imdb": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tmdb": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "tvdb": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              },
+              "kind": {
+                "oneOf": [
+                  {
+                    "enum": [
+                      "movie",
+                      "episode",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "const": "extra",
+                    "description": "Bonus material attached to a movie or show (trailers, featurettes, …).",
+                    "type": "string"
+                  },
+                  {
+                    "const": "sample",
+                    "description": "A release \"sample\" clip; never shown as a library item.",
+                    "type": "string"
+                  }
+                ]
+              },
+              "original_title": {
+                "description": "The other-script half of a bilingual name (`示例剧.Some.Show.S01E01…` → title \"Some Show\", original title \"示例剧\"). The catalog stores it as the item's `original_title`, so search finds both names.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "part": {
+                "description": "Multi-part movies (`cd1`, `part2`).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "release_group": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "season": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "Movie title or show name, cleaned for display/search.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "video_codec": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "year": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "episodes",
+              "ids",
+              "confidence",
+              "evidence"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subtitle_files": {
+            "description": "Subtitle files beside it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tracks": {
+            "items": {
+              "description": "One track of a file.",
+              "properties": {
+                "channels": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "codec": {
+                  "description": "\"H.264\", \"AAC\", \"SubRip\"…",
+                  "type": "string"
+                },
+                "default": {
+                  "type": "boolean"
+                },
+                "forced": {
+                  "type": "boolean"
+                },
+                "fps": {
+                  "format": "float",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "hdr": {
+                  "description": "HDR format, for video (\"HDR10\", \"Dolby Vision\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "height": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "description": "`video`, `audio` or `subtitle`.",
+                  "type": "string"
+                },
+                "language": {
+                  "description": "The language the file declares (ISO 639-2, `jpn`), if any.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "description": "The track's own name, if the file gives one (\"Director's commentary\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "width": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "codec",
+                "default",
+                "forced"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "available",
+          "tracks",
+          "chapters",
+          "subtitle_files"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "folders": {
+      "description": "A show's folders, relative to their library folder.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "gaps": {
+      "description": "What it lacks; empty when nothing is missing.",
+      "items": {
+        "description": "Something an item lacks: what `library.gaps` counts and `items.find` filters by.",
+        "oneOf": [
+          {
+            "const": "identity",
+            "description": "Not identified: no provider match, and neither you nor an agent set its title or ids. Films and shows.",
+            "type": "string"
+          },
+          {
+            "const": "year",
+            "description": "No year. Films and shows.",
+            "type": "string"
+          },
+          {
+            "const": "overview",
+            "description": "No description. Films and shows.",
+            "type": "string"
+          },
+          {
+            "const": "poster",
+            "description": "No poster but flux's own (a frame of the video, or AI art), or none. Films and shows.",
+            "type": "string"
+          },
+          {
+            "const": "backdrop",
+            "description": "No backdrop but flux's own, or none. Films and shows.",
+            "type": "string"
+          },
+          {
+            "const": "episode_titles",
+            "description": "Episodes still titled \"Episode N\": shows that have some, and those episodes.",
+            "type": "string"
+          },
+          {
+            "const": "offline",
+            "description": "No file on a drive that answers.",
+            "type": "string"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "id": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "kind": {
+      "enum": [
+        "movie",
+        "show",
+        "season",
+        "episode",
+        "extra"
+      ],
+      "type": "string"
+    },
+    "library": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "match_confidence": {
+      "description": "How sure flux's matcher was (0–1), when it tried.",
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "match_state": {
+      "description": "How flux identified an item.",
+      "oneOf": [
+        {
+          "const": "unmatched",
+          "description": "Not even the name could be read.",
+          "type": "string"
+        },
+        {
+          "const": "parsed",
+          "description": "Named from the file only (or offline suggestions): nobody has confirmed what it is.",
+          "type": "string"
+        },
+        {
+          "const": "matched",
+          "description": "A metadata provider confirmed it.",
+          "type": "string"
+        },
+        {
+          "const": "locked",
+          "description": "Settled by hand (flux matches it no more).",
+          "type": "string"
+        }
+      ]
+    },
+    "parent": {
+      "description": "A season's show, an episode's season, an extra's film or show.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "path": {
+      "description": "The first file's path (films, episodes, videos), or the show's first folder.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "poster": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "const": "provider",
+              "description": "From a metadata provider (TMDB, fanart.tv…), with attribution.",
+              "type": "string"
+            },
+            {
+              "const": "local",
+              "description": "A poster/thumb file next to the media.",
+              "type": "string"
+            },
+            {
+              "const": "frame",
+              "description": "A frame picked from the video plus typeset title (no AI).",
+              "type": "string"
+            },
+            {
+              "const": "generated",
+              "description": "AI-generated; always labelled as such in the UI.",
+              "type": "string"
+            },
+            {
+              "const": "custom",
+              "description": "Chosen by you or your agent (`art.add`): found elsewhere and credited ([`ArtRef::attribution`]), or made without AI. Shown over every other image of its kind.",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Where the poster it shows comes from; `null`: it has none."
+    },
+    "season_number": {
+      "description": "Seasons and episodes: the numbers.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sources": {
+      "additionalProperties": {
+        "description": "Who set a field, when, and from what.",
+        "properties": {
+          "agent": {
+            "description": "The agent, for `agent` (`claude-code`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "by": {
+            "description": "The person who set it, or for whom the agent did (a login).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changeset": {
+            "description": "The changeset that set it.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider": {
+            "description": "The provider, for `provider` (`tmdb`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "Where a value came from.",
+            "oneOf": [
+              {
+                "const": "file",
+                "description": "The file: its name, its folder or its tags (what the scan found).",
+                "type": "string"
+              },
+              {
+                "const": "provider",
+                "description": "A metadata provider's match (`provider` names it).",
+                "type": "string"
+              },
+              {
+                "const": "user",
+                "description": "A person (the web app, or the CLI with no agent named).",
+                "type": "string"
+              },
+              {
+                "const": "agent",
+                "description": "An agent (`agent` names it).",
+                "type": "string"
+              }
+            ]
+          },
+          "sources": {
+            "description": "What supports the value.",
+            "items": {
+              "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+              "properties": {
+                "title": {
+                  "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "description": "An `http` or `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "description": "Where each field that has a value came from. A field that isn't listed came from the file (or the scan).",
+      "type": "object"
+    },
+    "subtitle": {
+      "description": "`S01E03` for episodes, the season's name for seasons.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "title": {
+      "description": "The title as you may see it: one from a withheld provider is replaced by the title the file gives.",
+      "type": "string"
+    },
+    "withheld": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Fields left out because their provider's terms forbid use with AI, and that provider: `{\"overview\": \"tmdb\"}`. They have a value you don't see; replace them only if you have better.",
+      "type": "object"
+    },
+    "year": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "library",
+    "title",
+    "match_state",
+    "gaps",
+    "available",
+    "fields",
+    "sources",
+    "withheld",
+    "episode_numbers",
+    "files",
+    "folders",
+    "art",
+    "children",
+    "changes"
+  ],
+  "title": "AgentItemDetail",
+  "type": "object"
+}

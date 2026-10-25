@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`items.edit` output.",
+  "properties": {
+    "changeset": {
+      "description": "The changeset (applied or proposed); `null` for a dry run or when nothing would change.",
+      "properties": {
+        "agent": {
+          "description": "The agent that made it; `null` for a person.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by": {
+          "description": "The person it was made by, or for (a login).",
+          "type": "string"
+        },
+        "change_count": {
+          "description": "How many changes it holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "decided_at": {
+          "description": "Applied or rejected.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "decided_by": {
+          "description": "Who applied or rejected a proposal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "item_count": {
+          "description": "How many items it changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reverted_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reverted_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "applied"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "proposed",
+              "description": "Waiting for an Owner or Admin.",
+              "type": "string"
+            },
+            {
+              "const": "reverted",
+              "description": "Undone.",
+              "type": "string"
+            },
+            {
+              "const": "rejected",
+              "description": "A proposal turned down.",
+              "type": "string"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "summary",
+        "by",
+        "created_at",
+        "item_count",
+        "change_count"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "items": {
+      "items": {
+        "description": "What an edit did to one item.",
+        "properties": {
+          "changed": {
+            "items": {
+              "description": "A field's change.",
+              "properties": {
+                "after": true,
+                "before": {
+                  "description": "The value before (`null`: empty, or withheld)."
+                },
+                "field": {
+                  "type": "string"
+                },
+                "withheld": {
+                  "description": "The provider the value before is withheld for.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "field"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "item": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "refused": {
+            "items": {
+              "description": "A field an edit didn't change, and why.",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          },
+          "unchanged": {
+            "description": "Fields that already held the value.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "item",
+          "title",
+          "changed",
+          "unchanged",
+          "refused"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "EditOutput",
+  "type": "object"
+}

@@ -846,7 +846,8 @@ fn fill_original_title(conn: &Connection, r: &Resolver, id: Id, original: &str) 
 /// `new`: a dotted name read with spaces, release tags no longer taken for
 /// an episode title). The item takes the new title when its title is the
 /// one the old parse gave, so it came from the file name: a title from a
-/// provider match or the user (`matched`, `locked`) is never replaced.
+/// provider match or the user (`matched`, `locked`), or one a person or an
+/// agent set, is never replaced.
 /// Returns whether the title changed.
 pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str, new: &str) -> Result<bool> {
     if old == new || new.trim().is_empty() {
@@ -858,7 +859,8 @@ pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str,
     let n = conn
         .prepare_cached(
             "UPDATE item SET title = ?3, sort_title = ?4, updated_at = ?5
-              WHERE id = ?1 AND title = ?2 AND match_state NOT IN ('matched', 'locked')",
+              WHERE id = ?1 AND title = ?2 AND match_state NOT IN ('matched', 'locked')
+                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent'))",
         )?
         .execute(params![id, old, new, sort_title(new), r.now])?;
     if n > 0 {
@@ -897,8 +899,8 @@ const FILES_OF_SHOW: &str = "WITH e(id) AS (SELECT ep.id FROM item se JOIN item 
 /// normalised title (else of its lowest-id file). An episode takes the
 /// first episode title its files give, else its "Episode 3" placeholder
 /// (or air date). A title from a provider or the user (`matched`,
-/// `locked`) stays, and so does a title any of the files gives. Returns
-/// whether the title changed.
+/// `locked`, or set by a person or an agent: `item_field`) stays, and so
+/// does a title any of the files gives. Returns whether the title changed.
 ///
 /// Files are placed by their library's kind ([`place_in`]), as
 /// `Apply::place` places them: a videos library's item takes the title its
@@ -909,7 +911,8 @@ pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Resu
         .prepare_cached(
             "SELECT i.kind, i.title, i.group_key, i.episode_number, i.air_date, l.kind
                FROM item i JOIN library l ON l.id = i.library_id
-              WHERE i.id = ?1 AND i.match_state NOT IN ('matched', 'locked')",
+              WHERE i.id = ?1 AND i.match_state NOT IN ('matched', 'locked')
+                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id AND f.field = 'title' AND f.source IN ('user', 'agent'))",
         )?
         .query_row([id], |row| {
             Ok((
@@ -1321,7 +1324,8 @@ pub(crate) fn resolve_episode(
         let n = conn
             .prepare_cached(
                 "UPDATE item SET title = ?2, sort_title = ?3, updated_at = ?4
-                 WHERE id = ?1 AND title GLOB 'Episode [0-9]*' AND match_state NOT IN ('matched','locked')",
+                 WHERE id = ?1 AND title GLOB 'Episode [0-9]*' AND match_state NOT IN ('matched','locked')
+                   AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent'))",
             )?
             .execute(params![id, t, sort_title(t), r.now])?;
         if n > 0 {

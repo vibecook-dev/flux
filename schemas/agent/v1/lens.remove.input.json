@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`lens.remove` input.",
+  "properties": {
+    "everyone": {
+      "default": false,
+      "description": "The one kept for everyone (Owner or Admin).",
+      "type": "boolean"
+    },
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "LensRemoveInput",
+  "type": "object"
+}
