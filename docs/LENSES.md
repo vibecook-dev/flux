@@ -101,6 +101,8 @@ A kit lens is data, a JSON object any agent can write (`src/lens/kit`, `KitSpec`
 
 Five ship as examples: Tonight, Helix, Timeline, Film strip and Corkboard. You can add your own from the lens gallery (the last button in the lens bar, or `\`). Describe the lens, copy the prompt for your agent, then paste back the JSON it writes, or open a lens file. Preview it, then keep it. Lenses you add are kept on this device, 24 at most.
 
+An agent connected to flux can skip the copy and paste: it checks a lens with `lens.check` (the server lists what the browser would remove) and keeps it with `lens.add` (`flux lens add board.json`; the `flux-lens` skill walks it through). A lens kept on the server shows in the gallery on all your devices at once, marked with the agent that added it, 24 per person; an Owner or Admin can keep one for everyone. The browser treats it like any other kit lens: sanitised, scoped and run in the locked-down worker below ([AGENT-NATIVE.md](AGENT-NATIVE.md#lenses-on-the-server)).
+
 A lens can come from anyone, so its code gets no page, no network and no account:
 
 - The layout runs in a Web Worker whose script first removes `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `importScripts`, nested workers, storage, `navigator` and `location`. Lens code that uses `import` is refused. A blob: worker shares the page's origin, so without this it could call flux's API as you.

@@ -23,7 +23,7 @@ The research behind every decision here is in `research/01..09`. This document i
    - The matcher returns a confidence and evidence.
 4. **Bounded everything.** Bounded queues, per-device I/O admission, explicit caches, cancellation tokens.
 5. **Never mistake "unreachable" for "deleted".** An asleep NAS makes items *unavailable*, never removed.
-6. **AI never blocks scan or playback, and never sees TMDB content** (TMDB API terms §1.C; research/05).
+6. **AI never blocks scan or playback, and never sees TMDB content** (TMDB API terms §1.C; research/05). That includes agents: what flux shows an agent leaves TMDB's text and images out (docs/AGENT-NATIVE.md).
 
 ## Crates
 
@@ -39,7 +39,9 @@ crates/
   flux-meta     TMDB client + offline TMDB export index, matcher, AI hypothesis trait,
                 artwork: frame posters (no AI) and opt-in genAI posters
   flux-net      Truffle node (embedded Tailscale), tailnet + LAN listeners, WhoIs identity, hyper serving, tailnet HTTPS
-  flux-server   the binary: axum routes (flux_core::api), sessions, jobs, SSE, static web UI
+  flux-server   the binary: axum routes (flux_core::api), sessions, jobs, SSE, static web UI,
+                agent operations (flux_core::agent) over HTTP and MCP
+  flux-cli      `flux`, the command line: a client of a running server (the agent operations, MCP over stdio)
 web/            React 19 + TypeScript + Vite web client (hls.js), talks flux_core::api
 tools/          corpus generators and benchmark harnesses (Jellyfin baselines)
 ```
@@ -50,6 +52,7 @@ Dependencies point strictly downward, with no cycles:
 - `scan → {catalog, probe, names}`: the orchestrator needs the catalog's snapshot and writer functions, not just its types (docs/prototype/integration.md §5.1).
 - `hls → probe` (allowed, to reuse `flux_probe::ffprobe`)
 - every crate → `core`. `catalog`, `meta` and `net` depend on `core` only.
+- `cli` depends on `core` only: it talks to a running server over HTTP.
 
 ## Data flow
 
@@ -110,6 +113,8 @@ Dependencies point strictly downward, with no cycles:
 - `WAL`, `synchronous=NORMAL`.
 - Domain model: Library, Root, File (location), Asset (probed media), Item (movie / show / season / episode), UserState.
 - File identity: `(root, rel_path)` plus `(dev, ino)` and `btime` for rename/move detection.
+- Where each value came from (`item_field`): a provider, a person or an agent. A value a person or an agent set is locked: the matcher and the scanner's re-parse never overwrite it, and a merge carries it to the item that stays (`fields`).
+- Every edit through the agent operations is a changeset (`changes`): applied or proposed, journaled field by field, undoable while the fields still hold what it set.
 
 ### flux-scan
 
@@ -134,6 +139,7 @@ Dependencies point strictly downward, with no cycles:
 - One router layer guards every listener: a `Host` that isn't one of the server's names gets 421 (DNS rebinding); an unsafe `/api/` call needs `X-Flux-Request: 1` and no foreign `Origin`, else 403 (CSRF).
 - A file is served only from inside its library, or when it is exactly the file the scan recorded behind a link that leaves it.
 - Everything a caller can create is bounded: plans (on disk, LRU), sessions, event streams.
+- Agent operations (`agent`, docs/AGENT-NATIVE.md) are defined once (name, JSON Schemas, who may call them) and served at `/api/v1/ops/{name}`, over MCP at `/mcp`, and by the `flux` command line. A caller that names an agent never receives TMDB-sourced text or images (`agent::policy`): principle 6 holds for agents too.
 
 ## Dogfooding: Truffle and Mille
 

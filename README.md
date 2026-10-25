@@ -49,6 +49,7 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 - **Playback.** Direct play with HTTP Range. Otherwise HLS (fMP4/CMAF), remuxed in process from MKV, MP4 and MPEG-TS/M2TS. ffmpeg transcodes audio per segment (TrueHD, DTS and others) and transcodes video when the client can't decode it (H.264 out through the first encoder that works: VideoToolbox, NVENC, Quick Sync, VAAPI or libx264, with HDR → SDR tone mapping; see [docs/ENCODERS.md](docs/ENCODERS.md)). Text subtitles (SRT, ASS) play as WebVTT. Audio switching happens inside the session. Resume and watched state are kept.
 - **Web client** (React 19, hls.js). Your library fills the window, seen through a lens of your choice: Wall (a zoomable grid: zooming and flinging through 10,000 titles drop no frames, and a pinch follows your fingers live), Flow (Cover Flow), Shelf (VHS tapes), Gallery, or a lens-kit lens, including ones you add yourself ([LENSES.md](docs/LENSES.md)). Wall, Flow, Shelf and Gallery draw with WebGPU (the Gallery's rooms with a depth buffer that leaves nothing to z-fight); a DOM version of each stands in where WebGPU isn't available. The controls float over it as glass: the island at the top is the search (the library filters as you type), the space switcher and the place live events appear (scans, new titles, a drive going offline); the lens bar at the bottom switches lenses. Item pages open over the library, and the player has a stats overlay. The final product walk in Chrome passed 36/36 steps on the previous layout ([e2e.md](docs/prototype/e2e.md)).
 - **Artwork and metadata.** Background jobs cut frame posters and backdrops from the files (no AI); they pause during playback and scans. Offline matching against TMDB's daily ID exports needs no key. It suggests candidates for review but auto-accepts none, because the exports carry no year or runtime. The TMDB API client takes your own key (`TMDB_READ_TOKEN` or `TMDB_API_KEY`).
+- **Agents.** flux has no AI of its own; the agent you use (Claude Code, Codex, Claude Desktop…) is how a library gets identified, described and illustrated, from the open web, which knows far more than any database about rare films, home recordings and old TV. One contract (`flux.agent/1`, JSON Schemas in [`schemas/agent/v1`](schemas/agent/v1)) is served three ways: HTTP operations, MCP at `/mcp`, and the `flux` command line that ships with the server. Agents find what's missing (`flux gaps`), read each file's own evidence, and edit with the pages they used as sources; every edit is a changeset you review and undo in the app (Agents & changes), and nothing an agent sets is overwritten by flux's own matching. TMDB's text and images never reach an agent. Skills in [`skills/`](skills) teach agents the jobs, and an agent can add a lens that shows on all your devices. See [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md).
 - **Hardening.** A Host allowlist against DNS rebinding (421), a CSRF header on unsafe API calls (403), caps on connections and event streams, write timeouts and bounded caches. An adversarial review found 37 defects. All are fixed, each with a regression test. A re-verification then tried variants against every fix and hardened five of them further ([review.md](docs/prototype/review.md), [reverify.md](docs/prototype/reverify.md)).
 
 ### Prototype gaps
@@ -173,11 +174,12 @@ The principles are to skip work rather than speed it up, to make every playback 
 | `flux-hls` | Playback planner and index, stateless fMP4/CMAF segmenter, HLS playlists, ffmpeg transcodes |
 | `flux-meta` | TMDB client, offline export index, matcher, AI hypothesis trait, frame posters and opt-in AI posters |
 | `flux-net` | Local, LAN and tailnet listeners (Truffle or system Tailscale), WhoIs identity, admission limits |
-| `flux-server` | The binary: axum routes, sessions, jobs, SSE, static web UI |
+| `flux-server` | The binary: axum routes, sessions, jobs, SSE, static web UI; agent operations and MCP |
+| `flux-cli` | `flux`, the command line: the agent operations from a terminal, and MCP over stdio |
 | `web/` | React 19 + TypeScript + Vite client (hls.js) |
 | `tools/` | Corpus generators and benchmark harnesses |
 
-Dependencies point downward only: `server → {scan, hls, meta, net, catalog}`, `scan → {catalog, probe, names}`, `hls → probe`, and every crate → `core`.
+Dependencies point downward only: `server → {scan, hls, meta, net, catalog}`, `scan → {catalog, probe, names}`, `hls → probe`, and every crate → `core`. `flux-cli` talks to a running server over HTTP and depends on `core` only.
 
 ## Tests and benchmarks
 
@@ -207,6 +209,8 @@ These are still open. They come from [research/00-synthesis.md](research/00-synt
 - [docs/INSTALL.md](docs/INSTALL.md): release packages, Windows, Docker, a systemd unit, upgrading and building from source.
 - [docs/RELEASING.md](docs/RELEASING.md): how releases are made and verified.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the contract the crates are built against.
+- [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md): flux for agents: the operations, MCP, the `flux` command line, skills, changesets and what agents are never shown.
+- [docs/LENSES.md](docs/LENSES.md): the web client's lenses and the lens kit.
 - [docs/prototype/](docs/prototype/): one report per component, plus [benchmarks.md](docs/prototype/benchmarks.md), [e2e.md](docs/prototype/e2e.md), [review.md](docs/prototype/review.md), [fixes.md](docs/prototype/fixes.md), [reverify.md](docs/prototype/reverify.md) and [audit.md](docs/prototype/audit.md) (every published number traced to its result file).
 - [docs/DECISIONS.md](docs/DECISIONS.md): settled project decisions and why.
 - [research/](research/): the research behind the design, starting with [00-synthesis.md](research/00-synthesis.md).
