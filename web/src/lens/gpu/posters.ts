@@ -67,56 +67,70 @@ interface Entry {
   slot: number;
   ctl: AbortController | null;
   bitmap: ImageBitmap | null;
+  /** The part of `bitmap` to show (cover-cropped to 2:3), in its pixels. */
+  crop: Crop | null;
   retryAt: number;
+}
+
+interface Crop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 const MAX_LOADING = 8;
 const UPLOAD_BUDGET_MS = 3;
 const IDLE_RELEASE_MS = 20_000;
 
-/** Fetch, decode off the main thread and fit to `w`×`h` (cover-cropped). */
-async function decodePoster(url: string, w: number, h: number, signal: AbortSignal): Promise<ImageBitmap> {
+/** The centred part of a `sw`×`sh` image with the aspect of `w`×`h` (what "cover" shows). */
+export function coverCrop(sw: number, sh: number, w: number, h: number): Crop {
+  const want = w / h;
+  const have = sw / sh;
+  if (have > want * 1.02) {
+    const cw = Math.max(1, Math.round(sh * want));
+    return { x: Math.round((sw - cw) / 2), y: 0, w: cw, h: sh };
+  }
+  if (have < want / 1.02) {
+    const ch = Math.max(1, Math.round(sw / want));
+    return { x: 0, y: Math.round((sh - ch) / 2), w: sw, h: ch };
+  }
+  return { x: 0, y: 0, w: sw, h: sh };
+}
+
+/**
+ * Fetch and decode a poster. Real art (JPEG, WebP, PNG) decodes off the main
+ * thread and is not resized here: resizing an ImageBitmap runs on the main thread
+ * in Chrome (12 ms for a 640×960 poster at "high"), so the GPU fits it instead
+ * (PosterCache.fit). The mock's SVG posters can only be drawn on the main thread;
+ * they are drawn straight at the slot's size.
+ */
+async function decodePoster(url: string, w: number, h: number, signal: AbortSignal): Promise<{ bitmap: ImageBitmap; crop: Crop }> {
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`art ${res.status}`);
   const blob = await res.blob();
-  let source: ImageBitmap | HTMLImageElement;
-  let done: () => void;
+  if (!blob.type.includes('svg')) {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      return { bitmap, crop: coverCrop(bitmap.width, bitmap.height, w, h) };
+    } catch {
+      // not a raster image after all: try it as an image element below
+    }
+  }
+  const u = URL.createObjectURL(blob);
   try {
-    if (blob.type.includes('svg')) throw new Error('svg');
-    source = await createImageBitmap(blob);
-    const bmp = source;
-    done = () => bmp.close();
-  } catch {
-    // SVG (the mock's stand-in posters) can't be decoded from a blob directly.
-    const u = URL.createObjectURL(blob);
-    done = () => URL.revokeObjectURL(u);
     const img = new Image();
     img.decoding = 'async';
     img.src = u;
     await img.decode();
-    source = img;
-  }
-  try {
-    const sw = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
-    const sh = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
-    const opts: ImageBitmapOptions = { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' };
-    if (!sw || !sh) return await createImageBitmap(source, opts);
-    const want = w / h;
-    const have = sw / sh;
-    let cx = 0;
-    let cy = 0;
-    let cw = sw;
-    let ch = sh;
-    if (have > want * 1.02) {
-      cw = Math.round(sh * want);
-      cx = Math.round((sw - cw) / 2);
-    } else if (have < want / 1.02) {
-      ch = Math.round(sw / want);
-      cy = Math.round((sh - ch) / 2);
-    }
-    return await createImageBitmap(source, cx, cy, cw, ch, opts);
+    const opts: ImageBitmapOptions = { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' };
+    const sw = img.naturalWidth;
+    const sh = img.naturalHeight;
+    const c = sw && sh ? coverCrop(sw, sh, w, h) : null;
+    const bitmap = c ? await createImageBitmap(img, c.x, c.y, c.w, c.h, opts) : await createImageBitmap(img, opts);
+    return { bitmap, crop: { x: 0, y: 0, w: bitmap.width, h: bitmap.height } };
   } finally {
-    done();
+    URL.revokeObjectURL(u);
   }
 }
 
@@ -166,7 +180,7 @@ export class PosterCache {
     this.stores = CLASSES.map((c, i) => new ClassStore({ ...c, max: Math.min(c.max, cap) }, i));
     this.dummy = gpu.device.createTexture({ label: 'flux poster placeholder', size: [1, 1, 1], format: 'rgba8unorm', usage: TEXTURE.TEXTURE_BINDING, dimension: '2d' });
     this.dummyView = this.dummy.createView({ dimension: '2d-array' });
-    this.mipSampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+    this.mipSampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear', mipmapFilter: 'linear' });
   }
 
   /** Call when a decoded poster is waiting to upload (renderers redraw). */
@@ -226,7 +240,7 @@ export class PosterCache {
     const key = `${cls}|${url}`;
     const e = this.entries.get(key);
     if (!e) {
-      this.entries.set(key, { key, url: artUrl({ url } as ArtRef, CLASSES[cls].bucket), art: url, cls, state: 'want', prio, prioFrame: this.frame, seen: this.frame, slot: -1, ctl: null, bitmap: null, retryAt: 0 });
+      this.entries.set(key, { key, url: artUrl({ url } as ArtRef, CLASSES[cls].bucket), art: url, cls, state: 'want', prio, prioFrame: this.frame, seen: this.frame, slot: -1, ctl: null, bitmap: null, crop: null, retryAt: 0 });
       return;
     }
     e.seen = this.frame;
@@ -270,14 +284,15 @@ export class PosterCache {
     e.ctl = new AbortController();
     this.loading++;
     decodePoster(e.url, spec.w, spec.h, e.ctl.signal).then(
-      (bmp) => {
+      ({ bitmap, crop }) => {
         this.loading--;
         e.ctl = null;
         if (this.entries.get(e.key) !== e) {
-          bmp.close();
+          bitmap.close();
           return;
         }
-        e.bitmap = bmp;
+        e.bitmap = bitmap;
+        e.crop = crop;
         e.state = 'decoded';
         this.decoded.push(e);
         for (const l of this.listeners) l();
@@ -308,6 +323,7 @@ export class PosterCache {
     const now = clock();
     this.decoded.sort((a, b) => a.prio - b.prio);
     const encoder = device.createCommandEncoder({ label: 'flux poster mips' });
+    const staging: GPUTexture[] = [];
     let any = false;
     const keep: Entry[] = [];
     for (let i = 0; i < this.decoded.length; i++) {
@@ -342,9 +358,14 @@ export class PosterCache {
         continue;
       }
       if (evicted) this.evict(evicted);
-      device.queue.copyExternalImageToTexture({ source: bmp }, { texture: store.tex as GPUTexture, origin: [0, 0, slot], premultipliedAlpha: true }, [store.spec.w, store.spec.h, 1]);
+      const crop = e.crop ?? { x: 0, y: 0, w: bmp.width, h: bmp.height };
+      if (crop.x === 0 && crop.y === 0 && crop.w === store.spec.w && crop.h === store.spec.h && bmp.width === crop.w && bmp.height === crop.h) {
+        // Already the slot's size: copy it straight in.
+        device.queue.copyExternalImageToTexture({ source: bmp }, { texture: store.tex as GPUTexture, origin: [0, 0, slot], premultipliedAlpha: true }, [store.spec.w, store.spec.h, 1]);
+      } else this.fit(encoder, store, slot, bmp, crop, staging);
       bmp.close();
       e.bitmap = null;
+      e.crop = null;
       this.mips(encoder, store, slot);
       e.slot = slot;
       e.state = 'ready';
@@ -355,8 +376,51 @@ export class PosterCache {
       any = true;
     }
     device.queue.submit([encoder.finish()]);
+    if (staging.length) void device.queue.onSubmittedWorkDone().then(() => staging.forEach((t) => t.destroy()));
     this.decoded = keep;
     return any;
+  }
+
+  /**
+   * Resample a decoded poster into a slot on the GPU: copy the visible part as it
+   * came (no CPU resize), give a much larger source its own mip chain, then draw
+   * it into the slot through the linear sampler.
+   */
+  private fit(encoder: GPUCommandEncoder, store: ClassStore, layer: number, bmp: ImageBitmap, crop: Crop, staging: GPUTexture[]): void {
+    const device = this.gpu.device;
+    const ratio = Math.max(crop.w / store.spec.w, crop.h / store.spec.h);
+    const levels = ratio >= 2 ? Math.min(1 + Math.floor(Math.log2(ratio)), 8) : 1;
+    const tex = device.createTexture({
+      label: 'flux poster staging',
+      size: [crop.w, crop.h],
+      mipLevelCount: levels,
+      format: 'rgba8unorm',
+      usage: TEXTURE.TEXTURE_BINDING | TEXTURE.COPY_DST | TEXTURE.RENDER_ATTACHMENT,
+    });
+    staging.push(tex);
+    device.queue.copyExternalImageToTexture({ source: bmp, origin: [crop.x, crop.y] }, { texture: tex, premultipliedAlpha: true }, [crop.w, crop.h]);
+    for (let m = 1; m < levels; m++) {
+      this.blit(encoder, tex.createView({ baseMipLevel: m - 1, mipLevelCount: 1 }), tex.createView({ baseMipLevel: m, mipLevelCount: 1 }));
+    }
+    const slot = (store.tex as GPUTexture).createView({ dimension: '2d', baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: layer, arrayLayerCount: 1 });
+    this.blit(encoder, tex.createView(), slot);
+  }
+
+  /** Draw `src` over all of `dst` through the linear sampler (mip levels, fits). */
+  private blit(encoder: GPUCommandEncoder, src: GPUTextureView, dst: GPUTextureView): void {
+    if (!this.mipPipeline) return;
+    const bind = this.gpu.device.createBindGroup({
+      layout: this.mipPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: src },
+        { binding: 1, resource: this.mipSampler },
+      ],
+    });
+    const pass = encoder.beginRenderPass({ colorAttachments: [{ view: dst, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+    pass.setPipeline(this.mipPipeline);
+    pass.setBindGroup(0, bind);
+    pass.draw(3);
+    pass.end();
   }
 
   private evict(key: string): void {
@@ -426,30 +490,42 @@ export class PosterCache {
   }
 
   private mips(encoder: GPUCommandEncoder, store: ClassStore, layer: number): void {
-    const device = this.gpu.device;
-    if (!this.mipPipeline) return;
     const tex = store.tex as GPUTexture;
     for (let m = 1; m < store.spec.mips; m++) {
       const src = tex.createView({ dimension: '2d', baseMipLevel: m - 1, mipLevelCount: 1, baseArrayLayer: layer, arrayLayerCount: 1 });
       const dst = tex.createView({ dimension: '2d', baseMipLevel: m, mipLevelCount: 1, baseArrayLayer: layer, arrayLayerCount: 1 });
-      const bind = device.createBindGroup({
-        layout: this.mipPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: src },
-          { binding: 1, resource: this.mipSampler },
-        ],
-      });
-      const pass = encoder.beginRenderPass({ colorAttachments: [{ view: dst, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
-      pass.setPipeline(this.mipPipeline);
-      pass.setBindGroup(0, bind);
-      pass.draw(3);
-      pass.end();
+      this.blit(encoder, src, dst);
     }
   }
 
   /** Texture views for the shader, with a stand-in for classes not allocated yet. */
   views(): GPUTextureView[] {
     return this.stores.map((s) => s.view ?? this.dummyView);
+  }
+
+  private holders = 0;
+  private releaseT: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * A lens drawing from the cache holds it; call the returned function when it
+   * unmounts. 30 s after the last one lets go, every class is freed.
+   */
+  retain(): () => void {
+    this.holders++;
+    if (this.releaseT) {
+      clearTimeout(this.releaseT);
+      this.releaseT = null;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.holders > 0) return;
+      this.releaseT = setTimeout(() => {
+        this.releaseT = null;
+        if (this.holders === 0) this.trim(true);
+      }, 30_000);
+    };
   }
 
   /** Free classes no lens has drawn from for a while (memory goes back to the system). */

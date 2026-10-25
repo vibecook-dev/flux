@@ -149,8 +149,6 @@ function cssColor(value: string, fallback: RGBA): RGBA {
   return [p[0] / 255, p[1] / 255, p[2] / 255, Number.isFinite(p[3]) ? p[3] : 1];
 }
 
-let live = 0;
-let trimTimer: ReturnType<typeof setTimeout> | null = null;
 
 export class GpuWallView implements LensView {
   private root: HTMLElement;
@@ -239,9 +237,8 @@ export class GpuWallView implements LensView {
     this.text = textAtlas(gpu);
     this.theme = this.readTheme();
     this.measure();
-    live++;
-    if (trimTimer) clearTimeout(trimTimer);
-    this.cleanup.push(this.posters.onReady(this.invalidate), this.text.onChange(this.invalidate), gpu.onLost(() => this.fallBack()));
+    // Holding the poster cache keeps its textures while any GPU lens is mounted.
+    this.cleanup.push(this.posters.retain(), this.posters.onReady(this.invalidate), this.text.onChange(this.invalidate), gpu.onLost(() => this.fallBack()));
     if (!this.mini) {
       this.tip = el('div', `${styles.tip} glass glass-clear`, { 'aria-hidden': 'true' });
       root.append(this.tip);
@@ -1380,13 +1377,6 @@ export class GpuWallView implements LensView {
     this.scroller.remove();
     this.tip?.remove();
     this.root.classList.remove(styles.gpu);
-    live--;
-    if (live === 0) {
-      const cache = this.posters;
-      trimTimer = setTimeout(() => {
-        if (live === 0) cache.trim(true);
-      }, 30_000);
-    }
   }
 
   /** The GPU went away (driver reset, GPU process crash): carry on as the DOM Wall. */

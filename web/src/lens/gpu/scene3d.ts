@@ -127,23 +127,29 @@ fn roundRect(p: vec2f, b: vec2f, r: f32) -> f32 {
   return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - r;
 }
 
-fn poster(cls: u32, uv: vec2f, layer: i32, lod: f32) -> vec4f {
+// Explicit gradients: anisotropic filtering keeps a cover seen at a steep angle sharp
+// along its long axis (an isotropic mip level would blur it).
+fn poster(cls: u32, uv: vec2f, layer: i32, gx: vec2f, gy: vec2f) -> vec4f {
   switch cls {
-    case 0u: { return textureSampleLevel(tex0, samp, uv, layer, lod); }
-    case 1u: { return textureSampleLevel(tex1, samp, uv, layer, lod); }
-    case 2u: { return textureSampleLevel(tex2, samp, uv, layer, lod); }
-    default: { return textureSampleLevel(tex3, samp, uv, layer, lod); }
+    case 0u: { return textureSampleGrad(tex0, samp, uv, layer, gx, gy); }
+    case 1u: { return textureSampleGrad(tex1, samp, uv, layer, gx, gy); }
+    case 2u: { return textureSampleGrad(tex2, samp, uv, layer, gx, gy); }
+    default: { return textureSampleGrad(tex3, samp, uv, layer, gx, gy); }
   }
 }
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4f {
-  // Screen-space rates first (derivatives need uniform control flow): how many of
-  // this quad's units one device pixel covers, for antialiasing and mip levels.
-  let dl = fwidth(in.local);
-  let aa = max(max(dl.x, dl.y), 0.0001);
-  let reach = max(length(dpdx(in.local)), length(dpdy(in.local)));
+  // Screen-space rates first (derivatives need uniform control flow). Antialias with
+  // the distance field's own rate, so a face seen nearly edge-on (a tape's side, a
+  // cover turned away) keeps crisp edges; a width taken from the quad's coordinates
+  // would smear them across the steep axis. The face's rate of change per device
+  // pixel (gx, gy) drives anisotropic texture filtering.
   let q = quads[in.idx];
+  let d0 = roundRect(in.local, in.half, min(q.size.z, min(in.half.x, in.half.y)));
+  let aa = max(fwidth(d0), 0.0001);
+  let gx = dpdx(in.local) / (2.0 * in.half);
+  let gy = dpdy(in.local) / (2.0 * in.half);
   let kind = u32(q.size.w);
   let flags = u32(q.fx.x);
   let radius = min(q.size.z, min(in.half.x, in.half.y));
@@ -157,7 +163,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
     let d = roundRect(in.local, max(in.half - vec2f(blur), vec2f(0.5)), radius);
     cover = 1.0 - smoothstep(-blur * 0.5, blur * 0.5, d);
   } else {
-    let d = roundRect(in.local, in.half, radius);
+    let d = d0;
     cover = clamp(0.5 - d / aa, 0.0, 1.0);
     if (kind == K_RING) {
       cover = cover - clamp(0.5 - (d + q.tex.y) / aa, 0.0, 1.0);
@@ -174,8 +180,8 @@ fn fs(in: VOut) -> @location(0) vec4f {
       }
       if (q.tex.z >= 0.0) {
         let code = u32(q.tex.x);
-        let lod = max(log2(max(reach * q.tex.y / (2.0 * in.half.x), 0.000001)), 0.0);
-        var s = poster(code >> 12u, q.uv.xy + (q.uv.zw - q.uv.xy) * f, i32(code & 4095u), lod);
+        let span = q.uv.zw - q.uv.xy;
+        var s = poster(code >> 12u, q.uv.xy + span * f, i32(code & 4095u), gx * span, gy * span);
         if ((flags & F_GRAY) != 0u) {
           let g = dot(s.rgb, vec3f(0.2126, 0.7152, 0.0722)) * 0.6;
           s = vec4f(vec3f(g), s.a);
@@ -404,7 +410,7 @@ export function prepareScene3D(gpu: Gpu): Promise<boolean> {
           },
           primitive: { topology: 'triangle-strip' },
         });
-        const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+        const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', maxAnisotropy: 16 });
         shared.set(device, { pipeline, sampler });
         return true;
       } catch (err) {

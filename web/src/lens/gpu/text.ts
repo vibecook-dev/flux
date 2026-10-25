@@ -96,6 +96,12 @@ export class TextAtlas {
     this.canvas = document.createElement('canvas');
     this.canvas.width = SIZE;
     this.canvas.height = SIZE;
+    // Canvas text takes its font smoothing from the canvas element's style, and a canvas
+    // outside the page gets the platform default (heavier on macOS than the page's
+    // antialiased text): keep it in the page, hidden.
+    this.canvas.hidden = true;
+    this.canvas.setAttribute('aria-hidden', 'true');
+    document.body.append(this.canvas);
     const ctx = this.canvas.getContext('2d');
     if (!ctx) throw new Error('No 2D canvas for text.');
     this.ctx = ctx;

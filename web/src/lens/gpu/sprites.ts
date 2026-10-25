@@ -48,6 +48,10 @@ export class SpriteSheet {
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.cellW;
     this.canvas.height = this.cellH;
+    // In the page, hidden: canvas text gets the page's font smoothing (text.ts says why).
+    this.canvas.hidden = true;
+    this.canvas.setAttribute('aria-hidden', 'true');
+    document.body.append(this.canvas);
     const ctx = this.canvas.getContext('2d');
     if (!ctx) throw new Error('No 2D canvas for sprites.');
     this.ctx = ctx;
@@ -124,5 +128,6 @@ export class SpriteSheet {
 
   destroy(): void {
     this.tex.destroy();
+    this.canvas.remove();
   }
 }
