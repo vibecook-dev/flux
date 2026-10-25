@@ -3,7 +3,8 @@
 //! is the server's; this keeps the session id, and when the server has
 //! restarted (it answers 404 for the old session) it initializes again
 //! with the client's own `initialize` and retries, so the client never
-//! notices. Logs go to stderr; stdout carries only JSON-RPC.
+//! notices. Logs go to stderr; stdout carries only JSON-RPC (on Windows with
+//! non-ASCII characters as `\u` escapes, which parse to the same strings).
 
 use std::io::{BufRead, Write};
 
@@ -148,7 +149,15 @@ pub fn bridge(c: &Client) -> Result<(), Failure> {
             ),
         };
         if let Some(r) = reply {
-            writeln!(out, "{r}").map_err(|e| Failure::error(e.to_string()))?;
+            // On Windows, \u escapes: a client that decodes our output with a
+            // legacy code page still gets the same JSON (the parsed strings
+            // are identical, so nothing changes for the others).
+            let line = if cfg!(windows) {
+                crate::ascii_json(&r.to_string())
+            } else {
+                r.to_string()
+            };
+            writeln!(out, "{line}").map_err(|e| Failure::error(e.to_string()))?;
             out.flush().map_err(|e| Failure::error(e.to_string()))?;
         }
     }
