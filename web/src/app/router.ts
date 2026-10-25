@@ -13,6 +13,12 @@ export interface RouteDef {
   load: () => Promise<{ default: ComponentType<RouteProps> }>;
   /** Render without the app chrome (player). */
   bare?: boolean;
+  /**
+   * Where the screen lives in the shell: `space` routes are the library itself
+   * (drawn by the shell's lens), `overlay` routes open over the library, which
+   * stays mounted underneath (detail, settings sheets).
+   */
+  layer?: 'space' | 'overlay';
 }
 
 export interface RouteProps {

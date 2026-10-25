@@ -1,7 +1,7 @@
 /**
  * "Why is it playing like this?" — the plan the server chose, its reasons in
  * plain sentences, the network path, codecs in → out, and live client/server
- * timings. Toggle with `i`. Styled as a scope readout, not a debug dump.
+ * timings. Toggle with `i`. Styled as a scope readout on glass, not a debug dump.
  */
 import { channelLayout, codecShort, hdrName, planLabel, planTone } from '../api/explain';
 import { formatBitrate, formatBytes, formatCount, formatMs, pathLabel } from '../api/format';
@@ -60,7 +60,7 @@ export function StatsOverlay({ res, asset, engine, hlsVersion, path, metrics, di
   const reasons = res.explain.length > 0 ? res.explain : [label === 'Direct play' ? 'Nothing needed changing: this device plays the file as it is.' : 'No reasons given.'];
 
   return (
-    <section className={styles.stats} aria-label="Playback details" data-tone={planTone(label)}>
+    <section className={`${styles.stats} glass`} aria-label="Playback details" data-tone={planTone(label)}>
       <header className={styles.statsHead}>
         <span className={styles.planPill}>{label}</span>
         <button type="button" className={styles.statsClose} onClick={onClose} aria-label="Hide playback details">

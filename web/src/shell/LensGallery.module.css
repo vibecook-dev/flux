@@ -1,0 +1,498 @@
+/* The lens gallery: the library steps back (Shell.module.css scales it), and the lenses line up as live previews. */
+.wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  --cw: min(600px, 70vw);
+}
+
+.back {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 46%, transparent, var(--scrim) 75%);
+}
+
+.head {
+  position: relative;
+  text-align: center;
+  padding: 0 64px;
+}
+
+.head p {
+  margin: 6px auto 0;
+  max-width: 46ch;
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.close {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--pill);
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+
+.close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.track {
+  position: relative;
+  display: flex;
+  gap: 28px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  padding: 26px calc(50vw - var(--cw) / 2) 14px;
+  scrollbar-width: none;
+}
+
+.track::-webkit-scrollbar {
+  display: none;
+}
+
+.card {
+  flex: none;
+  width: var(--cw);
+  scroll-snap-align: center;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  transform: scale(calc(1 - var(--d, 0) * 0.08));
+  opacity: calc(1 - var(--d, 0) * 0.5);
+}
+
+.view {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  aspect-ratio: var(--ar, 16 / 10);
+  border-radius: 26px;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--bg);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow:
+    0 50px 90px -46px rgb(0 0 0 / 0.85),
+    0 0 0 0.5px var(--rim),
+    inset 0 0 0 0.5px var(--line);
+  transition: box-shadow 0.3s var(--out);
+}
+
+.card[data-on] .view {
+  box-shadow:
+    0 50px 90px -40px rgb(0 0 0 / 0.9),
+    0 0 0 1.5px var(--text);
+}
+
+.screen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+  overflow: hidden;
+  background:
+    radial-gradient(90% 70% at 50% -18%, color-mix(in oklab, var(--text) 6%, transparent), transparent 72%),
+    var(--bg);
+}
+
+.still {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+}
+
+.still svg {
+  width: 72px;
+  height: 72px;
+}
+
+.badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  padding: 3px 9px;
+  border-radius: var(--pill);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.meta {
+  display: grid;
+  gap: 6px;
+  padding: 0 6px;
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.name b {
+  font-weight: 500;
+  font-size: 1.125rem;
+}
+
+.icon,
+.icon :global(svg) {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--text-2);
+}
+
+.tag {
+  padding: 2px 8px;
+  border-radius: var(--pill);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+  font-size: 0.6875rem;
+  color: var(--text-3);
+}
+
+.meta p {
+  max-width: 52ch;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.pin {
+  height: 32px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: var(--pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--glass-clear);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.pin:hover {
+  color: var(--text);
+  background: var(--glass-hi);
+}
+
+.pin[aria-pressed='true'] {
+  background: var(--text);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+.pin svg {
+  width: 14px;
+  height: 14px;
+}
+
+.textBtn {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--pill);
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.textBtn:hover {
+  color: var(--text);
+  background: var(--glass-clear);
+}
+
+.textBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
+.danger {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.foot {
+  position: relative;
+  margin-top: 6px;
+  text-align: center;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+}
+
+/* Leaving: the chosen card grows into the window; the rest fades. */
+.wrap[data-leaving] .head,
+.wrap[data-leaving] .foot,
+.wrap[data-leaving] .close {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+/* ── Make a lens ── */
+.makeView {
+  cursor: default;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in oklab, #b58cff 18%, transparent), transparent 60%),
+    radial-gradient(120% 90% at 100% 100%, color-mix(in oklab, #ffb36b 14%, transparent), transparent 60%),
+    var(--glass-solid);
+}
+
+/* The form grows to fit (the preview keeps the window's shape). */
+.makeForm {
+  aspect-ratio: auto;
+  min-height: calc(var(--cw) / var(--ar, 1.6));
+}
+
+.form {
+  position: relative;
+  padding: clamp(16px, 2.6vw, 26px);
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  scrollbar-width: thin;
+}
+
+.makeTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.makeTitle b {
+  font-weight: 400;
+  font-size: clamp(1.2rem, 1rem + 0.7vw, 1.5rem);
+  letter-spacing: -0.01em;
+}
+
+.steps {
+  display: grid;
+  gap: 14px;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps > li {
+  display: grid;
+  gap: 8px;
+  counter-increment: step;
+}
+
+.steps label:first-child::before {
+  content: counter(step) '  ';
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+.steps label {
+  font-size: 0.8125rem;
+  color: var(--text-2);
+}
+
+.form textarea {
+  width: 100%;
+  resize: none;
+  border: 0;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--text);
+  background: var(--glass-clear);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.form textarea:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px var(--text);
+}
+
+.form textarea::placeholder {
+  color: var(--text-3);
+}
+
+.mono {
+  font-family: var(--font-mono) !important;
+  font-size: 0.6875rem !important;
+  line-height: 1.5;
+}
+
+.ideas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.idea {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--glass-clear);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+  color: var(--text-2);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.idea:hover {
+  color: var(--text);
+  background: var(--glass-hi);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.primary {
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--cta-bg);
+  color: var(--cta-fg);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primary:hover {
+  background: var(--cta-bg-hover);
+}
+
+.primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.primary svg {
+  width: 15px;
+  height: 15px;
+}
+
+.status {
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.error {
+  font-size: 0.8125rem;
+  color: var(--danger);
+}
+
+.previewBar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 10px 10px 16px;
+  border-radius: 20px;
+}
+
+.previewName {
+  flex: 1;
+  min-width: 140px;
+  display: grid;
+}
+
+.previewName b {
+  font-weight: 500;
+}
+
+.previewName small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
+
+.previewActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    --cw: 84vw;
+  }
+  /* A window-shaped preview would fill a phone; show its middle in a 3:4 card. */
+  .view {
+    aspect-ratio: 3 / 4;
+  }
+  .track {
+    gap: 16px;
+  }
+  .head {
+    padding: 0 60px;
+  }
+  .makeForm {
+    aspect-ratio: auto;
+    min-height: 0;
+  }
+  .idea:nth-child(n + 4) {
+    display: none;
+  }
+  .track {
+    align-items: start;
+  }
+}

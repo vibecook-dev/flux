@@ -1,5 +1,6 @@
 /**
- * Item detail for films, shows, seasons and episodes.
+ * Item detail for films, shows, seasons and episodes, opened over the library:
+ * the poster flies out of the lens, the room dims, and closing flies it back.
  *
  * The header paints instantly from the summary of the card that was clicked
  * (optimistic navigation); the detail fills in when it arrives. Everything
@@ -7,9 +8,9 @@
  * ("Expected on this device"), how it was matched ("Matched as"), where the
  * artwork came from, and what the probe found in each file.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { setAmbientFromHash } from '../app/ambient';
-import { navigate, type RouteProps } from '../app/router';
+import { back, navigate, type RouteProps } from '../app/router';
 import { Link } from '../app/Link';
 import { useTitle } from '../app/useTitle';
 import { codecShort, containerName, planLabel, planTone } from '../api/explain';
@@ -27,6 +28,10 @@ import { sourceLabel } from '../components/art-label';
 import { PosterCard } from '../components/Cards';
 import { hasPosterColumn, isResumable, isWatched } from '../components/card-utils';
 import { Icon } from '../components/Icon';
+import { activeLens, rectInLens } from '../lens/bridge';
+import { reducedMotion } from '../lens/dom';
+import { flyElement, takeOrigin } from '../lens/flight';
+import { deepen, paletteOf } from '../lens/palette';
 import { predictPlan } from '../plan/predict';
 import { preloadPlayer, startPlay } from '../player/start';
 import styles from './Item.module.css';
@@ -417,19 +422,75 @@ export default function Item({ params, query }: RouteProps) {
   const [sub, setSub] = useState<number | null>(null);
   const asset = assets.find((a) => a.id === assetId) ?? assets.find((a) => a.available) ?? assets[0];
 
+  const root = useRef<HTMLElement>(null);
+  const posterRef = useRef<HTMLDivElement>(null);
+  const closing = useRef(false);
+
+  // The poster arrives from where it was in the lens; its place there stays empty
+  // until it goes back, like a print lifted off a wall.
+  useLayoutEffect(() => {
+    // Keyboard and screen readers start on the page itself (Tab goes to Back, then on down).
+    root.current?.focus({ preventScroll: true });
+    const from = takeOrigin(id);
+    const slot = posterRef.current?.firstElementChild as HTMLElement | null;
+    const view = activeLens()?.view;
+    // A lens that draws on a canvas hides the title itself; a DOM lens has an element to hide.
+    const source = view?.hide ? null : (view?.artOf?.(id) ?? null);
+    view?.hide?.(id);
+    if (source) source.style.visibility = 'hidden';
+    if (from && slot) void flyElement(slot, { from }, 620);
+    return () => {
+      view?.hide?.(null);
+      if (source) source.style.visibility = '';
+    };
+  }, [id]);
+
+  // Closing flies the poster back to its place in the lens, then steps back.
+  const close = useCallback(() => {
+    if (closing.current) return;
+    closing.current = true;
+    const leave = () => back('/');
+    const slot = posterRef.current?.firstElementChild as HTMLElement | null;
+    const to = rectInLens(id);
+    if (reducedMotion() || !root.current) return leave();
+    root.current.dataset.leaving = '';
+    if (slot && to) void flyElement(slot, { to }, 480).then(leave);
+    else setTimeout(leave, 240);
+  }, [id]);
+
+  // Esc closes with the flight (the shell would close without it).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('dialog, [role="menu"], select')) return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [close]);
+
+  useEffect(() => {
+    closing.current = false;
+    root.current?.scrollTo({ top: 0 });
+  }, [id]);
+
   if (!summary) {
     if (q.status === 'error') {
       return (
-        <div className={styles.missing}>
-          <h1 className="display-l">This title isn’t available</h1>
-          <p className="muted">It may have been removed from the library, or the server isn’t reachable.</p>
-          <Link to="/" className="btn">
-            Go home
-          </Link>
-        </div>
+        <article className={styles.overlay} ref={root} tabIndex={-1}>
+          <div className={styles.missing}>
+            <h1 className="display-l">This title isn’t available</h1>
+            <p className="muted">It may have been removed from the library, or the server isn’t reachable.</p>
+            <button type="button" className="btn" onClick={close}>
+              Back to the library
+            </button>
+          </div>
+        </article>
       );
     }
-    return <div className={`skeleton ${styles.heroSkeleton}`} aria-busy="true" aria-label="Loading" />;
+    return <article className={styles.overlay} ref={root} tabIndex={-1} aria-busy="true" aria-label="Loading" />;
   }
 
   const isShow = summary.kind === 'show';
@@ -448,17 +509,28 @@ export default function Item({ params, query }: RouteProps) {
     startPlay(id, { assetId: isShow ? null : (asset?.id ?? null), audioTrack: audio, subtitleTrack: sub, startMs: fromStart ? 0 : null });
   const posterLabel = sourceLabel(summary.poster);
   const posterColumn = hasPosterColumn(summary.kind);
+  const tint = deepen(paletteOf(summary).c1, 0.07);
 
   return (
-    <article className={styles.page}>
+    <article ref={root} className={styles.overlay} style={{ '--tint': tint } as CSSProperties} aria-label={summary.title} tabIndex={-1}>
       <div className={styles.backdrop} aria-hidden="true">
-        {art && <Art art={art} width={1600} aspect="wide" title="" priority showSourceLabel={false} className={styles.backdropArt} />}
+        {art ? (
+          <Art art={art} width={1600} aspect="wide" title="" priority showSourceLabel={false} className={styles.backdropArt} />
+        ) : (
+          <Art art={summary.poster} width={160} aspect="poster" title="" showSourceLabel={false} className={styles.backdropBlur} />
+        )}
+        <div className={styles.scrim} />
       </div>
+      <button type="button" className={`${styles.back} glass glass-btn`} onClick={close} aria-label="Back to the library" title="Back (esc)">
+        <Icon name="back" />
+      </button>
 
-      <div className={styles.layout} data-poster={posterColumn || undefined}>
+      <div className={styles.layout} data-poster={posterColumn || undefined} key={`hero-${id}`}>
         {posterColumn && (
           <div className={styles.posterCol}>
-            <Art art={summary.poster} width={260} aspect="poster" title={summary.title} priority className={styles.poster} />
+            <div ref={posterRef}>
+              <Art art={summary.poster} width={360} aspect="poster" title={summary.title} priority className={styles.poster} />
+            </div>
             {posterLabel && <p className={styles.posterNote}>{posterLabel.long}</p>}
           </div>
         )}
@@ -466,8 +538,8 @@ export default function Item({ params, query }: RouteProps) {
         <div className={styles.main}>
           {isEpisode && detail?.show_id !== null && detail?.show_id !== undefined && <ShowLink showId={detail.show_id} title={detail.parent_title} />}
           <p className={`edge ${styles.eyebrow}`}>{isShow ? 'Show' : isEpisode ? 'Episode' : summary.kind === 'movie' ? 'Film' : summary.kind}</p>
-          <h1 className="display-xl">{summary.title}</h1>
-          <p className={`edge ${styles.meta}`}>{meta.join(' · ') || ' '}</p>
+          <h1 className={`display-xl ${styles.title}`}>{summary.title}</h1>
+          <p className={styles.meta}>{meta.join(' · ') || ' '}</p>
 
           {facts.length > 0 && (
             <ul className={styles.facts} aria-label="Quality">
@@ -479,8 +551,11 @@ export default function Item({ params, query }: RouteProps) {
             </ul>
           )}
 
+          {detail?.overview && <p className={styles.overview}>{detail.overview}</p>}
+          {!detail && <div className={`skeleton ${styles.overviewSkeleton}`} />}
+
           <div className={styles.actions}>
-            <button type="button" className="btn btn-primary btn-lg" disabled={!canPlay && Boolean(detail)} onClick={() => play(false)} onPointerEnter={preloadPlayer} onFocus={preloadPlayer}>
+            <button type="button" className={`${styles.play} glass glass-tint glass-btn`} disabled={!canPlay && Boolean(detail)} onClick={() => play(false)} onPointerEnter={preloadPlayer} onFocus={preloadPlayer}>
               <Icon name="play" />
               {resumable && p ? `Resume ${formatClock(p.position_ms)}` : isShow ? 'Play next episode' : 'Play'}
             </button>
@@ -507,9 +582,6 @@ export default function Item({ params, query }: RouteProps) {
 
           {!isShow && <ExpectedPlayback itemId={id} asset={asset} audio={audio} sub={sub} />}
 
-          {detail?.overview && <p className={styles.overview}>{detail.overview}</p>}
-          {!detail && <div className={`skeleton ${styles.overviewSkeleton}`} />}
-
           {!isShow && (
             <>
               <VersionPicker
@@ -527,7 +599,7 @@ export default function Item({ params, query }: RouteProps) {
         </div>
       </div>
 
-      {isShow && <Seasons key={id} showId={id} initialSeason={Number(query.get('season')) || null} />}
+      {isShow && <Seasons key={`seasons-${id}`} showId={id} initialSeason={Number(query.get('season')) || null} />}
 
       {detail && (
         <div className={styles.panels}>

@@ -16,6 +16,31 @@ import type { Id, ItemSummary, LibrarySort } from './types';
 const FIRST_PAGE = 120;
 const NEXT_PAGE = 1000;
 
+// ── holding: the library isn't on screen (an item page, a sheet, the player), so the
+// large background pages wait and leave the network to what you are looking at ──
+let held = false;
+const waiters = new Set<() => void>();
+
+/** Hold (or release) background paging. First pages still load, so the library is ready to show. */
+export function holdPaging(on: boolean): void {
+  held = on;
+  if (!on) for (const w of [...waiters]) w();
+}
+
+/** Resolves when paging may go on, or the load was abandoned. */
+function mayPage(signal: AbortSignal): Promise<void> {
+  if (!held || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const go = () => {
+      waiters.delete(go);
+      signal.removeEventListener('abort', go);
+      resolve();
+    };
+    waiters.add(go);
+    signal.addEventListener('abort', go, { once: true });
+  });
+}
+
 export class LibraryList {
   readonly libraryId: Id;
   readonly sort: LibrarySort;
@@ -64,6 +89,8 @@ export class LibraryList {
     let firstPage = true;
     try {
       do {
+        if (!firstPage) await mayPage(signal);
+        if (signal.aborted) return;
         const page = await api.libraryItems(this.libraryId, { cursor, limit, sort: this.sort }, signal);
         if (signal.aborted) return;
         this.items = firstPage ? page.items : this.items.concat(page.items);
@@ -97,8 +124,8 @@ export function getLibraryList(libraryId: Id, sort: LibrarySort): LibraryList {
     list = new LibraryList(libraryId, sort);
     lists.set(key, list);
     list.load();
-    // Keep memory bounded: at most four lists (10k summaries is ~4 MB).
-    if (lists.size > 4) {
+    // Keep memory bounded: at most six lists (10k summaries is ~4 MB); "All" holds one per library.
+    if (lists.size > 6) {
       const oldest = lists.keys().next().value;
       if (oldest !== undefined && oldest !== key) {
         lists.get(oldest)?.dispose();

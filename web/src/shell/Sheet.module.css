@@ -1,0 +1,76 @@
+.wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.back {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: fade 0.3s var(--out);
+}
+
+.sheet {
+  position: absolute;
+  left: 50%;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  bottom: 0;
+  translate: -50% 0;
+  width: min(980px, calc(100vw - 32px));
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  background-color: var(--glass-solid);
+  overflow: hidden;
+  outline: none;
+  animation: rise 0.56s var(--spring-soft);
+}
+
+.close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--pill);
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+
+.close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.body {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 28px clamp(16px, 4vw, 48px) calc(48px + env(safe-area-inset-bottom, 0px));
+  scrollbar-width: thin;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(60px);
+    opacity: 0;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .sheet {
+    width: calc(100vw - 16px);
+    top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+}

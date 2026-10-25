@@ -1,14 +1,17 @@
-/** Route table. Each screen is its own chunk, preloaded on link hover/focus. */
+/** Route table. Each overlay screen is its own chunk, preloaded on link hover/focus. */
 import { defineRoutes, preloadRoute } from './router';
 
 /** Start loading the player's code (Play intent); records it so Play renders it without suspending. */
 export const loadPlayer = () => preloadRoute('/play/0');
 
+/** Space routes draw nothing themselves: the shell's lens is the screen. */
+const space = () => Promise.resolve({ default: () => null });
+
 defineRoutes([
-  { name: 'home', path: '/', load: () => import('../routes/Home') },
-  { name: 'library', path: '/library/:id', load: () => import('../routes/Library') },
-  { name: 'item', path: '/item/:id', load: () => import('../routes/Item') },
+  { name: 'home', path: '/', layer: 'space', load: space },
+  { name: 'library', path: '/library/:id', layer: 'space', load: space },
+  { name: 'item', path: '/item/:id', layer: 'overlay', load: () => import('../routes/Item') },
   { name: 'play', path: '/play/:id', load: () => import('../routes/Player'), bare: true },
-  { name: 'connect', path: '/connect', load: () => import('../routes/Connect') },
-  { name: 'admin', path: '/admin', load: () => import('../routes/Admin') },
+  { name: 'connect', path: '/connect', layer: 'overlay', load: () => import('../routes/Connect') },
+  { name: 'admin', path: '/admin', layer: 'overlay', load: () => import('../routes/Admin') },
 ]);

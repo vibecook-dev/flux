@@ -78,7 +78,7 @@
 
 .stepTitle {
   display: block;
-  font-weight: 700;
+  font-weight: 600;
   margin-top: 4px;
 }
 
@@ -201,7 +201,7 @@
 
 .error {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .connected {
@@ -311,7 +311,7 @@
 }
 
 .kindTitle {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .kindNote {
@@ -345,12 +345,12 @@
 }
 
 .createdTitle {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .subhead {
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-2);
   margin-top: 6px;
 }

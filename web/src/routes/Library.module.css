@@ -90,7 +90,7 @@
   background: transparent;
   color: var(--text-2);
   font-size: 0.86rem;
-  font-weight: 620;
+  font-weight: 520;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -116,7 +116,7 @@
   min-height: 38px;
   border-radius: 999px;
   font-size: 0.88rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .resultCount {
@@ -233,7 +233,7 @@
 .crumbs [aria-current='page'] {
   padding: 2px 6px;
   color: var(--text);
-  font-weight: 650;
+  font-weight: 550;
 }
 
 .folders {
@@ -273,7 +273,7 @@
 
 .folderName {
   overflow: hidden;
-  font-weight: 650;
+  font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

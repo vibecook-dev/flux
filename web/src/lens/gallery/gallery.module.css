@@ -1,0 +1,435 @@
+/*
+ * Gallery: an exhibition you walk through. Charcoal walls and warm light at night,
+ * white walls and pale wood by day. Everything is drawn in world px on 3D planes.
+ */
+.gal {
+  --gal-void: #0b0a09;
+  --gal-wall: #201e1b;
+  --gal-wall-hi: #292623;
+  --gal-wall-lo: #151412;
+  --gal-skirt: #090807;
+  --gal-jamb: #262421;
+  --gal-jamb-side: #141312;
+  --gal-floor: rgb(19 18 16 / 0.9);
+  --gal-board: rgb(255 255 255 / 0.028);
+  --gal-sheen: rgb(255 232 200 / 0.07);
+  --gal-ceil: #0c0b0b;
+  --gal-ceil-light: rgb(255 236 210 / 0.2);
+  --gal-fixture: rgb(255 238 214 / 0.95);
+  --gal-fixture-glow: rgb(255 226 186 / 0.12);
+  --gal-ink: #ede7dd;
+  --gal-ink-2: rgb(237 231 221 / 0.66);
+  --gal-ink-3: rgb(237 231 221 / 0.42);
+  --gal-spot: rgb(255 224 182 / 0.3);
+  --gal-spot-2: rgb(255 224 182 / 0.07);
+  --gal-frame-a: #1e1e1e;
+  --gal-frame-b: #060606;
+  --gal-mat: #f0ede6;
+  --gal-bevel: #fbfaf6;
+  --gal-shadow: rgb(0 0 0 / 0.78);
+  --gal-fog: rgb(11 10 9 / 0.9);
+  --gal-vignette: rgb(0 0 0 / 0.46);
+  --gal-door: #fff3e0;
+  --gal-door-glow: rgb(255 228 190 / 0.32);
+  --gal-away: #ff8a75;
+  --gal-tint: #3a3836;
+
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(60% 40% at 50% 62%, color-mix(in oklab, var(--gal-tint) 10%, transparent), transparent 70%),
+    var(--gal-void);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+
+.dragging {
+  cursor: grabbing;
+}
+
+:root[data-theme='light'] .gal {
+  --gal-void: #dcdad5;
+  --gal-wall: #ebeae6;
+  --gal-wall-hi: #f3f2ee;
+  --gal-wall-lo: #dfddd8;
+  --gal-skirt: #c9c6bf;
+  --gal-jamb: #f4f3f0;
+  --gal-jamb-side: #d9d7d2;
+  --gal-floor: rgb(214 196 168 / 0.9);
+  --gal-board: rgb(90 60 30 / 0.07);
+  --gal-sheen: rgb(255 255 255 / 0.22);
+  --gal-ceil: #f3f2ef;
+  --gal-ceil-light: rgb(255 255 255 / 1);
+  --gal-fixture: rgb(255 255 255 / 1);
+  --gal-fixture-glow: rgb(200 196 186 / 0.25);
+  --gal-ink: #1b1a18;
+  --gal-ink-2: rgb(27 26 24 / 0.66);
+  --gal-ink-3: rgb(27 26 24 / 0.46);
+  --gal-spot: rgb(255 253 248 / 0.95);
+  --gal-spot-2: rgb(255 252 245 / 0.35);
+  --gal-frame-a: #2a2a2a;
+  --gal-frame-b: #0b0b0b;
+  --gal-mat: #fbfaf7;
+  --gal-bevel: #ffffff;
+  --gal-shadow: rgb(40 34 24 / 0.42);
+  --gal-fog: rgb(236 234 229 / 0.85);
+  --gal-vignette: rgb(60 50 40 / 0.14);
+  --gal-door: #ffffff;
+  --gal-door-glow: rgb(255 255 255 / 0.7);
+  --gal-away: #c23a22;
+}
+
+.view {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  perspective-origin: 50% 50%;
+}
+
+.world {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.plane {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* ── architecture ── */
+.wall {
+  background: linear-gradient(to bottom, var(--gal-wall-lo) 0%, var(--gal-wall) 16%, var(--gal-wall-hi) 44%, var(--gal-wall) 78%, var(--gal-wall-lo) 97.2%, var(--gal-skirt) 97.2%);
+}
+
+.floor {
+  background:
+    linear-gradient(90deg, transparent 8%, var(--gal-sheen) 50%, transparent 92%),
+    repeating-linear-gradient(90deg, transparent 0 123px, var(--gal-board) 123px 125px),
+    var(--gal-floor);
+}
+
+.ceil {
+  background:
+    radial-gradient(22px 15px at var(--fix-x, -999px) var(--fix-y, -999px), var(--gal-fixture), transparent 100%),
+    radial-gradient(150px 110px at var(--fix-x, -999px) var(--fix-y, -999px), var(--gal-fixture-glow), transparent 100%),
+    linear-gradient(90deg, transparent 47.2%, var(--gal-ceil-light) 49.4%, var(--gal-ceil-light) 50.6%, transparent 52.8%),
+    linear-gradient(90deg, var(--gal-ceil) 0%, color-mix(in oklab, var(--gal-ceil), var(--gal-ceil-light) 18%) 50%, var(--gal-ceil) 100%);
+}
+
+.jamb {
+  background: linear-gradient(to bottom, var(--gal-jamb) 0 97.2%, var(--gal-skirt) 97.2%);
+}
+
+.jambSide {
+  background: linear-gradient(to bottom, var(--gal-jamb-side) 0 97.2%, var(--gal-skirt) 97.2%);
+}
+
+.soffit {
+  background: var(--gal-jamb-side);
+}
+
+.lintel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--gal-jamb);
+  color: var(--gal-ink);
+  font-family: var(--font-body);
+  text-align: center;
+}
+
+.lintel b {
+  font-weight: 300;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.lintel small,
+.roomtext small {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gal-ink-3);
+}
+
+.roomtext {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 0 0 10px 30px;
+  color: var(--gal-ink);
+  font-family: var(--font-body);
+}
+
+.roomtext b {
+  font-weight: 300;
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  white-space: nowrap;
+}
+
+.roomtext p {
+  margin: 0;
+  max-width: 420px;
+  font-size: 19px;
+  line-height: 1.45;
+  color: var(--gal-ink-2);
+}
+
+/* ── a piece: light pool, framed print, wall label ── */
+.piece {
+  pointer-events: none;
+}
+
+.spot {
+  position: absolute;
+  inset: 0;
+  opacity: 0.72;
+  transition: opacity 0.9s ease;
+  background:
+    radial-gradient(30% 7% at var(--fx) 0%, color-mix(in oklab, var(--gal-spot), white 30%), transparent 100%),
+    radial-gradient(33% 52% at var(--fx) 46%, var(--gal-spot), var(--gal-spot-2) 55%, transparent 82%);
+}
+
+.on .spot {
+  opacity: 1;
+}
+
+.frame {
+  position: absolute;
+  padding: 7px;
+  border: 0;
+  border-radius: 1px;
+  pointer-events: auto;
+  cursor: pointer;
+  background: linear-gradient(150deg, var(--gal-frame-a), var(--gal-frame-b) 60%);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.07),
+    0 44px 46px -34px var(--gal-shadow),
+    0 10px 20px -8px var(--gal-shadow);
+  transition:
+    box-shadow 0.35s ease,
+    filter 0.35s ease;
+}
+
+.frame:hover {
+  filter: brightness(1.08);
+}
+
+.frame:focus-visible {
+  outline: 3px solid var(--gal-ink);
+  outline-offset: 6px;
+}
+
+.mat {
+  position: relative;
+  padding: 30px 30px 40px;
+  background: var(--gal-mat);
+  box-shadow:
+    inset 0 1px 4px rgb(0 0 0 / 0.22),
+    inset 0 0 0 1px rgb(0 0 0 / 0.05);
+}
+
+.art {
+  border-radius: 0;
+  aspect-ratio: auto;
+  box-shadow:
+    0 0 0 3px var(--gal-bevel),
+    0 0 0 4px rgb(0 0 0 / 0.1);
+}
+
+.glaze {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(116deg, transparent 30%, rgb(255 255 255 / 0.1) 41%, rgb(255 255 255 / 0.02) 52%, transparent 60%);
+}
+
+.label {
+  position: absolute;
+  color: var(--gal-ink);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.label b {
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.004em;
+}
+
+.yr {
+  color: var(--gal-ink-2);
+  font-size: 15px;
+}
+
+.yr::before {
+  content: ', ';
+}
+
+.label p {
+  margin: 3px 0 0;
+  color: var(--gal-ink-2);
+}
+
+.label .med {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--gal-ink-3);
+}
+
+.label .st {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--gal-ink-2);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.label .st::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+  flex: none;
+}
+
+.label .fresh::before {
+  background: var(--gal-ink);
+  opacity: 1;
+  box-shadow: 0 0 8px var(--gal-ink);
+}
+
+.label .away {
+  color: var(--gal-away);
+}
+
+.label .away::before {
+  opacity: 1;
+}
+
+/* Reflections in the polished floor. */
+.mirror {
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
+  opacity: 0.5;
+}
+
+.mirror .spot {
+  opacity: 0.4;
+}
+
+.mirror .frame {
+  box-shadow: none;
+  pointer-events: none;
+}
+
+/* The far wall: the end of the show, and a door to daylight. */
+.end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  background: linear-gradient(to bottom, var(--gal-wall-lo), var(--gal-wall) 30%, var(--gal-wall) 97.2%, var(--gal-skirt) 97.2%);
+  color: var(--gal-ink-2);
+  font-family: var(--font-body);
+}
+
+.end p {
+  margin: 0 0 34px;
+  font-size: 22px;
+  font-weight: 300;
+  text-align: center;
+  display: grid;
+  gap: 8px;
+}
+
+.end p span {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gal-ink-3);
+}
+
+.door {
+  display: block;
+  width: 250px;
+  height: 450px;
+  margin-bottom: 19px;
+  background: linear-gradient(to bottom, var(--gal-door), color-mix(in oklab, var(--gal-door), var(--gal-tint) 12%));
+  box-shadow: 0 0 90px 30px var(--gal-door-glow);
+}
+
+/* Depth: the corridor dissolves into haze where it vanishes; corners fall into shadow. */
+.fog {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(20% 22% at var(--vpx, 50%) 50%, color-mix(in oklab, var(--gal-fog), var(--gal-tint) 10%) 0%, transparent 100%),
+    radial-gradient(135% 105% at 50% 50%, transparent 58%, var(--gal-vignette) 100%);
+  transition: opacity 0.6s ease;
+}
+
+/* The accessory: a tour that walks from work to work on its own. */
+.tour {
+  height: 44px;
+  padding: 0 16px 0 13px;
+  border: 0;
+  border-radius: var(--pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tour:hover {
+  color: var(--text);
+  background: var(--glass-clear);
+}
+
+.tour[aria-pressed='true'] {
+  color: var(--text);
+}
+
+.tour svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spot,
+  .fog {
+    transition: none;
+  }
+}

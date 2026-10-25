@@ -1,8 +1,10 @@
+import '@fontsource-variable/jost';
 import '@fontsource-variable/archivo/wdth.css';
-import '@fontsource-variable/atkinson-hyperlegible-next/index.css';
-import '@fontsource-variable/atkinson-hyperlegible-mono/index.css';
+import '@fontsource/dm-mono/400.css';
+import '@fontsource/dm-mono/500.css';
 import './styles/tokens.css';
 import './styles/base.css';
+import './styles/glass.css';
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

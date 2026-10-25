@@ -29,13 +29,73 @@ const DEVICES = {
   phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
 };
 
+// Each screen opens with a lens chosen (stored per space, as the app does) and the first-run hint dismissed.
 const SCREENS = [
   { name: 'home', path: '/' },
-  { name: 'library', path: '/library/1' },
+  {
+    name: 'home-overview',
+    path: '/?sort=-year',
+    act: async (p) => {
+      await p.keyboard.press('-');
+      await p.keyboard.press('-');
+      await p.waitForTimeout(700);
+    },
+  },
+  {
+    name: 'library-details',
+    path: '/library/1?sort=-year',
+    act: async (p) => {
+      await p.keyboard.press('+');
+      await p.waitForTimeout(700);
+    },
+  },
   { name: 'library-10k', path: '/library/3', act: async (p) => p.mouse.wheel(0, 2400) },
+  { name: 'lens-flow', path: '/', lens: 'flow' },
+  { name: 'lens-shelf', path: '/', lens: 'shelf' },
+  { name: 'lens-gallery', path: '/?sort=-year', lens: 'gallery' },
+  { name: 'lens-tonight', path: '/?sort=-added', lens: 'tonight' },
+  {
+    name: 'island',
+    path: '/',
+    act: async (p) => {
+      await p.keyboard.press('/');
+      await p.waitForTimeout(700);
+    },
+  },
+  {
+    name: 'search',
+    path: '/',
+    act: async (p) => {
+      await p.waitForTimeout(300);
+      await p.keyboard.type('blade', { delay: 30 });
+      await p.waitForTimeout(700);
+    },
+  },
+  {
+    name: 'lens-gallery-screen',
+    path: '/',
+    act: async (p) => {
+      await p.keyboard.press('\\');
+      await p.waitForTimeout(1200);
+    },
+  },
   { name: 'item-movie', path: `/item/${movie('Blade Runner 2049')}` },
-  { name: 'item-versions', path: `/item/${movie('Spirited Away')}`, full: true },
-  { name: 'item-show', path: `/item/${show('Severance')}` },
+  {
+    name: 'item-versions',
+    path: `/item/${movie('Spirited Away')}`,
+    act: async (p) => {
+      await p.locator('article').first().evaluate((a) => a.scrollTo(0, a.scrollHeight));
+      await p.waitForTimeout(400);
+    },
+  },
+  {
+    name: 'item-show',
+    path: `/item/${show('Severance')}`,
+    act: async (p) => {
+      await p.locator('article').first().evaluate((a) => a.scrollTo(0, window.innerHeight * 0.8));
+      await p.waitForTimeout(400);
+    },
+  },
   {
     name: 'player',
     path: `/item/${movie('Blade Runner 2049')}`,
@@ -62,7 +122,6 @@ const SCREENS = [
       await p.getByRole('button', { name: /Create invite link/ }).click();
       await p.waitForTimeout(500);
     },
-    full: true,
   },
   {
     name: 'admin',
@@ -73,27 +132,16 @@ const SCREENS = [
     },
   },
   {
-    // Keyboard / TV remote: arrow keys move a visible focus through the virtual grid.
-    name: 'focus-grid',
+    // Keyboard / TV remote: arrow keys move a visible focus through the wall.
+    name: 'focus-wall',
     path: '/library/1',
     act: async (p) => {
       await p.waitForTimeout(400);
-      await p.locator('[role="grid"] a[tabindex="0"]').first().focus();
       for (const k of ['ArrowRight', 'ArrowRight', 'ArrowDown']) {
         await p.keyboard.press(k);
-        await p.waitForTimeout(120);
+        await p.waitForTimeout(160);
       }
       await p.waitForTimeout(900);
-    },
-  },
-  {
-    name: 'search',
-    path: '/',
-    act: async (p) => {
-      await p.waitForTimeout(300);
-      await p.keyboard.press('/');
-      await p.keyboard.type('blade', { delay: 30 });
-      await p.waitForTimeout(500);
     },
   },
 ];
@@ -105,6 +153,10 @@ for (const s of SCREENS) {
   for (const theme of ['dark', 'light']) {
     for (const [device, opts] of Object.entries(DEVICES)) {
       const ctx = await browser.newContext({ ...opts, colorScheme: theme, reducedMotion: 'reduce' });
+      await ctx.addInitScript((lens) => {
+        localStorage.setItem('flux.coach.done', 'true');
+        if (lens) localStorage.setItem('flux.lens.choice', JSON.stringify({ all: lens, lib1: lens, lib3: lens }));
+      }, s.lens ?? null);
       const page = await ctx.newPage();
       const errors = [];
       page.on('pageerror', (e) => errors.push(e.message));
@@ -114,7 +166,7 @@ for (const s of SCREENS) {
         if (s.act) await s.act(page);
         await page.waitForTimeout(600);
         const file = join(OUT, `${s.name}-${theme}-${device}.png`);
-        await page.screenshot({ path: file, fullPage: Boolean(s.full) && device === 'desktop' });
+        await page.screenshot({ path: file });
         console.log(`${errors.length ? 'WARN' : 'ok  '} ${file}${errors.length ? ` (${errors.join('; ')})` : ''}`);
       } catch (e) {
         failures++;

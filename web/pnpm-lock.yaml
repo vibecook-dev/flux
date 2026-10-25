@@ -11,10 +11,10 @@ importers:
       '@fontsource-variable/archivo':
         specifier: 5.3.0
         version: 5.3.0
-      '@fontsource-variable/atkinson-hyperlegible-mono':
+      '@fontsource-variable/jost':
         specifier: 5.3.0
         version: 5.3.0
-      '@fontsource-variable/atkinson-hyperlegible-next':
+      '@fontsource/dm-mono':
         specifier: 5.3.0
         version: 5.3.0
       blurhash:
@@ -256,11 +256,11 @@ packages:
   '@fontsource-variable/archivo@5.3.0':
     resolution: {integrity: sha512-HogK8FJelrD1o7TlZlkIVtHgc20bO5PZRWE7mUeUTdMN055alznQV6/00J00IBeu8FQAH4s3zW9UJNvKExXf+g==}
 
-  '@fontsource-variable/atkinson-hyperlegible-mono@5.3.0':
-    resolution: {integrity: sha512-0IbthhO18EEpLe69h+cmrsxCkl4yk80gMk+fAN3+9M5zQvoR1JlkzoJRR6U9/UXLYpVBGEXu+Md2LO8TIp30dw==}
+  '@fontsource-variable/jost@5.3.0':
+    resolution: {integrity: sha512-9FS8iBMJnfyPqQOi9dfMjSwYBIWd0kBD3/jl8VvtbIMY2pK+CSp3oAaTLS1V60rDoM7AfyPvuT+IUfJfGeCTKg==}
 
-  '@fontsource-variable/atkinson-hyperlegible-next@5.3.0':
-    resolution: {integrity: sha512-UnLzNUy1RWoLDfydAatP4NaRm99X/WbQEph7q/PymJnCFIOOwKOx3pBmp5ys8trO0dM+CKGuJgeZP9fAR4mQpA==}
+  '@fontsource/dm-mono@5.3.0':
+    resolution: {integrity: sha512-OINjI8C1S/wpchhQxl7njZdMn4+hnDCpQ4YtvvOpKNARo+0J8O1x1IcrChxNjHOhfVv1by8C/FQoy3hXK+C1Ug==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -1626,9 +1626,9 @@ snapshots:
 
   '@fontsource-variable/archivo@5.3.0': {}
 
-  '@fontsource-variable/atkinson-hyperlegible-mono@5.3.0': {}
+  '@fontsource-variable/jost@5.3.0': {}
 
-  '@fontsource-variable/atkinson-hyperlegible-next@5.3.0': {}
+  '@fontsource/dm-mono@5.3.0': {}
 
   '@humanfs/core@0.19.2':
     dependencies:

@@ -1,0 +1,185 @@
+/* Artwork as lenses draw it: the same marks everywhere (progress, watched, new, offline, frame/AI labels). */
+.art {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-poster);
+  background-color: var(--c2, var(--surface));
+  background-image: linear-gradient(160deg, var(--c1, var(--surface-3)), var(--c2, var(--surface)));
+  background-size: cover;
+  background-position: center;
+  isolation: isolate;
+  contain: paint;
+}
+
+.poster {
+  aspect-ratio: 2 / 3;
+}
+
+.wide {
+  aspect-ratio: 16 / 9;
+}
+
+.img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 280ms var(--ease);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.loaded {
+  opacity: 1;
+}
+
+/* Hairline inner edge so posters read as objects on any background. */
+.art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+  pointer-events: none;
+}
+
+.typeset {
+  display: grid;
+  align-items: end;
+  container-type: inline-size;
+}
+
+.typeset > span {
+  margin: 11cqi;
+  font-weight: 500;
+  font-size: clamp(0.8rem, 11cqi, 1.6rem);
+  line-height: 1.05;
+  color: #fff;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 12px rgb(0 0 0 / 0.35);
+}
+
+@container (max-width: 72px) {
+  .typeset > span {
+    display: none;
+  }
+}
+
+.prog {
+  position: absolute;
+  z-index: 4;
+  left: 8%;
+  right: 8%;
+  bottom: 7px;
+  height: 3px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 0.3);
+  overflow: hidden;
+}
+
+.prog > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: #fff;
+}
+
+.watched {
+  position: absolute;
+  z-index: 4;
+  right: 6px;
+  top: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgb(8 8 10 / 0.6);
+  color: #fff;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.watched svg {
+  width: 11px;
+  height: 11px;
+}
+
+.newDot {
+  position: absolute;
+  z-index: 4;
+  right: 8px;
+  top: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgb(0 0 0 / 0.25),
+    0 0 12px rgb(255 255 255 / 0.8);
+}
+
+/* A drive that isn't answering: the title stays, greyed, and says so. */
+.offline .img {
+  filter: grayscale(1) brightness(0.6);
+}
+
+.offlineTag {
+  position: absolute;
+  z-index: 4;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(8 8 10 / 0.75);
+  color: #e9e6df;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.label {
+  position: absolute;
+  z-index: 4;
+  left: 6px;
+  top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(8 8 10 / 0.72);
+  color: #e9e6df;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.label svg {
+  width: 9px;
+  height: 9px;
+}
+
+.labelAi {
+  background: rgb(8 8 10 / 0.86);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.55);
+  color: #fff;
+}
+
+/* Tiny art (mosaics, thumbnails) carries colour only. */
+.bare .label,
+.bare .watched,
+.bare .newDot,
+.bare .offlineTag,
+.bare .prog {
+  display: none;
+}

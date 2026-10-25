@@ -7,6 +7,8 @@
 - the player, with an explainable stats overlay;
 - libraries and scanning.
 
+> **Update (lenses):** the home page of shelves, the library grid page, the sidebar and the search dialog are gone. The library now fills the window, drawn by a **lens** (Wall, Flow, Shelf, Gallery, or a kit lens made of data), and the controls float over it as glass: the island at the top (where you are, search, spaces, filters, live server events), the lens bar at the bottom, and one corner menu. Item pages, Libraries & scanning and Remote access open over the library, which stays mounted underneath. [LENSES.md](../LENSES.md) describes the shell and the lens contract. The rest of this page records the client as phases C and D built it; notes like this one mark what has changed since.
+
 It runs fully against an in-browser **mock backend** (MSW). The mock is built from the real test-library manifest and the feature clips' probe facts, so every screen works without flux-server. The same build talks to a real server when `VITE_FLUX_API` is set.
 
 Quality gates (all green): `pnpm typecheck` · `pnpm lint` (ESLint 10 + typescript-eslint type-checked + React Compiler hook rules, zero warnings) · `pnpm test` (75 vitest tests) · `pnpm build`.
@@ -24,6 +26,8 @@ The direction comes from one brief: *calm, cinematic, poster-first; the library 
   - Atkinson Hyperlegible Next for body text: legible at 10 feet and good for accessibility.
   - Atkinson Hyperlegible Mono for **edge codes**: technical facts set like the print along a film's edge (`2160P · HEVC MAIN 10 · HDR10 · E-AC-3 5.1`).
   - All fonts are self-hosted via `@fontsource-variable`. A private media server should make no third-party font requests. Latin subsets are 90 + 34 + 18 kB woff2, loaded on demand.
+
+  > **Update:** body and display type is now Jost (light weights for display sizes), edge codes are set in DM Mono, and condensed Archivo stays for tape spines (and is offered to kit lenses). All three are self-hosted through `@fontsource`.
 - **Colour only where it means something.** Playback paths get semantic colours, used for the plan pill, the "expected playback" dot and scan states:
   - phosphor green: direct play;
   - blue: repackaged;
@@ -33,6 +37,8 @@ The direction comes from one brief: *calm, cinematic, poster-first; the library 
   - the virtual grid uses a roving tabindex with Page/Home/End;
   - home shelves use geometric up/down between shelves (`src/components/spatial.ts`);
   - the player has YouTube-style shortcuts, with `?` for help.
+
+  > **Update:** each lens now moves focus itself (`LensView.move`), and the shell routes the arrows to it; `spatial.ts` and the shelves are gone. The room light follows the focused title in every lens.
 - **Explainability is a first-class surface, not a debug page.**
   - "Expected on this device" on the detail page.
   - "Matched as" with a confidence meter, the evidence list, provider ids and TMDB attribution.
@@ -41,11 +47,13 @@ The direction comes from one brief: *calm, cinematic, poster-first; the library 
   - The player's stats overlay (below).
 - **Calm copy.** Sentence case, plain verbs. Errors say what happened and what to do; empty states invite an action. Numbered steps appear only where order is real (onboarding).
 
-The light theme is real, not inverted: "house lights up", a cool grey room, and the ambient wash at lower strength. The theme follows the system by default and can be overridden from the sidebar. The resolved theme is set before first paint by an inline script in `index.html`.
+The light theme is real, not inverted: "house lights up", a cool grey room, and the ambient wash at lower strength. The theme follows the system by default and can be overridden from the sidebar (now: the corner menu). The resolved theme is set before first paint by an inline script in `index.html`.
 
 ## Screens
 
 Screenshots are in `$FLUX_WORK/bench/web-screens/`, named `<screen>-<dark|light>-<desktop|phone>.png`: 12 screens × 4 = 48 files. Regenerate them with `pnpm screens`.
+
+> **Update:** Home, Library, Search and Focus below are replaced by the shell: `/` is every film and show library merged and `/library/:id` is one library, each drawn by the lens you chose for it, with filter, sort and search text in the query string (`show=`, `sort=`, `q=`). Search is the island (type anywhere, or `/` or `⌘K`). Item, Connect and Admin open over the library; the player is unchanged in what it does and restyled as glass. `pnpm screens` now shoots the lenses, the island, search, the lens gallery and the item overlay too (the list is in `scripts/screens.mjs`).
 
 | Screen | Route | What's there |
 |---|---|---|
@@ -80,6 +88,17 @@ routes/     Home, Library, Item, Player, Connect, Admin (each its own chunk)
 mock/       db.ts (catalog), handlers.ts (MSW), art.ts (stand-in posters + real blurhash),
             media.ts, curated.ts, fixtures.json (generated), browser.ts (boot)
 ```
+
+> **Update:** `components/` keeps Art, Cards (PosterCard), VirtualGrid (a videos library's folders), QrCode and Icon; Row, SearchOverlay and spatial.ts are gone, as are `routes/Home` and `routes/Library`. New:
+>
+> ```
+> shell/  Shell.tsx (spaces, lens choice, keyboard, overlays), Island.tsx + live.ts (search, spaces,
+>         live events), events-bridge.ts (SSE → island), LensBar, Corner, Sheet, LensGallery, space.ts
+> lens/   types.ts (the lens contract), LensHost.tsx, registry.ts, sections.ts (filter, sort, sections),
+>         palette.ts (colours from blurhash), art.ts, flight.ts, bridge.ts,
+>         wall/, flow/, shelf/, gallery/ (first-party lenses), kit/ (lenses as data)
+> api/    space-list.ts (one library, or all of them merged)
+> ```
 
 ### API layer: exact mirror of flux-core
 
@@ -212,6 +231,13 @@ Reported via `POST /sessions/{id}/progress`:
 
 `LibraryList` loads a first page of 120 so the grid paints immediately, then pages of 1,000 in the background. `Page.total` sizes the scrollbar from the start, and unloaded cells are skeletons. SSE `items_changed` refreshes in place, keeping old items on screen until the new first page lands.
 
+> **Update:** for films and shows the grid is now the Wall lens (`src/lens/wall`), at four zoom levels with section headings and skeleton rows. It draws with WebGPU, one draw call a frame (posters as mipmapped textures, text from a glyph atlas), over a transparent native scroller; the titles on screen are mirrored as invisible links for screen readers and tests. A DOM version, virtualised as this grid was, stands in where WebGPU isn't available ([LENSES.md](../LENSES.md#the-wall-on-the-gpu)). `VirtualGrid` remains for a videos library's folders. "All" merges every film and show library's `LibraryList` and shows only the merged titles that can no longer move while other libraries load (`api/space-list.ts`). The background pages wait while the library is hidden (an item page, a sheet, the player), so they don't compete with what you opened; first pages still load. `pnpm bench:grid` measures the Wall:
+>
+> - home ready is the first wall tile;
+> - "fully loaded" is the last page response;
+> - the keyboard path is 25 ArrowDowns at 40 ms, reported as `keyboard_focus_index_after_25_arrow_downs` (it was 25 PageDowns);
+> - `grid_rows` is now `wall_height_px`.
+
 ### Mock backend
 
 - **Catalog** (`src/mock/`, a lazy chunk):
@@ -278,6 +304,19 @@ Measured with Google Chrome (headless) via `playwright-core`, against `vite prev
 | Route chunks | Home 2.5 · Library 3.6 · Item 5.1 · Player 7.3 · Connect 11.1 (QR encoder) · Admin 3.4 kB |
 | hls.js 1.7.3 | 173 kB, loaded only on Play intent, and never on Safari |
 | Mock backend (MSW + fixtures) | 242 kB, mock builds only; absent from `VITE_FLUX_API=/` builds |
+
+> **Update (lenses):** the shell (island, lens bar, lens host, live events) now sits on the initial path in place of the Home and Library chunks: **109.5 kB** gzip (101.1 kB JS + 8.4 kB CSS), measured on a `VITE_FLUX_API=/` build. Each lens loads on first use, JS + CSS: Wall 5.4 + 1.2, Flow 5.4 + 1.6, Shelf 7.4 + 2.9, Gallery 7.1 + 2.4, the kit runtime 7.3 (+ 3.1 for its five examples), the lens gallery 7.3 + 2.2 kB.
+>
+> The grid bench on the Wall (WebGPU), `vite preview` of the mock build, median of 3:
+>
+> - home ready 504 ms;
+> - frame time p50 / p95 / p99 / max **16.7 / 16.8 / 16.8 / 16.8 ms**: **0** janky frames (the DOM Wall: 1, worst 33.3 ms);
+> - **0** long tasks;
+> - 36 title links mirrored and 193 DOM nodes in the page (the DOM Wall: 467);
+> - 42 MB JS heap;
+> - 25 ArrowDowns land on title 1,708.
+>
+> Zooming, the DOM Wall's worst case, went from 23 dropped frames (worst 117 ms) to none; see [LENSES.md](../LENSES.md#the-wall-on-the-gpu) for the full comparison.
 
 ### Library grid, 10,000 items (`pnpm bench:grid` → `bench/results/flux-web-grid-scroll.json`)
 

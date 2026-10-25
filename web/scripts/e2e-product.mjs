@@ -16,20 +16,35 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
+  ITEM,
   MEDIA,
   NO_AV1_INIT,
   SHOTS,
+  SKIP_COACH,
+  SORT_CHIPS,
+  TILE,
   WORK,
   api,
+  findTile,
+  gotoItem,
+  islandRest,
+  itemFullShot,
+  lastPageOf,
   launchChrome,
   load1,
   machine,
+  openIsland,
   quietGate,
   sampleRss,
   sleep,
+  sortBy,
+  spaceChip,
   startServer,
   summary,
+  tileHrefs,
+  waitNewTiles,
   waitScansIdle,
+  wallScrollPerf,
   watchPage,
   writeResult,
 } from './e2e-lib.mjs';
@@ -82,7 +97,9 @@ async function step(name, fn, { always = false } = {}) {
 async function shot(page, name, opts = {}) {
   shotN += 1;
   const file = join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`);
-  await page.screenshot({ path: file, ...opts });
+  // Item pages scroll inside their overlay, where fullPage can't reach.
+  if (opts.fullPage && (await page.locator(ITEM).count())) await itemFullShot(page, file);
+  else await page.screenshot({ path: file, ...opts });
   return file;
 }
 
@@ -127,12 +144,6 @@ async function recordEvents(page) {
       }
     };
   });
-}
-
-async function gotoItem(page, base, id) {
-  await page.goto(`${base}/item/${id}`, { waitUntil: 'domcontentloaded' });
-  await page.locator('h1').first().waitFor();
-  await page.waitForLoadState('networkidle').catch(() => undefined);
 }
 
 /** Install an independent first-frame probe and the click clock, like bench-playback.mjs. */
@@ -199,10 +210,10 @@ async function playFromItem(page, base, { item, asset = null, seeks = 10, name, 
       if (idx >= 0) await radio.nth(idx).check({ force: true });
     }
   }
-  const button = page.locator('button', { hasText: /^(Resume|Play)/ }).first();
+  const button = page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first();
   await button.waitFor();
   // "Expected on this device" (server /plan) — compared with what Play does.
-  const expectedEl = page.locator('p[data-tone] strong').first();
+  const expectedEl = page.locator(`${ITEM} p[data-tone] strong`).first();
   await expectedEl.waitFor({ timeout: 5000 }).catch(() => undefined);
   const expectedLabel = (await expectedEl.textContent().catch(() => null))?.trim() ?? null;
   await button.hover();
@@ -280,7 +291,14 @@ const rssSamples = [{ at: 'startup', mb: server.rss() }];
 const rssSampler = sampleRss(server.pid, 500);
 
 const browser = await launchChrome();
+// The walk's own context meets the first-run hint once and dismisses it; other
+// contexts (other devices, other themes) start with it seen.
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+const newContext = async (opts) => {
+  const c = await browser.newContext(opts);
+  await c.addInitScript(SKIP_COACH);
+  return c;
+};
 const page = await ctx.newPage();
 watchPage(page, errors);
 const libIds = {};
@@ -295,21 +313,28 @@ await step(
     await page.goto(base + '/', { waitUntil: 'networkidle' });
     await page.getByText('Your library is empty').waitFor({ timeout: 10_000 });
     const s = await shot(page, 'first-run-empty-home');
+    // The first-run hint floats over the wall's corner, where later steps point: dismiss it.
+    const coach = page.getByRole('complementary', { name: 'How flux works now' });
+    if (await coach.isVisible().catch(() => false)) await coach.getByRole('button', { name: 'Dismiss' }).click();
     return { shot: s, server_ready_ms: Math.round(server.readyMs) };
   },
   { always: true },
 );
+// Whatever happened above, no later page load shows the hint again.
+await ctx.addInitScript(SKIP_COACH);
 
 await step(
   'first-run-add-libraries-ui',
   async () => {
     await page.getByRole('link', { name: 'Add a library' }).click();
-    await page.getByRole('heading', { name: /Libraries/ }).waitFor();
+    // Libraries & scanning opens as a sheet over the (empty) library.
+    const sheet = page.getByRole('dialog', { name: 'Libraries & scanning' });
+    await sheet.getByRole('heading', { name: /Libraries/ }).waitFor();
     await recordEvents(page);
-    await page.locator('main header p[data-state="open"]').waitFor({ timeout: 10_000 });
+    await sheet.locator('header p[data-state="open"]').waitFor({ timeout: 10_000 });
     const perLib = [];
     for (const lib of LIBRARIES) {
-      await page.getByRole('button', { name: 'Add library' }).click();
+      await sheet.getByRole('button', { name: 'Add library' }).click();
       const dlg = page.locator('dialog[open]');
       await dlg.getByLabel('Name').fill(lib.name);
       await dlg.getByLabel(lib.kind, { exact: true }).check();
@@ -320,7 +345,7 @@ await step(
       await dlg.waitFor({ state: 'detached' }).catch(() => undefined);
       await page.waitForFunction(() => !document.querySelector('dialog[open]'));
       // The library card appears and goes live.
-      const card = page.locator('article', { has: page.getByRole('link', { name: lib.name, exact: true }) });
+      const card = sheet.locator('article', { has: page.getByRole('link', { name: lib.name, exact: true }) });
       await card.waitFor();
       let midShot = null;
       let sawScanningInUi = false;
@@ -374,7 +399,7 @@ await step(
     const libsNow = await api(base, '/api/v1/libraries');
     const cardCounts = {};
     for (const L of libsNow) {
-      const edge = await page.locator('article', { has: page.getByRole('link', { name: L.name, exact: true }) }).locator('p.edge').first().innerText();
+      const edge = await sheet.locator('article', { has: page.getByRole('link', { name: L.name, exact: true }) }).locator('p.edge').first().innerText();
       cardCounts[L.name] = { card: edge.replace(/\s+/g, ' '), api_items: L.item_count };
     }
     const countsOk = libsNow.every((L) => cardCounts[L.name].card.toLowerCase().includes(`${L.item_count.toLocaleString()} items`));
@@ -398,14 +423,15 @@ features = await fileMap(base, libIds.Features);
 research = await fileMap(base, libIds.Research);
 
 await step('home', async () => {
+  // Home is the "All" space: every film and show on the wall, and the island saying where you are.
   await page.goto(base + '/', { waitUntil: 'networkidle' });
-  await page.locator('#hero-title').waitFor();
-  const rows = await page.locator('section h2').allTextContents();
-  const cards = await page.locator('main a[href^="/item/"]').count();
-  // No typeset fallback title behind the hero's own heading (it overlapped the meta line).
-  const heroGhost = await page.locator('section[aria-labelledby="hero-title"] [role="img"] span, section[aria-labelledby="hero-title"] [aria-hidden="true"] span').count();
+  await page.locator(TILE).first().waitFor();
+  // The wall's section headings (A, B, C… under the default title sort) stand where Home's rows were.
+  const rows = await page.locator('[role="grid"] [role="rowheader"]').evaluateAll((els) => els.map((e) => (e.firstElementChild ?? e).textContent));
+  const cards = await page.locator(TILE).count();
+  const island = await islandRest(page);
   const s = await shot(page, 'home');
-  return { ok: heroGhost === 0, rows, cards, hero_fallback_titles: heroGhost, shot: s };
+  return { ok: cards > 0 && /^All\b/.test(island), rows, cards, island, shot: s };
 });
 
 await step('navigation-latency', async () => {
@@ -413,28 +439,28 @@ await step('navigation-latency', async () => {
   const samples = [];
   for (let i = 0; i < 6; i++) {
     await page.goto(`${base}/library/${libIds.Movies}?sort=-year`, { waitUntil: 'networkidle' });
-    const card = page.locator('[role="grid"] a[href^="/item/"]').nth(i * 3);
+    const card = page.locator(TILE).nth(i * 3);
     const href = await card.getAttribute('href');
     const title = (await card.getAttribute('aria-label')).split(',')[0];
     await card.hover();
     await page.waitForTimeout(250);
     const r = await page.evaluate(
-      ([href, title]) =>
+      ([href, title, item]) =>
         new Promise((resolve) => {
           const a = document.querySelector(`[role="grid"] a[href="${href}"]`);
           const t0 = performance.now();
           let titleAt = null;
           const tick = () => {
-            const h1 = document.querySelector('main h1');
+            const h1 = document.querySelector(`${item} h1`);
             if (titleAt === null && location.pathname === href && h1?.textContent === title) titleAt = performance.now() - t0;
             if (titleAt !== null && document.querySelector('#files')) return resolve({ title_ms: Math.round(titleAt), detail_ms: Math.round(performance.now() - t0) });
             if (performance.now() - t0 > 5000) return resolve({ title_ms: titleAt, detail_ms: null });
             requestAnimationFrame(tick);
           };
-          a.click();
+          a.click(); // a plain click: the poster flies into the item page
           requestAnimationFrame(tick);
         }),
-      [href, title],
+      [href, title, ITEM],
     );
     samples.push(r);
   }
@@ -448,58 +474,22 @@ await step('navigation-latency', async () => {
 });
 
 await step('library-grid-movies', async () => {
+  // Into Movies with the island's Spaces chip, from another space: from Home it
+  // would be instant, because "All" has already loaded every Movies page.
+  await page.goto(`${base}/library/${libIds.TV}`, { waitUntil: 'networkidle' });
+  const before = await tileHrefs(page);
+  const chip = await spaceChip(page, 'Movies');
+  const loaded = lastPageOf(page, libIds.Movies, 30_000);
   const t0 = Date.now();
-  await page.getByRole('navigation', { name: 'Main' }).first().getByRole('link', { name: /^Movies/ }).click();
-  await page.locator('[role="grid"] a[href^="/item/"]').first().waitFor();
+  await chip.click();
+  await waitNewTiles(page, before);
   const firstCellMs = Date.now() - t0;
-  await page.waitForFunction(() => !/loaded/.test(document.querySelector('header p')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => undefined);
-  const header = await page.locator('main header p').first().textContent();
+  await loaded;
+  const header = await islandRest(page);
   const top = await shot(page, 'library-movies');
-  // Fling through the whole grid and measure frame times (rAF deltas) + long tasks.
-  const perf = await page.evaluate(async () => {
-    const frames = [];
-    let last = performance.now();
-    let run = true;
-    const loop = (t) => {
-      frames.push(t - last);
-      last = t;
-      if (run) requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-    const longTasks = [];
-    const po = new PerformanceObserver((l) => longTasks.push(...l.getEntries().map((e) => Math.round(e.duration))));
-    try {
-      po.observe({ type: 'longtask', buffered: false });
-    } catch {
-      /* unsupported */
-    }
-    const h = document.documentElement.scrollHeight;
-    for (let y = 0; y < h; y += 1400) {
-      window.scrollTo(0, y);
-      await new Promise((r) => setTimeout(r, 16));
-    }
-    for (let y = h; y > 0; y -= 900) {
-      window.scrollTo(0, y);
-      await new Promise((r) => setTimeout(r, 16));
-    }
-    await new Promise((r) => setTimeout(r, 300));
-    run = false;
-    po.disconnect();
-    const s = [...frames].sort((a, b) => a - b);
-    const q = (p) => Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10;
-    return {
-      frames: frames.length,
-      p50: q(0.5),
-      p95: q(0.95),
-      p99: q(0.99),
-      janky_over_25ms: frames.filter((f) => f > 25).length,
-      long_tasks: longTasks,
-      cards_in_dom: document.querySelectorAll('[role="grid"] a[href^="/item/"]').length,
-      dom_nodes: document.getElementsByTagName('*').length,
-      heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
-      scroll_height: h,
-    };
-  });
+  // Fling through the whole wall and measure frame times (rAF deltas) + long tasks.
+  const perf = await wallScrollPerf(page, { down: 1400, up: 900 });
+  await page.mouse.move(720, 450);
   await page.mouse.wheel(0, 9000);
   await page.waitForTimeout(800);
   const mid = await shot(page, 'library-movies-scrolled');
@@ -508,36 +498,32 @@ await step('library-grid-movies', async () => {
 
 await step('library-grid-tv-sorted', async () => {
   await page.goto(`${base}/library/${libIds.TV}?sort=-added`, { waitUntil: 'networkidle' });
-  await page.locator('[role="grid"] a[href^="/item/"]').first().waitFor();
-  const header = await page.locator('main header p').first().textContent();
+  await page.locator(TILE).first().waitFor();
+  const header = await islandRest(page);
   const s = await shot(page, 'library-tv-recent');
-  // Every sort answers through the UI.
+  // Every sort answers through the UI: the island's Sort chips.
   const sorts = {};
-  for (const v of ['title', '-title', 'year', '-year', 'added', '-added']) {
-    await page.locator('main select').selectOption(v);
-    await page.waitForTimeout(400);
-    sorts[v] = (await page.locator('[role="grid"] a[href^="/item/"]').first().getAttribute('aria-label')) ?? null;
-  }
+  for (const v of Object.keys(SORT_CHIPS)) sorts[v] = await sortBy(page, v);
+  await page.keyboard.press('Escape');
   return { header, first_card_by_sort: sorts, shot: s };
 });
 
 await step('search', async () => {
   await page.goto(base + '/', { waitUntil: 'networkidle' });
-  await page.keyboard.press('/');
-  const dlg = page.locator('dialog[open]');
-  await dlg.waitFor();
+  await openIsland(page); // `/`
   const t0 = Date.now();
   await page.keyboard.type('blade run', { delay: 40 });
-  await dlg.locator('a[href^="/item/"], [role="option"]').first().waitFor({ timeout: 10_000 });
+  const options = page.getByRole('listbox', { name: 'Results' }).getByRole('option');
+  await options.first().waitFor({ timeout: 10_000 });
   const firstResultMs = Date.now() - t0;
-  const results = (await dlg.locator('a[href^="/item/"], [role="option"]').allInnerTexts()).map((s) => s.replace(/\n+/g, ' · ')).slice(0, 8);
-  // Thumbnails stay thumbnail-sized without art (they were 156 px wide with the title stacked letter by letter).
-  const thumbs = await dlg.locator('[role="option"] [role="img"]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
+  const results = (await options.allInnerTexts()).map((s) => s.replace(/\n+/g, ' · ').replace(/ · ↵$/, '')).slice(0, 8);
+  // Thumbnails stay thumbnail-sized, art or not (they were 156 px wide with the title stacked letter by letter).
+  const thumbs = await options.locator('button > :first-child').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
   const s = await shot(page, 'search');
   await page.keyboard.press('Enter');
   await page.waitForURL(/\/item\/\d+/, { timeout: 10_000 });
-  await page.locator('h1').first().waitFor();
-  const landed = await page.locator('h1').first().textContent();
+  await page.locator(`${ITEM} h1`).waitFor();
+  const landed = await page.locator(`${ITEM} h1`).textContent();
   ctxState.searchItem = Number(page.url().match(/item\/(\d+)/)[1]);
   return { ok: thumbs.every((w) => w <= 48), first_result_ms: firstResultMs, results, thumb_widths: thumbs, landed, shot: s };
 });
@@ -546,8 +532,8 @@ await step('item-movie', async () => {
   const id = ctxState.searchItem;
   await gotoItem(page, base, id);
   await page.waitForTimeout(400);
-  await page.locator('p[data-tone] strong').first().waitFor({ timeout: 5000 }).catch(() => undefined);
-  const expected = await page.locator('p[data-tone]').first().innerText().catch(() => null);
+  await page.locator(`${ITEM} p[data-tone] strong`).first().waitFor({ timeout: 5000 }).catch(() => undefined);
+  const expected = await page.locator(`${ITEM} p[data-tone]`).first().innerText().catch(() => null);
   const s = await shot(page, 'item-movie', { fullPage: true });
   return { id, expected_on_device: expected, shot: s };
 });
@@ -556,22 +542,24 @@ await step('item-show-season-episode', async () => {
   const shows = await allItems(base, libIds.TV);
   const show = shows.find((s) => s.title === 'Breaking Bad') ?? shows.find((s) => (s.child_count ?? 0) > 2);
   await gotoItem(page, base, show.id);
-  await page.locator('[role="tablist"] [role="tab"]').first().waitFor();
-  const tabs = await page.locator('[role="tablist"] [role="tab"]').allInnerTexts();
+  // Scoped: the lens bar under the overlay is a tablist too.
+  const tabList = page.locator(`${ITEM} [role="tablist"] [role="tab"]`);
+  await tabList.first().waitFor();
+  const tabs = await tabList.allInnerTexts();
   const sShow = await shot(page, 'item-show', { fullPage: true });
   const seasons = await api(base, `/api/v1/items/${show.id}/children`);
   const season = seasons[Math.min(1, seasons.length - 1)];
   await page.goto(`${base}/item/${season.id}`, { waitUntil: 'networkidle' });
   await page.waitForURL(new RegExp(`/item/${show.id}\\?season=${season.id}`), { timeout: 10_000 });
-  const selected = await page.locator('[role="tab"][aria-selected="true"]').innerText();
+  const selected = await page.locator(`${ITEM} [role="tab"][aria-selected="true"]`).innerText();
   const sSeason = await shot(page, 'item-season');
   const eps = await api(base, `/api/v1/items/${season.id}/children`);
-  await page.locator(`a[href="/item/${eps[0].id}"]`).first().click();
+  await page.locator(`${ITEM} a[href="/item/${eps[0].id}"]`).first().click();
   await page.waitForURL(new RegExp(`/item/${eps[0].id}`));
-  await page.locator('h1').first().waitFor();
+  await page.locator(`${ITEM} h1`).waitFor();
   // SPA navigation: the load state is already 'networkidle'; wait for the detail itself.
   await page.locator('#files').waitFor({ timeout: 10_000 });
-  const backLink = await page.locator('a', { hasText: show.title }).first().isVisible();
+  const backLink = await page.locator(`${ITEM} a`, { hasText: show.title }).first().isVisible();
   const sEp = await shot(page, 'item-episode', { fullPage: true });
   ctxState.episode = eps[0].id;
   ctxState.show = show.id;
@@ -623,7 +611,7 @@ for (const p of [...PLAYS, ...RESEARCH_PLAYS]) {
 
 await step('play-transcode-av1-no-av1-device', async () => {
   // A second context whose Chrome reports no AV1 decoder (MSE, canPlayType, mediaCapabilities).
-  const c2 = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+  const c2 = await newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
   await c2.addInitScript(NO_AV1_INIT);
   const p2 = await c2.newPage();
   watchPage(p2, errors);
@@ -703,7 +691,7 @@ await step('audio-track-switch', async () => {
 await step('subtitles', async () => {
   const f = features.get('h264_multi_audio_subs.mkv');
   await gotoItem(page, base, f.item);
-  const button = page.locator('button', { hasText: /^(Resume|Play)/ }).first();
+  const button = page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first();
   await button.hover();
   await button.click();
   await page.waitForFunction(() => window.__fluxPlayback?.metrics().ttffMs != null, null, { timeout: 30_000 });
@@ -743,7 +731,7 @@ await step('subtitles', async () => {
 await step('resume-continue-watching', async () => {
   const f = features.get('long_2h_360p.mkv');
   await gotoItem(page, base, f.item);
-  await page.locator('button', { hasText: /^(Resume|Play)/ }).first().click();
+  await page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first().click();
   await page.waitForFunction(() => window.__fluxPlayback?.metrics().ttffMs != null, null, { timeout: 30_000 });
   const target = 1834;
   await seekOnce(page, target);
@@ -754,10 +742,14 @@ await step('resume-continue-watching', async () => {
   // The position stored is where we left (the unmount report), not the last seek (1834 s).
   const stored = (await api(base, `/api/v1/items/${f.item}`)).progress;
   await page.goto(base + '/', { waitUntil: 'networkidle' });
-  const heroTitle = await page.locator('#hero-title').textContent();
-  const eyebrow = await page.locator('section[aria-labelledby="hero-title"] p.edge').first().textContent();
+  // Continue watching lives in the island: the film we left is the first under "Continue".
+  await openIsland(page);
+  const cont = page.locator('section', { has: page.locator('h3', { hasText: /^Continue$/ }) });
+  const resume = cont.locator('button').first();
+  await resume.waitFor({ timeout: 10_000 });
+  const heroTitle = await resume.locator('b').textContent();
+  const eyebrow = await cont.locator('h3').textContent();
   const sHome = await shot(page, 'home-continue-watching');
-  const resume = page.locator('section[aria-labelledby="hero-title"] button', { hasText: 'Resume' });
   await resume.hover();
   await armFirstFrameProbe(page);
   await resume.click();
@@ -766,7 +758,7 @@ await step('resume-continue-watching', async () => {
   const sPlay = await shot(page, 'resumed');
   await backToDetails(page);
   return {
-    ok: Math.abs(r.t - left) < 15 && /Continue watching/.test(eyebrow ?? '') && stored.position_ms >= (left - 1.5) * 1000,
+    ok: Math.abs(r.t - left) < 15 && /Continue/.test(eyebrow ?? '') && stored.position_ms >= (left - 1.5) * 1000,
     left_at_s: Math.round(left * 10) / 10,
     stored_on_leave_s: stored.position_ms / 1000,
     resumed_at_s: Math.round(r.t * 10) / 10,
@@ -793,14 +785,13 @@ await step('mark-watched', async () => {
   const unmark = page.getByRole('button', { name: /^Mark (as )?unwatched/i });
   await unmark.waitFor({ timeout: 5000 });
   const d = await api(base, `/api/v1/items/${f.item}`);
-  const resumeGone = (await page.locator('button', { hasText: /^Resume/ }).count()) === 0;
+  const resumeGone = (await page.locator(`${ITEM} button`, { hasText: /^Resume/ }).count()) === 0;
   const s = await shot(page, 'mark-watched');
   const home = await api(base, '/api/v1/home');
   const stillContinue = home.continue_watching.some((i) => i.id === f.item);
-  // The card in its library shows the watched mark.
+  // The card on its library's wall shows the watched mark (scrolled to: the wall draws only what is on screen).
   await page.goto(`${base}/library/${libIds.Features}`, { waitUntil: 'networkidle' });
-  const card = page.locator(`[role="grid"] a[href="/item/${f.item}"]`).first();
-  const cardLabel = await card.getAttribute('aria-label');
+  const cardLabel = await findTile(page, f.item);
   // And back.
   await gotoItem(page, base, f.item);
   await page.getByRole('button', { name: /^Mark (as )?unwatched/i }).click();
@@ -845,10 +836,12 @@ await step('frame-posters', async () => {
     after = await count();
     if (Object.values(after).reduce((a, b) => a + b.frame_posters, 0) >= 60) break;
   }
-  await page.goto(`${base}/library/${libIds.Movies}?sort=added`, { waitUntil: 'networkidle' });
+  // Art jobs run newest first (flux-catalog jobs.rs), so the frame posters lead "Added".
+  await page.goto(`${base}/library/${libIds.Movies}?sort=-added`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   const s1 = await shot(page, 'frame-posters-movies');
-  const labels = await page.locator('[role="grid"] img').count();
+  // Posters drawn: <img> tiles on the DOM Wall, titles with art on the GPU Wall.
+  const labels = await page.locator('[role="grid"] img, [role="grid"] a[data-art]:not([data-art="none"])').count();
   await page.goto(base + '/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   const s2 = await shot(page, 'frame-posters-home');
@@ -871,7 +864,9 @@ await step('unavailable-root', async () => {
   // A scratch clone of features is its own library; rename its folder away and back.
   await page.goto(base + '/admin', { waitUntil: 'networkidle' });
   await recordEvents(page);
-  await page.getByRole('button', { name: 'Add library' }).click();
+  const sheet = page.getByRole('dialog', { name: 'Libraries & scanning' });
+  const scratchCard = sheet.locator('article', { has: page.getByRole('link', { name: 'Scratch', exact: true }) });
+  await sheet.getByRole('button', { name: 'Add library' }).click();
   const dlg = page.locator('dialog[open]');
   await dlg.getByLabel('Name').fill('Scratch');
   await dlg.getByLabel('Films', { exact: true }).check();
@@ -897,23 +892,32 @@ await step('unavailable-root', async () => {
   }
   const watcherMs = byWatcher ? Date.now() - tMove : null;
   if (!byWatcher) {
-    const card = page.locator('article', { has: page.getByRole('link', { name: 'Scratch', exact: true }) });
-    await card.getByRole('button', { name: /Scan now/ }).click();
+    await scratchCard.getByRole('button', { name: /Scan now/ }).click();
     await waitScansIdle(base, { timeoutMs: 60_000, ids: [lib.id] }).catch(() => undefined);
     await sleep(500);
   }
   const L1 = (await api(base, '/api/v1/libraries')).find((l) => l.id === lib.id);
   await page.waitForTimeout(800);
-  await page.locator('article', { has: page.getByRole('link', { name: 'Scratch', exact: true }) }).scrollIntoViewIfNeeded();
-  const cardAway = await page.locator('article', { has: page.getByRole('link', { name: 'Scratch', exact: true }) }).innerText();
+  await scratchCard.scrollIntoViewIfNeeded();
+  const cardAway = await scratchCard.innerText();
   const sseAway = await page.evaluate(() => (window.__sse ?? []).filter((x) => x.e.type === 'source_availability').map((x) => x.e));
   const sAdmin = await shot(page, 'unavailable-admin');
+  // Back on the library, the island says so: live events held while the sheet
+  // covered it play one by one (a scan's "new films" first, ~6 s each).
+  await page.getByRole('button', { name: 'Close Libraries & scanning' }).click();
+  const notice = await page
+    .getByRole('status')
+    .filter({ hasText: /isn.t answering|is offline/ })
+    .first()
+    .innerText({ timeout: 20_000 })
+    .catch(() => null);
   await page.goto(`${base}/library/${lib.id}`, { waitUntil: 'networkidle' });
-  const notice = await page.locator('[role="note"]').innerText().catch(() => null);
+  // Its titles stay on the wall, marked offline.
+  const offlineTiles = await page.locator(TILE).evaluateAll((as) => as.filter((a) => /, offline$/.test(a.getAttribute('aria-label') ?? '')).length);
   const sLib = await shot(page, 'unavailable-library');
   await gotoItem(page, base, victim.id);
-  const offlineText = await page.getByText(/Offline/).first().innerText().catch(() => null);
-  const playDisabled = await page.locator('button', { hasText: /^(Resume|Play)/ }).first().isDisabled();
+  const offlineText = await page.locator(ITEM).getByText(/Offline/).first().innerText().catch(() => null);
+  const playDisabled = await page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first().isDisabled();
   const sItem = await shot(page, 'unavailable-item');
   const playStatus = await fetch(`${base}/api/v1/play`, {
     method: 'POST',
@@ -942,14 +946,13 @@ await step('unavailable-root', async () => {
   }
   if (!backByWatcher) {
     await page.goto(base + '/admin', { waitUntil: 'networkidle' });
-    const card = page.locator('article', { has: page.getByRole('link', { name: 'Scratch', exact: true }) });
-    await card.getByRole('button', { name: /Scan now/ }).click();
+    await scratchCard.getByRole('button', { name: /Scan now/ }).click();
     await waitScansIdle(base, { timeoutMs: 60_000, ids: [lib.id] }).catch(() => undefined);
   }
   const L2 = (await api(base, '/api/v1/libraries')).find((l) => l.id === lib.id);
   const itemsBack = (await allItems(base, lib.id)).length;
   await gotoItem(page, base, victim.id);
-  const playEnabled = !(await page.locator('button', { hasText: /^(Resume|Play)/ }).first().isDisabled());
+  const playEnabled = !(await page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first().isDisabled());
   const sBack = await shot(page, 'available-again');
   return {
     ok: !L1.roots[0].available && itemsWhileAway === scratchItems.length && playStatus.status === 409 && L2.roots[0].available && itemsBack === scratchItems.length && playEnabled,
@@ -957,7 +960,7 @@ await step('unavailable-root', async () => {
     watcher_ms: watcherMs,
     back_detected_by_watcher: backByWatcher,
     back_ms: backByWatcher ? Date.now() - tBack : null,
-    while_away: { admin_card: cardAway.replace(/\n+/g, ' | '), roots: L1.roots, scan_state: L1.scan.state, last_error: L1.scan.last_error, items: itemsWhileAway, library_notice: notice, item_offline_text: offlineText, play_button_disabled: playDisabled, play_api: playStatus },
+    while_away: { admin_card: cardAway.replace(/\n+/g, ' | '), roots: L1.roots, scan_state: L1.scan.state, last_error: L1.scan.last_error, items: itemsWhileAway, library_notice: notice, library_offline_tiles: offlineTiles, item_offline_text: offlineText, play_button_disabled: playDisabled, play_api: playStatus },
     after_back: { roots: L2.roots, scan_state: L2.scan.state, items: itemsBack, play_enabled: playEnabled },
     sse_source_availability_while_away: sseAway,
     shots: [sAdmin, sLib, sItem, sBack],
@@ -1003,74 +1006,59 @@ await step('library-grid-12k', async () => {
   libIds.Archive = L.id;
   const libs = await waitScansIdle(base, { ids: [L.id], timeoutMs: 300_000 });
   const lib = libs.find((l) => l.id === L.id);
-  await page.goto(`${base}/`, { waitUntil: 'networkidle' });
+  // Into the Archive with the island's Spaces chip, from Movies: Home ("All")
+  // would have loaded the Archive's pages before the click.
+  await page.goto(`${base}/library/${libIds.Movies}`, { waitUntil: 'networkidle' });
+  const before = await tileHrefs(page);
+  const chip = await spaceChip(page, 'Archive');
+  const loaded = lastPageOf(page, L.id, 30_000);
   const tNav = Date.now();
-  await page.getByRole('navigation', { name: 'Main' }).first().getByRole('link', { name: /^Archive/ }).click();
-  await page.locator('[role="grid"] a[href^="/item/"]').first().waitFor();
+  await chip.click();
+  await waitNewTiles(page, before);
   const firstCellMs = Date.now() - tNav;
-  await page.waitForFunction(() => !/loaded/.test(document.querySelector('main header p')?.textContent ?? ''), null, { timeout: 30_000 });
+  if (!(await loaded)) throw new Error('the Archive’s last page did not arrive within 30 s');
   const allLoadedMs = Date.now() - tNav;
-  const header = await page.locator('main header p').first().textContent();
-  const perf = await page.evaluate(async () => {
-    const frames = [];
-    let last = performance.now();
-    let run = true;
-    const loop = (t) => {
-      frames.push(t - last);
-      last = t;
-      if (run) requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-    const longTasks = [];
-    const po = new PerformanceObserver((l) => longTasks.push(...l.getEntries().map((e) => Math.round(e.duration))));
-    try {
-      po.observe({ type: 'longtask', buffered: false });
-    } catch {
-      /* unsupported */
-    }
-    const h = document.documentElement.scrollHeight;
-    for (let y = 0; y < h; y += 2400) {
-      window.scrollTo(0, y);
-      await new Promise((r) => setTimeout(r, 16));
-    }
-    await new Promise((r) => setTimeout(r, 300));
-    run = false;
-    po.disconnect();
-    const s = [...frames].sort((a, b) => a - b);
-    const q = (p) => Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10;
-    return {
-      frames: frames.length,
-      p50: q(0.5),
-      p95: q(0.95),
-      p99: q(0.99),
-      janky_over_25ms: frames.filter((f) => f > 25).length,
-      long_tasks: longTasks,
-      cards_in_dom: document.querySelectorAll('[role="grid"] a[href^="/item/"]').length,
-      dom_nodes: document.getElementsByTagName('*').length,
-      heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
-      scroll_height: h,
-    };
-  });
-  // A–Z rail and the instant filter.
-  await page.evaluate(() => window.scrollTo(0, 0));
+  const header = await islandRest(page);
+  const perf = await wallScrollPerf(page, { down: 2400 });
+  // There is no A–Z rail on the wall: jump the way the scrollbar does, to the
+  // middle of the M titles, and time until they are drawn.
+  const toTop = () => page.evaluate(() => document.querySelector('[role="grid"]').parentElement.scrollTo(0, 0));
+  await toTop();
+  const mAt = (names.filter((x) => x < 'M').length + names.filter((x) => x.startsWith('M')).length / 2) / names.length;
   const tJump = Date.now();
-  await page.getByRole('button', { name: 'Jump to M' }).click();
-  await page.waitForFunction(() => [...document.querySelectorAll('[role="grid"] a[href^="/item/"]')].some((a) => /^Midnight/.test(a.getAttribute('aria-label') ?? '')), null, { timeout: 5000 });
+  await page.evaluate((f) => {
+    const sc = document.querySelector('[role="grid"]').parentElement;
+    sc.scrollTop = f * sc.scrollHeight - sc.clientHeight / 2;
+  }, mAt);
+  await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((a) => /^Midnight/.test(a.getAttribute('aria-label') ?? '')), TILE, { timeout: 5000 });
   const jumpMs = Date.now() - tJump;
   const sJump = await shot(page, 'library-12k-jump-m');
-  await page.evaluate(() => window.scrollTo(0, 0));
+  // The instant filter: the island's search filters the wall as you type.
+  await toTop();
+  const search = await openIsland(page);
   const tFilter = Date.now();
-  await page.getByPlaceholder(/Filter/).fill('velvet harbor');
-  await page.getByRole('status').filter({ hasText: /of/ }).first().waitFor();
+  await search.fill('velvet harbor');
+  await page.waitForFunction(
+    (sel) => {
+      const tiles = [...document.querySelectorAll(sel)];
+      return tiles.length > 0 && tiles.every((a) => /velvet harbor/i.test(a.getAttribute('aria-label') ?? ''));
+    },
+    TILE,
+    { timeout: 10_000 },
+  );
   const filterMs = Date.now() - tFilter;
-  const filterStatus = await page.getByRole('status').filter({ hasText: /of/ }).first().textContent();
+  const filterStatus = await page.getByText(/ on the wall\b/).first().textContent();
+  // The island also lists the server's results; let them land for the shot.
+  await page.getByRole('listbox', { name: 'Results' }).getByRole('option').first().waitFor({ timeout: 3000 }).catch(() => undefined);
   const sFilter = await shot(page, 'library-12k-filter');
-  // Again from Home, now that the scan's aftermath (art jobs queued, WAL) has settled.
-  await page.goto(`${base}/`, { waitUntil: 'networkidle' });
+  // Again from Movies, now that the scan's aftermath (art jobs queued, WAL) has settled.
+  await page.goto(`${base}/library/${libIds.Movies}`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1000);
+  const before2 = await tileHrefs(page);
+  const chip2 = await spaceChip(page, 'Archive');
   const tNav2 = Date.now();
-  await page.getByRole('navigation', { name: 'Main' }).first().getByRole('link', { name: /^Archive/ }).click();
-  await page.locator('[role="grid"] a[href^="/item/"]').first().waitFor();
+  await chip2.click();
+  await waitNewTiles(page, before2);
   const firstCellAgainMs = Date.now() - tNav2;
   const pageApi = await (async () => {
     const xs = [];
@@ -1102,7 +1090,7 @@ await step('library-grid-12k', async () => {
 
 await step('phone-and-light-screens', async () => {
   const shots = [];
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' });
+  const phone = await newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' });
   const pp = await phone.newPage();
   watchPage(pp, errors);
   await pp.goto(base + '/', { waitUntil: 'networkidle' });
@@ -1115,7 +1103,7 @@ await step('phone-and-light-screens', async () => {
   await gotoItem(pp, base, ctxState.show);
   shots.push(await shot(pp, 'phone-show'));
   await phone.close();
-  const light = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
+  const light = await newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
   const lp = await light.newPage();
   watchPage(lp, errors);
   await lp.goto(base + '/', { waitUntil: 'networkidle' });
