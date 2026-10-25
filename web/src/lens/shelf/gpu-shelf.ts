@@ -33,8 +33,9 @@ import { planShelf, shelfLayout, shelfMetrics, spineLook, type Metrics, type She
 import styles from './shelf.module.css';
 import { backKey, grayHex, mixBlackOklab, paintBack, paintEdge, paintGlow, paintRamp, paintSheen, paintSpine, spineKey, type ShelfFonts } from './spine';
 import { facing, I3, place, REST, rotX, rotY, splitAtDepth, tapeFaces, type M3, type Placed, type TapeFaces, type TapeMove } from './transform';
+import { cssColor, dcColor, hexColor } from '../gpu/colors';
 
-type RGBA = [number, number, number, number];
+type RGBA = readonly [number, number, number, number];
 type Span = [number, number];
 type Stage = 'rest' | 'pull' | 'out' | 'open';
 
@@ -230,41 +231,6 @@ interface Theme {
   fonts: ShelfFonts;
 }
 
-function hexColor(h: string): RGBA {
-  const n = parseInt(h.slice(1, 7), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1];
-}
-
-let probe: CanvasRenderingContext2D | null = null;
-
-/** Any CSS colour as straight RGBA 0–1 (the canvas parses it). */
-function cssColor(value: string, fallback: RGBA): RGBA {
-  probe ??= document.createElement('canvas').getContext('2d');
-  if (!probe || !value.trim()) return fallback;
-  probe.fillStyle = '#000';
-  probe.fillStyle = value.trim();
-  const v = String(probe.fillStyle);
-  if (v.startsWith('#')) return hexColor(v);
-  const m = /rgba?\(([^)]+)\)/.exec(v);
-  if (!m) return fallback;
-  const p = m[1].split(',').map((s) => Number(s.trim()));
-  return [p[0] / 255, p[1] / 255, p[2] / 255, Number.isFinite(p[3]) ? p[3] : 1];
-}
-
-const B83 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~';
-
-/** The poster's average colour (the blurhash DC term). */
-function dcColor(hash: string): RGBA | null {
-  if (hash.length < 6) return null;
-  let v = 0;
-  for (const ch of hash.slice(2, 6)) {
-    const d = B83.indexOf(ch);
-    if (d < 0) return null;
-    v = v * 83 + d;
-  }
-  return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
-}
-
 const edgeCache = new Map<string, [RGBA, RGBA] | null>();
 
 /**
@@ -419,7 +385,7 @@ export class GpuShelfView implements LensView {
   private fSpine = blank();
   private fTop = blank();
   private fSide = blank();
-  private tint: RGBA = [1, 1, 1, 1];
+  private tint: [number, number, number, number] = [1, 1, 1, 1];
   private paintL: TapeLook | null = null;
   private paintTW = 0;
   private paintK = 1;

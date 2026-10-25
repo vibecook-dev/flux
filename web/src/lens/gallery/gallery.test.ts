@@ -1,7 +1,7 @@
 /** The Gallery lens's show: how titles are hung, labelled and windowed. */
 import { describe, expect, it } from 'vitest';
 import type { ItemSummary } from '../../api/types';
-import { hangShow, isGrowth, roomByline, slotRange, wallLines, type RoomSlot, type WorkSlot } from './gallery';
+import { hangShow, isGrowth, roomByline, slotRange, wallLines, type RoomSlot, type WorkSlot } from './core';
 
 const DAY = 24 * 3600 * 1000;
 const NOW = 1_800_000_000_000;

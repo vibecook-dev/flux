@@ -24,6 +24,7 @@
     "sizes": "node scripts/bundle-sizes.mjs",
     "screens": "node scripts/screens.mjs",
     "bench:grid": "node scripts/bench-grid.mjs",
+    "check:zfight": "node scripts/check-zfight.mjs",
     "bench:playback": "node scripts/bench-playback.mjs",
     "bench:audio": "nice -n 19 node scripts/bench-audio-switch.mjs",
     "e2e": "nice -n 19 sh -c 'node scripts/e2e-product.mjs && node scripts/e2e-bench.mjs && node scripts/e2e-playback.mjs'",

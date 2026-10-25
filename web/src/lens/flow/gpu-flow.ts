@@ -21,11 +21,11 @@ import { clock, type RGBA } from '../gpu/quads';
 import { corners, FLAG3D, inside, KIND3D, prepareScene3D, Quad3DBatch, Scene3DRenderer, type Camera } from '../gpu/scene3d';
 import { SpriteSheet, type Sprite } from '../gpu/sprites';
 import { textAtlas, wrap, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
-import { paletteOf } from '../palette';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
 import type { Dir, LensContext, LensModule, LensView } from '../types';
 import { coverPose, edgeOpacity, FlowCore, shadeOf, type CoverState, type Metrics } from './core';
 import styles from './flow.module.css';
+import { cssColor, dcColor, paperOf } from '../gpu/colors';
 
 const DEG = Math.PI / 180;
 /** Corner radius of a cover (`--flow-r`). */
@@ -189,59 +189,6 @@ interface Theme {
   shade: number;
   body: string;
   mono: string;
-}
-
-const B83 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~';
-const dcCache = new Map<string, RGBA | null>();
-
-/** The poster's average colour (the blurhash DC term): the placeholder until it loads. */
-function dcColor(hash: string): RGBA | null {
-  let c = dcCache.get(hash);
-  if (c !== undefined) return c;
-  c = null;
-  if (hash.length >= 6) {
-    let v = 0;
-    for (const ch of hash.slice(2, 6)) v = v * 83 + B83.indexOf(ch);
-    if (v >= 0) c = [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
-  }
-  if (dcCache.size > 20000) dcCache.clear();
-  dcCache.set(hash, c);
-  return c;
-}
-
-function hexColor(h: string): RGBA {
-  const n = parseInt(h.slice(1, 7), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1];
-}
-
-const paperCache = new Map<string, [RGBA, RGBA]>();
-
-/** A title without art: its stable fallback gradient (art.ts draws the same). */
-function paperOf(item: ItemSummary): [RGBA, RGBA] {
-  let p = paperCache.get(item.title);
-  if (!p) {
-    const pal = paletteOf(item);
-    p = [hexColor(pal.c1), hexColor(pal.c2)];
-    if (paperCache.size > 20000) paperCache.clear();
-    paperCache.set(item.title, p);
-  }
-  return p;
-}
-
-let probe: CanvasRenderingContext2D | null = null;
-
-/** Any CSS colour as straight RGBA 0–1 (the canvas parses it). */
-function cssColor(value: string, fallback: RGBA): RGBA {
-  probe ??= document.createElement('canvas').getContext('2d');
-  if (!probe || !value.trim()) return fallback;
-  probe.fillStyle = '#000';
-  probe.fillStyle = value.trim();
-  const v = String(probe.fillStyle);
-  if (v.startsWith('#')) return hexColor(v);
-  const m = /rgba?\(([^)]+)\)/.exec(v);
-  if (!m) return fallback;
-  const p = m[1].split(',').map((s) => Number(s.trim()));
-  return [p[0] / 255, p[1] / 255, p[2] / 255, Number.isFinite(p[3]) ? p[3] : 1];
 }
 
 /** The pointer's light, white: a radial gradient that is clear from 70% of its radius. */

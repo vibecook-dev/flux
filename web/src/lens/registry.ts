@@ -59,7 +59,7 @@ export const FIRST_PARTY: LensDef[] = [
     icon: LENS_ICONS.gallery,
     blurb: 'Walk an exhibition of your library: framed posters, wall labels, and a room for every decade.',
     author: 'flux',
-    load: () => import('./gallery/gallery').then((m) => m.gallery),
+    load: () => import('./gallery/load').then((m) => m.loadGallery()),
   },
 ];
 

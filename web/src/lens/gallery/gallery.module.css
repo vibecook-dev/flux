@@ -433,3 +433,36 @@
     transition: none;
   }
 }
+
+/* ── the WebGPU Gallery (gpu-gallery.ts) ── */
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* The works in view, as invisible buttons over their frames (screen readers, focus, the item-page flight). */
+.option {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+.option:focus-visible {
+  opacity: 1;
+  outline: 3px solid var(--gal-ink);
+  outline-offset: 6px;
+}
+
+.overFrame {
+  cursor: pointer;
+}
