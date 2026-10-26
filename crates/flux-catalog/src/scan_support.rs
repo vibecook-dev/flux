@@ -1079,7 +1079,9 @@ impl Apply<'_> {
                     Some(p) => p,
                     None => group::resolve_work(conn, &mut self.r, "movie", &work, None)?,
                 };
-                if let Some(Placement::Movie { work: was, .. }) = &was {
+                // A file fixed to belong to a work never names it: its own
+                // name names another (the work it was merged from).
+                if let (Some(Placement::Movie { work: was, .. }), None) = (&was, pin.of) {
                     self.retitle(item, &was.title, &work.title)?;
                 }
                 if was.is_some() {
@@ -1124,7 +1126,9 @@ impl Apply<'_> {
                     ..
                 }) = &was
                 {
-                    self.retitle(show_id, &was_show.title, &show.title)?;
+                    if pin.of.is_none() {
+                        self.retitle(show_id, &was_show.title, &show.title)?;
+                    }
                     if let ([ep], true) = (was_eps.as_slice(), (*was_season, was_eps) == (season, &episodes))
                     {
                         was_episode = Some(group::episode_title(ep, was_title.as_deref()));

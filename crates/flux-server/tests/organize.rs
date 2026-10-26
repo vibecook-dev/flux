@@ -550,3 +550,36 @@ async fn files_fix_and_items_merge_over_http() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_film_keeps_its_title_through_a_plan_and_its_undo() {
+    let lib = library(
+        LibraryKind::Movies,
+        &[("Interstellar.2014.1080p.mkv", "a"), ("星际穿越4k.mp4", "b")],
+    )
+    .await;
+    let keep = lib.find("Interstellar").await;
+    let other = lib.find("星际穿越").await;
+    run(
+        &lib.app,
+        "items.merge",
+        json!({"summary": "One film", "into": keep, "from": [other]}),
+    )
+    .await;
+    let plan: PlanOutput = serde_json::from_value(
+        run(
+            &lib.app,
+            "files.plan",
+            json!({"summary": "tidy", "items": [keep]}),
+        )
+        .await,
+    )
+    .unwrap();
+    let cs = plan.changeset.unwrap().id;
+    run(&lib.app, "changes.apply", json!({"changeset": cs})).await;
+    run(&lib.app, "changes.undo", json!({"changeset": cs})).await;
+    let d: Value = run(&lib.app, "item.get", json!({"item": keep})).await;
+    assert_eq!(d["title"], "Interstellar", "the file merged in doesn't rename it");
+    assert_eq!(d["files"].as_array().unwrap().len(), 2);
+    lib.catalog_matches_disk();
+}
