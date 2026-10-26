@@ -3,7 +3,7 @@
 //!
 //! flux places every file by the guess its name parser made ([`crate::group`]).
 //! A fix (`file_fix`, [`FileFix`]) corrects that guess, and the scan places
-//! the file by its guess with the fix applied ([`effective`]): a fix holds
+//! the file by its guess with the fix applied (`effective`): a fix holds
 //! through rescans, re-parses and renames, as it belongs to the file row,
 //! which follows the file. A fix says
 //!
@@ -15,10 +15,10 @@
 //!
 //! Changing fixes is a changeset ([`commit`]): a `file.fix` change per
 //! file, with its fix before and after. The files are placed again at once
-//! ([`crate::scan_support::refix`]); a work left with no files is carried
+//! (`scan_support::refix`); a work left with no files is carried
 //! into the work its files went to, as when a rename moves them, and goes.
 //! So that undoing the change brings that work back as it was, the change
-//! keeps what people and agents had set on the file's items ([`Keep`]):
+//! keeps what people and agents had set on the file's items (`Keep`):
 //! their fields, everyone's watched state, their collections and the images
 //! chosen for them.
 

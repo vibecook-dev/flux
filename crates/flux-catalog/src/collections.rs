@@ -4,7 +4,7 @@
 //! the library changes. Per person (`owner` = user id) or for everyone
 //! (`owner` 0). The app shows them as spaces beside the libraries
 //! ([`crate::read::items_page`] with a collection), agents read them with
-//! [`page`].
+//! [`info`] and [`members`].
 //!
 //! A rule never counts a value a reader may not see: an agent's view of a
 //! rule on genres leaves out genres a provider withheld from it gave, so

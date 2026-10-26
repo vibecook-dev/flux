@@ -9,7 +9,7 @@
 //!   POST /mcp                       MCP (Streamable HTTP): the operations as tools
 //! ```
 //!
-//! The `flux` command line ([`flux-cli`]) calls the same routes; the web
+//! The `flux` command line (crate `flux-cli`) calls the same routes; the web
 //! client too. Who may run what follows the caller's role ([`Ctx::may`]);
 //! a caller that names an agent (MCP, `X-Flux-Agent`) never sees what a
 //! provider's terms keep from AI ([`policy`]).

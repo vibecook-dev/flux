@@ -11,7 +11,7 @@
 //! - **Locks.** A `user`, `agent` or `sidecar` row locks its field: the
 //!   matcher ([`crate::Writer::update_item_metadata`]) and the scanner's
 //!   re-parse leave it alone, and a merge carries it to the item that stays
-//!   ([`carry`]). A person's value outranks an agent's, which outranks a
+//!   (`carry`). A person's value outranks an agent's, which outranks a
 //!   metadata file's ([`rank`]).
 
 use std::collections::{BTreeMap, BTreeSet};
