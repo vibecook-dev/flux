@@ -352,7 +352,7 @@
     transform 1s var(--spring-soft);
 }
 
-.tailnet-ring span {
+.tailnet-ring > span {
   position: absolute;
   top: -11px;
   left: 28px;

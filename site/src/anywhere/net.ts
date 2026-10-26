@@ -42,18 +42,18 @@ export function startNet(): void {
   });
 
   /**
-   * The middle of a node's icon, in the map's own pixels, from layout alone: a node is
+   * Where a node's lines meet it, in the map's own pixels, from layout alone: a node is
    * centred on its --x/--y by translate(-50%, -50%), and transforms (a hurdle shrinking
-   * away) don't move it.
+   * away) don't move it. Across the map, lines meet the middle of the icon; down a phone's
+   * map, they leave from below the server's caption and land on top of each device.
    */
-  const anchor = (name: string) => {
+  const anchor = (name: string, edge: 'middle' | 'below' | 'top' = 'middle') => {
     const node = canvas.querySelector<HTMLElement>(`[data-node="${name}"]`);
     const icon = node?.querySelector<HTMLElement>('.node-icon, .hurdle-icon');
     if (!node || !icon) return { x: 0, y: 0 };
-    return {
-      x: node.offsetLeft - node.offsetWidth / 2 + icon.offsetLeft + icon.offsetWidth / 2,
-      y: node.offsetTop - node.offsetHeight / 2 + icon.offsetTop + icon.offsetHeight / 2,
-    };
+    const top = node.offsetTop - node.offsetHeight / 2;
+    const y = edge === 'below' ? top + node.offsetHeight + 6 : edge === 'top' ? top + icon.offsetTop - 2 : top + icon.offsetTop + icon.offsetHeight / 2;
+    return { x: node.offsetLeft - node.offsetWidth / 2 + icon.offsetLeft + icon.offsetWidth / 2, y };
   };
 
   const draw = () => {
@@ -77,7 +77,8 @@ export function startNet(): void {
       return p;
     };
 
-    const at = Object.fromEntries(['server', 'router', 'internet', 'ddns', 'proxy', 'cert', 'password', ...DEVICES].map((n) => [n, anchor(n)]));
+    const edge = (n: string) => (across ? 'middle' : n === 'server' ? 'below' : DEVICES.includes(n) ? 'top' : 'middle');
+    const at = Object.fromEntries(['server', 'router', 'internet', 'ddns', 'proxy', 'cert', 'password', ...DEVICES].map((n) => [n, anchor(n, edge(n))]));
     const parts: SVGPathElement[] = [];
     // The usual way: one long road, and the chores beside it.
     parts.push(path(curve(at.server, at.router), 'usual'));
