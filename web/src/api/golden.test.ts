@@ -35,10 +35,13 @@ import {
   EDIT_MODES,
   EFFECTS,
   ERROR_CODES,
+  FIX_KINDS,
   GAPS,
   LENS_INPUTS,
   MATCH_STATES,
+  NAMING_SCHEMES,
   SOURCES,
+  STEP_KINDS,
 } from './agent';
 
 describe('enum strings match serde', () => {
@@ -73,6 +76,9 @@ describe('enum strings match serde', () => {
     ['ErrorCode', ERROR_CODES],
     ['LensInput', LENS_INPUTS],
     ['Effect', EFFECTS],
+    ['FixKind', FIX_KINDS],
+    ['StepKind', STEP_KINDS],
+    ['NamingScheme', NAMING_SCHEMES],
   ];
   for (const [name, values] of cases) {
     it(name, () => {

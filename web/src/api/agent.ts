@@ -9,13 +9,13 @@
  */
 import { API_BASE } from '../config';
 import { FLUX_REQUEST_HEADER, FluxApiError, whenReady } from './client';
-import type { ArtSource, Id, ItemKind, LibraryKind, NameGuess } from './types';
+import type { ArtSource, ExtraKind, Id, ItemKind, LibraryKind, NameGuess } from './types';
 
 export const GAPS = ['identity', 'year', 'overview', 'poster', 'backdrop', 'episode_titles', 'offline'] as const;
 export type Gap = (typeof GAPS)[number];
 export const MATCH_STATES = ['unmatched', 'parsed', 'matched', 'locked'] as const;
 export type MatchState = (typeof MATCH_STATES)[number];
-export const SOURCES = ['file', 'provider', 'user', 'agent'] as const;
+export const SOURCES = ['file', 'provider', 'user', 'agent', 'sidecar'] as const;
 /** Where a value came from. */
 export type Source = (typeof SOURCES)[number];
 export const CHANGESET_STATES = ['proposed', 'applied', 'reverted', 'rejected'] as const;
@@ -34,6 +34,12 @@ export const LENS_INPUTS = ['x', 'y', 'none'] as const;
 export type LensInput = (typeof LENS_INPUTS)[number];
 export const EFFECTS = ['read', 'write', 'act'] as const;
 export type Effect = (typeof EFFECTS)[number];
+export const FIX_KINDS = ['movie', 'episode', 'extra', 'ignore'] as const;
+export type FixKind = (typeof FIX_KINDS)[number];
+export const STEP_KINDS = ['new_folder', 'rename_folder', 'move_video', 'move_companion', 'remove_folder'] as const;
+export type StepKind = (typeof STEP_KINDS)[number];
+export const NAMING_SCHEMES = ['standard'] as const;
+export type NamingScheme = (typeof NAMING_SCHEMES)[number];
 
 export interface Link {
   url: string;
@@ -107,8 +113,24 @@ export interface TrackEvidence {
   forced: boolean;
 }
 
+/** What a file is when its name says otherwise (`files.fix`). */
+export interface FileFix {
+  kind: FixKind | null;
+  of: Id | null;
+  title: string | null;
+  year: number | null;
+  season: number | null;
+  episodes: number[] | null;
+  extra: ExtraKind | null;
+  edition: string | null;
+  part: number | null;
+}
+
 export interface FileEvidence {
+  id: Id;
+  /** Relative to its library folder (`root`). */
   path: string;
+  root: string;
   size: number;
   modified: number | null;
   available: boolean;
@@ -119,7 +141,10 @@ export interface FileEvidence {
   tracks: TrackEvidence[];
   chapters: string[];
   subtitle_files: string[];
+  /** `.flux.json` and `.nfo` files beside it that flux read. */
+  sidecars: string[];
   parsed: NameGuess | null;
+  fix: FileFix | null;
 }
 
 export interface AgentArt {
@@ -165,12 +190,18 @@ export interface ChangesetSummary {
   reverted_by: string | null;
   item_count: number;
   change_count: number;
+  /** It renames or moves files on disk (a file plan). */
+  moves_files: boolean;
 }
 
 export interface Change {
   item: Id;
   title: string | null;
-  /** A field name, or `art.<kind>`. */
+  /**
+   * A field name; `art.<kind>`; `file.fix` (`{file, path, fix}`);
+   * `file.path` (`{root, path, what, file}`), `folder.path`, `folder.new`,
+   * `folder.gone` (`{root, path}`): a file plan's steps.
+   */
   field: string;
   before: unknown;
   after: unknown;
@@ -202,6 +233,142 @@ export interface Decided {
   changeset: ChangesetSummary;
   done: number;
   not_done: NotDone[];
+}
+
+/** `items.edit` input. */
+export interface ItemEdit {
+  item: Id;
+  set?: Partial<Fields>;
+  clear?: string[];
+  sources?: (Link | string)[];
+}
+
+export interface EditInput {
+  summary: string;
+  edits: ItemEdit[];
+  mode?: EditMode;
+  force?: boolean;
+  dry_run?: boolean;
+}
+
+export interface FieldChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+  withheld: string | null;
+}
+
+export interface Refused {
+  field: string;
+  reason: string;
+}
+
+export interface EditResult {
+  item: Id;
+  title: string;
+  changed: FieldChange[];
+  unchanged: string[];
+  refused: Refused[];
+}
+
+/** `items.edit`. */
+export interface EditOutput {
+  changeset: ChangesetSummary | null;
+  items: EditResult[];
+}
+
+/** Where a file is (`files.fix`). */
+export interface FilePlace {
+  item: Id | null;
+  title: string | null;
+}
+
+export interface FixResult {
+  file: Id;
+  path: string;
+  before: FilePlace;
+  after: FilePlace | null;
+  fix: FileFix | null;
+  unchanged: string | null;
+}
+
+/** `files.fix`, `items.merge`. */
+export interface FixOutput {
+  changeset: ChangesetSummary | null;
+  files: FixResult[];
+}
+
+export interface PlanStep {
+  step: StepKind;
+  file: Id | null;
+  item: Id | null;
+  root: string;
+  from: string | null;
+  to: string | null;
+}
+
+export interface PlanSkip {
+  file: Id | null;
+  item: Id | null;
+  path: string | null;
+  reason: string;
+}
+
+/** `files.plan`. */
+export interface PlanOutput {
+  changeset: ChangesetSummary | null;
+  steps: PlanStep[];
+  skipped: PlanSkip[];
+}
+
+/** The titles a rule takes into a collection. */
+export interface CollectionRule {
+  libraries: Id[];
+  kinds: ItemKind[];
+  genres: string[];
+  tags: string[];
+  people: string[];
+  studios: string[];
+  countries: string[];
+  languages: string[];
+  year_from: number | null;
+  year_to: number | null;
+  text: string | null;
+}
+
+export interface CollectionPick {
+  item: Id;
+  note: string | null;
+}
+
+/** A collection kept on the server. */
+export interface CollectionInfo {
+  id: Id;
+  name: string;
+  description: string | null;
+  everyone: boolean;
+  rule: CollectionRule | null;
+  count: number;
+  cover: Id[];
+  added_by: string;
+  agent: string | null;
+  sources: Link[];
+  created_at: number;
+  updated_at: number;
+}
+
+/** `collections.list`. */
+export interface Collections {
+  collections: CollectionInfo[];
+}
+
+/** `collection.get`. */
+export interface CollectionItems {
+  collection: CollectionInfo;
+  items: AgentItem[];
+  notes: Record<string, string>;
+  next: string | null;
+  total: number;
 }
 
 export interface LensSpec {
@@ -343,6 +510,11 @@ export const FIELD_NAMES: Record<string, string> = {
   studios: 'Studios',
   content_rating: 'Rating',
   links: 'Links',
+  'file.fix': 'What the file is',
+  'file.path': 'File',
+  'folder.path': 'Folder',
+  'folder.new': 'New folder',
+  'folder.gone': 'Folder removed',
   'art.poster': 'Poster',
   'art.backdrop': 'Backdrop',
   'art.thumb': 'Thumbnail',
@@ -424,6 +596,36 @@ export function valueText(v: unknown, field?: string): string {
     if ('pinned' in o) return typeof o.pinned === 'number' ? `image ${o.pinned}` : 'flux’s choice';
   }
   return JSON.stringify(v);
+}
+
+const EXTRA_NAMES: Record<string, string> = {
+  trailer: 'a trailer',
+  featurette: 'a featurette',
+  behind_the_scenes: 'behind the scenes',
+  deleted_scene: 'a deleted scene',
+  interview: 'an interview',
+  short: 'a short',
+  scene: 'a scene',
+  other: 'an extra',
+};
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** A file's fix in words: "an episode · S02E05", "a trailer · of item 40". */
+export function fixText(f: FileFix | null | undefined): string {
+  if (!f) return 'what its name says';
+  if (f.kind === 'ignore') return 'not part of the library';
+  const parts: string[] = [];
+  if (f.extra) parts.push(EXTRA_NAMES[f.extra] ?? 'an extra');
+  else if (f.kind) parts.push({ movie: 'a film', episode: 'an episode', extra: 'an extra' }[f.kind]);
+  if (f.of !== null) parts.push(`of item ${f.of}`);
+  if (f.title) parts.push(`“${f.title}”`);
+  if (f.year !== null) parts.push(String(f.year));
+  if (f.season !== null && f.episodes?.length) parts.push(`S${pad2(f.season)}${f.episodes.map((e) => `E${pad2(e)}`).join('-')}`);
+  else if (f.season !== null) parts.push(`season ${f.season}`);
+  if (f.edition) parts.push(f.edition);
+  if (f.part !== null) parts.push(`part ${f.part}`);
+  return parts.join(' · ') || 'what its name says';
 }
 
 /** `https://en.wikipedia.org/wiki/X` → `en.wikipedia.org`. */

@@ -394,6 +394,7 @@ fn changeset_summary() -> ChangesetSummary {
         reverted_by: None,
         item_count: 1,
         change_count: 2,
+        moves_files: false,
     }
 }
 
@@ -452,6 +453,23 @@ fn stored_lens() -> StoredLens {
     }
 }
 
+fn collection() -> CollectionInfo {
+    CollectionInfo {
+        id: 3,
+        name: "Tarkovsky".into(),
+        description: Some("Andrei Tarkovsky's features".into()),
+        everyone: true,
+        rule: Some(CollectionRule { people: vec!["Andrei Tarkovsky".into()], year_from: Some(1960), ..CollectionRule::default() }),
+        count: 1,
+        cover: vec![7],
+        added_by: "james@example.com".into(),
+        agent: Some("claude-code".into()),
+        sources: vec![wiki()],
+        created_at: 1_760_000_000_000,
+        updated_at: 1_760_000_000_000,
+    }
+}
+
 fn agent_item_detail(guess: &NameGuess) -> AgentItemDetail {
     let item = AgentItem {
         id: 7,
@@ -498,7 +516,11 @@ fn agent_item_detail(guess: &NameGuess) -> AgentItemDetail {
         season_number: None,
         episode_numbers: vec![],
         files: vec![FileEvidence {
-            path: "/media/Films/Stalker.1979.mkv".into(),
+            id: 70,
+            path: "Stalker.1979.mkv".into(),
+            root: "/media/Films".into(),
+            sidecars: vec!["Stalker.1979.nfo".into()],
+            fix: Some(FileFix { year: Some(1979), ..FileFix::default() }),
             size: 4_000_000_000,
             modified: Some(1_760_000_000_000),
             available: true,
@@ -571,7 +593,7 @@ fn main() {
         // The agent contract (flux_core::agent; web/src/api/agent.ts).
         "Gap": variants!(Gap: Identity, Year, Overview, Poster, Backdrop, EpisodeTitles, Offline),
         "MatchState": variants!(MatchState: Unmatched, Parsed, Matched, Locked),
-        "Source": variants!(Source: File, Provider, User, Agent),
+        "Source": variants!(Source: File, Provider, User, Agent, Sidecar),
         "ChangesetState": variants!(ChangesetState: Proposed, Applied, Reverted, Rejected),
         "ChangeState": variants!(ChangeState: Pending, Applied, Skipped, Reverted, Kept),
         "ArtKind": variants!(ArtKind: Poster, Backdrop, Thumb, Logo),
@@ -580,6 +602,9 @@ fn main() {
         "ErrorCode": variants!(ErrorCode: Invalid, NotFound, Forbidden, Conflict, Unavailable, TooLarge, Internal),
         "LensInput": variants!(LensInput: X, Y, None),
         "Effect": variants!(Effect: Read, Write, Act),
+        "FixKind": variants!(FixKind: Movie, Episode, Extra, Ignore),
+        "StepKind": variants!(StepKind: NewFolder, RenameFolder, MoveVideo, MoveCompanion, RemoveFolder),
+        "NamingScheme": variants!(NamingScheme: Standard),
     });
 
     // Display names used by Reason::explain (web/src/api/explain.ts mirrors them).
@@ -805,6 +830,7 @@ fn main() {
             v(&Event::Tailnet { info: tailnet_login() }),
             v(&Event::Changes { changeset: changeset_summary() }),
             v(&Event::Lenses),
+            v(&Event::Collections),
         ],
         "AgentItemDetail": v(&agent_item_detail(&name_guess)),
         "ChangesListOutput": v(&ChangesListOutput { changesets: vec![changeset_summary()], next: None, proposed: 1 }),
@@ -815,6 +841,33 @@ fn main() {
             not_done: vec![NotDone { item: 7, field: "year".into(), reason: "it changed again since".into() }],
         }),
         "Lenses": v(&Lenses { lenses: vec![stored_lens()] }),
+        "FixOutput": v(&FixOutput {
+            changeset: Some(changeset_summary()),
+            files: vec![FixResult {
+                file: 71,
+                path: "Stalker (2).mkv".into(),
+                before: FilePlace { item: Some(8), title: Some("Stalker (2)".into()) },
+                after: Some(FilePlace { item: Some(7), title: Some("Stalker".into()) }),
+                fix: Some(FileFix { of: Some(7), ..FileFix::default() }),
+                unchanged: None,
+            }],
+        }),
+        "PlanOutput": v(&PlanOutput {
+            changeset: Some(changeset_summary()),
+            steps: vec![
+                PlanStep { step: StepKind::NewFolder, file: None, item: Some(7), root: "/media/Films".into(), from: None, to: Some("Stalker (1979)".into()) },
+                PlanStep { step: StepKind::MoveVideo, file: Some(70), item: Some(7), root: "/media/Films".into(), from: Some("Stalker.1979.mkv".into()), to: Some("Stalker (1979)/Stalker (1979).mkv".into()) },
+            ],
+            skipped: vec![PlanSkip { file: Some(72), item: Some(9), path: Some("x.mkv".into()), reason: "its drive doesn't answer".into() }],
+        }),
+        "Collections": v(&Collections { collections: vec![collection()] }),
+        "CollectionItems": v(&CollectionItems {
+            collection: collection(),
+            items: vec![agent_item_detail(&name_guess).item],
+            notes: [("7".to_string(), "Tarkovsky's last Soviet film".to_string())].into(),
+            next: None,
+            total: 1,
+        }),
         "ErrorBody": v(&ErrorBody { error: OpError { code: ErrorCode::Conflict, message: "changeset 3 is reverted".into() } }),
         "Manifest": v(&Manifest {
             contract: CONTRACT.into(),

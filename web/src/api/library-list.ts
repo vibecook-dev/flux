@@ -9,9 +9,9 @@
  * offset/letter index is listed as a proposed core change.
  */
 import { useSyncExternalStore } from 'react';
-import { api } from './client';
+import { api, type ItemsQuery } from './client';
 import { rememberSummaries } from './queries';
-import type { Id, ItemSummary, LibrarySort } from './types';
+import type { Id, ItemSummary, LibrarySort, Page } from './types';
 
 const FIRST_PAGE = 120;
 const NEXT_PAGE = 1000;
@@ -42,7 +42,12 @@ function mayPage(signal: AbortSignal): Promise<void> {
 }
 
 export class LibraryList {
+  /** The library (0 for a collection's list). */
   readonly libraryId: Id;
+  /** A collection's titles instead of a library's. */
+  readonly collectionId: Id | null;
+  /** Unique among lists: `12` (a library), `c3` (a collection). */
+  readonly key: string;
   readonly sort: LibrarySort;
   items: ItemSummary[] = [];
   total: number | null = null;
@@ -53,8 +58,10 @@ export class LibraryList {
   private listeners = new Set<() => void>();
   private abort: AbortController | null = null;
 
-  constructor(libraryId: Id, sort: LibrarySort) {
+  constructor(libraryId: Id, sort: LibrarySort, collectionId: Id | null = null) {
     this.libraryId = libraryId;
+    this.collectionId = collectionId;
+    this.key = collectionId === null ? String(libraryId) : `c${collectionId}`;
     this.sort = sort;
   }
 
@@ -91,7 +98,9 @@ export class LibraryList {
       do {
         if (!firstPage) await mayPage(signal);
         if (signal.aborted) return;
-        const page = await api.libraryItems(this.libraryId, { cursor, limit, sort: this.sort }, signal);
+        const q: ItemsQuery = { cursor, limit, sort: this.sort };
+        const page: Page<ItemSummary> =
+          this.collectionId === null ? await api.libraryItems(this.libraryId, q, signal) : await api.collectionItems(this.collectionId, q, signal);
         if (signal.aborted) return;
         this.items = firstPage ? page.items : this.items.concat(page.items);
         firstPage = false;
@@ -118,10 +127,18 @@ const lists = new Map<string, LibraryList>();
 
 /** Shared list per (library, sort); kept for instant back-navigation. */
 export function getLibraryList(libraryId: Id, sort: LibrarySort): LibraryList {
-  const key = `${libraryId}|${sort}`;
+  return cached(`${libraryId}|${sort}`, () => new LibraryList(libraryId, sort));
+}
+
+/** Shared list per (collection, sort). */
+export function getCollectionList(collectionId: Id, sort: LibrarySort): LibraryList {
+  return cached(`c${collectionId}|${sort}`, () => new LibraryList(0, sort, collectionId));
+}
+
+function cached(key: string, make: () => LibraryList): LibraryList {
   let list = lists.get(key);
   if (!list) {
-    list = new LibraryList(libraryId, sort);
+    list = make();
     lists.set(key, list);
     list.load();
     // Keep memory bounded: at most six lists (10k summaries is ~4 MB); "All" holds one per library.
@@ -136,9 +153,18 @@ export function getLibraryList(libraryId: Id, sort: LibrarySort): LibraryList {
   return list;
 }
 
-/** Reload every cached list of a library (after `items_changed`), or of every library. */
+/** Reload every cached list of a library (after `items_changed`), or of every library; collections span libraries, so theirs too. */
 export function refreshLibrary(libraryId?: Id): void {
-  for (const list of lists.values()) if (libraryId === undefined || list.libraryId === libraryId) list.load(true);
+  for (const list of lists.values()) {
+    if (libraryId === undefined || list.libraryId === libraryId || list.collectionId !== null) list.load(true);
+  }
+}
+
+/** Reload the lists of a collection (after the collections changed), or of every collection. */
+export function refreshCollections(collectionId?: Id): void {
+  for (const list of lists.values()) {
+    if (list.collectionId !== null && (collectionId === undefined || list.collectionId === collectionId)) list.load(true);
+  }
 }
 
 export function useLibraryList(libraryId: Id, sort: LibrarySort): LibraryList {

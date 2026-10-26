@@ -7,7 +7,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTitle } from '../app/useTitle';
 import { Link } from '../app/Link';
-import { fieldName, hostOf, op, OpFailure, valueText, type Change, type Changeset, type ChangesetState, type ChangesetSummary, type ChangesListOutput, type Decided, type Link as SourceLink } from '../api/agent';
+import {
+  fieldName,
+  fixText,
+  hostOf,
+  op,
+  OpFailure,
+  valueText,
+  type Change,
+  type Changeset,
+  type ChangesetState,
+  type ChangesetSummary,
+  type ChangesListOutput,
+  type Decided,
+  type FileFix,
+  type Link as SourceLink,
+} from '../api/agent';
 import { subscribeEvents } from '../api/events';
 import { formatAgo, formatCount } from '../api/format';
 import { keys, useChanges, useManifest, useServer } from '../api/queries';
@@ -121,28 +136,108 @@ const CHANGE_NOTE: Partial<Record<Change['state'], string>> = {
   kept: 'kept: it changed again since',
 };
 
+/** Fields of a file plan's steps. */
+const STEP_FIELDS = new Set(['file.path', 'folder.path', 'folder.new', 'folder.gone']);
+
+/** A step's path (`{root, path, …}`). */
+function pathOf(v: unknown): string | null {
+  return v && typeof v === 'object' && typeof (v as { path?: unknown }).path === 'string' ? (v as { path: string }).path : null;
+}
+
+const STEP_LABEL: Record<string, string> = {
+  'folder.new': 'New folder',
+  'folder.path': 'Rename folder',
+  'folder.gone': 'Remove empty folder',
+};
+
+const STEP_NOTE: Partial<Record<Change['state'], string>> = {
+  pending: 'to do',
+  skipped: 'not done',
+  reverted: 'put back',
+  kept: 'left: it moved again since',
+};
+
+/** A file plan, step by step: what moves where. */
+function PlanSteps({ changes }: { changes: Change[] }) {
+  return (
+    <ol className={styles.steps}>
+      {changes
+        .filter((ch) => STEP_FIELDS.has(ch.field))
+        .map((ch, i) => {
+          const companion = (ch.after as { what?: string } | null)?.what === 'companion';
+          const label = STEP_LABEL[ch.field] ?? (companion ? 'With it' : 'Move');
+          const from = pathOf(ch.before);
+          const to = pathOf(ch.after);
+          return (
+            <li key={i} data-state={ch.state} data-step={ch.field} data-companion={companion ? '' : undefined}>
+              <span className={styles.stepKind}>{label}</span>
+              <span className={styles.stepPaths}>
+                {from && <del className="mono">{from}</del>}
+                {to && <ins className="mono">{to}</ins>}
+              </span>
+              {STEP_NOTE[ch.state] && <span className={styles.changeNote}>{STEP_NOTE[ch.state]}</span>}
+            </li>
+          );
+        })}
+    </ol>
+  );
+}
+
+/** A fix change's fix (`{file, path, fix}`). */
+function fixOf(v: unknown): FileFix | null {
+  return v && typeof v === 'object' ? ((v as { fix?: FileFix | null }).fix ?? null) : null;
+}
+
 function ChangesetBody({ id }: { id: Id }) {
   const q = useQuery(`changeset:${id}`, () => op<Changeset>('changes.get', { changeset: id }), { staleMs: 2_000 });
   if (q.status === 'error') return <p className={styles.errorNote}>{q.error instanceof Error ? q.error.message : 'Couldn’t load this changeset.'}</p>;
   if (!q.data) return <div className={`skeleton ${styles.bodySkeleton}`} />;
+  if (q.data.moves_files) {
+    return (
+      <div className={styles.body}>
+        <PlanSteps changes={q.data.changes} />
+        {q.data.state === 'proposed' && (
+          <p className={styles.planNote}>
+            <Icon name="lock" /> Applying it renames and moves these files on disk. flux never replaces a file, never moves one to another drive, and Undo puts everything back.
+          </p>
+        )}
+      </div>
+    );
+  }
   return (
     <div className={styles.body}>
       {byItem(q.data.changes).map((g) => (
         <div key={g.item} className={styles.group}>
-          <Link to={`/item/${g.item}`} className={styles.itemLink}>
-            {g.title ?? `Item ${g.item} (gone)`}
-          </Link>
+          {g.item > 0 ? (
+            <Link to={`/item/${g.item}`} className={styles.itemLink}>
+              {g.title ?? `Item ${g.item} (gone)`}
+            </Link>
+          ) : (
+            <span className={styles.itemLink}>Not in the library</span>
+          )}
           <ul className={styles.diff}>
-            {g.changes.map((ch) => (
-              <li key={`${ch.field}`} data-state={ch.state}>
-                <span className={styles.field}>{fieldName(ch.field)}</span>
-                <span className={styles.values}>
-                  {ch.before !== null && ch.before !== undefined ? <del>{valueText(ch.before, ch.field)}</del> : ch.withheld ? <del className={styles.withheld}>{ch.withheld.toUpperCase()}’s</del> : null}
-                  <ins>{ch.after === null || ch.after === undefined ? 'cleared' : valueText(ch.after, ch.field)}</ins>
-                </span>
-                {CHANGE_NOTE[ch.state] && <span className={styles.changeNote}>{CHANGE_NOTE[ch.state]}</span>}
-              </li>
-            ))}
+            {g.changes.map((ch, i) =>
+              ch.field === 'file.fix' ? (
+                <li key={`fix-${i}`} data-state={ch.state}>
+                  <span className={styles.field}>{fieldName(ch.field)}</span>
+                  <span className={styles.values}>
+                    <span className={`mono ${styles.filePath}`}>{pathOf(ch.before) ?? pathOf(ch.after)}</span>
+                    <del>{fixText(fixOf(ch.before))}</del>
+                    <ins>{fixText(fixOf(ch.after))}</ins>
+                  </span>
+                  {CHANGE_NOTE[ch.state] && <span className={styles.changeNote}>{CHANGE_NOTE[ch.state]}</span>}
+                </li>
+              ) : (
+                <li key={`${ch.field}`} data-state={ch.state}>
+                  <span className={styles.field}>{fieldName(ch.field)}</span>
+                  <span className={styles.values}>
+                    {ch.before !== null && ch.before !== undefined ? <del>{valueText(ch.before, ch.field)}</del> : ch.withheld ? <del className={styles.withheld}>{ch.withheld.toUpperCase()}’s</del> : null}
+                    <ins>{ch.after === null || ch.after === undefined ? 'cleared' : valueText(ch.after, ch.field)}</ins>
+                  </span>
+                  {CHANGE_NOTE[ch.state] && <span className={styles.changeNote}>{CHANGE_NOTE[ch.state]}</span>}
+                </li>
+              ),
+            )}
           </ul>
           {g.sources.length > 0 && (
             <p className={styles.sources}>
@@ -188,7 +283,7 @@ function ChangesetCard({
     setErr(null);
     op<Decided>(`changes.${action}`, { changeset: cs.id })
       .then((d) => {
-        const kept = d.not_done.map((n) => `${fieldName(n.field)} (${n.reason})`);
+        const kept = d.not_done.map((n) => (cs.moves_files ? n.reason : `${fieldName(n.field)} (${n.reason})`));
         const did = action === 'undo' ? 'Undone' : action === 'apply' ? 'Applied' : 'Turned down';
         setNote(action === 'reject' ? did : `${did}: ${plural(d.done, 'change')}${kept.length ? `. Left as it was: ${kept.join(', ')}` : ''}.`);
         invalidateQueries(keys.changes);
@@ -208,8 +303,10 @@ function ChangesetCard({
         <span className={styles.csMain}>
           <span className={styles.summary}>{cs.summary}</span>
           <span className={styles.byline}>
-            <span className="mono">{who(cs, me)}</span> · {formatAgo(cs.created_at)} · {plural(cs.change_count, 'change')}
+            <span className="mono">{who(cs, me)}</span> · {formatAgo(cs.created_at)} ·{' '}
+            {cs.moves_files ? plural(cs.change_count, 'step') : plural(cs.change_count, 'change')}
             {cs.item_count > 1 ? ` to ${plural(cs.item_count, 'title')}` : ''}
+            {cs.moves_files ? ' · moves files' : ''}
           </span>
         </span>
         <span className={styles.chip} data-state={cs.state}>
@@ -228,9 +325,21 @@ function ChangesetCard({
           )}
           {admin && cs.state === 'proposed' && (
             <>
-              <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => decide('apply')}>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  if (cs.moves_files && !open) {
+                    // A plan moves files: look at it before saying yes.
+                    onToggle();
+                    return;
+                  }
+                  decide('apply');
+                }}
+              >
                 <Icon name="check" />
-                Apply
+                {cs.moves_files ? (open ? 'Move the files' : 'Review the plan') : 'Apply'}
               </button>
               <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => decide('reject')}>
                 Turn down

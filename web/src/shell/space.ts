@@ -1,5 +1,6 @@
 /**
- * The space under everything: "All" at `/`, one library at `/library/:id`. Its
+ * The space under everything: "All" at `/`, one library at `/library/:id`, a
+ * collection at `/collection/:id`. Its
  * filter (`show`), sort and search text live in the query string, so Back and
  * Forward and shared links keep them. While an overlay (detail, settings) is
  * open, the space is the last one you were in.
@@ -24,18 +25,23 @@ export function spaceFor(pathname: string, search: string): SpaceState {
   const m = matchRoute(pathname);
   if (!m || m.route.layer === 'space') last = { pathname, search };
   const route = matchRoute(last.pathname);
-  const id: SpaceId = route?.route.name === 'library' ? Number(route.params.id) : 'all';
+  const id: SpaceId =
+    route?.route.name === 'library' ? Number(route.params.id) : route?.route.name === 'collection' ? `c${Number(route.params.id)}` : 'all';
   const q = new URLSearchParams(last.search);
   return { id, show: parseShow(q.get('show')), sort: parseSort(q.get('sort')), text: q.get('q') ?? '', href: last.pathname + last.search };
 }
 
 export function spacePath(id: SpaceId): string {
-  return id === 'all' ? '/' : `/library/${id}`;
+  if (id === 'all') return '/';
+  if (typeof id === 'string') return `/collection/${id.slice(1)}`;
+  return `/library/${id}`;
 }
 
 /** The key lens choices are remembered under. */
 export function spaceKey(id: SpaceId): string {
-  return id === 'all' ? 'all' : `lib${id}`;
+  if (id === 'all') return 'all';
+  if (typeof id === 'string') return `col${id.slice(1)}`;
+  return `lib${id}`;
 }
 
 function onSpaceRoute(): boolean {

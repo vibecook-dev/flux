@@ -9,7 +9,7 @@ import { navigate } from '../app/router';
 import { subscribeEvents } from '../api/events';
 import { formatCount } from '../api/format';
 import { refreshFolders } from '../api/folder-list';
-import { refreshLibrary } from '../api/library-list';
+import { refreshCollections, refreshLibrary } from '../api/library-list';
 import { keys, recallSummary } from '../api/queries';
 import { invalidateQueries, peekQuery, setQueryData } from '../api/query';
 import type { Id, Library, TailnetInfo } from '../api/types';
@@ -127,6 +127,11 @@ export function useEventsBridge(): void {
         }
         case 'lenses': {
           invalidateQueries(keys.serverLenses);
+          break;
+        }
+        case 'collections': {
+          invalidateQueries(keys.collections);
+          refreshCollections();
           break;
         }
         case 'tailnet': {

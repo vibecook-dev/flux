@@ -13,8 +13,8 @@ import { back, matchRoute, navigateWhenLoaded, preloadRoute, type Location } fro
 import { useTheme } from '../app/theme';
 import { guardRefusal } from '../api/client';
 import { holdPaging } from '../api/library-list';
-import { prefetchItem, useLibraries, useServer, useServerLenses } from '../api/queries';
-import { useSpaceList } from '../api/space-list';
+import { prefetchItem, useCollections, useLibraries, useServer, useServerLenses } from '../api/queries';
+import { collectionOf, useSpaceList } from '../api/space-list';
 import type { Id, ItemSummary, LibraryKind } from '../api/types';
 import { LensHost } from '../lens/LensHost';
 import { activeLens, lensFocus, setLensFocus } from '../lens/bridge';
@@ -48,13 +48,17 @@ export function Shell({ loc }: { loc: Location }) {
   const overlay = m && m.route.layer === 'overlay' ? m : null;
   const space = spaceFor(loc.pathname, loc.search);
   const libs = useLibraries();
-  const lib = space.id === 'all' ? undefined : libs.data?.find((l) => l.id === space.id);
-  const kind: LibraryKind | 'all' = space.id === 'all' ? 'all' : (lib?.kind ?? 'movies');
+  const collections = useCollections();
+  const collectionId = collectionOf(space.id);
+  const collection = collectionId === null ? undefined : collections.data?.collections.find((c) => c.id === collectionId);
+  const lib = typeof space.id === 'number' ? libs.data?.find((l) => l.id === space.id) : undefined;
+  // A collection holds films and shows from any library: browsed like All.
+  const kind: LibraryKind | 'all' = typeof space.id === 'number' ? (lib?.kind ?? 'movies') : 'all';
   const phone = usePhone();
   const insets = useInsets();
   const { resolved: theme } = useTheme();
   // Overlays set their own title; the space sets it otherwise.
-  const libName = lib?.name;
+  const libName = lib?.name ?? collection?.name;
   useEffect(() => {
     if (!overlay) document.title = space.id === 'all' || !libName ? 'flux' : `${libName} · flux`;
   }, [overlay, space.id, libName]);
@@ -322,7 +326,7 @@ export function Shell({ loc }: { loc: Location }) {
 
   const safe = useMemo(() => ({ top: 68 + insets.top, bottom: 84 + insets.bottom, left: 16, right: 16 }), [insets]);
   const OverlayComponent = overlay?.route.Component;
-  const spaceName = space.id === 'all' ? 'All' : (lib?.name ?? 'Library');
+  const spaceName = space.id === 'all' ? 'All' : collectionId !== null ? (collection?.name ?? 'Collection') : (lib?.name ?? 'Library');
 
   return (
     <div className={styles.shell} data-lens={def.id}>
@@ -374,6 +378,7 @@ export function Shell({ loc }: { loc: Location }) {
           show={space.show}
           sort={space.sort}
           libraries={libs.data}
+          collections={collections.data?.collections}
           open={islandOpen}
           seed={seed}
           covered={covered}

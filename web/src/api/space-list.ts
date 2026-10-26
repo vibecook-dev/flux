@@ -6,11 +6,16 @@
  */
 import { useMemo, useSyncExternalStore } from 'react';
 import { titleSortKey } from './format';
-import { getLibraryList, type LibraryList } from './library-list';
+import { getCollectionList, getLibraryList, type LibraryList } from './library-list';
 import type { ItemSummary, Library, LibrarySort } from './types';
 
-/** `all`, or a library id. */
-export type SpaceId = 'all' | number;
+/** `all`, a library id, or a collection (`c3`). */
+export type SpaceId = 'all' | number | `c${number}`;
+
+/** The collection a space is, if it is one. */
+export function collectionOf(id: SpaceId): number | null {
+  return typeof id === 'string' && id.startsWith('c') ? Number(id.slice(1)) || null : null;
+}
 
 export interface SpaceSnapshot {
   items: readonly ItemSummary[];
@@ -86,7 +91,7 @@ export function mergeSorted(lists: readonly (readonly ItemSummary[])[], sort: Li
 }
 
 function snapshotOf(lists: readonly LibraryList[], sort: LibrarySort, cache: { key: string; items: readonly ItemSummary[] }): SpaceSnapshot {
-  const version = lists.map((l) => `${l.libraryId}:${l.version}`).join(',');
+  const version = lists.map((l) => `${l.key}:${l.version}`).join(',');
   let items = cache.items;
   if (cache.key !== version) {
     items = lists.length === 1 ? lists[0].items : settledPrefix(mergeSorted(lists.map((l) => l.items), sort), lists, sort);
@@ -111,12 +116,17 @@ function snapshotOf(lists: readonly LibraryList[], sort: LibrarySort, cache: { k
  * "All"); while it is still loading, "All" is empty and not done.
  */
 export function useSpaceList(space: SpaceId, sort: LibrarySort, libraries: readonly Library[] | undefined): SpaceSnapshot {
+  const collection = collectionOf(space);
   const ids = useMemo(() => {
-    if (space !== 'all') return [space];
+    if (typeof space === 'number') return [space];
+    if (space !== 'all') return [];
     return libraries ? allLibraries(libraries).map((l) => l.id) : [];
   }, [space, libraries]);
-  const key = `${ids.join(',')}|${sort}`;
-  const lists = useMemo(() => ids.map((id) => getLibraryList(id, sort)), [ids, sort]);
+  const key = `${collection ?? ids.join(',')}|${sort}`;
+  const lists = useMemo(
+    () => (collection !== null ? [getCollectionList(collection, sort)] : ids.map((id) => getLibraryList(id, sort))),
+    [collection, ids, sort],
+  );
   const cache = useMemo(() => ({ key: '', items: [] as readonly ItemSummary[] }), [key]); // eslint-disable-line react-hooks/exhaustive-deps
   const subscribe = useMemo(
     () => (cb: () => void) => {

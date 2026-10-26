@@ -10,6 +10,7 @@ const space = () => Promise.resolve({ default: () => null });
 defineRoutes([
   { name: 'home', path: '/', layer: 'space', load: space },
   { name: 'library', path: '/library/:id', layer: 'space', load: space },
+  { name: 'collection', path: '/collection/:id', layer: 'space', load: space },
   { name: 'item', path: '/item/:id', layer: 'overlay', load: () => import('../routes/Item') },
   { name: 'play', path: '/play/:id', load: () => import('../routes/Player'), bare: true },
   { name: 'connect', path: '/connect', layer: 'overlay', load: () => import('../routes/Connect') },

@@ -832,7 +832,9 @@ const SUMMARY_SQL: &str =
     "SELECT cs.id, cs.state, cs.summary, cs.agent, cs.actor, cs.created_at, cs.decided_at,
         cs.decided_by, cs.reverted_at, cs.reverted_by,
         (SELECT count(DISTINCT item_id) FROM change WHERE changeset_id = cs.id),
-        (SELECT count(*) FROM change WHERE changeset_id = cs.id)
+        (SELECT count(*) FROM change WHERE changeset_id = cs.id),
+        EXISTS (SELECT 1 FROM change WHERE changeset_id = cs.id
+                 AND field IN ('file.path', 'folder.path', 'folder.new', 'folder.gone'))
    FROM changeset cs";
 
 fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetSummary> {
@@ -849,6 +851,7 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChangesetSummary> {
         reverted_by: r.get(9)?,
         item_count: r.get::<_, i64>(10)? as u32,
         change_count: r.get::<_, i64>(11)? as u32,
+        moves_files: r.get(12)?,
     })
 }
 

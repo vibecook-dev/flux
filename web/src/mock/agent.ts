@@ -12,6 +12,12 @@ import type {
   AgentItem,
   AgentItemDetail,
   Change,
+  CollectionInfo,
+  CollectionItems,
+  CollectionPick,
+  CollectionRule,
+  Collections,
+  EditOutput,
   Changeset,
   ChangesetState,
   ChangesListOutput,
@@ -27,7 +33,7 @@ import type {
   NotDone,
   StoredLens,
 } from '../api/agent';
-import type { FluxEvent, Id, ItemSummary } from '../api/types';
+import type { FluxEvent, Id, ItemSummary, LibrarySort, Page } from '../api/types';
 import { MATCHED_IDS } from './curated';
 import type { MockDb } from './db';
 
@@ -41,6 +47,9 @@ interface Ctx {
 type Values = Record<string, unknown>;
 
 const WIKI = (page: string, title = 'Wikipedia'): Link => ({ url: `https://en.wikipedia.org/wiki/${page}`, title });
+
+/** Fields of a file plan's steps (they move files on disk). */
+const PLAN_FIELDS = new Set(['file.path', 'folder.path', 'folder.new', 'folder.gone']);
 
 const EMPTY_FIELDS: Fields = {
   title: null,
@@ -111,6 +120,13 @@ export function agentHandlers(ctx: Ctx) {
       }
     }
     if (changes.length === 0) return;
+    push(summary, state, agent, by, ago, changes);
+  };
+
+  /** A changeset with its changes as they are. */
+  const push = (summary: string, state: ChangesetState, agent: string | null, by: string, ago: number, changes: Change[]) => {
+    const id = journal.length ? Math.max(...journal.map((j) => j.id)) + 1 : nextId++;
+    nextId = Math.max(nextId, id + 1);
     const items = new Set(changes.map((c) => c.item)).size;
     journal.push({
       id,
@@ -125,8 +141,10 @@ export function agentHandlers(ctx: Ctx) {
       reverted_by: state === 'reverted' ? by : null,
       item_count: items,
       change_count: changes.length,
+      moves_files: changes.some((c) => PLAN_FIELDS.has(c.field)),
       changes,
     });
+    return id;
   };
 
   const owner = 'james@example.com';
@@ -161,6 +179,43 @@ export function agentHandlers(ctx: Ctx) {
     25 * 60_000,
     episodes.map((e, i) => ({ item: e, values: { title: ['Good News About Hell', 'Half Loop'][i] }, sources: [{ url: 'https://tv.apple.com/show/severance', title: 'Apple TV+' }] })),
   );
+
+  // A file plan an agent proposed, and a fix it applied.
+  const spirited = find('Spirited Away');
+  if (spirited) {
+    const root = '/media/Movies';
+    const step = (field: string, before: unknown, after: unknown): Change => ({
+      item: spirited.id,
+      title: spirited.title,
+      field,
+      before,
+      after,
+      withheld: null,
+      sources: [],
+      state: 'pending',
+    });
+    push('Name Spirited Away’s files the standard way', 'proposed', 'claude-code', owner, 12 * 60_000, [
+      step('folder.path', { root: 1, path: 'sen to chihiro (2001) 1080p' }, { root: 1, path: 'Spirited Away (2001)' }),
+      step('file.path', { root: 1, path: 'Spirited Away (2001)/Sen.to.Chihiro.2001.1080p.BluRay.mkv', what: 'video', file: 501 }, { root: 1, path: 'Spirited Away (2001)/Spirited Away (2001).mkv', what: 'video', file: 501 }),
+      step('file.path', { root: 1, path: 'Spirited Away (2001)/Sen.to.Chihiro.2001.1080p.BluRay.ja.srt', what: 'companion', file: null }, { root: 1, path: 'Spirited Away (2001)/Spirited Away (2001).ja.srt', what: 'companion', file: null }),
+    ]);
+    void root;
+  }
+  const heat = find('Heat');
+  if (heat) {
+    push('Two copies of Heat are one film: the 4K joins the 1080p', 'applied', 'claude-code', owner, 50 * 60_000, [
+      {
+        item: heat.id,
+        title: heat.title,
+        field: 'file.fix',
+        before: { file: 502, path: 'Heat.1995.2160p.UHD.mkv', fix: null },
+        after: { file: 502, path: 'Heat.1995.2160p.UHD.mkv', fix: { kind: null, of: heat.id, title: null, year: null, season: null, episodes: null, extra: null, edition: null, part: null }, item: heat.id },
+        withheld: null,
+        sources: [],
+        state: 'applied',
+      },
+    ]);
+  }
 
   const lensSpec: LensSpec = {
     name: 'Departure board',
@@ -228,7 +283,11 @@ export function agentHandlers(ctx: Ctx) {
     }
     fields.ids = Object.keys(ids).length ? ids : null;
     const files: FileEvidence[] = d.assets.map((a) => ({
-      path: a.path,
+      id: a.id,
+      path: a.path.replace(/^\/media\/[^/]+\//, ''),
+      root: a.path.match(/^\/media\/[^/]+/)?.[0] ?? '/media',
+      sidecars: [],
+      fix: null,
       size: a.size,
       modified: null,
       available: a.available,
@@ -280,6 +339,7 @@ export function agentHandlers(ctx: Ctx) {
     reverted_by: c.reverted_by,
     item_count: c.item_count,
     change_count: c.change_count,
+    moves_files: c.moves_files,
   });
 
   const announce = (c: Changeset) => {
@@ -301,6 +361,17 @@ export function agentHandlers(ctx: Ctx) {
     let done = 0;
     const now = Date.now();
     for (const ch of [...c.changes].reverse()) {
+      // The mock moves no files and places nothing again: a step is done.
+      if (PLAN_FIELDS.has(ch.field) || ch.field === 'file.fix') {
+        if (action === 'undo' && ch.state === 'applied') {
+          ch.state = 'reverted';
+          done += 1;
+        } else if (action === 'apply' && ch.state === 'pending') {
+          ch.state = 'applied';
+          done += 1;
+        }
+        continue;
+      }
       if (action === 'undo' && ch.state === 'applied') {
         if (JSON.stringify(valueOf(ch.item, ch.field)) === JSON.stringify(ch.after)) {
           record(ch.item, ch.field, ch.before, null);
@@ -329,6 +400,59 @@ export function agentHandlers(ctx: Ctx) {
     return { changeset: summaryOf(c), done, not_done: notDone };
   };
 
+  interface MockCollection {
+    id: Id;
+    name: string;
+    description: string | null;
+    everyone: boolean;
+    rule: CollectionRule | null;
+    picks: { item: Id; note: string | null }[];
+    agent: string | null;
+    at: number;
+  }
+  const collections: MockCollection[] = [];
+  const ghibli = ['Spirited Away', 'Princess Mononoke', 'My Neighbor Totoro', 'Howl’s Moving Castle', 'Kiki’s Delivery Service']
+    .map((t) => find(t))
+    .filter((x): x is ItemSummary => !!x);
+  if (ghibli.length) {
+    collections.push({
+      id: 1,
+      name: 'Ghibli',
+      description: 'Studio Ghibli’s features, in the order they came out.',
+      everyone: true,
+      rule: null,
+      picks: ghibli.map((g, i) => ({ item: g.id, note: i === 0 ? 'The one to start with' : null })),
+      agent: 'claude-code',
+      at: t0 - 3_600_000,
+    });
+  }
+  const rainy = db
+    .libraryIds(1, 'year')
+    .map((i) => db.summary(i))
+    .filter((x): x is ItemSummary => !!x && x.kind === 'movie' && (x.year ?? 9999) < 1990)
+    .slice(0, 8);
+  if (rainy.length) {
+    collections.push({ id: 2, name: 'Rainy Sunday', description: 'Old favourites for a slow afternoon.', everyone: false, rule: null, picks: rainy.map((r) => ({ item: r.id, note: null })), agent: 'claude-code', at: t0 - 7_200_000 });
+  }
+  const membersOf = (c: MockCollection): Id[] => c.picks.map((p) => p.item).filter((i) => db.summary(i));
+  const infoOf = (c: MockCollection): CollectionInfo => {
+    const ids = membersOf(c);
+    return {
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      everyone: c.everyone,
+      rule: c.rule,
+      count: ids.length,
+      cover: ids.slice(0, 4),
+      added_by: owner,
+      agent: c.agent,
+      sources: [],
+      created_at: c.at,
+      updated_at: c.at,
+    };
+  };
+
   const ops: Record<string, (input: Record<string, unknown>) => unknown> = {
     'changes.list': (input) => {
       const state = input.state as ChangesetState | undefined;
@@ -354,6 +478,82 @@ export function agentHandlers(ctx: Ctx) {
     'changes.apply': (input) => decide(Number(input.changeset), 'apply'),
     'changes.reject': (input) => decide(Number(input.changeset), 'reject'),
     'item.get': (input) => itemGet(Number(input.item)) ?? opError(404, 'not_found', `No item ${String(input.item)}`),
+    'items.edit': (input) => {
+      const edits = (input.edits as { item: Id; set?: Record<string, unknown>; clear?: string[] }[] | undefined) ?? [];
+      const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
+      if (!summary) return opError(400, 'invalid', 'Give a summary: what these changes are and why');
+      const propose = input.mode === 'propose';
+      const changes: Change[] = [];
+      const results: EditOutput['items'] = [];
+      for (const e of edits) {
+        const s = db.summary(e.item);
+        if (!s) return opError(404, 'not_found', `No item ${e.item}`);
+        const changed: EditOutput['items'][number]['changed'] = [];
+        const flat: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(e.set ?? {})) {
+          if (v === null || v === undefined) continue;
+          if (k === 'ids' && typeof v === 'object') for (const [p, id] of Object.entries(v as Record<string, unknown>)) flat[`ids.${p}`] = id;
+          else flat[k] = v;
+        }
+        for (const f of e.clear ?? []) flat[f] = null;
+        for (const [field, after] of Object.entries(flat)) {
+          const before = valueOf(e.item, field) ?? (field === 'title' ? s.title : field === 'year' ? s.year : null);
+          if (JSON.stringify(before) === JSON.stringify(after)) continue;
+          changes.push({ item: e.item, title: s.title, field, before, after, withheld: null, sources: [], state: propose ? 'pending' : 'applied' });
+          changed.push({ field, before, after, withheld: null });
+        }
+        results.push({ item: e.item, title: s.title, changed, unchanged: [], refused: [] });
+      }
+      if (changes.length === 0) return { changeset: null, items: results } satisfies EditOutput;
+      const id = push(summary, propose ? 'proposed' : 'applied', null, owner, 0, changes);
+      const c = journal.find((j) => j.id === id)!;
+      c.created_at = Date.now();
+      if (!propose) {
+        for (const ch of changes) record(ch.item, ch.field, ch.after, ch.after === null ? null : { source: 'user', provider: null, agent: null, by: owner, changeset: id, at: Date.now(), sources: [] });
+      }
+      announce(c);
+      return { changeset: summaryOf(c), items: results } satisfies EditOutput;
+    },
+    'collections.list': (): Collections => ({ collections: collections.map(infoOf) }),
+    'collection.get': (input) => {
+      const c = collections.find((x) => x.id === input.collection);
+      if (!c) return opError(404, 'not_found', `No collection ${String(input.collection)}`);
+      const ids = membersOf(c);
+      const out: CollectionItems = {
+        collection: infoOf(c),
+        items: ids.map((i) => db.summary(i)).filter((x): x is ItemSummary => !!x).map(brief),
+        notes: Object.fromEntries(c.picks.filter((p) => p.note).map((p) => [String(p.item), p.note as string])),
+        next: null,
+        total: ids.length,
+      };
+      return out;
+    },
+    'collection.put': (input) => {
+      const name = typeof input.name === 'string' ? input.name.trim() : '';
+      if (!name) return opError(400, 'invalid', 'Give a name of 1 to 60 characters');
+      let c = collections.find((x) => x.id === input.id || x.name.toLowerCase() === name.toLowerCase());
+      if (!c) {
+        c = { id: collections.length + 1, name, description: null, everyone: Boolean(input.everyone), rule: null, picks: [], agent: null, at: Date.now() };
+        collections.push(c);
+      }
+      c.name = name;
+      if (typeof input.description === 'string') c.description = input.description;
+      if (Array.isArray(input.items)) c.picks = (input.items as CollectionPick[]).map((p) => ({ item: p.item, note: p.note ?? null }));
+      for (const p of (input.add as CollectionPick[] | undefined) ?? []) if (!c.picks.some((x) => x.item === p.item)) c.picks.push({ item: p.item, note: p.note ?? null });
+      const remove = (input.remove as Id[] | undefined) ?? [];
+      c.picks = c.picks.filter((p) => !remove.includes(p.item));
+      if (input.rule !== undefined) c.rule = (input.rule as CollectionRule | null) ?? null;
+      ctx.broadcast({ type: 'collections' });
+      return infoOf(c);
+    },
+    'collection.remove': (input) => {
+      const i = collections.findIndex((x) => x.id === input.collection);
+      if (i >= 0) {
+        collections.splice(i, 1);
+        ctx.broadcast({ type: 'collections' });
+      }
+      return { removed: i >= 0 };
+    },
     'lenses.list': (): Lenses => ({ lenses }),
     'lens.remove': (input) => {
       const i = lenses.findIndex((l) => l.id === input.id);
@@ -381,6 +581,27 @@ export function agentHandlers(ctx: Ctx) {
   });
 
   return [
+    http.get(u('/api/v1/collections/:id/items'), async ({ params, request }) => {
+      await wait();
+      const c = collections.find((x) => x.id === Number(params.id));
+      if (!c) return new HttpResponse(`No collection ${String(params.id)}`, { status: 404 });
+      const url = new URL(request.url);
+      const sort = (url.searchParams.get('sort') ?? 'title') as LibrarySort;
+      const items = membersOf(c)
+        .map((i) => db.summary(i))
+        .filter((x): x is ItemSummary => !!x);
+      const by: Record<LibrarySort, (a: ItemSummary, b: ItemSummary) => number> = {
+        title: (a, b) => a.title.localeCompare(b.title),
+        '-title': (a, b) => b.title.localeCompare(a.title),
+        year: (a, b) => (a.year ?? 9999) - (b.year ?? 9999),
+        '-year': (a, b) => (b.year ?? -1) - (a.year ?? -1),
+        added: (a, b) => a.added_at - b.added_at,
+        '-added': (a, b) => b.added_at - a.added_at,
+      };
+      items.sort(by[sort] ?? by.title);
+      const page: Page<ItemSummary> = { items, next: null, total: items.length };
+      return HttpResponse.json(page);
+    }),
     http.get(u('/api/v1/agent'), async () => {
       await wait();
       return HttpResponse.json(manifestOf());

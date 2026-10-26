@@ -3,7 +3,7 @@
  * lets a detail page render its header instantly from the card that was
  * clicked (optimistic navigation) while the full ItemDetail loads.
  */
-import { manifest, op, type AgentItemDetail, type ChangesListOutput, type Lenses } from './agent';
+import { manifest, op, type AgentItemDetail, type ChangesListOutput, type Collections, type Lenses } from './agent';
 import { api } from './client';
 import { prefetchQuery, useQuery } from './query';
 import type { Id, ItemDetail, ItemSummary } from './types';
@@ -22,6 +22,8 @@ export const keys = {
   facts: (id: Id) => `facts:${id}`,
   /** Lenses kept on the server (`lenses.list`). */
   serverLenses: 'server-lenses',
+  /** `collections.list`. */
+  collections: 'collections',
   /** `GET /api/v1/agent`. */
   manifest: 'agent-manifest',
 } as const;
@@ -40,6 +42,7 @@ export const useFacts = (id: Id) => useQuery(keys.facts(id), () => op<AgentItemD
 export const useServerLenses = (enabled = true) =>
   useQuery(keys.serverLenses, () => op<Lenses>('lenses.list'), { staleMs: 30_000, enabled });
 export const useManifest = () => useQuery(keys.manifest, manifest, { staleMs: 300_000 });
+export const useCollections = () => useQuery(keys.collections, () => op<Collections>('collections.list'), { staleMs: 30_000 });
 
 const summaries = new Map<Id, ItemSummary>();
 

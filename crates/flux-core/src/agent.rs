@@ -863,6 +863,8 @@ pub struct ChangesetSummary {
     pub item_count: u32,
     /// How many changes it holds.
     pub change_count: u32,
+    /// It renames or moves files on disk (a file plan, `files.plan`).
+    pub moves_files: bool,
 }
 
 /// One change of a changeset.

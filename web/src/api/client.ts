@@ -192,6 +192,16 @@ export function createFluxClient(opts: FluxClientOptions) {
       const qs = params.toString();
       return get<Page<ItemSummary>>(`/api/v1/libraries/${id}/items${qs ? `?${qs}` : ''}`, signal);
     },
+    /** GET /api/v1/collections/{id}/items?cursor=&limit=&sort=&filter= (a collection's titles, across libraries). */
+    collectionItems: (id: Id, q: ItemsQuery = {}, signal?: AbortSignal) => {
+      const params = new URLSearchParams();
+      if (q.cursor) params.set('cursor', q.cursor);
+      if (q.limit !== undefined) params.set('limit', String(q.limit));
+      if (q.sort) params.set('sort', q.sort);
+      if (q.filter) params.set('filter', q.filter);
+      const qs = params.toString();
+      return get<Page<ItemSummary>>(`/api/v1/collections/${id}/items${qs ? `?${qs}` : ''}`, signal);
+    },
     /** GET /api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort= (a videos library's folders). */
     libraryFolders: (id: Id, q: FolderQuery = {}, signal?: AbortSignal) => {
       const params = new URLSearchParams();

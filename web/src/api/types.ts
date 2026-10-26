@@ -667,7 +667,9 @@ export type FluxEvent =
   /** A changeset was made, applied, undone or turned down (agents' and people's edits). */
   | { type: 'changes'; changeset: ChangesetSummary }
   /** The lenses kept on the server changed. */
-  | { type: 'lenses' };
+  | { type: 'lenses' }
+  /** The collections kept on the server changed. */
+  | { type: 'collections' };
 
 export const TAILNET_MODES = ['off', 'embedded', 'system'] as const;
 /** How flux reaches the tailnet: not at all, its own node (Truffle), or this machine's tailscaled. */

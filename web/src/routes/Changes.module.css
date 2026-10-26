@@ -407,3 +407,85 @@
     gap: 0;
   }
 }
+
+/* A file plan's steps: what moves where, in order. */
+.steps {
+  display: grid;
+  gap: 8px;
+  counter-reset: step;
+}
+
+.steps li {
+  display: grid;
+  grid-template-columns: minmax(110px, 160px) 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.steps li[data-companion] {
+  opacity: 0.72;
+}
+
+.stepKind {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.stepPaths {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stepPaths del {
+  font-size: 0.78rem;
+  color: var(--text-3);
+  text-decoration-color: color-mix(in srgb, var(--text-3) 60%, transparent);
+}
+
+.stepPaths ins {
+  text-decoration: none;
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.steps li[data-state='skipped'] ins,
+.steps li[data-state='reverted'] ins,
+.steps li[data-state='kept'] ins {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.filePath {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.planNote {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.planNote :global(svg) {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--text-3);
+}
+
+@media (max-width: 600px) {
+  .steps li {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

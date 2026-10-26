@@ -8,6 +8,7 @@ import { api } from '../api/client';
 import { formatCount, formatRemaining } from '../api/format';
 import { prefetchItem, rememberSummaries, useHome } from '../api/queries';
 import type { SpaceId } from '../api/space-list';
+import type { CollectionInfo } from '../api/agent';
 import type { ItemSummary, Library } from '../api/types';
 import { Art } from '../components/Art';
 import { resultEdge } from '../components/card-utils';
@@ -28,6 +29,8 @@ export interface IslandProps {
   show: Show;
   sort: Sort;
   libraries: readonly Library[] | undefined;
+  /** Collections (everyone's and yours): spaces too. */
+  collections?: readonly CollectionInfo[];
   open: boolean;
   /** Text to start with when opened by typing. */
   seed: string | null;
@@ -325,7 +328,7 @@ function Chip({ on, label, n, onClick, dot }: { on: boolean; label: string; n?: 
   );
 }
 
-function Home({ spaceId, libraries, show, sort, onSpace, onShow, onSort, onResume }: IslandProps) {
+function Home({ spaceId, libraries, collections, show, sort, onSpace, onShow, onSort, onResume }: IslandProps) {
   const home = useHome();
   const conts = (home.data?.continue_watching ?? []).slice(0, 4);
   const total = (libraries ?? []).filter((l) => l.kind !== 'videos').reduce((n, l) => n + l.item_count, 0);
@@ -363,6 +366,16 @@ function Home({ spaceId, libraries, show, sort, onSpace, onShow, onSort, onResum
           ))}
         </div>
       </section>
+      {collections && collections.length > 0 && (
+        <section className={styles.sec}>
+          <h3>Collections</h3>
+          <div className={styles.chips}>
+            {collections.map((c) => (
+              <Chip key={c.id} on={spaceId === `c${c.id}`} label={c.name} n={formatCount(c.count)} onClick={() => onSpace(`c${c.id}`)} />
+            ))}
+          </div>
+        </section>
+      )}
       <section className={styles.sec}>
         <h3>Show</h3>
         <div className={styles.chips}>

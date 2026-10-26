@@ -51,6 +51,10 @@
           "minimum": 0,
           "type": "integer"
         },
+        "moves_files": {
+          "description": "It renames or moves files on disk (a file plan, `files.plan`).",
+          "type": "boolean"
+        },
         "reverted_at": {
           "format": "int64",
           "type": [
@@ -100,7 +104,8 @@
         "by",
         "created_at",
         "item_count",
-        "change_count"
+        "change_count",
+        "moves_files"
       ],
       "type": "object"
     },

@@ -191,6 +191,12 @@
       "scene",
       "other"
     ],
+    "FixKind": [
+      "movie",
+      "episode",
+      "extra",
+      "ignore"
+    ],
     "FolderSort": [
       "title",
       "-title",
@@ -263,6 +269,9 @@
       "tmdb",
       "exports"
     ],
+    "NamingScheme": [
+      "standard"
+    ],
     "Role": [
       "owner",
       "admin",
@@ -281,7 +290,15 @@
       "file",
       "provider",
       "user",
-      "agent"
+      "agent",
+      "sidecar"
+    ],
+    "StepKind": [
+      "new_folder",
+      "rename_folder",
+      "move_video",
+      "move_companion",
+      "remove_folder"
     ],
     "TailnetMode": [
       "off",
@@ -644,6 +661,7 @@
           "decided_by": "james@example.com",
           "id": 3,
           "item_count": 1,
+          "moves_files": false,
           "reverted_at": null,
           "reverted_by": null,
           "state": "applied",
@@ -698,6 +716,18 @@
           "container_title": "Сталкер",
           "duration_ms": 9660000,
           "edition": null,
+          "fix": {
+            "edition": null,
+            "episodes": null,
+            "extra": null,
+            "kind": null,
+            "of": null,
+            "part": null,
+            "season": null,
+            "title": null,
+            "year": 1979
+          },
+          "id": 70,
           "modified": 1760000000000,
           "parsed": {
             "absolute_episode": 1,
@@ -729,7 +759,11 @@
             "video_codec": "x264",
             "year": 2008
           },
-          "path": "/media/Films/Stalker.1979.mkv",
+          "path": "Stalker.1979.mkv",
+          "root": "/media/Films",
+          "sidecars": [
+            "Stalker.1979.nfo"
+          ],
           "size": 4000000000,
           "subtitle_files": [],
           "tracks": [
@@ -796,6 +830,7 @@
           "decided_by": "james@example.com",
           "id": 3,
           "item_count": 1,
+          "moves_files": false,
           "reverted_at": null,
           "reverted_by": null,
           "state": "applied",
@@ -848,10 +883,110 @@
       "decided_by": "james@example.com",
       "id": 3,
       "item_count": 1,
+      "moves_files": false,
       "reverted_at": null,
       "reverted_by": null,
       "state": "applied",
       "summary": "Identified Stalker (1979) from its Russian container title"
+    },
+    "CollectionItems": {
+      "collection": {
+        "added_by": "james@example.com",
+        "agent": "claude-code",
+        "count": 1,
+        "cover": [
+          7
+        ],
+        "created_at": 1760000000000,
+        "description": "Andrei Tarkovsky's features",
+        "everyone": true,
+        "id": 3,
+        "name": "Tarkovsky",
+        "rule": {
+          "countries": [],
+          "genres": [],
+          "kinds": [],
+          "languages": [],
+          "libraries": [],
+          "people": [
+            "Andrei Tarkovsky"
+          ],
+          "studios": [],
+          "tags": [],
+          "text": null,
+          "year_from": 1960,
+          "year_to": null
+        },
+        "sources": [
+          {
+            "title": "Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Stalker_(1979_film)"
+          }
+        ],
+        "updated_at": 1760000000000
+      },
+      "items": [
+        {
+          "available": true,
+          "gaps": [
+            "backdrop"
+          ],
+          "id": 7,
+          "kind": "movie",
+          "library": 1,
+          "match_state": "parsed",
+          "parent": null,
+          "path": "/media/Films/Stalker.1979.mkv",
+          "poster": "custom",
+          "subtitle": null,
+          "title": "Stalker",
+          "year": 1979
+        }
+      ],
+      "next": null,
+      "notes": {
+        "7": "Tarkovsky's last Soviet film"
+      },
+      "total": 1
+    },
+    "Collections": {
+      "collections": [
+        {
+          "added_by": "james@example.com",
+          "agent": "claude-code",
+          "count": 1,
+          "cover": [
+            7
+          ],
+          "created_at": 1760000000000,
+          "description": "Andrei Tarkovsky's features",
+          "everyone": true,
+          "id": 3,
+          "name": "Tarkovsky",
+          "rule": {
+            "countries": [],
+            "genres": [],
+            "kinds": [],
+            "languages": [],
+            "libraries": [],
+            "people": [
+              "Andrei Tarkovsky"
+            ],
+            "studios": [],
+            "tags": [],
+            "text": null,
+            "year_from": 1960,
+            "year_to": null
+          },
+          "sources": [
+            {
+              "title": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Stalker_(1979_film)"
+            }
+          ],
+          "updated_at": 1760000000000
+        }
+      ]
     },
     "CreateLibrary": {
       "kind": "movies",
@@ -870,6 +1005,7 @@
         "decided_by": "james@example.com",
         "id": 3,
         "item_count": 1,
+        "moves_files": false,
         "reverted_at": null,
         "reverted_by": null,
         "state": "applied",
@@ -953,6 +1089,7 @@
           "decided_by": "james@example.com",
           "id": 3,
           "item_count": 1,
+          "moves_files": false,
           "reverted_at": null,
           "reverted_by": null,
           "state": "applied",
@@ -962,8 +1099,54 @@
       },
       {
         "type": "lenses"
+      },
+      {
+        "type": "collections"
       }
     ],
+    "FixOutput": {
+      "changeset": {
+        "agent": "claude-code",
+        "by": "james@example.com",
+        "change_count": 2,
+        "created_at": 1760000000000,
+        "decided_at": 1760000000000,
+        "decided_by": "james@example.com",
+        "id": 3,
+        "item_count": 1,
+        "moves_files": false,
+        "reverted_at": null,
+        "reverted_by": null,
+        "state": "applied",
+        "summary": "Identified Stalker (1979) from its Russian container title"
+      },
+      "files": [
+        {
+          "after": {
+            "item": 7,
+            "title": "Stalker"
+          },
+          "before": {
+            "item": 8,
+            "title": "Stalker (2)"
+          },
+          "file": 71,
+          "fix": {
+            "edition": null,
+            "episodes": null,
+            "extra": null,
+            "kind": null,
+            "of": 7,
+            "part": null,
+            "season": null,
+            "title": null,
+            "year": null
+          },
+          "path": "Stalker (2).mkv",
+          "unchanged": null
+        }
+      ]
+    },
     "FolderPage": {
       "at": {
         "folder": "3/2019/Trip",
@@ -1539,6 +1722,49 @@
       ],
       "next": "c1",
       "total": 3
+    },
+    "PlanOutput": {
+      "changeset": {
+        "agent": "claude-code",
+        "by": "james@example.com",
+        "change_count": 2,
+        "created_at": 1760000000000,
+        "decided_at": 1760000000000,
+        "decided_by": "james@example.com",
+        "id": 3,
+        "item_count": 1,
+        "moves_files": false,
+        "reverted_at": null,
+        "reverted_by": null,
+        "state": "applied",
+        "summary": "Identified Stalker (1979) from its Russian container title"
+      },
+      "skipped": [
+        {
+          "file": 72,
+          "item": 9,
+          "path": "x.mkv",
+          "reason": "its drive doesn't answer"
+        }
+      ],
+      "steps": [
+        {
+          "file": null,
+          "from": null,
+          "item": 7,
+          "root": "/media/Films",
+          "step": "new_folder",
+          "to": "Stalker (1979)"
+        },
+        {
+          "file": 70,
+          "from": "Stalker.1979.mkv",
+          "item": 7,
+          "root": "/media/Films",
+          "step": "move_video",
+          "to": "Stalker (1979)/Stalker (1979).mkv"
+        }
+      ]
     },
     "PlanPreview": {
       "asset_id": 70,

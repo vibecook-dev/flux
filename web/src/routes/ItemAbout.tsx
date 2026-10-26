@@ -9,29 +9,32 @@ import { useState } from 'react';
 import { Link } from '../app/Link';
 import { countryName, fieldName, hostOf, languageName, type AgentItemDetail, type FieldSource, type Fields } from '../api/agent';
 import { formatAgo } from '../api/format';
+import { useServer } from '../api/queries';
 import type { UseQueryResult } from '../api/query';
 import type { ItemDetail } from '../api/types';
 import { Icon } from '../components/Icon';
 import styles from './Item.module.css';
 import about from './ItemAbout.module.css';
 import { agentBrief, formatRelease } from './item-brief';
+import { EditDetails } from './ItemEdit';
 
 /** Who set a value, in a few words. */
 function setBy(s: FieldSource): string {
   if (s.source === 'agent') return s.agent ?? 'an agent';
   if (s.source === 'user') return s.by ?? 'a person';
   if (s.source === 'provider') return (s.provider ?? 'a provider').toUpperCase();
+  if (s.source === 'sidecar') return s.provider === 'nfo' ? 'an .nfo file' : s.agent ? `${s.agent}, in a .flux.json` : 'a .flux.json file';
   return 'the file';
 }
 
 function SourceMark({ s }: { s: FieldSource | undefined }) {
-  if (!s || (s.source !== 'agent' && s.source !== 'user')) return null;
+  if (!s || (s.source !== 'agent' && s.source !== 'user' && s.source !== 'sidecar')) return null;
   const from = s.sources.map((l) => hostOf(l.url)).filter((h, i, a) => a.indexOf(h) === i);
   const title = `Set by ${setBy(s)}${s.at ? `, ${formatAgo(s.at)}` : ''}${from.length ? `, from ${from.join(', ')}` : ''}`;
   // A quiet mark per value; "Where this comes from" names who and how.
   const chip = (
     <span className={about.mark} data-source={s.source}>
-      {s.source === 'agent' ? <Icon name="sparkle" /> : <Icon name="user" />}
+      {s.source === 'agent' ? <Icon name="sparkle" /> : s.source === 'sidecar' ? <Icon name="folder" /> : <Icon name="user" />}
     </span>
   );
   return s.changeset ? (
@@ -107,6 +110,11 @@ function FixWithAgent({ item, facts }: { item: ItemDetail; facts: AgentItemDetai
 }
 
 export function AboutPanel({ item, facts }: { item: ItemDetail; facts: UseQueryResult<AgentItemDetail> }) {
+  const server = useServer();
+  const role = server.data?.you?.role;
+  const mayEdit = role === 'owner' || role === 'admin' || role === 'viewer';
+  const [editing, setEditing] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const f = facts.data?.fields;
   const sources = facts.data?.sources ?? {};
   const list = f ? rows(f) : [];
@@ -118,10 +126,22 @@ export function AboutPanel({ item, facts }: { item: ItemDetail; facts: UseQueryR
       <h2 id="about" className={`edge ${styles.panelTitle}`}>
         About
       </h2>
-      {f?.tagline && <p className={about.tagline}>{f.tagline}</p>}
+      {editing && facts.data && (
+        <EditDetails
+          id={item.id}
+          kind={item.kind}
+          facts={facts.data}
+          propose={role === 'viewer'}
+          onDone={(n) => {
+            setEditing(false);
+            setNote(n || null);
+          }}
+        />
+      )}
+      {!editing && f?.tagline && <p className={about.tagline}>{f.tagline}</p>}
       {!facts.data && facts.status !== 'error' && <div className={`skeleton ${about.skeleton}`} />}
-      {facts.data && list.length === 0 && !f?.tagline && <p className={about.empty}>Nothing more is known about this {kind} yet.</p>}
-      {list.length > 0 && (
+      {!editing && facts.data && list.length === 0 && !f?.tagline && <p className={about.empty}>Nothing more is known about this {kind} yet.</p>}
+      {!editing && list.length > 0 && (
         <dl className={about.facts}>
           {list.map((r) => (
             <div key={r.field}>
@@ -172,7 +192,29 @@ export function AboutPanel({ item, facts }: { item: ItemDetail; facts: UseQueryR
           </ul>
         </>
       )}
-      <FixWithAgent item={item} facts={facts.data} />
+      {note && (
+        <p className={about.hint} role="status">
+          {note}
+        </p>
+      )}
+      {!editing && (
+        <div className={about.tools}>
+          {mayEdit && facts.data && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setNote(null);
+                setEditing(true);
+              }}
+            >
+              <Icon name="settings" />
+              Edit details
+            </button>
+          )}
+          <FixWithAgent item={item} facts={facts.data} />
+        </div>
+      )}
     </section>
   );
 }

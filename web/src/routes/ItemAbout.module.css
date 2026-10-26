@@ -144,3 +144,93 @@
     gap: 2px;
   }
 }
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tools .fix {
+  margin-top: 0;
+}
+
+/* Editing the details: the same fields agents set, as a person. */
+.edit {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.editRow {
+  display: grid;
+  grid-template-columns: minmax(96px, 128px) 1fr;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.editRow[data-long] {
+  align-items: start;
+}
+
+.editLabel {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.editLabel small {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.editRow input,
+.editRow textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.editRow textarea {
+  resize: vertical;
+}
+
+.editRow input:focus-visible,
+.editRow textarea:focus-visible {
+  outline: 2px solid var(--stream);
+  outline-offset: 1px;
+}
+
+.editActions {
+  display: flex;
+  gap: 8px;
+}
+
+.refused {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--convert);
+}
+
+.errorNote {
+  font-size: 0.8rem;
+  color: var(--danger, #e5484d);
+}
+
+@media (max-width: 600px) {
+  .editRow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
