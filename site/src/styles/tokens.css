@@ -1,0 +1,93 @@
+/*
+ * The site's tokens follow the app's (web/src/styles/tokens.css): a dark room,
+ * warm "screen white" text, glass for whatever floats, and no brand accent of
+ * its own. Colour arrives from the artwork and from the app's playback paths:
+ * green plays directly (speed), blue streams (the tailnet), amber converts
+ * (agents' proposals waiting for you), coral re-encodes (what goes wrong).
+ */
+
+@property --glow {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #5a3f8c;
+}
+
+/* Where a headline's light falls (set per frame from the pointer, or drifting on touch screens). */
+@property --px {
+  syntax: '<length-percentage>';
+  inherits: false;
+  initial-value: 50%;
+}
+
+@property --py {
+  syntax: '<length-percentage>';
+  inherits: false;
+  initial-value: -40%;
+}
+
+:root {
+  color-scheme: dark;
+
+  --font-body: 'Jost Variable', Jost, 'Futura PT', Futura, 'Century Gothic', system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Room */
+  --bg: #07070a;
+  --bg-2: #0c0c10;
+  --surface: rgb(255 255 255 / 0.035);
+  --surface-2: rgb(255 255 255 / 0.06);
+  --line: rgb(255 255 255 / 0.08);
+  --line-2: rgb(255 255 255 / 0.14);
+
+  /* Light */
+  --text: #f3f3f0;
+  --text-2: rgb(243 243 240 / 0.68);
+  --text-3: rgb(243 243 240 / 0.44);
+  --text-4: rgb(243 243 240 / 0.26);
+
+  /* The one call to action: a lit screen. */
+  --lit: #f3f3f0;
+  --lit-hover: #ffffff;
+  --on-lit: #0b0b0e;
+
+  /* Glass */
+  --glass: rgb(28 28 34 / 0.46);
+  --glass-hi: rgb(52 52 60 / 0.56);
+  --rim: rgb(255 255 255 / 0.15);
+  --sheen: rgb(255 255 255 / 0.55);
+  --shade: rgb(0 0 0 / 0.45);
+  --glass-blur: 22px;
+
+  /* Playback paths, as accents */
+  --green: #7fdca0;
+  --blue: #a4dded;
+  --amber: #f2c46d;
+  --coral: #ff8a75;
+
+  /* Poster light */
+  --sun: #e9a03b;
+  --rose: #e0457b;
+  --sky: #5fa8d3;
+
+  /* Shape and motion */
+  --pill: 999px;
+  --r: 14px;
+  --r-lg: 22px;
+  --r-xl: 30px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --out: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  --spring-soft: cubic-bezier(0.25, 0.85, 0.3, 1.02);
+
+  --gutter: clamp(16px, 4.4vw, 56px);
+  --wide: 1240px;
+  --narrow: 860px;
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    /* Damped springs sampled to settle (the app's, k 210 / c 20 and k 150 / c 24). */
+    --spring: linear(0, 0.033, 0.116, 0.227, 0.352, 0.478, 0.596, 0.702, 0.794, 0.869, 0.929, 0.974, 1.007, 1.029, 1.042, 1.049, 1.05, 1.048, 1.043, 1.038, 1.031, 1.025, 1.019, 1.014, 1.01, 1.006, 1.003, 1.001, 0.999, 0.998, 0.998, 0.998, 0.998, 0.998, 0.998, 0.998, 1);
+    --spring-soft: linear(0, 0.032, 0.106, 0.201, 0.303, 0.403, 0.496, 0.579, 0.652, 0.715, 0.768, 0.813, 0.849, 0.88, 0.904, 0.924, 0.94, 0.953, 0.963, 0.971, 0.978, 0.983, 0.987, 0.99, 0.992, 0.994, 0.995, 0.996, 0.997, 0.998, 1);
+  }
+}

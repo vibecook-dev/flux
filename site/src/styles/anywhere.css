@@ -1,0 +1,527 @@
+/*
+ * Anywhere: a map of remote access, two ways. "The usual way" routes your
+ * films through six hurdles on the open internet; "With flux" every device
+ * reaches the server straight across your tailnet. Nodes sit at --x/--y;
+ * anywhere/net.ts draws the lines between them.
+ */
+.net {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.net-toggle {
+  z-index: 3;
+  margin-bottom: 26px;
+}
+
+.net-toggle button {
+  padding: 0 20px;
+}
+
+.net-canvas {
+  position: relative;
+  width: 100%;
+  height: clamp(460px, 44vw, 580px);
+  border-radius: var(--r-xl);
+  background:
+    radial-gradient(rgb(255 255 255 / 0.075) 1px, transparent 1.4px) 0 0 / 26px 26px,
+    radial-gradient(70% 80% at 15% 50%, rgb(164 221 237 / 0.07), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.03), rgb(255 255 255 / 0.012));
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.06),
+    0 40px 80px -50px rgb(0 0 0 / 0.9);
+  overflow: hidden;
+  -webkit-mask: radial-gradient(140% 120% at 50% 50%, #000 60%, transparent 100%);
+  mask: radial-gradient(140% 120% at 50% 50%, #000 60%, transparent 100%);
+}
+
+.net[data-mode='usual'] .net-canvas {
+  background:
+    radial-gradient(rgb(255 255 255 / 0.06) 1px, transparent 1.4px) 0 0 / 26px 26px,
+    radial-gradient(60% 70% at 50% 50%, rgb(255 138 117 / 0.06), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.03), rgb(255 255 255 / 0.012));
+}
+
+.net-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.net-lines path {
+  fill: none;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.net-lines .usual {
+  stroke: rgb(255 138 117 / 0.55);
+  stroke-width: 1.6;
+  stroke-dasharray: 3 7;
+  animation: crawl 1.6s linear infinite;
+  transition: opacity 0.6s var(--out);
+}
+
+.net-lines .usual.side {
+  stroke: rgb(255 138 117 / 0.3);
+  stroke-dasharray: 2 6;
+}
+
+@keyframes crawl {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.net-lines .flux {
+  stroke: rgb(164 221 237 / 0.7);
+  stroke-width: 1.8;
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  filter: drop-shadow(0 0 5px rgb(164 221 237 / 0.55));
+  transition: stroke-dashoffset 1.3s var(--out) var(--d, 0s);
+}
+
+.net-lines .packet {
+  stroke: #fff;
+  stroke-width: 3;
+  stroke-dasharray: 14 986;
+  stroke-dashoffset: 1000;
+  opacity: 0;
+  filter: drop-shadow(0 0 6px rgb(164 221 237 / 0.95));
+  transition: opacity 0.5s var(--out);
+}
+
+.net[data-mode='flux'] .net-lines .usual {
+  opacity: 0;
+}
+
+.net[data-mode='flux'] .net-lines .flux {
+  stroke-dashoffset: 0;
+}
+
+.net[data-mode='flux'] .net-lines .packet {
+  opacity: 1;
+  transition-delay: 1s;
+  animation: packet var(--dur, 2.4s) linear var(--pd, 0s) infinite;
+}
+
+.net[data-mode='usual'] .net-lines .flux {
+  transition-delay: 0s;
+  transition-duration: 0.5s;
+}
+
+@keyframes packet {
+  from {
+    stroke-dashoffset: 1000;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.net[data-mode='flux'] .net-lines .packet.back {
+  stroke-width: 2.2;
+  stroke-dasharray: 8 992;
+  animation-name: packet-back;
+}
+
+@keyframes packet-back {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 1000;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .net-lines .usual,
+  .net[data-mode='flux'] .net-lines .packet {
+    animation: none;
+  }
+
+  .net-lines .packet {
+    display: none;
+  }
+}
+
+/* ── Nodes ── */
+
+.node {
+  position: absolute;
+  z-index: 2;
+  left: var(--x);
+  top: var(--y);
+  transform: translate(-50%, -50%);
+}
+
+.node-device,
+.node-server {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.node-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #1d1d23, #131318);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.1),
+    0 10px 24px -12px rgb(0 0 0 / 0.8);
+}
+
+.node-icon svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.node-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.node-text strong {
+  font-size: 15.5px;
+  font-weight: 500;
+}
+
+.node-text span {
+  font-size: 13.5px;
+  color: var(--text-3);
+}
+
+.node-server {
+  flex-direction: column;
+  text-align: center;
+  gap: 12px;
+}
+
+.node-server .node-text {
+  align-items: center;
+}
+
+.server-icon {
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  transition: box-shadow 0.8s var(--out);
+}
+
+.server-icon svg {
+  width: 42px;
+  height: 42px;
+}
+
+.net[data-mode='flux'] .server-icon {
+  box-shadow:
+    inset 0 0 0 1px rgb(164 221 237 / 0.45),
+    0 0 0 8px rgb(164 221 237 / 0.06),
+    0 0 46px -4px rgb(164 221 237 / 0.45);
+}
+
+.node-tag,
+.node-role {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--blue);
+}
+
+.node-tag {
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: var(--pill);
+  background: rgb(164 221 237 / 0.08);
+  box-shadow: inset 0 0 0 0.5px rgb(164 221 237 / 0.3);
+}
+
+.node-role {
+  margin-left: 2px;
+  padding: 3px 8px;
+  border-radius: var(--pill);
+  background: rgb(164 221 237 / 0.08);
+}
+
+[data-flux-only] {
+  transition:
+    opacity 0.6s var(--out),
+    transform 0.8s var(--spring);
+}
+
+.net[data-mode='usual'] [data-flux-only] {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+.net[data-mode='flux'] [data-flux-only] {
+  transition-delay: 0.7s;
+}
+
+.node-hurdle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 14px 8px 9px;
+  border-radius: var(--pill);
+  font-size: 14px;
+  white-space: nowrap;
+  color: rgb(255 214 205 / 0.92);
+  background: rgb(36 17 15 / 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 138 117 / 0.32),
+    0 12px 28px -14px rgb(0 0 0 / 0.9);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition:
+    opacity 0.5s var(--out) var(--hd, 0s),
+    transform 0.7s var(--spring) var(--hd, 0s),
+    filter 0.5s var(--out) var(--hd, 0s);
+}
+
+.hurdle-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgb(255 138 117 / 0.16);
+}
+
+.hurdle-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.node-hurdle.danger {
+  padding: 12px 18px 12px 12px;
+  font-size: 15px;
+  color: #ffe1da;
+  background: rgb(58 20 16 / 0.8);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 138 117 / 0.55),
+    0 0 50px -10px rgb(255 138 117 / 0.45);
+}
+
+.node-hurdle.danger .hurdle-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.node-hurdle.danger .hurdle-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.net[data-mode='flux'] .node-hurdle {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.6);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+.tailnet-ring {
+  position: absolute;
+  inset: 6% 3.5%;
+  border-radius: 28px;
+  border: 1.5px dashed rgb(164 221 237 / 0.3);
+  opacity: 0;
+  transform: scale(1.03);
+  transition:
+    opacity 0.8s var(--out),
+    transform 1s var(--spring-soft);
+}
+
+.tailnet-ring span {
+  position: absolute;
+  top: -11px;
+  left: 28px;
+  padding: 2px 10px;
+  border-radius: var(--pill);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--blue);
+  background: var(--bg);
+}
+
+.net[data-mode='flux'] .tailnet-ring {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.35s;
+}
+
+/* Positions: a wide map on desktops… */
+[data-node='server'] { --x: 14%; --y: 50%; }
+[data-node='phone'] { --x: 85%; --y: 15%; }
+[data-node='laptop'] { --x: 85%; --y: 38.5%; }
+[data-node='tv'] { --x: 85%; --y: 62%; }
+[data-node='tablet'] { --x: 85%; --y: 85.5%; }
+[data-node='router'] { --x: 29%; --y: 50%; --hd: 0.15s; }
+[data-node='internet'] { --x: 49.5%; --y: 50%; --hd: 0.3s; }
+[data-node='ddns'] { --x: 47%; --y: 20%; --hd: 0.05s; }
+[data-node='proxy'] { --x: 67.5%; --y: 50%; --hd: 0.2s; }
+[data-node='cert'] { --x: 52%; --y: 80%; --hd: 0.1s; }
+[data-node='password'] { --x: 67%; --y: 24%; --hd: 0.25s; }
+
+.net-caption {
+  max-width: 620px;
+  min-height: 3.3em;
+  margin-top: 22px;
+  text-align: center;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-2);
+  transition:
+    opacity 0.35s var(--out),
+    transform 0.5s var(--spring);
+}
+
+.net-caption[data-swap] {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* …and a tall one on phones. */
+@media (max-width: 760px) {
+  .net-canvas {
+    height: 720px;
+  }
+
+  .node-device {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .node-device .node-text {
+    align-items: center;
+  }
+
+  .node-icon {
+    width: 46px;
+    height: 46px;
+  }
+
+  [data-node='server'] { --x: 50%; --y: 17%; }
+  [data-node='phone'] { --x: 26%; --y: 72%; }
+  [data-node='laptop'] { --x: 74%; --y: 72%; }
+  [data-node='tv'] { --x: 26%; --y: 90.5%; }
+  [data-node='tablet'] { --x: 74%; --y: 90.5%; }
+  [data-node='router'] { --x: 50%; --y: 30%; }
+  [data-node='ddns'] { --x: 27%; --y: 37%; }
+  [data-node='cert'] { --x: 73%; --y: 37%; }
+  [data-node='internet'] { --x: 50%; --y: 44.5%; }
+  [data-node='password'] { --x: 29%; --y: 52.5%; }
+  [data-node='proxy'] { --x: 62%; --y: 58.5%; }
+
+  .node-hurdle {
+    font-size: 12.5px;
+    padding: 6px 11px 6px 7px;
+  }
+
+  .node-hurdle.danger {
+    font-size: 13.5px;
+  }
+
+  .node-role {
+    margin: 0;
+  }
+
+  .tailnet-ring {
+    inset: 2.5% 3%;
+  }
+
+  .tailnet-ring .long {
+    display: none;
+  }
+
+  .server-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 19px;
+  }
+
+  .node-tag {
+    font-size: 11px;
+  }
+}
+
+/* ── Steps and roles ── */
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: clamp(56px, 7vw, 88px);
+  counter-reset: step;
+}
+
+.step {
+  padding: 30px 28px 32px;
+}
+
+.step-n {
+  display: inline-block;
+  margin-bottom: 26px;
+  font-size: 13px;
+  color: var(--blue);
+}
+
+.step h3 {
+  margin-bottom: 10px;
+}
+
+.step p {
+  font-size: 15.5px;
+  color: var(--text-2);
+}
+
+.roles {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: clamp(24px, 4vw, 56px);
+  align-items: center;
+  margin-top: 16px;
+  padding: clamp(28px, 4vw, 48px);
+}
+
+.roles h3 {
+  font-size: clamp(22px, 2.4vw, 30px);
+  letter-spacing: -0.025em;
+  margin-bottom: 14px;
+}
+
+.roles p {
+  color: var(--text-2);
+}
+
+@media (max-width: 900px) {
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .roles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

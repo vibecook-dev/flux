@@ -1,0 +1,290 @@
+/*
+ * The hero: a wall of posters drifting in the dark behind one line. The wall
+ * is drawn with WebGL (hero/wall.ts); the pointer is a light you carry across
+ * it and across the headline.
+ */
+.hero {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  min-height: max(100svh, 680px);
+  padding: 112px var(--gutter) 116px;
+  overflow: clip;
+}
+
+.hero-wall {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 1.6s var(--out);
+}
+
+.hero-wall[data-on] {
+  opacity: 1;
+}
+
+.wall-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* A pool of dark behind the words, and the floor fading into the page. */
+.wall-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 52% at 50% 52%, rgb(7 7 10 / 0.94) 0%, rgb(7 7 10 / 0.82) 40%, rgb(7 7 10 / 0.35) 72%, rgb(7 7 10 / 0.1) 100%),
+    linear-gradient(180deg, rgb(7 7 10 / 0.75) 0%, rgb(7 7 10 / 0) 20%, rgb(7 7 10 / 0) 60%, var(--bg) 98%);
+}
+
+.hero-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 1080px;
+  text-align: center;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 14px 0 14px;
+  border-radius: var(--pill);
+  font-size: 14.5px;
+  color: var(--text-2);
+  transition:
+    color 0.25s var(--out),
+    background-color 0.25s var(--out);
+}
+
+.eyebrow:hover {
+  color: var(--text);
+  background-color: var(--glass-hi);
+}
+
+.eyebrow-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 10px var(--green);
+}
+
+.eyebrow-dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid var(--green);
+  opacity: 0;
+  animation: ping 2.6s var(--out) infinite;
+}
+
+@keyframes ping {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  70%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+.eyebrow-arrow {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.5s var(--spring);
+}
+
+.eyebrow:hover .eyebrow-arrow {
+  transform: translateX(3px);
+}
+
+.hero-title {
+  position: relative;
+  margin-top: 34px;
+  font-size: clamp(56px, min(11.2vw, 17.5vh), 178px);
+  font-weight: 500;
+  line-height: 0.9;
+  letter-spacing: -0.055em;
+  color: rgb(243 243 240 / 0.93);
+}
+
+.hero-title .line {
+  display: block;
+  padding-inline: 0.04em;
+}
+
+.hero-title .lit {
+  background: linear-gradient(180deg, #ffffff 10%, #cfcfd8 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-title .lit .w {
+  background: inherit;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/*
+ * The light: a copy of the headline over itself, painted only where the
+ * pointer's pool of light falls (lib/light.ts sets --lit-x/--lit-y in px).
+ */
+.lit-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: transparent;
+  background: radial-gradient(circle clamp(180px, 22vw, 360px) at var(--px, 50%) var(--py, -40%), rgb(255 255 255 / 1), rgb(255 248 236 / 0.55) 38%, rgb(255 255 255 / 0) 72%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  opacity: 0;
+  transition: opacity 1.2s var(--out);
+}
+
+[data-light][data-lit-on] .lit-layer {
+  opacity: 1;
+}
+
+/* No pointer to carry the light: it drifts across by itself. */
+@media (hover: none) {
+  .lit-layer {
+    animation: lit-drift 11s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes lit-drift {
+  0% {
+    --px: 8%;
+    --py: 10%;
+  }
+  50% {
+    --px: 62%;
+    --py: 85%;
+  }
+  100% {
+    --px: 96%;
+    --py: 25%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lit-layer {
+    animation: none;
+  }
+}
+
+.hero-sub {
+  max-width: 720px;
+  margin-top: 32px;
+  font-size: clamp(17px, 1.6vw, 21px);
+  line-height: 1.6;
+  color: rgb(243 243 240 / 0.78);
+  text-shadow:
+    0 1px 2px rgb(7 7 10 / 0.9),
+    0 0 24px rgb(7 7 10 / 0.95);
+  text-wrap: pretty;
+}
+
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 40px;
+}
+
+.hero-meta {
+  margin-top: 22px;
+  font-size: 14px;
+  color: var(--text-3);
+  text-shadow: 0 0 16px rgb(7 7 10 / 0.95);
+}
+
+.scroll-cue {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  width: 26px;
+  height: 42px;
+  margin-left: -13px;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.22);
+  opacity: 0.8;
+  transition: opacity 0.3s var(--out);
+}
+
+.scroll-cue:hover {
+  opacity: 1;
+}
+
+.scroll-cue span {
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  width: 4px;
+  height: 8px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--text-2);
+  animation: cue 2.2s var(--out) infinite;
+}
+
+@keyframes cue {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  70% {
+    transform: translateY(13px);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .hero {
+    padding-top: 112px;
+  }
+
+  .hero-title {
+    margin-top: 28px;
+  }
+
+  .hero-cta .btn {
+    flex: 1 1 100%;
+  }
+
+  .scroll-cue {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eyebrow-dot::after,
+  .scroll-cue span {
+    animation: none;
+  }
+}

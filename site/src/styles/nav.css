@@ -1,0 +1,161 @@
+/*
+ * The island, as in the app: one glass pill at the top that says where you
+ * are. Its thumb slides to the section in view; scrolled down, the island
+ * firms up so it reads over the demo and the posters.
+ */
+.nav {
+  position: fixed;
+  z-index: 50;
+  top: max(14px, env(safe-area-inset-top, 0px));
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-inline: var(--gutter);
+  pointer-events: none;
+}
+
+.nav > * {
+  pointer-events: auto;
+}
+
+.island {
+  display: flex;
+  align-items: center;
+  height: 50px;
+  padding: 0 6px 0 16px;
+  border-radius: var(--pill);
+  transition:
+    background-color 0.5s var(--out),
+    transform 0.8s var(--spring),
+    box-shadow 0.5s var(--out);
+}
+
+.nav[data-scrolled] .island {
+  background-color: rgb(22 22 28 / 0.62);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+
+.brand .mark {
+  width: 25px;
+  height: 20px;
+  fill: var(--text);
+}
+
+.island-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 8px 0 14px;
+  background: var(--line-2);
+}
+
+.island-links {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.island-links a {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--pill);
+  font-size: 15px;
+  color: var(--text-2);
+  transition: color 0.25s var(--out);
+}
+
+.island-links a:hover,
+.island-links a[aria-current='true'] {
+  color: var(--text);
+}
+
+.island-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  left: 0;
+  height: 38px;
+  width: var(--w, 0px);
+  border-radius: var(--pill);
+  background: rgb(255 255 255 / 0.1);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.2);
+  opacity: var(--o, 0);
+  transform: translateX(var(--x, 0px));
+  transition:
+    transform 0.6s var(--spring),
+    width 0.6s var(--spring),
+    opacity 0.4s var(--out);
+}
+
+.nav-github {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  color: var(--text-2);
+  transition:
+    color 0.2s var(--out),
+    background-color 0.25s var(--out),
+    transform 0.6s var(--spring);
+}
+
+.nav-github:hover {
+  color: var(--text);
+  background-color: var(--glass-hi);
+}
+
+.nav-github svg {
+  width: 21px;
+  height: 21px;
+}
+
+.nav-cta {
+  height: 50px;
+  padding: 0 22px;
+}
+
+@media (max-width: 860px) {
+  .island-links a[data-section='anywhere'],
+  .island-links a[data-section='agents'] {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .nav {
+    justify-content: space-between;
+  }
+
+  .island-sep,
+  .island-links {
+    display: none;
+  }
+
+  .island {
+    padding: 0 16px;
+  }
+
+  .nav-github {
+    margin-left: auto;
+  }
+
+  .nav-cta {
+    padding: 0 18px;
+  }
+}
