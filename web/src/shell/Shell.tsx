@@ -16,6 +16,7 @@ import { holdPaging } from '../api/library-list';
 import { prefetchItem, useCollections, useLibraries, useServer, useServerLenses } from '../api/queries';
 import { collectionOf, useSpaceList } from '../api/space-list';
 import type { Id, ItemSummary, LibraryKind } from '../api/types';
+import { MOCK } from '../config';
 import { LensHost } from '../lens/LensHost';
 import { activeLens, lensFocus, setLensFocus } from '../lens/bridge';
 import { prefs } from '../lens/dom';
@@ -25,6 +26,7 @@ import { sectionOf, serverSort, visibleItems } from '../lens/sections';
 import type { Dir, LensDef } from '../lens/types';
 import { preloadPlayer, startPlay } from '../player/start';
 import { Corner } from './Corner';
+import { reportShell, setShellPicker } from './embed';
 import { useEventsBridge } from './events-bridge';
 import { startGlassLight } from './glass-light';
 import { Island } from './Island';
@@ -182,6 +184,22 @@ export function Shell({ loc }: { loc: Location }) {
   const failed = failure?.id === def.id ? failure.name : null;
 
   const closeOverlay = useCallback(() => back(space.href), [space.href]);
+
+  // The product site's live demo (a mock build in an iframe) switches lenses from outside, through src/mock/demo-bridge.ts.
+  const overlayOpen = Boolean(overlay);
+  useEffect(() => {
+    if (!MOCK) return;
+    setShellPicker((id) => {
+      if (overlayOpen) closeOverlay();
+      setGallery(false);
+      setIslandOpen(false);
+      pickLens(id);
+    });
+    return () => setShellPicker(null);
+  }, [overlayOpen, closeOverlay, pickLens]);
+  useEffect(() => {
+    if (MOCK) reportShell({ lens: def.id, items: visible.length });
+  }, [def.id, visible.length]);
 
   // ── keyboard: type anywhere to search, arrows move in the lens, Esc steps back ──
   const keyState = useRef({ overlay, islandOpen, gallery, text: space.text });

@@ -23,8 +23,12 @@ export type MockMedia = { mode: 'local'; base: string; index: LocalIndex } | { m
 
 export const PUBLIC_HLS = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 
-/** Probe for /mock-media/index.json (served by vite.config.ts when the SSD is present). */
-export async function detectMockMedia(base = '/mock-media'): Promise<MockMedia> {
+/**
+ * Probe for /mock-media/index.json (served by vite.config.ts when the SSD is present).
+ * A build served below a sub-path (the product site's live demo) looks below it,
+ * so a site can host media for its demo there.
+ */
+export async function detectMockMedia(base = `${import.meta.env.BASE_URL}mock-media`): Promise<MockMedia> {
   try {
     const res = await fetch(`${base}/index.json`, { cache: 'no-store' });
     if (res.ok) return { mode: 'local', base, index: (await res.json()) as LocalIndex };

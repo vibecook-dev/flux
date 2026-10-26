@@ -3,8 +3,13 @@
  * hover/focus, transitions so the current screen stays up until the next one's
  * code is ready (no blank flash), and per-entry scroll restoration.
  * The <Link> component lives in Link.tsx.
+ *
+ * Paths here are app paths ('/item/42'). A build served below a sub-path
+ * (base.ts) keeps them: the router strips the base from the address bar and
+ * puts it back when it pushes a URL.
  */
 import { type ComponentType, type LazyExoticComponent, lazy, startTransition, useSyncExternalStore } from 'react';
+import { appHref, appPath } from './base';
 
 export interface RouteDef {
   name: string;
@@ -112,7 +117,7 @@ const newKey = () => Math.random().toString(36).slice(2, 10);
 
 function readLocation(): Location {
   const state = history.state as { key?: string } | null;
-  return { pathname: location.pathname, search: location.search, key: state?.key ?? 'initial' };
+  return { pathname: appPath(location.pathname), search: location.search, key: state?.key ?? 'initial' };
 }
 
 let current = readLocation();
@@ -139,8 +144,9 @@ export function navigate(to: string, opts: { replace?: boolean } = {}): void {
   if (url.pathname + url.search === current.pathname + current.search && !opts.replace) return;
   scrollPositions.set(current.key, window.scrollY);
   const key = newKey();
-  if (opts.replace) history.replaceState({ key }, '', url.pathname + url.search + url.hash);
-  else history.pushState({ key }, '', url.pathname + url.search + url.hash);
+  const href = appHref(url.pathname) + url.search + url.hash;
+  if (opts.replace) history.replaceState({ key }, '', href);
+  else history.pushState({ key }, '', href);
   pendingRestore = opts.replace ? null : 0;
   startTransition(() => emit({ pathname: url.pathname, search: url.search, key }));
 }
@@ -173,6 +179,18 @@ export function consumeScrollRestore(): void {
   requestAnimationFrame(() => window.scrollTo(0, y));
 }
 
+/** The location now, outside React. */
+export function currentLocation(): Location {
+  return current;
+}
+
+/** Follow the location outside React (the live demo's bridge, src/mock/demo-bridge.ts). */
+export function watchLocation(fn: (loc: Location) => void): () => void {
+  const listener = () => fn(current);
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export function useLocation(): Location {
   return useSyncExternalStore(
     (cb) => {
@@ -194,5 +212,5 @@ export function setQuery(update: Record<string, string | null>): void {
   const qs = params.toString();
   const key = current.key;
   history.replaceState({ key }, '', `${location.pathname}${qs ? `?${qs}` : ''}`);
-  emit({ pathname: location.pathname, search: qs ? `?${qs}` : '', key });
+  emit({ pathname: appPath(location.pathname), search: qs ? `?${qs}` : '', key });
 }

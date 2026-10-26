@@ -687,7 +687,8 @@ export class GpuWallView implements LensView {
       return;
     }
     link.hidden = false;
-    link.href = `/item/${item.id}`;
+    // Below the build's base ('/' unless built for a sub-path, src/app/base.ts).
+    link.href = `${import.meta.env.BASE_URL}item/${item.id}`;
     link.dataset.id = String(item.id);
     link.setAttribute('aria-label', artLabel(item));
     link.style.transform = `translate(${this.px[i]}px, ${this.py[i]}px)`;
@@ -729,7 +730,7 @@ export class GpuWallView implements LensView {
           const item = this.items[i];
           let a = this.mirror.get(item.id);
           if (!a) {
-            a = el('a', `${styles.link} ${styles.mirror}`, { role: 'gridcell', tabindex: '-1', href: `/item/${item.id}`, draggable: 'false' });
+            a = el('a', `${styles.link} ${styles.mirror}`, { role: 'gridcell', tabindex: '-1', href: `${import.meta.env.BASE_URL}item/${item.id}`, draggable: 'false' });
             a.dataset.id = String(item.id);
             this.mirror.set(item.id, a);
             this.grid.append(a);

@@ -220,7 +220,8 @@ export class WallView implements LensView {
 
   private makeTile(item: ItemSummary, index: number): Tile {
     // A real link: middle-click and "open in new tab" work; a plain click flies the poster instead.
-    const node = el('a', styles.tile, { href: `/item/${item.id}`, role: 'gridcell', tabindex: '-1', 'data-id': item.id, 'aria-label': artLabel(item), draggable: 'false' });
+    // It carries the build's base ('/' unless built for a sub-path, src/app/base.ts).
+    const node = el('a', styles.tile, { href: `${import.meta.env.BASE_URL}item/${item.id}`, role: 'gridcell', tabindex: '-1', 'data-id': item.id, 'aria-label': artLabel(item), draggable: 'false' });
     const art = artElement(item, { width: this.tileW, defer: this.fast, placeholder: this.fast ? 'flat' : 'blur', bare: this.level === 0, className: styles.art });
     node.append(art);
     const cap = el('div', styles.cap);

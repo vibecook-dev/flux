@@ -800,7 +800,8 @@ export class GpuFlowView extends FlowCore<GCover> {
     f.hidden = false;
     if (f.dataset.id !== String(c.id)) {
       f.dataset.id = String(c.id);
-      f.href = `/item/${c.id}`;
+      // Below the build's base ('/' unless built for a sub-path, src/app/base.ts).
+      f.href = `${import.meta.env.BASE_URL}item/${c.id}`;
     }
     const label = artLabel(item);
     if (f.getAttribute('aria-label') !== label) f.setAttribute('aria-label', label);

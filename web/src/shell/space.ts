@@ -5,6 +5,7 @@
  * Forward and shared links keep them. While an overlay (detail, settings) is
  * open, the space is the last one you were in.
  */
+import { appPath } from '../app/base';
 import { matchRoute, navigate, setQuery } from '../app/router';
 import type { SpaceId } from '../api/space-list';
 import { parseShow, parseSort, type Show, type Sort } from '../lens/sections';
@@ -31,6 +32,11 @@ export function spaceFor(pathname: string, search: string): SpaceState {
   return { id, show: parseShow(q.get('show')), sort: parseSort(q.get('sort')), text: q.get('q') ?? '', href: last.pathname + last.search };
 }
 
+/** Where the last space you were in lives (its path and query), as an app path. */
+export function lastSpaceHref(): string {
+  return last.pathname + last.search;
+}
+
 export function spacePath(id: SpaceId): string {
   if (id === 'all') return '/';
   if (typeof id === 'string') return `/collection/${id.slice(1)}`;
@@ -45,7 +51,7 @@ export function spaceKey(id: SpaceId): string {
 }
 
 function onSpaceRoute(): boolean {
-  const m = matchRoute(location.pathname);
+  const m = matchRoute(appPath(location.pathname));
   return !m || m.route.layer === 'space';
 }
 

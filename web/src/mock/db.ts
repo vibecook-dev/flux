@@ -6,7 +6,8 @@
  *  1. Movies       2,998 titles from library.manifest.jsonl (real + synthetic names)
  *  2. TV Shows     300 shows, seasons and ~11k episodes from the same manifest
  *  3. Film Archive 10,000 generated titles, to exercise the virtualised grid at
- *                  10k; one of its two roots is "unavailable" (asleep NAS).
+ *                  10k; one of its two roots is "unavailable" (asleep NAS),
+ *                  except in the product site's live demo (`demo`).
  *
  * Everything is deterministic (hash-seeded) and summaries are built lazily.
  */
@@ -158,14 +159,26 @@ function badgesFor(probe: ProbeResult | null): string[] {
   return out;
 }
 
-export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
+export interface MockDbOptions {
+  /**
+   * The product site's live demo: every drive answers (no asleep NAS, so a first
+   * visit doesn't open on an "offline" notice), and made-up descriptions read as
+   * descriptions, without the note to developers.
+   */
+  demo?: boolean;
+}
+
+/** "a" or "an" for the word that follows. */
+const article = (word: string) => (/^[aeiou]/i.test(word) ? 'an' : 'a');
+
+export function createMockDb(fx: Fixtures, now = Date.now(), { demo = false }: MockDbOptions = {}): MockDb {
   const items = new Map<Id, ItemRec>();
   const byLibrary = new Map<Id, Id[]>();
   const rootAvailable = new Map<string, boolean>([
     [`${LIBRARY_ROOT}/Movies`, true],
     [`${LIBRARY_ROOT}/TV`, true],
     [ARCHIVE_ROOTS[0], true],
-    [ARCHIVE_ROOTS[1], false],
+    [ARCHIVE_ROOTS[1], demo],
   ]);
   const profileKeys = Object.keys(fx.profiles);
   const pickProfile = (seed: string, key: string) => {
@@ -300,7 +313,7 @@ export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
     });
   });
 
-  // 3. Film Archive: 10,000 generated titles across two roots, one asleep.
+  // 3. Film Archive: 10,000 generated titles across two roots, one asleep (not in the demo).
   for (let i = 0; i < 10_000; i++) {
     const r = rng(hash32(`archive:${i}`));
     const title = `${r() < 0.35 ? 'The ' : ''}${ARCH_A[Math.floor(r() * ARCH_A.length)]} ${ARCH_B[Math.floor(r() * ARCH_B.length)]}${ARCH_C[Math.floor(r() * ARCH_C.length)]}`;
@@ -315,7 +328,7 @@ export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
       title,
       year,
       tmdb: null,
-      files: [{ path: `${root}/${title} (${year})/${title} (${year}).${ext}`, profile: profileKeys[Math.floor(r() * profileKeys.length)], edition: null, part: null, resolution: null, available: !onNas }],
+      files: [{ path: `${root}/${title} (${year})/${title} (${year}).${ext}`, profile: profileKeys[Math.floor(r() * profileKeys.length)], edition: null, part: null, resolution: null, available: demo || !onNas }],
       addedAt: addedAgo(`archive${i}`) - 200 * DAY,
       runtimeMs: (80 + Math.floor(r() * 80)) * 60_000,
       posterSource: posterSourceFor(`archive${i}`),
@@ -354,11 +367,13 @@ export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
       kind: 'movies',
       roots: ARCHIVE_ROOTS.map((r) => rootStatus(r, 3 * 3600_000)),
       item_count: byLibrary.get(3)?.length ?? 0,
-      scan: {
-        ...scanIdle(6_667, 3 * 3600_000),
-        state: 'unavailable',
-        last_error: `${ARCHIVE_ROOTS[1]} is not responding (NAS asleep?). Its 3,334 items are kept and will play again when it wakes.`,
-      },
+      scan: demo
+        ? scanIdle(10_000, 3 * 3600_000)
+        : {
+            ...scanIdle(6_667, 3 * 3600_000),
+            state: 'unavailable',
+            last_error: `${ARCHIVE_ROOTS[1]} is not responding (NAS asleep?). Its 3,334 items are kept and will play again when it wakes.`,
+          },
     },
   ];
 
@@ -570,7 +585,11 @@ export function createMockDb(fx: Fixtures, now = Date.now()): MockDb {
     const genres = curated?.genres ?? [GENRES[Math.floor(r() * GENRES.length)], GENRES[Math.floor(r() * GENRES.length)]].filter((g, i, a) => a.indexOf(g) === i);
     let overview: string | null = curated?.logline ?? null;
     if (!overview && rec.kind !== 'season' && rec.kind !== 'episode') {
-      overview = `A ${ADJ[Math.floor(r() * ADJ.length)]} ${genres[0].toLowerCase()} set in a ${NOUN[Math.floor(r() * NOUN.length)]}. (Placeholder text from the mock server; real overviews come from the metadata provider.)`;
+      const adj = ADJ[Math.floor(r() * ADJ.length)];
+      const noun = NOUN[Math.floor(r() * NOUN.length)];
+      const line = `${article(adj)} ${adj} ${genres[0].toLowerCase()} set in ${article(noun)} ${noun}.`;
+      const note = demo ? '' : ' (Placeholder text from the mock server; real overviews come from the metadata provider.)';
+      overview = line[0].toUpperCase() + line.slice(1) + note;
     }
     if (rec.kind === 'episode' && show) overview = null;
     const m = matchFor(rec);

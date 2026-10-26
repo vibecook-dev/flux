@@ -1,5 +1,6 @@
 /** An <a> that navigates client-side and preloads its route's code on hover/focus. */
 import type { AnchorHTMLAttributes, MouseEvent, Ref } from 'react';
+import { appHref } from './base';
 import { navigateWhenLoaded, preloadRoute } from './router';
 
 export interface LinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
@@ -17,7 +18,7 @@ export function Link({ to, onIntent, replace, onClick, onPointerEnter, onFocus, 
   };
   return (
     <a
-      href={to}
+      href={appHref(to)}
       {...rest}
       onPointerEnter={(e) => {
         intent();
