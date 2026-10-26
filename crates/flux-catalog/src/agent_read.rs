@@ -214,9 +214,9 @@ pub fn find(c: &Connection, q: &FindQuery, hide: &[String]) -> Result<(Vec<Agent
         let hidden = arg(&mut args, serde_json::to_string(hide)?.into());
         wh.push(format!(
             "((i.title LIKE {pat} ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id
-                  AND f.field = 'title' AND f.source = 'provider' AND f.provider IN (SELECT value FROM json_each({hidden}))))
+                  AND f.field = 'title' AND f.source IN ('provider', 'sidecar') AND f.provider IN (SELECT value FROM json_each({hidden}))))
               OR (i.original_title LIKE {pat} ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id
-                  AND f.field = 'original_title' AND f.source = 'provider' AND f.provider IN (SELECT value FROM json_each({hidden}))))
+                  AND f.field = 'original_title' AND f.source IN ('provider', 'sidecar') AND f.provider IN (SELECT value FROM json_each({hidden}))))
               OR EXISTS (SELECT 1 FROM asset_item ai JOIN asset a ON a.id = ai.asset_id JOIN file fl ON fl.id = a.file_id
                           WHERE ai.item_id = i.id AND fl.rel_path LIKE {pat} ESCAPE '\\')
               OR EXISTS (SELECT 1 FROM item_folder d WHERE d.item_id = i.id AND d.folder LIKE {pat} ESCAPE '\\'))"
@@ -285,7 +285,7 @@ fn visible_title(c: &Connection, id: Id, title: String, hide: &[String]) -> Resu
         return Ok((title, None));
     }
     match fields::source_of(c, id, "title")? {
-        Some(s) if s.source == fields::PROVIDER && s.provider.as_ref().is_some_and(|p| hide.contains(p)) => {
+        Some(s) if s.withheld_by(hide).is_some() => {
             let own = fields::file_title(c, id)?.unwrap_or_else(|| format!("Item {id}"));
             Ok((own, s.provider))
         }
@@ -441,9 +441,7 @@ pub fn item(c: &Connection, id: Id, hide: &[String]) -> Result<Option<AgentItemD
     let mut withheld = BTreeMap::new();
     for (field, row) in fields::sources(c, id)? {
         // Ids name a work (and lead to open data): they stay visible.
-        let hidden = row.source == fields::PROVIDER
-            && row.provider.as_ref().is_some_and(|p| hide.contains(p))
-            && !field.starts_with("ids.");
+        let hidden = row.withheld_by(hide).is_some() && !field.starts_with("ids.");
         if hidden {
             withheld.insert(field.clone(), row.provider.clone().unwrap_or_default());
             values.remove(&field);

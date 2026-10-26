@@ -11,7 +11,7 @@ pub struct Skill {
     pub files: &'static [(&'static str, &'static str)],
 }
 
-pub const SKILLS: [Skill; 4] = [
+pub const SKILLS: [Skill; 5] = [
     Skill {
         name: "flux",
         text: include_str!("../../../../skills/flux/SKILL.md"),
@@ -25,6 +25,11 @@ pub const SKILLS: [Skill; 4] = [
     Skill {
         name: "flux-artwork",
         text: include_str!("../../../../skills/flux-artwork/SKILL.md"),
+        files: &[],
+    },
+    Skill {
+        name: "flux-organize",
+        text: include_str!("../../../../skills/flux-organize/SKILL.md"),
         files: &[],
     },
     Skill {

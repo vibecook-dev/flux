@@ -146,9 +146,13 @@ pub(crate) fn scan_root(
         Scope::Full(_) => vec![String::new()],
         Scope::Dirs(dirs) => dirs.iter().filter_map(|d| rel_of(&root_abs, d)).collect(),
     };
+    let meta_prefixes = sub_prefixes.clone();
     let sub_snapshot = inner
         .catalog
         .read_blocking(move |c| flux_catalog::sidecar::load_snapshot(c, rid, &sub_prefixes))?;
+    let meta_snapshot = inner
+        .catalog
+        .read_blocking(move |c| flux_catalog::metafiles::load_snapshot(c, rid, &meta_prefixes))?;
     Progress::add(&p.diff_ns, ms(t));
 
     // 4. Batcher thread and the context workers share.
@@ -231,6 +235,7 @@ pub(crate) fn scan_root(
         dir_dev: HashMap::new(),
         renumbered: HashMap::new(),
         subtitles: HashMap::new(),
+        metas: HashMap::new(),
     };
     let t = Instant::now();
     let walked = match &scope {
@@ -312,6 +317,7 @@ pub(crate) fn scan_root(
     let t = Instant::now();
     let rec = w.reconcile();
     let (sub_upserts, sub_removed) = w.subtitle_changes(&sub_snapshot);
+    let (meta_upserts, meta_removed) = w.meta_changes(&meta_snapshot, &root_abs);
     Progress::add(&p.diff_ns, ms(t));
     if !sub_upserts.is_empty() || !sub_removed.is_empty() {
         // Their own command: not a file batch (no items change).
@@ -323,6 +329,27 @@ pub(crate) fn scan_root(
             .wait()
         {
             tracing::warn!(root = %root.path, error = %e, "could not record subtitle files");
+        }
+    }
+    if !meta_upserts.is_empty() || !meta_removed.is_empty() {
+        Progress::add(&p.writer_commands, 1);
+        match inner
+            .catalog
+            .writer()
+            .sync_meta_files(root.id, meta_upserts, meta_removed)
+            .wait()
+        {
+            Ok(o) => {
+                if !(o.items_added.is_empty() && o.items_updated.is_empty() && o.items_removed.is_empty()) {
+                    inner.emit(Event::ItemsChanged {
+                        library_id: job.library_id,
+                        added: o.items_added,
+                        updated: o.items_updated,
+                        removed: o.items_removed,
+                    });
+                }
+            }
+            Err(e) => tracing::warn!(root = %root.path, error = %e, "could not record metadata files"),
         }
     }
     if !w.unread.is_empty() {
@@ -599,6 +626,8 @@ struct Walk<'a> {
     renumbered: HashMap<u64, u64>,
     /// Subtitle files walked (sidecars): relative path → (size, mtime).
     subtitles: HashMap<String, (u64, i64)>,
+    /// Metadata files walked (`.flux.json`, `.nfo`): path → (size, mtime).
+    metas: HashMap<String, (u64, i64)>,
 }
 
 impl Walk<'_> {
@@ -948,7 +977,11 @@ impl Walk<'_> {
             let Some(group) = self.cur.as_mut() else {
                 return Visit::Continue;
             };
-            group.names.push(name.to_string());
+            let meta = flux_catalog::metafiles::format_of(name);
+            // A `.flux.json` is no evidence for the name parser.
+            if meta != Some(flux_catalog::metafiles::FLUX) {
+                group.names.push(name.to_string());
+            }
             // Subtitle files are recorded as they are (no link that leaves
             // the library: its target is read when a subtitle is played).
             if !external
@@ -956,6 +989,10 @@ impl Walk<'_> {
                 && !flux_names::is_ignored(Path::new(&rel))
             {
                 self.subtitles.insert(rel.clone(), (e.size, e.mtime_ns));
+            }
+            // Metadata files beside the videos (read once the walk is done).
+            if !external && meta.is_some() && !flux_names::is_ignored(Path::new(&rel)) {
+                self.metas.insert(rel.clone(), (e.size, e.mtime_ns));
             }
             if is_video_name(name) && !flux_names::is_ignored(Path::new(&rel)) {
                 // Mille reports dev = ino = 0 where the platform has no inode
@@ -1139,6 +1176,62 @@ impl Walk<'_> {
         let mut removed: Vec<String> = before
             .keys()
             .filter(|rel| !self.subtitles.contains_key(*rel) && self.gone_at(rel).is_some())
+            .cloned()
+            .collect();
+        removed.sort();
+        (upserts, removed)
+    }
+
+    /// The metadata files to write after the walk, read: new or changed
+    /// ones (each read once, at most [`flux_catalog::metafiles::MAX_BYTES`])
+    /// and those of `before` a listing proved gone. Nothing when nothing
+    /// changed.
+    fn meta_changes(
+        &self,
+        before: &HashMap<String, (u64, i64)>,
+        root_abs: &Path,
+    ) -> (Vec<flux_catalog::metafiles::MetaFileRow>, Vec<String>) {
+        use flux_catalog::metafiles;
+        let mut upserts = Vec::new();
+        let mut changed: Vec<(&String, &(u64, i64))> = self
+            .metas
+            .iter()
+            .filter(|(rel, now)| before.get(*rel) != Some(*now))
+            .collect();
+        changed.sort();
+        for (rel, &(size, mtime_ns)) in changed {
+            let Some(format) = metafiles::format_of(rel.rsplit('/').next().unwrap_or(rel)) else {
+                continue;
+            };
+            let path = rel
+                .split('/')
+                .fold(root_abs.to_path_buf(), |p, part| p.join(part));
+            let (content, error) = if size > metafiles::MAX_BYTES {
+                (None, Some(format!("larger than {} bytes", metafiles::MAX_BYTES)))
+            } else {
+                match std::fs::read(&path) {
+                    Ok(bytes) => match metafiles::parse(format, &bytes) {
+                        Ok(c) => (Some(c), None),
+                        Err(e) => (None, Some(e)),
+                    },
+                    Err(e) => (None, Some(e.to_string())),
+                }
+            };
+            if let Some(e) = &error {
+                tracing::debug!(path = %path.display(), error = %e, "metadata file not read");
+            }
+            upserts.push(metafiles::MetaFileRow {
+                rel_path: rel.clone(),
+                size,
+                mtime_ns,
+                format: format.to_string(),
+                content,
+                error,
+            });
+        }
+        let mut removed: Vec<String> = before
+            .keys()
+            .filter(|rel| !self.metas.contains_key(*rel) && self.gone_at(rel).is_some())
             .cloned()
             .collect();
         removed.sort();

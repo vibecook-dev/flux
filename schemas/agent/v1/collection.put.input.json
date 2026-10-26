@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`collection.put` input: make a collection, or change one.",
+  "properties": {
+    "add": {
+      "description": "Titles to pick too, after the others.",
+      "items": {
+        "additionalProperties": false,
+        "description": "A title picked for a collection.",
+        "properties": {
+          "item": {
+            "description": "A film or show.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "description": "Why it's here, in a sentence (shown with it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "description": {
+      "description": "What it is, in a sentence or two (at most 1,000).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "everyone": {
+      "default": false,
+      "description": "Kept for everyone on this server (Owner or Admin), not just you.",
+      "type": "boolean"
+    },
+    "id": {
+      "description": "The collection to change; leave out to make one (one of yours with the same name is changed instead).",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "items": {
+      "description": "The titles picked, in order (replaces those picked before).",
+      "items": {
+        "additionalProperties": false,
+        "description": "A title picked for a collection.",
+        "properties": {
+          "item": {
+            "description": "A film or show.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "description": "Why it's here, in a sentence (shown with it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "type": "object"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "A few words: \"Ghibli\", \"Rainy Sunday\", \"Kids' films\" (at most 60 characters).",
+      "type": "string"
+    },
+    "remove": {
+      "description": "Titles to take out.",
+      "items": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "rule": {
+      "additionalProperties": false,
+      "description": "Titles matching it are in the collection too (`null` keeps the rule it has; an empty rule `{}` drops it).",
+      "properties": {
+        "countries": {
+          "description": "ISO 3166-1 codes (`JP`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "genres": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kinds": {
+          "description": "`movie`, `show` (default: both).",
+          "items": {
+            "enum": [
+              "movie",
+              "show",
+              "season",
+              "episode",
+              "extra"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "description": "ISO 639-1 codes (`ja`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "description": "In these libraries (default: every film and show library).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "people": {
+          "description": "Directed, written by or starring any of these.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "studios": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Text in the title or the original title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year_from": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "year_to": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "sources": {
+      "description": "Pages that say why these belong together.",
+      "items": {
+        "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+        "properties": {
+          "title": {
+            "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "An `http` or `https` URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "CollectionPutInput",
+  "type": "object"
+}

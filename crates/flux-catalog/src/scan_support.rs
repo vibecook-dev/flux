@@ -346,6 +346,21 @@ impl<'c> Apply<'c> {
         self.t.leaves.retain(|id| !deleted.contains(id));
         self.t.linked.retain(|id| !deleted.contains(id));
         self.t.parents.retain(|id| !deleted.contains(id));
+        // Items with new files take what the metadata files beside them
+        // say (a video found after its `.flux.json` or `.nfo`).
+        let fresh: Vec<Id> = {
+            let mut v: BTreeSet<Id> = self.r.created.iter().copied().collect();
+            v.extend(self.t.linked.iter().copied());
+            v.into_iter().filter(|id| !deleted.contains(id)).collect()
+        };
+        let described = crate::metafiles::apply_new_items(
+            self.conn,
+            self.root_id,
+            &fresh,
+            self.r.now,
+            self.r.job_max_attempts,
+        )?;
+        self.retitled.extend(described);
         let (updated, mut removed) = recompute(self.conn, self.r.now, &self.t, &self.r.created_meta)?;
         self.out.items_added = self
             .r

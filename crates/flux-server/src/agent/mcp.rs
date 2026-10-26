@@ -8,7 +8,7 @@
 //! - **Resources** are the skills (`flux://skills/<name>`, and files
 //!   beside them) and the main schemas (`flux://schemas/<name>`).
 //! - **Prompts** start the common jobs (`fill_gaps`, `find_art`,
-//!   `make_lens`, `review_library`).
+//!   `organize_files`, `make_collection`, `make_lens`, `review_library`).
 //!
 //! `initialize` opens a session (`Mcp-Session-Id`) that remembers the
 //! client's name: it is the agent its changesets are credited to. Every
@@ -478,7 +478,7 @@ struct Prompt {
     skill: &'static str,
 }
 
-const PROMPTS: [Prompt; 4] = [
+const PROMPTS: [Prompt; 6] = [
     Prompt {
         name: "review_library",
         title: "Review my library",
@@ -506,6 +506,21 @@ const PROMPTS: [Prompt; 4] = [
         description: "Find and add credited posters and backdrops where flux has only its own.",
         args: &[("item", "One item id (default: items with a poster gap)", false)],
         skill: "flux-artwork",
+    },
+    Prompt {
+        name: "organize_files",
+        title: "Tidy file names",
+        description:
+            "Plan naming files and folders the way media servers read them; nothing moves until I apply it.",
+        args: &[("items", "Item ids, comma-separated (default: ask me)", false)],
+        skill: "flux-organize",
+    },
+    Prompt {
+        name: "make_collection",
+        title: "Make a collection",
+        description: "Gather titles into a collection, picked by hand or by a rule.",
+        args: &[("idea", "What it should hold", true)],
+        skill: "flux-organize",
     },
     Prompt {
         name: "make_lens",
@@ -558,6 +573,16 @@ fn get_prompt(params: &Value) -> Result<Value, (i64, String)> {
              research the open web, cross-check, then edit with sources. Show me your plan for the first few items before a big batch.",
             arg("library").map(|l| format!(" (library {l})")).unwrap_or_default(),
             arg("gap").unwrap_or_else(|| "identity".into())
+        ),
+        "organize_files" => format!(
+            "Plan tidying the file names of {} in my flux library, following the skill below: make sure their titles and \
+             years are right first, then files_plan. Show me the plan's steps and what it skips, and don't apply it until I say so.",
+            arg("items").map(|i| format!("items {i}")).unwrap_or_else(|| "the titles I'll name (ask me which)".into())
+        ),
+        "make_collection" => format!(
+            "Make a collection in my flux library: {}. Follow the skill below: pick titles (or write a rule) from what \
+             items_find and item_get show, with a short note for each pick where it helps, and tell me what you made.",
+            arg("idea").unwrap_or_default()
         ),
         "find_art" => format!(
             "Find proper artwork for {} in my flux library, following the skill below. Credit every image and tell me what you added.",
@@ -630,7 +655,7 @@ mod tests {
             get_prompt(&json!({ "name": "make_lens" })).is_err(),
             "idea is required"
         );
-        assert_eq!(prompts().len(), 4);
+        assert_eq!(prompts().len(), 6);
     }
 
     #[test]

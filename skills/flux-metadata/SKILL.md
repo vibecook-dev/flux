@@ -74,6 +74,8 @@ Field notes:
 - `cast`: top-billed only, in billing order, with the role.
 - Ids: set what you're sure of. With a provider configured, flux uses `ids.tmdb` to fetch the rest itself (you won't see that text, and that's fine).
 - Episodes: `flux find --parent SHOW --kind episode --gap episode_titles`, then set each episode's `title` (and `air_date`, `overview`) from the broadcaster's or an episode list page.
+- Values from an `.nfo` beside the file (`sources.<field>.source = "sidecar"`, provider `nfo`) are withheld from you like TMDB's: replace them only with your own, cited.
+- Can't reach flux, but can write to the library's folders? Write a `.flux.json` beside the video instead (flux-organize, "Sidecars"); flux reads it on its next scan.
 
 ## 5. Check
 
@@ -82,5 +84,7 @@ flux edit 42 … --dry-run     # before: what would change, what's refused and w
 flux get 42                  # after: values and sources
 flux changes                 # your changeset; the user can undo it in the app
 ```
+
+Once titles and years are right, the files can be named to match (`flux plan`, see flux-organize). If two items turn out to be one film, merge them (`flux merge`); if a file belongs to another episode, fix it (`flux fix`).
 
 If the user disagrees with a change, `flux changes undo ID` restores it. If you're not confident (two films share a title and year, the runtime is off), say so and `--propose` instead of applying.

@@ -99,7 +99,7 @@ pub fn plan_edit(c: &Connection, actor: &Actor, edits: &[ItemEdit], force: bool)
         let cur =
             fields::read(c, e.item)?.ok_or_else(|| CatalogError::NotFound(format!("item {}", e.item)))?;
         let title_provider = fields::source_of(c, e.item, "title")?
-            .filter(|s| s.source == fields::PROVIDER)
+            .filter(|s| s.source == fields::PROVIDER || s.source == fields::SIDECAR)
             .and_then(|s| s.provider);
         let file_title = match title_provider {
             Some(_) => fields::file_title(c, e.item)?,
@@ -920,7 +920,7 @@ pub fn get(c: &Connection, cs: Id) -> Result<Option<(ChangesetSummary, Vec<Chang
             .optional()?;
         let title_provider = match head {
             Some(_) => fields::source_of(c, ch.item, "title")?
-                .filter(|s| s.source == fields::PROVIDER)
+                .filter(|s| s.source == fields::PROVIDER || s.source == fields::SIDECAR)
                 .and_then(|s| s.provider),
             None => None,
         };
@@ -937,7 +937,7 @@ pub fn get(c: &Connection, cs: Id) -> Result<Option<(ChangesetSummary, Vec<Chang
             before_provider: ch
                 .before_source
                 .as_ref()
-                .filter(|s| s.source == fields::PROVIDER)
+                .filter(|s| s.source == fields::PROVIDER || s.source == fields::SIDECAR)
                 .and_then(|s| s.provider.clone()),
             field: ch.field,
             before,

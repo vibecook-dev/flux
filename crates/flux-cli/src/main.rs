@@ -213,6 +213,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LensCmd,
     },
+    /// Collections: titles picked by hand, or taken by a rule.
+    Collections {
+        #[command(subcommand)]
+        cmd: Option<CollectionCmd>,
+    },
     /// Scan a library now.
     Scan { library: i64 },
     /// Follow the server's events, one JSON object a line (Ctrl-C to stop).
@@ -321,6 +326,41 @@ enum LensCmd {
         #[arg(long)]
         everyone: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum CollectionCmd {
+    /// Everyone's and yours.
+    List,
+    /// One collection's titles, in order.
+    Show { id: i64 },
+    /// Make or change one (a collection of yours with the same name is changed).
+    #[command(
+        after_help = "Examples:\n  flux collections put Ghibli --pick 40 --pick \"41:Where it began\"\n  \
+        flux collections put \"Rainy Sunday\" --rule '{\"genres\": [\"Comedy\"], \"year_to\": 1999}'\n  \
+        flux collections put Ghibli --unpick 41"
+    )]
+    Put {
+        name: String,
+        /// ITEM or ITEM:NOTE, in order (repeatable): picked after the others.
+        #[arg(long = "pick", value_name = "ITEM[:NOTE]")]
+        picks: Vec<String>,
+        /// Take a title out (repeatable).
+        #[arg(long = "unpick", value_name = "ITEM")]
+        unpicks: Vec<i64>,
+        /// A rule (JSON: genres, tags, people, studios, countries, languages, year_from, year_to, text).
+        #[arg(long)]
+        rule: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// For everyone (Owner or Admin).
+        #[arg(long)]
+        everyone: bool,
+        #[arg(long, value_name = "URL")]
+        source: Vec<String>,
+    },
+    /// Forget one (its titles stay in the library).
+    Remove { id: i64 },
 }
 
 #[derive(Debug, Subcommand)]
@@ -661,6 +701,45 @@ fn run(cli: &Cli) -> Result<Option<Value>, Failure> {
             LensCmd::Remove { id, everyone } => {
                 c.op("lens.remove", json!({ "id": id, "everyone": everyone }))?
             }
+        },
+        Cmd::Collections { cmd } => match cmd {
+            None | Some(CollectionCmd::List) => c.op("collections.list", json!({}))?,
+            Some(CollectionCmd::Show { id }) => {
+                c.op("collection.get", json!({ "collection": id, "limit": 200 }))?
+            }
+            Some(CollectionCmd::Put {
+                name,
+                picks,
+                unpicks,
+                rule,
+                description,
+                everyone,
+                source,
+            }) => {
+                let mut add = Vec::new();
+                for p in picks {
+                    let (item, note) = match p.split_once(':') {
+                        Some((i, n)) => (i, Some(n.trim().to_string())),
+                        None => (p.as_str(), None),
+                    };
+                    let item: i64 = item
+                        .trim()
+                        .parse()
+                        .map_err(|_| Failure::usage(format!("--pick {p:?}: ITEM is an item id")))?;
+                    add.push(json!({ "item": item, "note": note }));
+                }
+                let mut input = json!({
+                    "name": name, "add": add, "remove": unpicks, "everyone": everyone, "sources": source,
+                });
+                if let Some(r) = rule {
+                    input["rule"] = parse_json(r, "the rule")?;
+                }
+                if let Some(d) = description {
+                    input["description"] = json!(d);
+                }
+                c.op("collection.put", input)?
+            }
+            Some(CollectionCmd::Remove { id }) => c.op("collection.remove", json!({ "collection": id }))?,
         },
         Cmd::Scan { library } => c.op("library.scan", json!({ "library": library }))?,
         Cmd::Events => {

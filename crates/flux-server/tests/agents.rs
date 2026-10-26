@@ -158,7 +158,7 @@ async fn the_manifest_lists_operations_schemas_and_skills() {
     ] {
         assert!(names.contains(&n), "{n} in {names:?}");
     }
-    assert_eq!(m.policy.withheld, ["tmdb"]);
+    assert_eq!(m.policy.withheld, ["tmdb", "nfo"]);
     assert!(m.skills.iter().any(|s| s.name == "flux-metadata"));
     // Schemas are JSON Schema 2020-12, served by name.
     let s = get(&app, "/api/v1/schemas/items.edit.input").await;

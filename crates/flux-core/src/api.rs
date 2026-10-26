@@ -654,6 +654,9 @@ pub enum Event {
     },
     /// The lenses kept on the server changed (`lens.add`, `lens.remove`).
     Lenses,
+    /// The collections kept on the server changed (`collection.put`,
+    /// `collection.remove`).
+    Collections,
 }
 
 /// How flux reaches the tailnet.

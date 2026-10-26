@@ -32,6 +32,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/libraries", get(list_libraries).post(create_library))
         .route("/api/v1/libraries/{id}/scan", post(scan_library))
         .route("/api/v1/libraries/{id}/items", get(library_items))
+        .route("/api/v1/collections/{id}/items", get(collection_items))
         .route("/api/v1/libraries/{id}/folders", get(library_folders))
         .route("/api/v1/home", get(home))
         .route("/api/v1/items/{id}", get(item))
@@ -231,6 +232,37 @@ async fn library_items(
         limit: p.limit.unwrap_or(100),
         user_id: Some(user),
         filter: p.filter,
+        ..Default::default()
+    };
+    Ok(Json(st.catalog.read(move |c| read::items_page(c, &q)).await?))
+}
+
+/// `GET /api/v1/collections/{id}/items?cursor=&limit=&sort=&filter=`: a
+/// collection's titles across libraries, paged and sorted as a library's
+/// (a collection someone else keeps for themselves is not found).
+async fn collection_items(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    id: Result<UrlPath<Id>, axum::extract::rejection::PathRejection>,
+    params: Result<Query<ItemsParams>, QueryRejection>,
+) -> ApiResult<Json<Page<ItemSummary>>> {
+    let id = id_of(id)?;
+    let Query(p) = params?;
+    let user = st.user_id(&caller).await?;
+    let mine = caller.identity.is_some().then_some(user);
+    let row = st
+        .catalog
+        .read(move |c| flux_catalog::collections::get(c, id))
+        .await?
+        .filter(|r| flux_catalog::collections::visible(r, mine))
+        .ok_or_else(|| ApiError::not_found(format!("No collection {id}")))?;
+    let q = read::ItemsQuery {
+        sort: p.sort.unwrap_or_default(),
+        cursor: p.cursor,
+        limit: p.limit.unwrap_or(100),
+        user_id: Some(user),
+        filter: p.filter,
+        collection: Some(row.id),
         ..Default::default()
     };
     Ok(Json(st.catalog.read(move |c| read::items_page(c, &q)).await?))

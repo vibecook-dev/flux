@@ -385,6 +385,8 @@ fn extra_schemas() -> Vec<(&'static str, Value)> {
         ("fields", schema_of::<flux_core::agent::Fields>()),
         ("item", schema_of::<flux_core::agent::AgentItemDetail>()),
         ("changeset", schema_of::<flux_core::agent::Changeset>()),
+        ("sidecar", schema_of::<flux_core::agent::Sidecar>()),
+        ("collection_rule", schema_of::<flux_core::agent::CollectionRule>()),
         ("error", schema_of::<ErrorBody>()),
         ("manifest", schema_of::<Manifest>()),
     ]

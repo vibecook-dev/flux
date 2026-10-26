@@ -645,6 +645,19 @@ impl Writer {
         self.exec_quiet(move |c| crate::sidecar::sync(c, root_id, &upserts, &removed))
     }
 
+    /// A scan's metadata files of a root ([`crate::metafiles::sync`]):
+    /// `upserts` new or changed (with what flux read from them), `removed`
+    /// proven gone. What they say is applied to the items they describe.
+    pub fn sync_meta_files(
+        &self,
+        root_id: Id,
+        upserts: Vec<crate::metafiles::MetaFileRow>,
+        removed: Vec<String>,
+    ) -> Request<ApplyOutcome> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::metafiles::sync(c, root_id, &upserts, &removed, now_ms(), jobs))
+    }
+
     /// Delete tombstoned files older than their grace period, and items left
     /// with nothing playable. `now_ms` is injectable for tests.
     pub fn purge_tombstones(&self, now_ms: i64) -> Request<PurgeOutcome> {
@@ -1035,6 +1048,16 @@ impl Writer {
     /// Turn a proposed changeset down.
     pub fn reject_proposal(&self, changeset: Id, by: String) -> Request<Committed> {
         self.exec_quiet(move |c| crate::changes::reject_proposal(c, changeset, &by, now_ms()))
+    }
+
+    /// Make or change a collection ([`crate::collections::put`]).
+    pub fn put_collection(&self, p: crate::collections::Put) -> Request<crate::collections::Row> {
+        self.exec_quiet(move |c| crate::collections::put(c, &p, now_ms()))
+    }
+
+    /// Forget collection `id` of `owner`.
+    pub fn remove_collection(&self, owner: Id, id: Id) -> Request<bool> {
+        self.exec_quiet(move |c| crate::collections::remove(c, owner, id))
     }
 
     /// Keep a file plan (`files.plan`) as a proposed changeset; see

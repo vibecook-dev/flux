@@ -259,6 +259,53 @@ pub fn define() -> Vec<Op> {
             lens_remove,
         ),
         op(
+            "collections.list",
+            "Collections",
+            "The collections you may see: everyone's, then yours. Each has its titles picked by hand and/or \
+             a rule that takes matching titles as the library changes; the app shows them beside the \
+             libraries.",
+            Read,
+            ANYONE,
+            true,
+            false,
+            collections_list,
+        ),
+        op(
+            "collection.get",
+            "One collection",
+            "A collection's titles: those picked, in order (with why each is there), then those its rule \
+             takes, by title; paged.",
+            Read,
+            ANYONE,
+            true,
+            false,
+            collection_get,
+        ),
+        op(
+            "collection.put",
+            "Make or change a collection",
+            "Keep a collection on the server, for you or (Owner, Admin; everyone: true) for everyone: \
+             \"Ghibli\", \"Rainy Sunday\", \"Kids' films\". Pick titles (items, in order, each with a note; \
+             add, remove) and/or give a rule (genres, tags, people, studios, countries, languages, years, \
+             text) that takes matching titles as the library changes. A collection of yours with the same \
+             name is changed. It shows in the app at once.",
+            Act,
+            SIGNED_IN,
+            true,
+            true,
+            collection_put,
+        ),
+        op(
+            "collection.remove",
+            "Remove a collection",
+            "Forget a collection (yours, or everyone's: Owner or Admin). Its titles stay in the library.",
+            Act,
+            SIGNED_IN,
+            true,
+            true,
+            collection_remove,
+        ),
+        op(
             "library.scan",
             "Scan a library",
             "Look for new, changed and removed files in a library now (flux also watches its folders). \
@@ -515,7 +562,7 @@ fn edit_result(p: changes::PlannedItem, hide: &[String]) -> EditResult {
                 let withheld = c
                     .before_source
                     .as_ref()
-                    .filter(|s| s.source == fields::PROVIDER)
+                    .filter(|s| s.source == fields::PROVIDER || s.source == fields::SIDECAR)
                     .and_then(|s| s.provider.clone())
                     .filter(|p| hide.contains(p) && !c.field.starts_with("ids."));
                 FieldChange {
@@ -1155,6 +1202,198 @@ async fn lens_remove(ctx: Ctx, input: LensRemoveInput) -> Result<Removed, OpErro
         .map_err(cat_err)?;
     if removed {
         ctx.st.events.send(flux_core::api::Event::Lenses);
+    }
+    Ok(Removed { removed })
+}
+
+// ---- collections ----------------------------------------------------------------------------
+
+/// The caller's user id, if signed in.
+async fn user_of(ctx: &Ctx) -> Result<Option<Id>, OpError> {
+    match ctx.role() {
+        Some(_) => Ok(Some(ctx.user_id().await?)),
+        None => Ok(None),
+    }
+}
+
+/// A collection the caller may see.
+async fn visible_collection(ctx: &Ctx, id: Id) -> Result<flux_catalog::collections::Row, OpError> {
+    let user = user_of(ctx).await?;
+    let row = ctx
+        .st
+        .catalog
+        .read(move |c| flux_catalog::collections::get(c, id))
+        .await
+        .map_err(cat_err)?;
+    match row {
+        Some(r) if flux_catalog::collections::visible(&r, user) => Ok(r),
+        _ => Err(err(ErrorCode::NotFound, format!("No collection {id}"))),
+    }
+}
+
+async fn collections_list(ctx: Ctx, _: Nothing) -> Result<Collections, OpError> {
+    let user = user_of(&ctx).await?;
+    let hide = ctx.hide();
+    let collections = ctx
+        .st
+        .catalog
+        .read(move |c| flux_catalog::collections::list(c, user, &hide))
+        .await
+        .map_err(cat_err)?;
+    Ok(Collections { collections })
+}
+
+async fn collection_get(ctx: Ctx, input: CollectionGetInput) -> Result<CollectionItems, OpError> {
+    let row = visible_collection(&ctx, input.collection).await?;
+    let hide = ctx.hide();
+    let limit = input.limit.unwrap_or(50).clamp(1, 200) as usize;
+    let offset = cursor(input.cursor.as_deref())?.unwrap_or(0).max(0) as usize;
+    ctx.st
+        .catalog
+        .read(move |c| {
+            let info = flux_catalog::collections::info(c, &row, &hide)?;
+            let members = flux_catalog::collections::members(c, &row, &hide)?;
+            let notes = flux_catalog::collections::notes(c, &row)?;
+            let mut items = Vec::new();
+            for id in members.iter().skip(offset).take(limit) {
+                if let Some(it) = agent_read::agent_item(c, *id, &hide)? {
+                    items.push(it);
+                }
+            }
+            let next = (offset + limit < members.len()).then(|| (offset + limit).to_string());
+            Ok(CollectionItems {
+                collection: info,
+                notes: notes
+                    .into_iter()
+                    .filter(|(i, _)| members.contains(i))
+                    .map(|(i, n)| (i.to_string(), n))
+                    .collect(),
+                items,
+                next,
+                total: members.len() as u64,
+            })
+        })
+        .await
+        .map_err(cat_err)
+}
+
+fn tidy_text(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+async fn collection_put(ctx: Ctx, input: CollectionPutInput) -> Result<CollectionInfo, OpError> {
+    if ctx.role().is_none() {
+        return Err(err(
+            ErrorCode::Forbidden,
+            "Collections are kept per person: connect over the tailnet (or on this machine) to keep one",
+        ));
+    }
+    if input.everyone {
+        ctx.require_admin()?;
+    }
+    let name = tidy_text(&input.name);
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(err(ErrorCode::Invalid, "Give a name of 1 to 60 characters"));
+    }
+    let description = input
+        .description
+        .as_deref()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty());
+    if description.as_ref().is_some_and(|d| d.chars().count() > 1000) {
+        return Err(err(
+            ErrorCode::Invalid,
+            "The description is longer than 1,000 characters",
+        ));
+    }
+    let tidy_picks = |v: &[CollectionPick]| -> Result<Vec<CollectionPick>, OpError> {
+        v.iter()
+            .map(|p| {
+                let note = p.note.as_deref().map(tidy_text).filter(|n| !n.is_empty());
+                if note.as_ref().is_some_and(|n| n.chars().count() > 300) {
+                    return Err(err(
+                        ErrorCode::Invalid,
+                        format!("item {}: the note is longer than 300 characters", p.item),
+                    ));
+                }
+                Ok(CollectionPick { item: p.item, note })
+            })
+            .collect()
+    };
+    let items = input.items.as_deref().map(tidy_picks).transpose()?;
+    let add = tidy_picks(&input.add)?;
+    if items.as_ref().map_or(0, Vec::len) + add.len() > flux_catalog::collections::MAX_PICKED {
+        return Err(err(
+            ErrorCode::TooLarge,
+            format!(
+                "A collection picks at most {} titles: use a rule for more",
+                flux_catalog::collections::MAX_PICKED
+            ),
+        ));
+    }
+    if let Some(r) = &input.rule {
+        let lists = [
+            &r.genres,
+            &r.tags,
+            &r.people,
+            &r.studios,
+            &r.countries,
+            &r.languages,
+        ];
+        if lists.iter().any(|l| l.len() > 50) || r.libraries.len() > 50 {
+            return Err(err(ErrorCode::Invalid, "A rule lists at most 50 values for each"));
+        }
+    }
+    let owner = if input.everyone {
+        flux_catalog::collections::EVERYONE
+    } else {
+        ctx.user_id().await?
+    };
+    let put = flux_catalog::collections::Put {
+        id: input.id,
+        owner,
+        name,
+        description,
+        items,
+        add,
+        remove: input.remove.clone(),
+        rule: input.rule.clone(),
+        sources: check_sources(&input.sources)?,
+        by: ctx.login(),
+        agent: ctx.agent.clone(),
+    };
+    let row = ctx
+        .st
+        .catalog
+        .writer()
+        .put_collection(put)
+        .await
+        .map_err(cat_err)?;
+    ctx.st.events.send(flux_core::api::Event::Collections);
+    let hide = ctx.hide();
+    ctx.st
+        .catalog
+        .read(move |c| flux_catalog::collections::info(c, &row, &hide))
+        .await
+        .map_err(cat_err)
+}
+
+async fn collection_remove(ctx: Ctx, input: CollectionRef) -> Result<Removed, OpError> {
+    let row = visible_collection(&ctx, input.collection).await?;
+    if row.owner == flux_catalog::collections::EVERYONE {
+        ctx.require_admin()?;
+    } else if ctx.role().is_none() {
+        return Err(err(ErrorCode::Forbidden, "Sign in to remove your collections"));
+    }
+    let removed = ctx
+        .st
+        .catalog
+        .writer()
+        .remove_collection(row.owner, row.id)
+        .await
+        .map_err(cat_err)?;
+    if removed {
+        ctx.st.events.send(flux_core::api::Event::Collections);
     }
     Ok(Removed { removed })
 }

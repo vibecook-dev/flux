@@ -815,6 +815,16 @@ pub struct FieldRow {
 }
 
 impl FieldRow {
+    /// The provider (or metadata file kind) a reader that may not see
+    /// `hide` is kept from: a provider's value, or a value read from a
+    /// metadata file of that kind (an `.nfo` is usually a provider's copy).
+    pub fn withheld_by(&self, hide: &[String]) -> Option<String> {
+        (self.source == PROVIDER || self.source == SIDECAR)
+            .then(|| self.provider.clone())
+            .flatten()
+            .filter(|p| hide.contains(p))
+    }
+
     /// A person, an agent or a metadata file set it: the matcher and the
     /// scanner's re-parse leave it alone.
     pub fn locks(&self) -> bool {

@@ -27,6 +27,7 @@
 //! - [`organize`]: plans that rename and move files, and what moving them changes.
 //! - [`agent_read`]: what agents read: gaps, finding items, an item's evidence.
 //! - [`lenses`]: lenses kept on the server.
+//! - [`collections`]: collections kept on the server: titles picked, or taken by a rule.
 //!
 //! ```no_run
 //! # async fn demo() -> flux_catalog::Result<()> {
@@ -45,6 +46,7 @@
 
 pub mod agent_read;
 pub mod changes;
+pub mod collections;
 pub mod error;
 pub mod facts;
 pub mod fields;

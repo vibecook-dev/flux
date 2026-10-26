@@ -110,7 +110,7 @@ pub struct Work {
 
 fn title_provider(c: &Connection, item: Id) -> Result<Option<String>> {
     Ok(crate::fields::source_of(c, item, "title")?
-        .filter(|s| s.source == crate::fields::PROVIDER)
+        .filter(|s| s.source == crate::fields::PROVIDER || s.source == crate::fields::SIDECAR)
         .and_then(|s| s.provider))
 }
 

@@ -809,6 +809,11 @@ pub struct ItemsQuery {
     pub user_id: Option<Id>,
     /// `None` = everything. Shows match through their episodes.
     pub filter: Option<ItemFilter>,
+    /// Only the titles of this collection (across libraries; with
+    /// `library_id`, of that library), as a reader that may not see `hide`
+    /// counts them ([`crate::collections`]).
+    pub collection: Option<Id>,
+    pub hide: Vec<String>,
 }
 
 impl Default for ItemsQuery {
@@ -821,6 +826,8 @@ impl Default for ItemsQuery {
             limit: 100,
             user_id: None,
             filter: None,
+            collection: None,
+            hide: Vec::new(),
         }
     }
 }
@@ -1042,6 +1049,15 @@ pub fn items_page(c: &Connection, q: &ItemsQuery) -> Result<Page<ItemSummary>> {
         filter.push_str(" AND ");
         filter.push_str(&cond);
         args.extend(fargs);
+    }
+    if let Some(cid) = q.collection {
+        let r = crate::collections::get(c, cid)?
+            .ok_or_else(|| CatalogError::NotFound(format!("collection {cid}")))?;
+        let (cond, cargs) = crate::collections::member_sql(&r, &q.hide);
+        // Numbered after the arguments so far; later `?`s follow on.
+        filter.push_str(" AND ");
+        filter.push_str(&crate::collections::rebind(&cond, args.len(), cargs.len()));
+        args.extend(cargs);
     }
     let total: i64 = c
         .prepare_cached(&format!("SELECT count(*) FROM item i WHERE {filter}"))?

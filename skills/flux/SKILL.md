@@ -1,6 +1,6 @@
 ---
 name: flux
-description: Work with a flux media server (a self-hosted film, TV and home-video library). Use when the user asks about their flux library, wants it organised, fixed, filled in, searched or browsed differently, or mentions flux. Covers connecting (the flux CLI or MCP), how flux's library and changesets work, and the rules every edit follows. The flux-metadata, flux-artwork and flux-lens skills build on this one.
+description: Work with a flux media server (a self-hosted film, TV and home-video library). Use when the user asks about their flux library, wants it organised, fixed, filled in, searched or browsed differently, or mentions flux. Covers connecting (the flux CLI or MCP), how flux's library and changesets work, and the rules every edit follows. The flux-metadata, flux-artwork, flux-organize and flux-lens skills build on this one.
 ---
 
 # flux
@@ -22,7 +22,9 @@ Your role comes from where you connect: on the server's own machine you act as i
 - **Items**: films (`movie`), shows → seasons → episodes, extras, and videos (a `videos` library: one item per file, home videos and clips, never matched). Ids are integers.
 - **Every field says where its value came from** (`item.get` → `sources`): the file (its name, folder, container tags), a provider (TMDB), a person, or an agent (with its links). What a person or an agent set is locked: flux's scanner and matcher leave it alone.
 - **Gaps** are what an item lacks: `identity` (nobody confirmed what it is), `year`, `overview`, `poster`, `backdrop`, `episode_titles`, `offline`. `flux gaps` counts them; `flux find --gap poster` lists them.
-- **Withheld**: TMDB's terms forbid using its content with AI, so flux never shows you TMDB's text or images. `item.get` lists such fields under `withheld` (`{"overview": "tmdb"}`): they have a value you can't see. Don't try to get it another way; write your own from the open web if the user wants it replaced.
+- **Withheld**: TMDB's terms forbid using its content with AI, so flux never shows you TMDB's text or images. `item.get` lists such fields under `withheld` (`{"overview": "tmdb"}`): they have a value you can't see. Don't try to get it another way; write your own from the open web if the user wants it replaced. Text flux read from `.nfo` files is withheld the same way (`"nfo"`): scrapers usually copy it from TMDB.
+- **Files**: `item.get` lists an item's files, each with its `id`, its `path` inside its library folder (`root`), what flux read from the name (`parsed`), the metadata files beside it (`sidecars`) and its `fix` if it has one. A fix (`flux fix`) says what a file is when its name is wrong; a plan (`flux plan`) renames and moves files once the user applies it (flux-organize).
+- **Collections**: titles picked by hand or taken by a rule, shown in the app beside the libraries (flux-organize).
 - **Changesets**: each `flux edit` (one or many items) is one changeset with your summary. The user reviews them in the app; `flux changes undo ID` reverts one field by field, keeping fields changed since.
 
 ## Commands
@@ -42,6 +44,9 @@ flux art view 1234 -o poster.jpg  # look at an image
 flux art add 42 poster https://example.org/p.jpg --credit "Studio Ghibli" --from https://example.org/press
 flux changes                      # newest first; flux changes show 17; flux changes undo 17
 flux lens check board.json && flux lens add board.json
+flux collections put Ghibli --pick 40 --pick 41        # see flux-organize
+flux fix 812 season=2 episodes=5                       # what a file is
+flux plan 40 --summary "Name its files the standard way"  # a proposal; nothing moves until applied
 flux ops                          # every operation and its schemas
 flux call items.find '{"gap": "year", "limit": 5}'
 ```
@@ -56,7 +61,7 @@ Values: text as is; lists comma-separated (`genres="Animation, Fantasy"`); JSON 
 4. **Small, clear changesets.** One topic per changeset (for example "Years for 12 films"), a summary a person understands, at most 100 items. Use `--dry-run` to see what would change.
 5. **Propose when unsure** (`--propose`): the user applies or rejects it in the app.
 6. **Honest images.** Credit what you add; make an image with AI only when the user asks, and name the model (see flux-artwork).
-7. **Never touch the files.** flux doesn't move, rename or delete media for you.
+7. **Files move only by plan.** Never rename, move or delete media yourself; `flux plan` proposes renames and moves, the user approves, flux carries them out (and can put them back). flux never deletes media.
 8. **Private libraries stay private.** Home videos are personal: describe them only as much as the user asks, and never send their details to a web service without asking.
 
 ## When something fails

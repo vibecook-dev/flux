@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use crate::client::Failure;
 
 /// Each skill: its name and files (`SKILL.md` first).
-const SKILLS: [(&str, &[(&str, &str)]); 4] = [
+const SKILLS: [(&str, &[(&str, &str)]); 5] = [
     (
         "flux",
         &[("SKILL.md", include_str!("../../../skills/flux/SKILL.md"))],
@@ -21,6 +21,10 @@ const SKILLS: [(&str, &[(&str, &str)]); 4] = [
     (
         "flux-artwork",
         &[("SKILL.md", include_str!("../../../skills/flux-artwork/SKILL.md"))],
+    ),
+    (
+        "flux-organize",
+        &[("SKILL.md", include_str!("../../../skills/flux-organize/SKILL.md"))],
     ),
     (
         "flux-lens",
@@ -91,7 +95,7 @@ mod tests {
     fn skills_install_with_their_files() {
         let dir = tempfile::tempdir().unwrap();
         let out = install(Some(dir.path())).unwrap();
-        assert_eq!(out["installed"].as_array().unwrap().len(), 5);
+        assert_eq!(out["installed"].as_array().unwrap().len(), 6);
         let lens = std::fs::read_to_string(dir.path().join("flux-lens/reference.md")).unwrap();
         assert!(lens.contains("layout(items, view)"));
         assert!(list()["skills"][1]["description"]

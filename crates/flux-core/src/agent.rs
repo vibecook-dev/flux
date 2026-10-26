@@ -1202,6 +1202,199 @@ pub struct FixOutput {
     pub files: Vec<FixResult>,
 }
 
+// ---- collections ------------------------------------------------------------------------
+
+/// The titles a rule takes into a collection: those that match every
+/// condition given (in a list, any of its values; names in any case). As
+/// the library changes, so does the collection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionRule {
+    /// In these libraries (default: every film and show library).
+    pub libraries: Vec<Id>,
+    /// `movie`, `show` (default: both).
+    pub kinds: Vec<ItemKind>,
+    pub genres: Vec<String>,
+    pub tags: Vec<String>,
+    /// Directed, written by or starring any of these.
+    pub people: Vec<String>,
+    pub studios: Vec<String>,
+    /// ISO 3166-1 codes (`JP`).
+    pub countries: Vec<String>,
+    /// ISO 639-1 codes (`ja`).
+    pub languages: Vec<String>,
+    pub year_from: Option<u16>,
+    pub year_to: Option<u16>,
+    /// Text in the title or the original title.
+    pub text: Option<String>,
+}
+
+impl CollectionRule {
+    /// No condition at all (it would take every title).
+    pub fn is_empty(&self) -> bool {
+        *self == CollectionRule::default()
+    }
+}
+
+/// A title picked for a collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionPick {
+    /// A film or show.
+    pub item: Id,
+    /// Why it's here, in a sentence (shown with it).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `collection.put` input: make a collection, or change one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionPutInput {
+    /// The collection to change; leave out to make one (one of yours with
+    /// the same name is changed instead).
+    #[serde(default)]
+    pub id: Option<Id>,
+    /// A few words: "Ghibli", "Rainy Sunday", "Kids' films" (at most 60
+    /// characters).
+    pub name: String,
+    /// What it is, in a sentence or two (at most 1,000).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The titles picked, in order (replaces those picked before).
+    #[serde(default)]
+    pub items: Option<Vec<CollectionPick>>,
+    /// Titles to pick too, after the others.
+    #[serde(default)]
+    pub add: Vec<CollectionPick>,
+    /// Titles to take out.
+    #[serde(default)]
+    pub remove: Vec<Id>,
+    /// Titles matching it are in the collection too (`null` keeps the rule
+    /// it has; an empty rule `{}` drops it).
+    #[serde(default)]
+    pub rule: Option<CollectionRule>,
+    /// Kept for everyone on this server (Owner or Admin), not just you.
+    #[serde(default)]
+    pub everyone: bool,
+    /// Pages that say why these belong together.
+    #[serde(default)]
+    pub sources: Vec<Link>,
+}
+
+/// A collection kept on the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionInfo {
+    pub id: Id,
+    pub name: String,
+    pub description: Option<String>,
+    pub everyone: bool,
+    pub rule: Option<CollectionRule>,
+    /// Titles in it now.
+    pub count: u64,
+    /// The first few titles (ids), for a cover.
+    pub cover: Vec<Id>,
+    /// Who made it (a login).
+    pub added_by: String,
+    pub agent: Option<String>,
+    pub sources: Vec<Link>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// `collections.list` output: everyone's, then yours.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Collections {
+    pub collections: Vec<CollectionInfo>,
+}
+
+/// `collection.get` input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionGetInput {
+    pub collection: Id,
+    /// 1–200, default 50.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `next` from the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// `collection.get` output: its titles, those picked first (in order),
+/// then those its rule takes (by title).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionItems {
+    pub collection: CollectionInfo,
+    pub items: Vec<AgentItem>,
+    /// Why a picked title is there, by id.
+    pub notes: BTreeMap<String, String>,
+    pub next: Option<String>,
+    pub total: u64,
+}
+
+/// Input naming one collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CollectionRef {
+    pub collection: Id,
+}
+
+// ---- metadata files beside the videos -------------------------------------------------
+
+/// The sidecar format, `flux.sidecar/1`.
+pub const SIDECAR: &str = "flux.sidecar/1";
+
+/// An episode's facts in a show's `flux.json`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SidecarEpisode {
+    pub season: u16,
+    pub episode: u16,
+    #[serde(default)]
+    pub fields: Fields,
+}
+
+/// A `.flux.json`: facts that travel with the files. Beside a video, named
+/// like it (`Film (2010).flux.json`), it describes that video; as
+/// `flux.json` in a film's or show's own folder, the film or show (a show's
+/// can describe its episodes too). flux reads it on every scan. What it
+/// says counts more than a provider's match, less than what a person or an
+/// agent set in flux. An agent that can write files but can't reach flux
+/// can still contribute this way.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Sidecar {
+    /// [`SIDECAR`]: `flux.sidecar/1`.
+    pub flux: String,
+    /// The facts, as `items.edit` takes them.
+    #[serde(default)]
+    pub fields: Fields,
+    /// What the video is, as `files.fix` takes it (a video's own sidecar
+    /// only).
+    #[serde(default)]
+    pub fix: Option<FileFix>,
+    /// A show's episodes (a show folder's `flux.json` only).
+    #[serde(default)]
+    pub episodes: Vec<SidecarEpisode>,
+    /// The pages that support the facts.
+    #[serde(default)]
+    pub sources: Vec<Link>,
+    /// Who wrote it: an agent's name or a person's.
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
 // ---- organising files -----------------------------------------------------------------
 
 /// How `files.plan` names files.
