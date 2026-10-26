@@ -115,6 +115,9 @@ Dependencies point strictly downward, with no cycles:
 - File identity: `(root, rel_path)` plus `(dev, ino)` and `btime` for rename/move detection.
 - Where each value came from (`item_field`): a provider, a person or an agent. A value a person or an agent set is locked: the matcher and the scanner's re-parse never overwrite it, and a merge carries it to the item that stays (`fields`).
 - Every edit through the agent operations is a changeset (`changes`): applied or proposed, journaled field by field, undoable while the fields still hold what it set.
+- A file's fix (`file_fix`, `fixes`) corrects what its name says: every placement goes by the stored guess with the fix applied, so a fix holds through rescans and re-parses. A pin (`of`) follows its work through merges.
+- Metadata files beside the videos (`.flux.json`, `.nfo`: `meta_file`, `metafiles`) are read once per change and rank between agents and providers; a value one no longer gives goes back to flux.
+- Collections (`collections`) are picked titles and/or a rule; a rule never counts a value the reader may not see.
 
 ### flux-scan
 
@@ -139,7 +142,8 @@ Dependencies point strictly downward, with no cycles:
 - One router layer guards every listener: a `Host` that isn't one of the server's names gets 421 (DNS rebinding); an unsafe `/api/` call needs `X-Flux-Request: 1` and no foreign `Origin`, else 403 (CSRF).
 - A file is served only from inside its library, or when it is exactly the file the scan recorded behind a link that leaves it.
 - Everything a caller can create is bounded: plans (on disk, LRU), sessions, event streams.
-- Agent operations (`agent`, docs/AGENT-NATIVE.md) are defined once (name, JSON Schemas, who may call them) and served at `/api/v1/ops/{name}`, over MCP at `/mcp`, and by the `flux` command line. A caller that names an agent never receives TMDB-sourced text or images (`agent::policy`): principle 6 holds for agents too.
+- Agent operations (`agent`, docs/AGENT-NATIVE.md) are defined once (name, JSON Schemas, who may call them) and served at `/api/v1/ops/{name}`, over MCP at `/mcp`, and by the `flux` command line. A caller that names an agent never receives TMDB-sourced text or images, nor what flux read from `.nfo` files (`agent::policy`): principle 6 holds for agents too.
+- Files move only by a plan a person applies (`agent::files`): steps stay inside their library folder, are checked again right before they run, and use the platform's no-replace rename (never replacing, never copying across drives, never through a link); the catalog follows and items keep their ids.
 
 ## Dogfooding: Truffle and Mille
 
