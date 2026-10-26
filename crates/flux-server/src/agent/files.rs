@@ -758,6 +758,30 @@ impl Planner {
             })
             .count();
         let mut seasons_done: BTreeMap<u16, String> = BTreeMap::new();
+        // In the order a person reads them: versions, episodes by number,
+        // extras by title.
+        let mut files = files;
+        files.sort_by(|a, b| {
+            let key = |f: &VideoFile| match &f.role {
+                Role::Version { edition, part, .. } => {
+                    (0, 0, 0, edition.clone().unwrap_or_default(), part.unwrap_or(0))
+                }
+                Role::Episode {
+                    season,
+                    episodes,
+                    air_date,
+                    ..
+                } => (
+                    1,
+                    *season,
+                    episodes.first().copied().unwrap_or(0),
+                    air_date.clone().unwrap_or_default(),
+                    0,
+                ),
+                Role::Extra { title, .. } => (2, 0, 0, title.clone(), 0),
+            };
+            key(a).cmp(&key(b)).then(a.file.cmp(&b.file))
+        });
         for f in &files {
             let from = self.now(root, &f.rel_path);
             let ext = ext_of(name_of(&f.rel_path));
