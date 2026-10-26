@@ -995,10 +995,41 @@ impl Writer {
         })
     }
 
-    /// Apply a proposed changeset (`by` decides it).
+    /// Apply a proposed changeset (`by` decides it). A structure change
+    /// in it places files again, so library counts are recomputed.
     pub fn apply_proposal(&self, changeset: Id, by: String) -> Request<Committed> {
         let jobs = self.apply_jobs;
-        self.exec_quiet(move |c| crate::changes::apply_proposal(c, changeset, &by, now_ms(), jobs))
+        self.exec(move |c| crate::changes::apply_proposal(c, changeset, &by, now_ms(), jobs))
+    }
+
+    /// Fix what files are (`files.fix`, `items.merge`) as one changeset:
+    /// applied now, or (`propose`) proposed; a `dry_run` is worked out and
+    /// rolled back. Returns what changed for each file, as a reader that
+    /// may not see `hide` names the items. See [`crate::fixes`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_fixes(
+        &self,
+        actor: Actor,
+        summary: String,
+        edits: Vec<crate::fixes::FixEdit>,
+        propose: bool,
+        dry_run: bool,
+        hide: Vec<String>,
+    ) -> Request<(Committed, Vec<crate::fixes::FixOutcome>)> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| {
+            crate::fixes::commit(
+                c,
+                &actor,
+                &summary,
+                &edits,
+                propose,
+                dry_run,
+                &hide,
+                now_ms(),
+                jobs,
+            )
+        })
     }
 
     /// Turn a proposed changeset down.
@@ -1006,10 +1037,35 @@ impl Writer {
         self.exec_quiet(move |c| crate::changes::reject_proposal(c, changeset, &by, now_ms()))
     }
 
+    /// Keep a file plan (`files.plan`) as a proposed changeset; see
+    /// [`crate::organize`].
+    pub fn propose_plan(
+        &self,
+        actor: Actor,
+        summary: String,
+        steps: Vec<crate::organize::Step>,
+    ) -> Request<Committed> {
+        self.exec_quiet(move |c| crate::organize::propose(c, &actor, &summary, &steps, now_ms()))
+    }
+
+    /// Record what moving a plan's files did (or, with `undo`, putting them
+    /// back): the catalog follows the files, and moved videos are placed
+    /// again by their new names. `by` decided it.
+    pub fn record_plan(
+        &self,
+        changeset: Id,
+        by: String,
+        done: Vec<crate::organize::Done>,
+        undo: bool,
+    ) -> Request<Committed> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::organize::record(c, changeset, &by, &done, undo, now_ms(), jobs))
+    }
+
     /// Undo an applied changeset, where its fields still hold what it set.
     pub fn revert_changeset(&self, changeset: Id, by: String) -> Request<Committed> {
         let jobs = self.apply_jobs;
-        self.exec_quiet(move |c| crate::changes::revert(c, changeset, &by, now_ms(), jobs))
+        self.exec(move |c| crate::changes::revert(c, changeset, &by, now_ms(), jobs))
     }
 
     /// Add an image a person or an agent chose (`custom`, or `generated`

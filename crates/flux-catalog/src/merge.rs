@@ -121,8 +121,15 @@ impl Merge<'_> {
              WHERE id = ?2",
         )?
         .execute(params![from, into])?;
-        // What a person or an agent set on `from` (and the history of it).
+        // What a person or an agent set on `from` (and the history of it),
+        // the collections it's in, and the files fixed to belong to it.
         crate::fields::carry(c, from, into, self.now)?;
+        c.prepare_cached(
+            "INSERT OR IGNORE INTO collection_item(collection_id, item_id, position, note)
+             SELECT collection_id, ?2, position, note FROM collection_item WHERE item_id = ?1",
+        )?
+        .execute(params![from, into])?;
+        crate::fixes::remap(c, from, into)?;
         if let Some(doc) = crate::fts::doc(c, from)? {
             crate::fts::remove(c, from, &doc)?;
         }

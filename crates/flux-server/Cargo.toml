@@ -32,6 +32,8 @@ flux-scan.workspace = true
 flux-hls.workspace = true
 flux-meta.workspace = true
 flux-net.workspace = true
+# Parsing a file's new name when flux moves it (agent::files).
+flux-names.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
@@ -79,6 +81,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_JobObjects",
@@ -95,7 +98,6 @@ flux-test-media = { path = "../flux-test-media" }
 tempfile = "3.27"
 http-body-util = "0.1"
 flux-probe.workspace = true
-flux-names.workspace = true
 
 [[example]]
 name = "probe_vs_index"

@@ -8,10 +8,11 @@
 //!   rest (`tagline`, `cast`, `links`, …) live in the `details` object.
 //! - **Sources.** `item_field` has a row for each field a provider, a person
 //!   or an agent set. A field without one came from the file (or the scan).
-//! - **Locks.** A `user` or `agent` row locks its field: the matcher
-//!   ([`crate::Writer::update_item_metadata`]) and the scanner's re-parse
-//!   leave it alone, and a merge carries it to the item that stays
-//!   ([`carry`]).
+//! - **Locks.** A `user`, `agent` or `sidecar` row locks its field: the
+//!   matcher ([`crate::Writer::update_item_metadata`]) and the scanner's
+//!   re-parse leave it alone, and a merge carries it to the item that stays
+//!   ([`carry`]). A person's value outranks an agent's, which outranks a
+//!   metadata file's ([`rank`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,6 +30,20 @@ pub const PROVIDER: &str = "provider";
 pub const USER: &str = "user";
 /// `item_field.source` of an agent.
 pub const AGENT: &str = "agent";
+/// `item_field.source` of a metadata file beside the video (`provider`:
+/// `flux` for a `.flux.json`, `nfo` for an `.nfo`).
+pub const SIDECAR: &str = "sidecar";
+
+/// How much a source's value counts: a person's (3) over an agent's (2)
+/// over a metadata file's (1) over a provider's (0).
+pub fn rank(source: &str) -> u8 {
+    match source {
+        USER => 3,
+        AGENT => 2,
+        SIDECAR => 1,
+        _ => 0,
+    }
+}
 
 /// The keys of `item.details`.
 pub const DETAILS: [&str; 11] = [
@@ -783,7 +798,7 @@ pub(crate) fn first_guess(c: &Connection, item: Id, kind: &str) -> Result<Option
 /// One `item_field` row: who or what set a field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldRow {
-    /// [`PROVIDER`], [`USER`] or [`AGENT`].
+    /// [`PROVIDER`], [`USER`], [`AGENT`] or [`SIDECAR`].
     pub source: String,
     #[serde(default)]
     pub provider: Option<String>,
@@ -800,9 +815,10 @@ pub struct FieldRow {
 }
 
 impl FieldRow {
-    /// A person or an agent set it: flux's own processes leave it alone.
+    /// A person, an agent or a metadata file set it: the matcher and the
+    /// scanner's re-parse leave it alone.
     pub fn locks(&self) -> bool {
-        self.source == USER || self.source == AGENT
+        rank(&self.source) > 0
     }
 
     pub fn to_api(&self) -> FieldSource {
@@ -810,6 +826,7 @@ impl FieldRow {
             source: match self.source.as_str() {
                 PROVIDER => Source::Provider,
                 USER => Source::User,
+                SIDECAR => Source::Sidecar,
                 _ => Source::Agent,
             },
             provider: self.provider.clone(),
@@ -880,23 +897,24 @@ pub(crate) fn put_source(c: &Connection, item: Id, field: &str, row: Option<&Fie
     Ok(())
 }
 
-/// Whether a person or an agent set `field` of `item`.
+/// Whether a person, an agent or a metadata file set `field` of `item`.
 pub fn is_locked(c: &Connection, item: Id, field: &str) -> Result<bool> {
     Ok(source_of(c, item, field)?.is_some_and(|r| r.locks()))
 }
 
-/// The fields of `item` a person or an agent set.
+/// The fields of `item` a person, an agent or a metadata file set.
 pub fn locked(c: &Connection, item: Id) -> Result<BTreeSet<String>> {
-    let mut stmt =
-        c.prepare_cached("SELECT field FROM item_field WHERE item_id = ?1 AND source IN ('user', 'agent')")?;
+    let mut stmt = c.prepare_cached(
+        "SELECT field FROM item_field WHERE item_id = ?1 AND source IN ('user', 'agent', 'sidecar')",
+    )?;
     let rows = stmt.query_map([item], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// What a person or an agent set on `from` goes to `into`, where nobody
-/// set it on `into` (a person's value over an agent's): the work merged
-/// into another, or a work whose files moved. Changes recorded against
-/// `from` now name `into`, so they can still be undone.
+/// What a person, an agent or a metadata file set on `from` goes to
+/// `into`, where nothing that counts as much set it on `into` ([`rank`]):
+/// the work merged into another, or a work whose files moved. Changes
+/// recorded against `from` now name `into`, so they can still be undone.
 pub(crate) fn carry(c: &Connection, from: Id, into: Id, now: i64) -> Result<()> {
     if from == into {
         return Ok(());
@@ -907,8 +925,7 @@ pub(crate) fn carry(c: &Connection, from: Id, into: Id, now: i64) -> Result<()> 
         for (field, row) in theirs.into_iter().filter(|(_, r)| r.locks()) {
             let take = match source_of(c, into, &field)? {
                 None => true,
-                Some(mine) if !mine.locks() => true,
-                Some(mine) => mine.source == AGENT && row.source == USER,
+                Some(mine) => rank(&row.source) > rank(&mine.source),
             };
             if !take {
                 continue;

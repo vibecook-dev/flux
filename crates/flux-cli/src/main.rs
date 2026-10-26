@@ -133,6 +133,63 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
     },
+    /// Say what a file is when flux read its name wrong: one changeset.
+    #[command(
+        after_help = "Fix: kind=movie|episode|extra|ignore of=ITEM title=TEXT year=N season=N \
+        episodes=1,2 extra=trailer|featurette|behind_the_scenes|deleted_scene|interview|short|scene|other \
+        edition=TEXT part=N. Give only what's wrong.\n\
+        Examples:\n  flux fix 812 of=40 --summary \"Another copy of Heat\"\n  flux fix 813 season=2 episodes=5\n  \
+        flux fix 814 kind=extra extra=trailer of=40\n  flux fix 815 --clear"
+    )]
+    Fix {
+        /// The file (`files[].id` in `flux get`).
+        file: i64,
+        /// KEY=VALUE.
+        values: Vec<String>,
+        /// Clear the file's fix: its name decides again.
+        #[arg(long)]
+        clear: bool,
+        /// A page that supports it (repeatable).
+        #[arg(long, value_name = "URL")]
+        source: Vec<String>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        propose: bool,
+        /// Show where it would go; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Films (or shows) that are one work: the files of FROM join INTO.
+    Merge {
+        into: i64,
+        #[arg(required = true)]
+        from: Vec<i64>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        propose: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Plan naming items' files the standard way, or moving files where you
+    /// say: a proposal; nothing moves until it's applied (flux changes apply).
+    #[command(
+        after_help = "Examples:\n  flux plan 40 41 --summary \"Name the Ghibli films' files\"\n  \
+        flux plan --move \"812=Kids/Spirited Away (2001)/Spirited Away (2001).mkv\"\n  flux changes apply 23"
+    )]
+    Plan {
+        /// Films, shows, seasons, episodes or extras to name.
+        items: Vec<i64>,
+        /// FILE=PATH: move a file to PATH (relative to its library folder).
+        #[arg(long = "move", value_name = "FILE=PATH")]
+        moves: Vec<String>,
+        /// Put ids in folder names ([imdbid-tt…]).
+        #[arg(long)]
+        ids: bool,
+        #[arg(long)]
+        summary: Option<String>,
+    },
     /// Images: look at one, add one, choose one.
     Art {
         #[command(subcommand)]
@@ -424,6 +481,102 @@ fn run(cli: &Cli) -> Result<Option<Value>, Failure> {
             }
         }
         Cmd::Get { item } => c.op("item.get", json!({ "item": item }))?,
+        Cmd::Fix {
+            file,
+            values,
+            clear,
+            source,
+            summary,
+            propose,
+            dry_run,
+        } => {
+            let fix = if *clear {
+                if !values.is_empty() {
+                    return Err(Failure::usage("--clear takes no values"));
+                }
+                Value::Null
+            } else {
+                let f = args::fix(values).map_err(Failure::usage)?;
+                if f.is_empty() {
+                    return Err(Failure::usage(
+                        "say what's wrong: KEY=VALUE (of=ITEM, season=2 episodes=5, …), or --clear",
+                    ));
+                }
+                Value::Object(f)
+            };
+            let summary = summary.clone().unwrap_or_else(|| {
+                if *clear {
+                    format!("Let file {file}'s name decide again")
+                } else {
+                    format!("Fixed what file {file} is")
+                }
+            });
+            c.op(
+                "files.fix",
+                json!({
+                    "summary": summary,
+                    "fixes": [{ "file": file, "fix": fix, "sources": source }],
+                    "mode": if *propose { "propose" } else { "apply" },
+                    "dry_run": dry_run,
+                }),
+            )?
+        }
+        Cmd::Merge {
+            into,
+            from,
+            summary,
+            propose,
+            dry_run,
+        } => {
+            let summary = summary.clone().unwrap_or_else(|| {
+                let list: Vec<String> = from.iter().map(|f| f.to_string()).collect();
+                format!("Merged {} into {into}: one work", list.join(", "))
+            });
+            c.op(
+                "items.merge",
+                json!({
+                    "summary": summary, "into": into, "from": from,
+                    "mode": if *propose { "propose" } else { "apply" },
+                    "dry_run": dry_run,
+                }),
+            )?
+        }
+        Cmd::Plan {
+            items,
+            moves,
+            ids,
+            summary,
+        } => {
+            let mut list = Vec::new();
+            for m in moves {
+                let (file, to) = m
+                    .split_once('=')
+                    .ok_or_else(|| Failure::usage(format!("--move {m:?}: give FILE=PATH")))?;
+                let file: i64 = file
+                    .trim()
+                    .parse()
+                    .map_err(|_| Failure::usage(format!("--move {m:?}: FILE is a file id")))?;
+                list.push(json!({ "file": file, "to": to }));
+            }
+            if items.is_empty() && list.is_empty() {
+                return Err(Failure::usage(
+                    "which items? flux plan ITEM… (or --move FILE=PATH)",
+                ));
+            }
+            let summary = summary
+                .clone()
+                .unwrap_or_else(|| match (items.len(), list.len()) {
+                    (0, n) => format!("Move {n} file{}", if n == 1 { "" } else { "s" }),
+                    (n, _) => format!(
+                        "Name {n} item{}'s files the standard way",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                });
+            c.op(
+                "files.plan",
+                json!({ "summary": summary, "items": items, "moves": list, "ids_in_names": ids }),
+            )?
+        }
         Cmd::Edit {
             item,
             values,

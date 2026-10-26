@@ -753,7 +753,7 @@ fn adopt_year(conn: &Connection, r: &Resolver, id: Id, year: Option<u16>) -> Res
 }
 
 /// Record that `show` has episodes in `folder` (no-op if already known).
-fn claim_folder(conn: &Connection, r: &mut Resolver, show: Id, folder: &str) -> Result<()> {
+pub(crate) fn claim_folder(conn: &Connection, r: &mut Resolver, show: Id, folder: &str) -> Result<()> {
     if r.claimed.insert((show, folder.to_string())) {
         conn.prepare_cached("INSERT OR IGNORE INTO item_folder(folder, item_id) VALUES (?1, ?2)")?
             .execute(params![folder, show])?;
@@ -860,7 +860,7 @@ pub(crate) fn retitle_parsed(conn: &Connection, r: &Resolver, id: Id, old: &str,
         .prepare_cached(
             "UPDATE item SET title = ?3, sort_title = ?4, updated_at = ?5
               WHERE id = ?1 AND title = ?2 AND match_state NOT IN ('matched', 'locked')
-                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent'))",
+                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent', 'sidecar'))",
         )?
         .execute(params![id, old, new, sort_title(new), r.now])?;
     if n > 0 {
@@ -912,7 +912,7 @@ pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Resu
             "SELECT i.kind, i.title, i.group_key, i.episode_number, i.air_date, l.kind
                FROM item i JOIN library l ON l.id = i.library_id
               WHERE i.id = ?1 AND i.match_state NOT IN ('matched', 'locked')
-                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id AND f.field = 'title' AND f.source IN ('user', 'agent'))",
+                AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id AND f.field = 'title' AND f.source IN ('user', 'agent', 'sidecar'))",
         )?
         .query_row([id], |row| {
             Ok((
@@ -957,6 +957,8 @@ pub(crate) fn heal_parsed_title(conn: &Connection, r: &Resolver, id: Id) -> Resu
         }) else {
             continue;
         };
+        // What the file is placed by: its name, corrected by its fix.
+        let guess = crate::fixes::fixed(conn, file_id, guess)?;
         let (given, prefer) = match (kind.as_str(), place_in(library_kind, root_id, &guess, &rel_path)) {
             ("movie", Placement::Movie { work, .. }) | ("show", Placement::Episodes { show: work, .. }) => {
                 let same_work = normalize_title(&work.title) == group_key;
@@ -1325,7 +1327,7 @@ pub(crate) fn resolve_episode(
             .prepare_cached(
                 "UPDATE item SET title = ?2, sort_title = ?3, updated_at = ?4
                  WHERE id = ?1 AND title GLOB 'Episode [0-9]*' AND match_state NOT IN ('matched','locked')
-                   AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent'))",
+                   AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = ?1 AND f.field = 'title' AND f.source IN ('user', 'agent', 'sidecar'))",
             )?
             .execute(params![id, t, sort_title(t), r.now])?;
         if n > 0 {

@@ -26,7 +26,7 @@
           "after": true,
           "before": true,
           "field": {
-            "description": "A field name, or `art.<kind>` for the image an item shows.",
+            "description": "A field name; `art.<kind>` for the image an item shows; `file.fix` for what a file is (`before` and `after` are `{file, path, fix}`); `file.path` for a file moved and `folder.path` for a folder renamed (`{file, path}` or `{folder, path}`).",
             "type": "string"
           },
           "item": {

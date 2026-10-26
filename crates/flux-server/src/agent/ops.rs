@@ -10,7 +10,7 @@ use flux_core::agent::*;
 use flux_core::api::{ArtSource, Id, Role};
 
 use super::{announce, cat_err, err, op, Ctx, Op, ADMIN, ANYONE, EDITORS, SIGNED_IN};
-use crate::agent::{fetch, lens, policy};
+use crate::agent::{fetch, files, lens, policy};
 
 /// Most items one `items.edit` changes.
 pub const MAX_EDITS: usize = 100;
@@ -81,6 +81,51 @@ pub fn define() -> Vec<Op> {
             false,
             true,
             items_edit,
+        ),
+        op(
+            "files.fix",
+            "Say what files are",
+            "Correct what flux read from file names, for up to 200 files as one changeset: which film or show \
+             a file belongs to (of), the title and year to group it under (two films in one item: give each \
+             its own), an episode's season and number, or that it is an extra (with its kind) or nothing \
+             (ignore). flux places the files again at once, and on every scan after; null clears a fix. \
+             Apply (Owner, Admin) or propose; dry_run shows where each file would go. To say what a film \
+             is (its title, year, ids), use items.edit instead.",
+            Write,
+            EDITORS,
+            false,
+            true,
+            files_fix,
+        ),
+        op(
+            "items.merge",
+            "Merge items",
+            "Films (or shows) that are one work: every file of each from item is fixed to belong to into \
+             (episodes keep their numbers), and each goes once it's empty, with what people and agents set \
+             on it, everyone's watched state and its collections carried over. One changeset; undo gives \
+             them back. dry_run shows where each file would go.",
+            Write,
+            EDITORS,
+            false,
+            true,
+            items_merge,
+        ),
+        op(
+            "files.plan",
+            "Plan renaming files",
+            "Name items' files the way media servers read them (scheme standard: Title (Year)/Title \
+             (Year).mkv; Show (Year)/Season 01/Show (Year) - S01E02 - Title.mkv; extras in Trailers/, \
+             Featurettes/…), or move files where you say (moves). Files named like a video (subtitles, \
+             .nfo, .flux.json, images) go with it; a film's or show's own folder is renamed. Nothing \
+             moves: the plan is a proposed changeset with every step, and what it leaves alone and why. \
+             Show it to the person; it runs when an Owner or Admin applies it (changes.apply, or in the \
+             app), and changes.undo puts everything back. flux never replaces a file, never moves one \
+             to another drive or out of its library folder.",
+            Write,
+            "anyone who may propose; applying it takes the Owner or an Admin",
+            false,
+            false,
+            files_plan,
         ),
         op(
             "art.view",
@@ -490,6 +535,126 @@ fn edit_result(p: changes::PlannedItem, hide: &[String]) -> EditResult {
     }
 }
 
+// ---- what files are ------------------------------------------------------------------------
+
+/// Most files one `files.fix` fixes.
+pub const MAX_FIXES: usize = flux_catalog::fixes::MAX_FIXES;
+
+pub(crate) fn summary_of_input(summary: &str) -> Result<String, OpError> {
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    if summary.is_empty() {
+        return Err(err(
+            ErrorCode::Invalid,
+            "Give a summary: what these changes are and why, for the person reviewing them",
+        ));
+    }
+    if summary.chars().count() > MAX_SUMMARY {
+        return Err(err(
+            ErrorCode::Invalid,
+            format!("The summary is longer than {MAX_SUMMARY} characters"),
+        ));
+    }
+    Ok(summary)
+}
+
+fn fix_output(committed: changes::Committed, outcomes: Vec<flux_catalog::fixes::FixOutcome>) -> FixOutput {
+    let place = |(item, title): (Option<Id>, Option<String>)| FilePlace { item, title };
+    FixOutput {
+        changeset: committed.changeset,
+        files: outcomes
+            .into_iter()
+            .map(|o| FixResult {
+                file: o.file,
+                path: o.path,
+                before: place(o.before),
+                after: o.after.map(place),
+                fix: o.fix,
+                unchanged: o.unchanged,
+            })
+            .collect(),
+    }
+}
+
+async fn commit_fixes(
+    ctx: &Ctx,
+    summary: String,
+    edits: Vec<flux_catalog::fixes::FixEdit>,
+    mode: EditMode,
+    dry_run: bool,
+) -> Result<FixOutput, OpError> {
+    let propose = edit_mode(ctx, mode)?;
+    let (committed, outcomes) = ctx
+        .st
+        .catalog
+        .writer()
+        .commit_fixes(ctx.actor(), summary, edits, propose, dry_run, ctx.hide())
+        .await
+        .map_err(cat_err)?;
+    announce(&ctx.st, &committed);
+    if committed.done > 0 {
+        ctx.st.activity.wake_jobs();
+    }
+    Ok(fix_output(committed, outcomes))
+}
+
+async fn files_fix(ctx: Ctx, input: FixInput) -> Result<FixOutput, OpError> {
+    edit_mode(&ctx, input.mode)?;
+    let summary = summary_of_input(&input.summary)?;
+    if input.fixes.is_empty() {
+        return Err(err(ErrorCode::Invalid, "There are no fixes"));
+    }
+    if input.fixes.len() > MAX_FIXES {
+        return Err(err(
+            ErrorCode::TooLarge,
+            format!("One changeset fixes at most {MAX_FIXES} files: split the work"),
+        ));
+    }
+    let mut edits = Vec::with_capacity(input.fixes.len());
+    for f in input.fixes {
+        edits.push(flux_catalog::fixes::FixEdit {
+            file: f.file,
+            fix: f.fix,
+            sources: check_sources(&f.sources)?,
+        });
+    }
+    commit_fixes(&ctx, summary, edits, input.mode, input.dry_run).await
+}
+
+async fn files_plan(ctx: Ctx, input: PlanInput) -> Result<PlanOutput, OpError> {
+    files::plan(&ctx, input).await
+}
+
+/// Whether changeset `cs` is a file plan (its steps move files).
+async fn is_plan(ctx: &Ctx, cs: Id) -> Result<bool, OpError> {
+    ctx.st
+        .catalog
+        .read(move |c| flux_catalog::organize::is_plan(c, cs))
+        .await
+        .map_err(cat_err)
+}
+
+async fn items_merge(ctx: Ctx, input: MergeInput) -> Result<FixOutput, OpError> {
+    edit_mode(&ctx, input.mode)?;
+    let summary = summary_of_input(&input.summary)?;
+    let (into, from) = (input.into, input.from.clone());
+    let edits = ctx
+        .st
+        .catalog
+        .read(move |c| flux_catalog::fixes::merge_edits(c, into, &from, &[]))
+        .await
+        .map_err(cat_err)?;
+    if edits.len() > MAX_FIXES {
+        return Err(err(
+            ErrorCode::TooLarge,
+            format!(
+                "Those items have {} files; one changeset fixes at most {MAX_FIXES}: merge fewer at once",
+                edits.len()
+            ),
+        ));
+    }
+    commit_fixes(&ctx, summary, edits, input.mode, input.dry_run).await
+}
+
 // ---- art ----------------------------------------------------------------------------------
 
 fn art_kind(k: ArtKind) -> flux_catalog::ArtKind {
@@ -860,6 +1025,11 @@ fn decision_err(e: flux_catalog::CatalogError) -> OpError {
 
 async fn changes_undo(ctx: Ctx, input: ChangesetRef) -> Result<Decided, OpError> {
     ctx.require_admin()?;
+    if is_plan(&ctx, input.changeset).await? {
+        let c = files::run(&ctx, input.changeset, true).await?;
+        ctx.st.activity.wake_jobs();
+        return decided(c);
+    }
     let c = ctx
         .st
         .catalog
@@ -880,6 +1050,11 @@ async fn changes_undo(ctx: Ctx, input: ChangesetRef) -> Result<Decided, OpError>
 
 async fn changes_apply(ctx: Ctx, input: ChangesetRef) -> Result<Decided, OpError> {
     ctx.require_admin()?;
+    if is_plan(&ctx, input.changeset).await? {
+        let c = files::run(&ctx, input.changeset, false).await?;
+        ctx.st.activity.wake_jobs();
+        return decided(c);
+    }
     let c = ctx
         .st
         .catalog

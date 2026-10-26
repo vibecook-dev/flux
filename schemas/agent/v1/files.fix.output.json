@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`files.fix` and `items.merge` output.",
+  "properties": {
+    "changeset": {
+      "description": "The changeset (applied or proposed); `null` for a dry run or when nothing would change.",
+      "properties": {
+        "agent": {
+          "description": "The agent that made it; `null` for a person.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by": {
+          "description": "The person it was made by, or for (a login).",
+          "type": "string"
+        },
+        "change_count": {
+          "description": "How many changes it holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "decided_at": {
+          "description": "Applied or rejected.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "decided_by": {
+          "description": "Who applied or rejected a proposal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "item_count": {
+          "description": "How many items it changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reverted_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reverted_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "applied"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "proposed",
+              "description": "Waiting for an Owner or Admin.",
+              "type": "string"
+            },
+            {
+              "const": "reverted",
+              "description": "Undone.",
+              "type": "string"
+            },
+            {
+              "const": "rejected",
+              "description": "A proposal turned down.",
+              "type": "string"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "summary",
+        "by",
+        "created_at",
+        "item_count",
+        "change_count"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "files": {
+      "items": {
+        "description": "What a fix did to one file (or, in a dry run, would do).",
+        "properties": {
+          "after": {
+            "description": "Where it is now; `null` for a proposal (known once it's applied).",
+            "properties": {
+              "item": {
+                "description": "A film, episode, extra or video; `null`: none (ignored, or waiting for its film to be scanned).",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The item's title as you may see it; for an episode, with its show and number (`Show · S01E03`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "before": {
+            "description": "The item a file belongs to.",
+            "properties": {
+              "item": {
+                "description": "A film, episode, extra or video; `null`: none (ignored, or waiting for its film to be scanned).",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The item's title as you may see it; for an episode, with its show and number (`Show · S01E03`).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "file": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "fix": {
+            "additionalProperties": false,
+            "description": "Its fix now (or as proposed).",
+            "properties": {
+              "edition": {
+                "description": "A film version's edition (\"Director's Cut\").",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "episodes": {
+                "description": "An episode's number, or its numbers for a file that holds several (`[1, 2]`).",
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "extra": {
+                "description": "An extra's kind.",
+                "enum": [
+                  "trailer",
+                  "featurette",
+                  "behind_the_scenes",
+                  "deleted_scene",
+                  "interview",
+                  "short",
+                  "scene",
+                  "other",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "description": "What a file is, when flux's reading of its name is wrong.",
+                    "oneOf": [
+                      {
+                        "const": "movie",
+                        "description": "A film, or one version of a film.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "episode",
+                        "description": "An episode of a show.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "extra",
+                        "description": "Bonus material of a film or show: a trailer, a featurette…",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ignore",
+                        "description": "Not part of the library (a sample, a stray clip): flux keeps the file but shows it nowhere.",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "of": {
+                "description": "The film or show it belongs to: a top-level item of its library. A film's other version, a show's episode, an extra's film or show.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "part": {
+                "description": "A film's part, for one split over files (2 for `cd2`).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "season": {
+                "description": "An episode's season (0 for specials).",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The title to group it under, as if its name said it: a film's title, or an episode's show.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "year": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "unchanged": {
+            "description": "Why nothing changed for this file.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file",
+          "path",
+          "before"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "files"
+  ],
+  "title": "FixOutput",
+  "type": "object"
+}

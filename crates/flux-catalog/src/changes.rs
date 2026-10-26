@@ -181,12 +181,40 @@ pub struct Committed {
     pub changeset: Option<ChangesetSummary>,
     /// Items whose values changed, with their library.
     pub items: Vec<(Id, Id)>,
+    /// Items a structure change made or removed (fixed files placed
+    /// again), with their library.
+    pub added: Vec<(Id, Id)>,
+    pub removed: Vec<(Id, Id)>,
     /// Art rows deleted, with their stored path (for the caller to delete
     /// the file it owns).
     pub art_removed: Vec<(Id, Option<String>)>,
     /// Changes left as they were, and why (item, field, reason).
     pub not_done: Vec<(Id, String, String)>,
     pub done: u32,
+}
+
+impl Committed {
+    /// Take in what placing files again changed (per library).
+    pub(crate) fn absorb(&mut self, placed: Vec<(Id, crate::model::ApplyOutcome)>) {
+        for (lib, o) in placed {
+            for id in o.items_added {
+                if !self.added.contains(&(id, lib)) {
+                    self.added.push((id, lib));
+                }
+            }
+            for id in o.items_removed {
+                if !self.removed.contains(&(id, lib)) {
+                    self.removed.push((id, lib));
+                }
+            }
+            for id in o.items_updated {
+                if !self.items.contains(&(id, lib)) {
+                    self.items.push((id, lib));
+                }
+            }
+        }
+        self.items.retain(|i| !self.removed.contains(i));
+    }
 }
 
 /// Make `edits` a changeset: applied now, or (`propose`) only proposed.
@@ -506,6 +534,16 @@ fn changeset_head(c: &Connection, cs: Id) -> Result<(String, Option<String>, Str
         .ok_or_else(|| CatalogError::NotFound(format!("changeset {cs}")))
 }
 
+/// The item a change names.
+fn item_of(c: &Connection, cs: Id, seq: i64) -> Result<Id> {
+    Ok(
+        c.prepare_cached("SELECT item_id FROM change WHERE changeset_id = ?1 AND seq = ?2")?
+            .query_row(params![cs, seq], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0),
+    )
+}
+
 fn set_change_state(c: &Connection, cs: Id, seq: i64, state: &str) -> Result<()> {
     c.prepare_cached("UPDATE change SET state = ?3 WHERE changeset_id = ?1 AND seq = ?2")?
         .execute(params![cs, seq, state])?;
@@ -530,8 +568,17 @@ pub fn apply_proposal(c: &Connection, cs: Id, by: &str, now: i64, jobs: u32) -> 
     let actor = Actor { login, agent };
     let mut out = Committed::default();
     let mut touched: Vec<(Id, Vec<(String, bool)>)> = Vec::new();
+    let mut fixes: Vec<crate::fixes::FixChange> = Vec::new();
     for ch in change_rows(c, cs)? {
         if ch.state != "pending" {
+            continue;
+        }
+        if ch.field == crate::fixes::FIELD {
+            fixes.push(crate::fixes::FixChange {
+                seq: ch.seq,
+                before: ch.before,
+                after: ch.after,
+            });
             continue;
         }
         let now_value = current(c, ch.item, &ch.field)?;
@@ -567,6 +614,16 @@ pub fn apply_proposal(c: &Connection, cs: Id, by: &str, now: i64, jobs: u32) -> 
     for (item, f) in &touched {
         after_edit(c, *item, f.iter().map(|(f, cl)| (f.as_str(), *cl)), now, jobs)?;
         out.items.push((*item, library_of(c, *item)?));
+    }
+    if !fixes.is_empty() {
+        for (seq, file, why) in crate::fixes::apply_rows(c, cs, &actor, &fixes, now, jobs, &mut out)? {
+            set_change_state(c, cs, seq, "skipped")?;
+            out.not_done.push((
+                item_of(c, cs, seq)?,
+                crate::fixes::FIELD.into(),
+                format!("file {file}: {why}"),
+            ));
+        }
     }
     c.prepare_cached(
         "UPDATE changeset SET state = 'applied', decided_at = ?2, decided_by = ?3 WHERE id = ?1",
@@ -605,10 +662,19 @@ pub fn revert(c: &Connection, cs: Id, by: &str, now: i64, jobs: u32) -> Result<C
     }
     let mut out = Committed::default();
     let mut touched: Vec<(Id, Vec<(String, bool)>)> = Vec::new();
+    let mut fixes: Vec<crate::fixes::FixChange> = Vec::new();
     let mut rows = change_rows(c, cs)?;
     rows.reverse();
     for ch in rows {
         if ch.state != "applied" {
+            continue;
+        }
+        if ch.field == crate::fixes::FIELD {
+            fixes.push(crate::fixes::FixChange {
+                seq: ch.seq,
+                before: ch.before,
+                after: ch.after,
+            });
             continue;
         }
         if let Some(kind) = ch.field.strip_prefix("art.") {
@@ -665,6 +731,16 @@ pub fn revert(c: &Connection, cs: Id, by: &str, now: i64, jobs: u32) -> Result<C
         after_edit(c, *item, f.iter().map(|(f, cl)| (f.as_str(), *cl)), now, jobs)?;
         if !out.items.iter().any(|(i, _)| i == item) {
             out.items.push((*item, library_of(c, *item)?));
+        }
+    }
+    if !fixes.is_empty() {
+        for (seq, file, why) in crate::fixes::revert_rows(c, cs, &fixes, now, jobs, &mut out)? {
+            set_change_state(c, cs, seq, "kept")?;
+            out.not_done.push((
+                item_of(c, cs, seq)?,
+                crate::fixes::FIELD.into(),
+                format!("file {file}: {why}"),
+            ));
         }
     }
     c.prepare_cached(
@@ -848,6 +924,12 @@ pub fn get(c: &Connection, cs: Id) -> Result<Option<(ChangesetSummary, Vec<Chang
                 .and_then(|s| s.provider),
             None => None,
         };
+        // What a fix change keeps for an undo is the journal's own.
+        let mut before = ch.before;
+        if let Some(Value::Object(m)) = before.as_mut() {
+            m.remove("keep");
+            m.remove("meta");
+        }
         out.push(ChangeView {
             item: ch.item,
             title: head,
@@ -858,7 +940,7 @@ pub fn get(c: &Connection, cs: Id) -> Result<Option<(ChangesetSummary, Vec<Chang
                 .filter(|s| s.source == fields::PROVIDER)
                 .and_then(|s| s.provider.clone()),
             field: ch.field,
-            before: ch.before,
+            before,
             after: ch.after,
             sources: ch.sources,
             state: parse_change_state(&ch.state),

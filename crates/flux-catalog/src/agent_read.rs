@@ -36,7 +36,7 @@ fn gap_sql(gap: Gap) -> String {
     match gap {
         Gap::Identity => format!(
             "{works} AND i.match_state IN ('unmatched', 'parsed')
-             AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id AND f.source IN ('user', 'agent')
+             AND NOT EXISTS (SELECT 1 FROM item_field f WHERE f.item_id = i.id AND f.source IN ('user', 'agent', 'sidecar')
                              AND (f.field = 'title' OR f.field LIKE 'ids.%'))"
         ),
         Gap::Year => format!("{works} AND i.year IS NULL"),
@@ -477,17 +477,24 @@ pub fn item(c: &Connection, id: Id, hide: &[String]) -> Result<Option<AgentItemD
     // not see them gets the confidence only (`match_evidence` isn't sent).
     let mut files = Vec::new();
     for a in crate::read::item_assets(c, id)? {
-        let meta: Option<(i64, Option<String>)> = c
+        let meta: Option<(Id, i64, Option<String>, String, String)> = c
             .prepare_cached(
-                "SELECT f.mtime_ns, m.guess FROM asset s JOIN file f ON f.id = s.file_id
+                "SELECT f.id, f.mtime_ns, m.guess, r.path, f.rel_path FROM asset s JOIN file f ON f.id = s.file_id
+                   JOIN root r ON r.id = f.root_id
                    LEFT JOIN file_meta m ON m.file_id = f.id WHERE s.id = ?1",
             )?
-            .query_row([a.id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([a.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
             .optional()?;
-        let (mtime, guess) = meta.unwrap_or((0, None));
+        let Some((file_id, mtime, guess, root, rel_path)) = meta else {
+            continue;
+        };
         let probe: Option<&ProbeResult> = a.probe.as_ref();
         files.push(FileEvidence {
-            path: a.path.clone(),
+            id: file_id,
+            root,
+            sidecars: crate::metafiles::beside(c, file_id)?,
+            fix: crate::fixes::fix_of(c, file_id)?,
+            path: rel_path,
             size: a.size,
             modified: (mtime > 0).then_some(mtime / 1_000_000),
             available: a.available,

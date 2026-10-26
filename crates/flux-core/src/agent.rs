@@ -243,6 +243,9 @@ pub enum Source {
     User,
     /// An agent (`agent` names it).
     Agent,
+    /// A metadata file beside the video: a `.flux.json` (`provider`:
+    /// `flux`) or an `.nfo` (`provider`: `nfo`).
+    Sidecar,
 }
 
 /// A web page or file that supports a value, or a link to keep. In an
@@ -509,7 +512,12 @@ pub struct TrackEvidence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FileEvidence {
+    /// The file, for `files.fix` and `files.plan`.
+    pub id: Id,
+    /// Relative to its library folder (`root`).
     pub path: String,
+    /// The library folder it's in.
+    pub root: String,
     pub size: u64,
     /// Last modified (Unix ms): for home videos, often when it was filmed.
     pub modified: Option<i64>,
@@ -526,8 +534,13 @@ pub struct FileEvidence {
     pub chapters: Vec<String>,
     /// Subtitle files beside it.
     pub subtitle_files: Vec<String>,
+    /// Metadata files beside it that flux read: a `.flux.json` or an `.nfo`.
+    pub sidecars: Vec<String>,
     /// What flux read from the file's name and folders.
     pub parsed: Option<NameGuess>,
+    /// What the file was fixed to be (`files.fix`), which flux places it by
+    /// instead of its name; `null`: its name decides.
+    pub fix: Option<FileFix>,
 }
 
 /// Image kinds.
@@ -859,7 +872,10 @@ pub struct Change {
     pub item: Id,
     /// The item's title now, as you may see it (`null` once it's gone).
     pub title: Option<String>,
-    /// A field name, or `art.<kind>` for the image an item shows.
+    /// A field name; `art.<kind>` for the image an item shows; `file.fix`
+    /// for what a file is (`before` and `after` are `{file, path, fix}`);
+    /// `file.path` for a file moved and `folder.path` for a folder renamed
+    /// (`{file, path}` or `{folder, path}`).
     pub field: String,
     pub before: Option<Value>,
     pub after: Option<Value>,
@@ -1034,6 +1050,263 @@ pub struct ArtPinOutput {
     pub changeset: Option<ChangesetSummary>,
     /// The image the item shows now.
     pub shown: Option<AgentArt>,
+}
+
+// ---- what a file is ---------------------------------------------------------------
+
+/// What a file is, when flux's reading of its name is wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum FixKind {
+    /// A film, or one version of a film.
+    Movie,
+    /// An episode of a show.
+    Episode,
+    /// Bonus material of a film or show: a trailer, a featurette…
+    Extra,
+    /// Not part of the library (a sample, a stray clip): flux keeps the file
+    /// but shows it nowhere.
+    Ignore,
+}
+
+/// A correction to what a file's name says. flux places the file by it, on
+/// every scan, until it's cleared; give only what's wrong, and the rest
+/// still comes from the name.
+///
+/// - Two items that are one film: fix the second one's files with `of`, the
+///   first (or use `items.merge`).
+/// - One item that is two films: give each film's files their own `title`
+///   and `year`.
+/// - An episode with the wrong number: `season` and `episodes`.
+/// - A trailer flux took for a film: `kind: extra`, `extra: trailer`, `of`
+///   the film.
+///
+/// To say what a film or episode *is* (its title, year, ids), edit the item
+/// with `items.edit`: a fix says which item a *file* belongs to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FileFix {
+    pub kind: Option<FixKind>,
+    /// The film or show it belongs to: a top-level item of its library. A
+    /// film's other version, a show's episode, an extra's film or show.
+    pub of: Option<Id>,
+    /// The title to group it under, as if its name said it: a film's
+    /// title, or an episode's show.
+    pub title: Option<String>,
+    pub year: Option<u16>,
+    /// An episode's season (0 for specials).
+    pub season: Option<u16>,
+    /// An episode's number, or its numbers for a file that holds several
+    /// (`[1, 2]`).
+    pub episodes: Option<Vec<u16>>,
+    /// An extra's kind.
+    pub extra: Option<crate::names::ExtraKind>,
+    /// A film version's edition ("Director's Cut").
+    pub edition: Option<String>,
+    /// A film's part, for one split over files (2 for `cd2`).
+    pub part: Option<u8>,
+}
+
+impl FileFix {
+    /// Nothing to correct.
+    pub fn is_empty(&self) -> bool {
+        *self == FileFix::default()
+    }
+}
+
+/// One file's fix, in `files.fix`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FileFixEdit {
+    /// The file (`files[].id` in `item.get`).
+    pub file: Id,
+    /// What it is. `null` (or `{}`) clears its fix: its name decides again.
+    #[serde(default)]
+    pub fix: Option<FileFix>,
+    /// The pages that support it.
+    #[serde(default)]
+    pub sources: Vec<Link>,
+}
+
+/// `files.fix` input: one changeset over up to 200 files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FixInput {
+    /// What these fixes are and why, for the person reviewing them.
+    pub summary: String,
+    pub fixes: Vec<FileFixEdit>,
+    #[serde(default)]
+    pub mode: EditMode,
+    /// Report where each file would go, and change nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `items.merge` input: films (or shows) that are one work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct MergeInput {
+    /// What's being merged and why, for the person reviewing it.
+    pub summary: String,
+    /// The film or show to keep.
+    pub into: Id,
+    /// The films or shows that are the same work. Their files are fixed to
+    /// belong to `into` (episodes keep their numbers); each goes once it's
+    /// empty, and what people and agents set on it carries over.
+    pub from: Vec<Id>,
+    #[serde(default)]
+    pub mode: EditMode,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The item a file belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FilePlace {
+    /// A film, episode, extra or video; `null`: none (ignored, or waiting
+    /// for its film to be scanned).
+    pub item: Option<Id>,
+    /// The item's title as you may see it; for an episode, with its show
+    /// and number (`Show · S01E03`).
+    pub title: Option<String>,
+}
+
+/// What a fix did to one file (or, in a dry run, would do).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FixResult {
+    pub file: Id,
+    pub path: String,
+    pub before: FilePlace,
+    /// Where it is now; `null` for a proposal (known once it's applied).
+    pub after: Option<FilePlace>,
+    /// Its fix now (or as proposed).
+    pub fix: Option<FileFix>,
+    /// Why nothing changed for this file.
+    pub unchanged: Option<String>,
+}
+
+/// `files.fix` and `items.merge` output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FixOutput {
+    /// The changeset (applied or proposed); `null` for a dry run or when
+    /// nothing would change.
+    pub changeset: Option<ChangesetSummary>,
+    pub files: Vec<FixResult>,
+}
+
+// ---- organising files -----------------------------------------------------------------
+
+/// How `files.plan` names files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum NamingScheme {
+    /// What Plex, Jellyfin, Emby and Kodi all read: `Title (Year)/Title
+    /// (Year).mkv` (versions ` - Edition` or ` - 1080p`, parts ` - part2`);
+    /// `Show (Year)/Season 01/Show (Year) - S01E02 - Episode Title.mkv`;
+    /// extras in `Trailers/`, `Featurettes/`, … beside the film.
+    #[default]
+    Standard,
+}
+
+/// A file to move where you say, in `files.plan`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FileMove {
+    /// A video file (`files[].id` in `item.get`).
+    pub file: Id,
+    /// Its new path relative to its library folder, `/` between folders
+    /// (`Interstellar (2014)/Interstellar (2014).mkv`).
+    pub to: String,
+}
+
+/// `files.plan` input: name items' files by a scheme, or move files where
+/// you say. Nothing moves: the plan is a proposal to review and apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PlanInput {
+    /// What the plan does and why, for the person reviewing it.
+    pub summary: String,
+    /// Films, shows, seasons, episodes or extras whose files to name by
+    /// `scheme` (a show: all its episodes and extras).
+    #[serde(default)]
+    pub items: Vec<Id>,
+    /// Or: files to move where you say.
+    #[serde(default)]
+    pub moves: Vec<FileMove>,
+    #[serde(default)]
+    pub scheme: NamingScheme,
+    /// Put the ids flux knows in folder names (`Interstellar (2014)
+    /// [imdbid-tt0816692]`), which other media servers match by.
+    #[serde(default)]
+    pub ids_in_names: bool,
+}
+
+/// One step of a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum StepKind {
+    /// Make a folder (`folder.new`).
+    NewFolder,
+    /// Rename a folder; everything in it comes along (`folder.path`).
+    RenameFolder,
+    /// Rename or move a video (`file.path`).
+    MoveVideo,
+    /// Rename or move a file beside a video: subtitles, a metadata file, an
+    /// image named like it (`file.path`).
+    MoveCompanion,
+    /// Remove a folder the plan leaves empty (`folder.gone`).
+    RemoveFolder,
+}
+
+/// One step of a plan: what moves where, inside one library folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PlanStep {
+    pub step: StepKind,
+    /// The video, for `move_video`.
+    pub file: Option<Id>,
+    /// The item it's for.
+    pub item: Option<Id>,
+    /// The library folder.
+    pub root: String,
+    /// Relative to the library folder; `null` for a new folder.
+    pub from: Option<String>,
+    /// Relative to the library folder; `null` for a folder removed.
+    pub to: Option<String>,
+}
+
+/// A file a plan leaves where it is, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PlanSkip {
+    pub file: Option<Id>,
+    pub item: Option<Id>,
+    pub path: Option<String>,
+    pub reason: String,
+}
+
+/// `files.plan` output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PlanOutput {
+    /// The plan, a proposed changeset: nothing moves until it's applied
+    /// (`changes.apply`, or in the app), and `changes.undo` puts everything
+    /// back. `null` when there's nothing to do.
+    pub changeset: Option<ChangesetSummary>,
+    pub steps: Vec<PlanStep>,
+    pub skipped: Vec<PlanSkip>,
 }
 
 // ---- lenses -------------------------------------------------------------------

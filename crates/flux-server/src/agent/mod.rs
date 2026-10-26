@@ -15,6 +15,7 @@
 //! provider's terms keep from AI ([`policy`]).
 
 pub mod fetch;
+pub mod files;
 pub mod lens;
 pub mod mcp;
 pub mod ops;
@@ -442,16 +443,23 @@ pub fn announce(st: &AppState, c: &flux_catalog::changes::Committed) {
             changeset: cs.clone(),
         });
     }
-    let mut by_lib: std::collections::BTreeMap<Id, Vec<Id>> = Default::default();
-    for (item, lib) in &c.items {
-        by_lib.entry(*lib).or_default().push(*item);
+    type Lists = (Vec<Id>, Vec<Id>, Vec<Id>);
+    let mut by_lib: std::collections::BTreeMap<Id, Lists> = Default::default();
+    for (item, lib) in &c.added {
+        by_lib.entry(*lib).or_default().0.push(*item);
     }
-    for (library_id, updated) in by_lib {
+    for (item, lib) in &c.items {
+        by_lib.entry(*lib).or_default().1.push(*item);
+    }
+    for (item, lib) in &c.removed {
+        by_lib.entry(*lib).or_default().2.push(*item);
+    }
+    for (library_id, (added, updated, removed)) in by_lib {
         st.events.send(flux_core::api::Event::ItemsChanged {
             library_id,
-            added: Vec::new(),
+            added,
             updated,
-            removed: Vec::new(),
+            removed,
         });
     }
 }

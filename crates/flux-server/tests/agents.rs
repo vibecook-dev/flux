@@ -207,7 +207,9 @@ async fn an_agent_finds_gaps_edits_with_sources_and_the_owner_undoes_it() {
 
     let d: AgentItemDetail =
         serde_json::from_value(owner_op(&app, "item.get", json!({"item": id})).await).unwrap();
-    assert_eq!(d.files[0].path, "/media/films/Gisaengchung.2019.mkv");
+    assert_eq!(d.files[0].path, "Gisaengchung.2019.mkv");
+    assert_eq!(d.files[0].root, "/media/films");
+    assert!(d.files[0].fix.is_none() && d.files[0].sidecars.is_empty());
     assert_eq!(
         d.files[0].parsed.as_ref().unwrap().title.as_deref(),
         Some("Gisaengchung")

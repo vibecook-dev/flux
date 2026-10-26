@@ -678,6 +678,135 @@
               "null"
             ]
           },
+          "fix": {
+            "additionalProperties": false,
+            "description": "What the file was fixed to be (`files.fix`), which flux places it by instead of its name; `null`: its name decides.",
+            "properties": {
+              "edition": {
+                "description": "A film version's edition (\"Director's Cut\").",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "episodes": {
+                "description": "An episode's number, or its numbers for a file that holds several (`[1, 2]`).",
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "extra": {
+                "description": "An extra's kind.",
+                "enum": [
+                  "trailer",
+                  "featurette",
+                  "behind_the_scenes",
+                  "deleted_scene",
+                  "interview",
+                  "short",
+                  "scene",
+                  "other",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "description": "What a file is, when flux's reading of its name is wrong.",
+                    "oneOf": [
+                      {
+                        "const": "movie",
+                        "description": "A film, or one version of a film.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "episode",
+                        "description": "An episode of a show.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "extra",
+                        "description": "Bonus material of a film or show: a trailer, a featurette…",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ignore",
+                        "description": "Not part of the library (a sample, a stray clip): flux keeps the file but shows it nowhere.",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "of": {
+                "description": "The film or show it belongs to: a top-level item of its library. A film's other version, a show's episode, an extra's film or show.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "part": {
+                "description": "A film's part, for one split over files (2 for `cd2`).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "season": {
+                "description": "An episode's season (0 for specials).",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The title to group it under, as if its name said it: a film's title, or an episode's show.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "year": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The file, for `files.fix` and `files.plan`.",
+            "format": "int64",
+            "type": "integer"
+          },
           "modified": {
             "description": "Last modified (Unix ms): for home videos, often when it was filmed.",
             "format": "int64",
@@ -887,7 +1016,19 @@
             ]
           },
           "path": {
+            "description": "Relative to its library folder (`root`).",
             "type": "string"
+          },
+          "root": {
+            "description": "The library folder it's in.",
+            "type": "string"
+          },
+          "sidecars": {
+            "description": "Metadata files beside it that flux read: a `.flux.json` or an `.nfo`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "size": {
             "format": "uint64",
@@ -985,12 +1126,15 @@
           }
         },
         "required": [
+          "id",
           "path",
+          "root",
           "size",
           "available",
           "tracks",
           "chapters",
-          "subtitle_files"
+          "subtitle_files",
+          "sidecars"
         ],
         "type": "object"
       },
@@ -1221,6 +1365,11 @@
               {
                 "const": "agent",
                 "description": "An agent (`agent` names it).",
+                "type": "string"
+              },
+              {
+                "const": "sidecar",
+                "description": "A metadata file beside the video: a `.flux.json` (`provider`: `flux`) or an `.nfo` (`provider`: `nfo`).",
                 "type": "string"
               }
             ]

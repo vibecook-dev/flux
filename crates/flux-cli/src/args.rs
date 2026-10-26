@@ -114,9 +114,70 @@ pub fn default_summary(set: &Map<String, Value>, clear: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// A file fix from `KEY=VALUE` arguments (`flux fix`): `kind`, `of`,
+/// `title`, `year`, `season`, `episodes` (comma-separated), `extra`,
+/// `edition`, `part`.
+pub fn fix(values: &[String]) -> Result<Map<String, Value>, String> {
+    let mut out = Map::new();
+    for v in values {
+        let (k, val) = v
+            .split_once('=')
+            .ok_or_else(|| format!("{v:?}: give KEY=VALUE"))?;
+        let (k, val) = (k.trim(), val.trim());
+        let number = |what: &str| -> Result<Value, String> {
+            val.parse::<u64>()
+                .map(Value::from)
+                .map_err(|_| format!("{what} is a number, not {val:?}"))
+        };
+        let parsed = match k {
+            "kind" | "title" | "extra" | "edition" => Value::from(val),
+            "of" | "year" | "season" | "part" => number(k)?,
+            "episodes" | "episode" => {
+                let mut list = Vec::new();
+                for e in val.split([',', ' ']).filter(|e| !e.is_empty()) {
+                    list.push(
+                        e.trim_start_matches(['e', 'E'])
+                            .parse::<u64>()
+                            .map(Value::from)
+                            .map_err(|_| format!("episodes are numbers, not {e:?}"))?,
+                    );
+                }
+                Value::Array(list)
+            }
+            other => {
+                return Err(format!(
+                    "{other:?} isn't something a fix says (kind, of, title, year, season, episodes, extra, edition, part)"
+                ))
+            }
+        };
+        let key = if k == "episode" { "episodes" } else { k };
+        out.insert(key.into(), parsed);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fix_reads_its_keys() {
+        let f = fix(&[
+            "of=40".into(),
+            "season=2".into(),
+            "episodes=5,6".into(),
+            "kind=episode".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            Value::Object(f),
+            serde_json::json!({"of": 40, "season": 2, "episodes": [5, 6], "kind": "episode"})
+        );
+        assert!(fix(&["year=soon".into()]).unwrap_err().contains("number"));
+        assert!(fix(&["colour=red".into()])
+            .unwrap_err()
+            .contains("isn't something"));
+    }
     use serde_json::json;
 
     fn args(v: &[&str]) -> Vec<String> {

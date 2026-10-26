@@ -14,6 +14,10 @@
 //! | `art`, `user`, `user_state`, `job` | artwork, tailnet users, per-user progress, background work queue |
 //! | `item_fts` | FTS5 index over item titles, kept in sync by the writer in the same transaction (`fts.rs`) |
 //! | `subtitle_file` | subtitle files (`.srt`, `.ass`, `.sup`…) the scan saw, per directory; matched to videos when read (`sidecar.rs`) |
+//! | `item_field`, `changeset`, `change`, `lens` | where each value came from, the journal of edits, lenses kept on the server (`fields.rs`, `changes.rs`) |
+//! | `file_fix` | what a file is when its name says otherwise (`fixes.rs`) |
+//! | `meta_file` | `.flux.json` and `.nfo` files beside the videos and what flux read from them (`metafiles.rs`) |
+//! | `collection`, `collection_item` | collections kept on the server (`collections.rs`) |
 //!
 //! Timestamps are Unix **milliseconds** (`i64`) everywhere. `dev`/`ino` are
 //! stored as the bit pattern of the `u64` in an `i64` column (SQLite integers
@@ -28,7 +32,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -575,6 +579,86 @@ SELECT id, 'overview', 'provider', 'tmdb', updated_at FROM item
 INSERT OR IGNORE INTO item_field(item_id, field, source, provider, at)
 SELECT id, 'genres', 'provider', 'tmdb', updated_at FROM item
  WHERE match_state = 'matched' AND tmdb_id IS NOT NULL AND overview IS NOT NULL AND genres IS NOT NULL;
+"#;
+
+/// v9: agents organise the library (docs/AGENT-NATIVE.md, Phase 2).
+///
+/// - `file_fix`: what a file is when its name says otherwise (`fixes.rs`):
+///   the scan places the file by its guess with the fix applied. `of_item`
+///   (the work a fix pins the file to, no foreign key) follows merges.
+/// - `meta_file`: metadata files beside the videos, `.flux.json` and
+///   `.nfo`, with what flux read from them (`metafiles.rs`).
+/// - `collection`, `collection_item`: collections kept on the server, per
+///   person (`owner` = user id) or for everyone (`owner` 0), picked by hand
+///   and/or by a rule (`collections.rs`).
+/// - `item_field`: rebuilt to allow the `sidecar` source (a value read from
+///   a metadata file; `provider` says which kind).
+const V9: &str = r#"
+CREATE TABLE file_fix(
+    file_id       INTEGER PRIMARY KEY REFERENCES file(id) ON DELETE CASCADE,
+    fix           TEXT NOT NULL,
+    of_item       INTEGER,
+    source        TEXT NOT NULL CHECK(source IN ('user','agent','sidecar')),
+    agent         TEXT,
+    actor         TEXT,
+    changeset_id  INTEGER,
+    at            INTEGER NOT NULL
+);
+CREATE INDEX file_fix_of ON file_fix(of_item) WHERE of_item IS NOT NULL;
+
+CREATE TABLE meta_file(
+    root_id    INTEGER NOT NULL REFERENCES root(id) ON DELETE CASCADE,
+    rel_path   TEXT NOT NULL,
+    dir        TEXT NOT NULL,
+    format     TEXT NOT NULL CHECK(format IN ('flux','nfo')),
+    size       INTEGER NOT NULL,
+    mtime_ns   INTEGER NOT NULL,
+    content    TEXT,
+    error      TEXT,
+    PRIMARY KEY(root_id, rel_path)
+) WITHOUT ROWID;
+CREATE INDEX meta_file_dir ON meta_file(root_id, dir);
+
+CREATE TABLE collection(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner        INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    rule         TEXT,
+    sort         TEXT NOT NULL DEFAULT 'picked',
+    added_by     TEXT NOT NULL,
+    agent        TEXT,
+    sources      TEXT,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX collection_name ON collection(owner, name COLLATE NOCASE);
+
+CREATE TABLE collection_item(
+    collection_id  INTEGER NOT NULL REFERENCES collection(id) ON DELETE CASCADE,
+    item_id        INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    position       INTEGER NOT NULL,
+    note           TEXT,
+    PRIMARY KEY(collection_id, item_id)
+) WITHOUT ROWID;
+CREATE INDEX collection_item_item ON collection_item(item_id);
+
+CREATE TABLE item_field_v9(
+    item_id       INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    field         TEXT NOT NULL,
+    source        TEXT NOT NULL CHECK(source IN ('provider','user','agent','sidecar')),
+    provider      TEXT,
+    agent         TEXT,
+    actor         TEXT,
+    changeset_id  INTEGER,
+    sources       TEXT,
+    at            INTEGER NOT NULL,
+    PRIMARY KEY(item_id, field)
+) WITHOUT ROWID;
+INSERT INTO item_field_v9(item_id, field, source, provider, agent, actor, changeset_id, sources, at)
+SELECT item_id, field, source, provider, agent, actor, changeset_id, sources, at FROM item_field;
+DROP TABLE item_field;
+ALTER TABLE item_field_v9 RENAME TO item_field;
 "#;
 
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
