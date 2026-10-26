@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.0-alpha.4](https://github.com/vibecook-dev/flux/compare/v0.1.0-alpha.3...v0.1.0-alpha.4) (2026-10-26)
+
+
+### Features
+
+* agents fix what files are, merge items and organise files on disk ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* flux for agents: one contract over HTTP, MCP and the flux command line ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* HTTPS on the tailnet, with the tailnet's own certificate ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* lenses on the GPU, flux for agents, HTTPS on the tailnet, and the website ([#36](https://github.com/vibecook-dev/flux/issues/36)) ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* metadata files beside the videos, and collections ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **site:** the product website, with flux's lenses living in the page ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** Agents & changes, an item's details and their sources, lenses agents keep ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** Flow draws with WebGPU ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** lens-based library shell, with the Wall drawn on WebGPU ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** perspective quads and sprite sheets for GPU lenses ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** review file plans, edit details, browse collections as spaces ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** run below a sub-path, and let the product site drive a mock build ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** the Gallery draws with WebGPU, with depth and nothing to z-fight ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** the Shelf draws with WebGPU ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+
+
+### Bug Fixes
+
+* **catalog:** a file merged into a work never renames it ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **cli:** flux mcp writes \u escapes on Windows too ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **cli:** JSON that survives Windows PowerShell pipes ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **deps:** ctutils 0.4.6, for RUSTSEC-2026-0385 ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **scan:** hold a library's watcher while flux moves its files ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **server:** a plan lists a work's files in reading order ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **server:** MCP clients find no OAuth, and get plain tool schemas ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **site:** one line for the tailnet's label, and phone maps that route round captions ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** an item an agent identified says so; quieter source marks ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+* **web:** GPU lenses decode posters off the main thread, sharper at an angle ([3cef403](https://github.com/vibecook-dev/flux/commit/3cef403f8494c5c59e112d429743f68242e8275e))
+
 ## [0.1.0-alpha.3](https://github.com/vibecook-dev/flux/compare/v0.1.0-alpha.2...v0.1.0-alpha.3) (2026-10-22)
 
 
