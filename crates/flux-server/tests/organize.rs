@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use axum::http::{Method, StatusCode};
 use common::*;
-use flux_catalog::scan_support;
 use flux_core::agent::{ChangesetState, Decided, FindOutput, FixOutput, PlanOutput, StepKind};
 use flux_core::api::{Id, Identity};
 use flux_core::LibraryKind;
@@ -137,6 +136,7 @@ impl Lib {
     /// with the inode the catalog has.
     #[cfg(unix)]
     fn catalog_matches_disk(&self) {
+        use flux_catalog::scan_support;
         use std::os::unix::fs::MetadataExt;
         let root_id = self
             .st
