@@ -1,0 +1,27 @@
+{
+  "name": "flux-site",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "flux's product website: a static page with the real web client embedded as a live demo",
+  "license": "MIT",
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "dev": "vite",
+    "demo": "node scripts/build-demo.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/build-demo.mjs --out dist/demo",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "release": "node scripts/release-snapshot.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "5.3.0",
+    "@fontsource-variable/jost": "5.3.0",
+    "@fontsource/dm-mono": "5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
+  }
+}

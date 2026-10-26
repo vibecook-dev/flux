@@ -168,7 +168,7 @@ How to read these:
 - **System mode cost and refresh:**
   - It uses the CLI. Talking to LocalAPI directly (the Linux unix socket; macOS needs the app's token discovery) would make cold WhoIs about 1 ms.
   - Tailscale addresses are read once. If tailscaled changes IPs or logs out after startup, flux keeps the old binding until restart.
-  - There's no TLS in system mode (it would need `tailscale cert`). Browsers see `http://…ts.net:8096`; WireGuard still encrypts.
+  - TLS in system mode is opt-in (`--tailnet-https`, or the switch in Remote access): rustls with the certificate from `tailscale cert`, HTTPS and plain HTTP on one port, told apart by the first byte (`src/tls.rs`; README §HTTPS). Without it, browsers see `http://…ts.net:8096`, which WireGuard still encrypts but browsers don't count as a secure page.
 - **Security trade-offs:**
   - **Localhost = Owner by default.** On a multi-user NAS any local process can reach 127.0.0.1. Set `localhost_role: None` there (flux-server: `--localhost-role none`, Phase D). A web page reaching 127.0.0.1 by DNS rebinding is refused by flux-server's Host allowlist (Phase D).
   - The LAN listener has no pairing or auth yet. LAN callers are just anonymous, and the server decides what anonymous may do.

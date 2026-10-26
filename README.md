@@ -1,17 +1,65 @@
-# flux
+<p align="center">
+  <a href="https://vibecook-dev.github.io/flux/"><img src="site/public/og.jpg" alt="flux: home media, rewritten" width="860"></a>
+</p>
 
-[![CI](https://github.com/vibecook-dev/flux/actions/workflows/ci.yml/badge.svg)](https://github.com/vibecook-dev/flux/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <b>Home media, rewritten.</b><br>
+  A fast, private media server for the films and shows you own.<br>
+  Written in Rust, reachable anywhere with a free Tailscale account, and built for the AI agent you already use.
+</p>
 
-flux is an open-source media server for personal movie and TV libraries, written in Rust. It scans your folders, serves a web client, and streams to browsers by direct play or HLS. For remote access you sign in with Tailscale instead of opening ports.
+<p align="center">
+  <a href="https://vibecook-dev.github.io/flux/"><b>Website</b></a>&nbsp;&nbsp;·&nbsp;
+  <a href="https://github.com/vibecook-dev/flux/releases">Download</a>&nbsp;&nbsp;·&nbsp;
+  <a href="docs/INSTALL.md">Install</a>&nbsp;&nbsp;·&nbsp;
+  <a href="docs/AGENT-NATIVE.md">For agents</a>&nbsp;&nbsp;·&nbsp;
+  <a href="docs/prototype/benchmarks.md">Benchmarks</a>
+</p>
 
-> **Status: research prototype.** The first pre-release is [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1), with packages for macOS and Linux and a Docker image ([Install](#install)). It is an alpha: expect changes between releases. flux was developed and benchmarked on macOS (Apple Silicon), and CI also builds and tests it on Linux (x86_64 and arm64). It depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
+<p align="center">
+  <a href="https://github.com/vibecook-dev/flux/actions/workflows/ci.yml"><img src="https://github.com/vibecook-dev/flux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/vibecook-dev/flux/releases"><img src="https://img.shields.io/github/v/release/vibecook-dev/flux?include_prereleases&label=release" alt="Newest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
-## Why flux
+flux is a media server for the films and shows you own. It scans a whole library in seconds, plays the moment you press play, reaches all your devices through your own Tailscale network, and works hand in hand with the AI agent you already use. Every playback plan and every metadata match comes with the reasons behind it. It is open source under the MIT licence, for macOS, Windows, Linux and Docker.
 
-flux is meant to be a lean, fast and private alternative to Plex and Jellyfin. It saves time by skipping work rather than doing the same work faster. It reads container indexes instead of decoding, never re-probes a file that hasn't changed, never writes its database when nothing changed, and remuxes in process instead of starting ffmpeg. Titles are browsable while the first scan is still running, and a seek is a plain `GET` for one segment. It is private by default: it listens on 127.0.0.1 only, and remote access means your own tailnet, where your Tailscale identity decides your role. There are no ports to forward and no flux passwords. Every playback plan and every metadata match comes with the reasons behind it.
+> **Status: alpha.** Releases are pre-releases (`0.1.0-alpha.N`) with packages for macOS, Linux and Windows and a Docker image ([Download](#download)); expect changes between them. flux was developed and benchmarked on macOS (Apple Silicon), and CI also builds and tests it on Linux (x86_64 and arm64) and Windows. It depends on changes to two libraries that are not all released yet (see [Prototype gaps](#prototype-gaps)). Read [Feature status](#feature-status) before you point it at a library you care about.
 
-## Headline numbers
+## Lenses: one library, every way to see it
+
+Your films aren't a row of thumbnails in somebody's storefront. The library fills the window, and a lens decides how you see it; switch whenever the mood changes.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/lens-wall.jpg" alt="The Wall lens: a dense grid of posters"><br><b>Wall</b>: every title at a glance, from whole decades down to one poster. Pinch, or press + and −.</td>
+    <td width="50%"><img src="docs/images/lens-flow.jpg" alt="The Flow lens: one cover facing you, the rest in stacks"><br><b>Flow</b>: one cover faces you; the rest wait in stacks you flick through.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/lens-shelf.jpg" alt="The Shelf lens: VHS tapes on shelves"><br><b>Shelf</b>: tapes on a shelf, the way the video shop kept them. Point at one to pull it out.</td>
+    <td width="50%"><img src="docs/images/lens-gallery.jpg" alt="The Gallery lens: framed posters along a corridor"><br><b>Gallery</b>: walk your library like an exhibition, with a room for every decade.</td>
+  </tr>
+</table>
+
+All four draw with WebGPU, so they keep up with a 120 Hz display: zooming through 10,000 posters on the Wall takes 3.6 ms of main-thread time a frame and drops none ([LENSES.md](docs/LENSES.md#drawing-on-the-gpu)). Where WebGPU isn't available, a DOM version of each stands in. Five more lenses come as examples of the lens kit (Tonight, Helix, Timeline, Film strip and Corkboard), and a lens is a small JSON file: describe the one you want and your agent writes it, for every device you use. They are all on the [website](https://vibecook-dev.github.io/flux/#lenses), running in the page.
+
+## Anywhere: all it takes is a free Tailscale account
+
+<p align="center"><img src="docs/images/site-anywhere.jpg" alt="flux and four devices on one tailnet: a phone on 5G, a laptop on hotel Wi-Fi, a living-room TV and an iPad 300 km away" width="860"></p>
+
+No port forwarding, no reverse proxy, no certificates to renew and no new passwords. flux joins your private tailnet, and the Tailscale login you already have is how you sign in, from the sofa, a hotel room or a train.
+
+1. **Get Tailscale** on the computer with your films and on your devices. Its Personal plan is free, for up to six people.
+2. **Switch on remote access**: one switch in flux's settings, or `--tailnet system`. flux uses the computer's Tailscale and answers on your tailnet, never on the open internet.
+3. **Open it anywhere** at `https://<machine>.<tailnet>.ts.net:<port>`. With HTTPS on, flux uses your tailnet's own certificate, so even the GPU lenses work on your phone.
+
+Your login is the Owner. Family and friends sign in with their own Tailscale accounts and can watch, and a grant in your tailnet policy (`vibecook.dev/cap/flux`) makes someone an Admin. Until you switch remote access on, flux listens on 127.0.0.1 only. The details are under [Remote access](#remote-access).
+
+## Speed: built in Rust, measured against Jellyfin
+
+<p align="center"><img src="docs/images/site-race.jpg" alt="Cold scan of a 14,760-file library: flux 3.24 s, Jellyfin 12.2 17 min 35 s" width="860"></p>
+
+flux saves time by skipping work rather than doing the same work faster. It reads container indexes instead of decoding, never re-probes a file that hasn't changed, never writes its database when nothing changed, and remuxes in process instead of starting ffmpeg. Titles are browsable while the first scan is still running, and a seek is a plain `GET` for one segment. It is one Rust program: memory-safe, no runtime to install, no garbage collector.
 
 These figures come from [docs/prototype/benchmarks.md](docs/prototype/benchmarks.md) (2026-10-20, summary `flux-e-bench-summary-20261020-043247.json`), which ran flux and Jellyfin 12.2 through the same harness on the same machine. Each figure is a median. The playback rows give the range of the per-file medians. Ratios are Jellyfin's median ÷ flux's.
 
@@ -41,25 +89,50 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 - **Different work, by design.** Jellyfin runs ffprobe on every file and reads NFOs and local artwork. flux probes headers in process and reads neither. Both ran with metadata fetching, background jobs and folder watching off.
 - **No Plex baseline.** Plex needs an account claim to run, so it was not measured. Nothing here says anything about Plex.
 
+## Agent-native: your agent knows more than any database
+
+<p align="center"><img src="docs/images/site-agents.jpg" alt="An agent identifies a film with the flux command line, and its change waits in Agents and changes" width="860"></p>
+
+flux has no AI of its own. The agent you already use (Claude Code, Codex, Claude Desktop, anything that speaks MCP) is how a library gets identified, described, illustrated and organised, from the open web, which knows far more than any database about rare films, home recordings and old TV.
+
+| | |
+| --- | --- |
+| **CLI** | `flux` ships with the server. Every command is one operation and prints JSON: `flux gaps`, `flux get 42`, `flux edit 42 title=… --source …`. |
+| **MCP** | The same operations over MCP, at `/mcp` over HTTP or `flux mcp` over stdio: `claude mcp add --transport http flux http://localhost:8096/mcp`. |
+| **Skills** | [`skills/`](skills) teach agents the jobs: identifying films, finding artwork, organising files, designing lenses. `flux skills install` puts them where your agent looks. |
+
+Every change is a changeset with the pages it came from, and you can undo any of it in the app (Agents & changes) or with `flux changes undo`. An agent's changes can wait for an Owner or Admin to apply them, and nothing an agent sets is overwritten by flux's own matching. Agents also fix what flux read wrong, keep collections that show up as spaces, and plan renaming your files the way Plex, Jellyfin and Kodi expect, which runs only when you apply it. TMDB's text and images never reach an agent. See [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md).
+
+## Download
+
+Releases are pre-releases (`0.1.0-alpha.N`) until the first stable one. The [website](https://vibecook-dev.github.io/flux/#download) offers the build for your system, and [docs/INSTALL.md](docs/INSTALL.md) has the steps for each way to install flux:
+
+- **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64, a `.zip`), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
+- **Docker**: `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and linux/arm64, and `edge` for the tip of `main`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source, and each release attaches the matching source tarball. See [INSTALL.md § Docker](docs/INSTALL.md#docker).
+- **Build from source**: see [Quickstart](#quickstart-build-from-source) below.
+
+flux only ever runs `ffmpeg` and `ffprobe` as separate processes and never links the FFmpeg libraries ([DECISIONS.md](docs/DECISIONS.md)).
+
 ## Feature status
 
 ### Works today
 
 - **Scanning.** A Mille directory walk (`getattrlistbulk`) and in-process header probes for MKV/WebM, MP4/MOV, MPEG-TS/M2TS and AVI, with ffprobe only as a fallback. Then a filename and folder parser, and a SQLite catalog. Items are browsable as soon as they are probed. A rescan that finds no changes opens no files and writes nothing. A filesystem watcher picks up changes. A drive or NAS that is offline makes its items *unavailable*, never deleted. A rename keeps watch state and resume points.
-- **Playback.** Direct play with HTTP Range. Otherwise HLS (fMP4/CMAF), remuxed in process from MKV, MP4 and MPEG-TS/M2TS. ffmpeg transcodes audio per segment (TrueHD, DTS and others) and transcodes video when the client can't decode it (H.264 out through the first encoder that works: VideoToolbox, NVENC, Quick Sync, VAAPI or libx264, with HDR → SDR tone mapping; see [docs/ENCODERS.md](docs/ENCODERS.md)). Text subtitles (SRT, ASS) play as WebVTT. Audio switching happens inside the session. Resume and watched state are kept.
-- **Web client** (React 19, hls.js). Home, library grids (tested at 12,000 titles), search, item pages, a player with a stats overlay, and an Admin screen with live scan progress. The final product walk in Chrome passed 36/36 steps ([e2e.md](docs/prototype/e2e.md)).
+- **Playback.** Direct play with HTTP Range. Otherwise HLS (fMP4/CMAF), remuxed in process from MKV, MP4 and MPEG-TS/M2TS. ffmpeg transcodes audio per segment (TrueHD, DTS and others) and transcodes video when the client can't decode it (H.264 out through the first encoder that works: VideoToolbox, NVENC, Quick Sync, VAAPI or libx264, with HDR → SDR tone mapping; see [docs/ENCODERS.md](docs/ENCODERS.md)). Text subtitles (SRT, ASS, MP4 text tracks and subtitle files beside the video) play as WebVTT, and picture subtitles (PGS, VobSub) are burned into a transcode. Audio switching happens inside the session. Resume and watched state are kept.
+- **Web client** (React 19, hls.js). The library fills the window, seen through a lens ([Lenses](#lenses-one-library-every-way-to-see-it)); the controls float over it as glass: the island at the top is the search, the space switcher and the place live events appear (scans, new titles, a drive going offline), and the lens bar at the bottom switches lenses. Item pages open over the library, and the player has a stats overlay. The final product walk in Chrome passed 36/36 steps on the previous layout ([e2e.md](docs/prototype/e2e.md)).
 - **Artwork and metadata.** Background jobs cut frame posters and backdrops from the files (no AI); they pause during playback and scans. Offline matching against TMDB's daily ID exports needs no key. It suggests candidates for review but auto-accepts none, because the exports carry no year or runtime. The TMDB API client takes your own key (`TMDB_READ_TOKEN` or `TMDB_API_KEY`).
+- **Agents.** One contract (`flux.agent/1`, JSON Schemas in [`schemas/agent/v1`](schemas/agent/v1)) served over HTTP, MCP and the `flux` command line; every edit is a changeset with its sources, reviewed and undone in the app. flux reads `.flux.json` and Kodi `.nfo` files beside the videos. See [Agent-native](#agent-native-your-agent-knows-more-than-any-database) and [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md).
 - **Hardening.** A Host allowlist against DNS rebinding (421), a CSRF header on unsafe API calls (403), caps on connections and event streams, write timeouts and bounded caches. An adversarial review found 37 defects. All are fixed, each with a regression test. A re-verification then tried variants against every fix and hardened five of them further ([review.md](docs/prototype/review.md), [reverify.md](docs/prototype/reverify.md)).
 
 ### Prototype gaps
 
 - **Platforms.** flux was developed and measured on macOS (Apple Silicon). CI also builds and tests it on Linux x86_64 and arm64 and on Windows x86_64, where video transcodes use libx264. Windows x86_64 is supported, with a release zip ([docs/INSTALL.md](docs/INSTALL.md#windows)): it was checked against a real library on Windows 11 with NVENC on an NVIDIA GPU. Quick Sync on Windows is detected but untested, and AMD's AMF encoder isn't used, so AMD GPUs transcode with libx264. The Linux hardware encoders (NVENC, Quick Sync, VAAPI) are detected at runtime ([docs/ENCODERS.md](docs/ENCODERS.md)) but not yet tested on real GPUs.
 - **Unreleased dependencies.** flux uses Mille (file walking and watching) and Truffle (embedded Tailscale), two libraries by the same maintainer, and needs changes to both that were made for flux. Mille comes as a git dependency from [vibecook-dev/mille](https://github.com/vibecook-dev/mille), pinned to the commit that merged flux's changes. Truffle's `truffle-core` comes from crates.io (0.7.20, the release with flux's changes). To build against local checkouts of either, see [CONTRIBUTING.md](CONTRIBUTING.md#local-mille-and-truffle-checkouts).
-- **Remote access has not run end to end.** Embedded mode has never joined a real tailnet; its serving path is tested with fabricated identities. System mode was tested read-only on one machine (WhoIs identity and network path), never from a second device.
+- **Remote access is partly tested.** System mode serves a Windows 11 machine's library over the tailnet and was used from another device there (WhoIs identity, a direct path, HTTPS on the tailnet). Embedded mode has never joined a real tailnet; its serving path is tested with fabricated identities.
 - **Roles and sharing.** Adding libraries, scanning and switching remote access need Owner or Admin. Beyond that, roles are not enforced: Kid and Guest see everything. LAN callers are anonymous, with no pairing. The web client's invite flow has no server API yet.
 - **Playback.**
   - Video transcodes have one H.264 bitrate (no ABR ladder).
-  - There is no subtitle burn-in, so image subtitles (PGS, VobSub) don't show. ASS shows as plain text.
+  - Picture subtitles (PGS, VobSub) show only by burning them in, which forces a video transcode. ASS shows as plain text.
   - Matroska rotation is ignored, and Dolby Vision profile 7 plays as its HDR10 base layer.
   - The first play of an MPEG-TS reads the whole file to index it. From a cold HDD or NAS that would take seconds (not measured).
 - **Metadata.** The TMDB API client has never run against the live API, because testing had no key. TMDB data is not yet refreshed within the API terms' 6-month cache limit.
@@ -67,16 +140,6 @@ Not every result is a large win. A TrueHD 7.1 file that needs an audio transcode
 - **Operations.** HTTP/1.1 only. The release packages, the Docker image and the systemd unit in [docs/INSTALL.md](docs/INSTALL.md) are new with the first pre-release, v0.1.0-alpha.1. CI smoke-tests every package (`x86_64-apple-darwin` under Rosetta 2, and the Windows zip stopped with Ctrl-C and Ctrl-Break) and the image on both platforms, but none of them has run as a long-lived service.
 
 The full lists are in [fixes.md §7](docs/prototype/fixes.md#7-open-items), [e2e.md §5](docs/prototype/e2e.md#5-remaining-gaps-by-priority), [benchmarks.md §8](docs/prototype/benchmarks.md#8-gaps) and each component report in `docs/prototype/`.
-
-## Install
-
-Releases are pre-releases (`0.1.0-alpha.N`) until the first stable one; the first is [v0.1.0-alpha.1](https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.1). [docs/INSTALL.md](docs/INSTALL.md) has the steps for each way to install flux:
-
-- **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64, a `.zip`), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
-- **Docker**: `ghcr.io/vibecook-dev/flux:<version>` (e.g. `0.1.0-alpha.1`) for linux/amd64 and linux/arm64, and `edge` for the tip of `main`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source, and each release attaches the matching source tarball. See [INSTALL.md § Docker](docs/INSTALL.md#docker).
-- **Build from source**, below.
-
-flux only ever runs `ffmpeg` and `ffprobe` as separate processes and never links the FFmpeg libraries ([DECISIONS.md](docs/DECISIONS.md)).
 
 ## Quickstart (build from source)
 
@@ -115,6 +178,7 @@ Open <http://127.0.0.1:8096>. Libraries named on the command line are created on
 | `--port PORT` / `--bind IP` | `FLUX_PORT` / `FLUX_BIND` | 8096 / 127.0.0.1. Callers on this listener are the Owner. |
 | `--lan ADDR:PORT` | `FLUX_LAN` | Off. Also listen on the LAN, e.g. `0.0.0.0:8097`. LAN callers are anonymous. |
 | `--tailnet off\|embedded\|system` | `FLUX_TAILNET` | `off`. See [Remote access](#remote-access). |
+| `--tailnet-https[=BOOL]` | `FLUX_TAILNET_HTTPS` | Off. Also serve HTTPS on the tailnet, with its MagicDNS certificate. See [HTTPS](#https). |
 | `--allow-host HOST` | `FLUX_ALLOW_HOSTS` (`,`-separated) | Extra host names the server answers to, e.g. a reverse proxy's (repeatable). Other hosts get 421. |
 | `--localhost-role ROLE` | `FLUX_LOCALHOST_ROLE` | `owner`. Use `none` on a machine other people can log in to. |
 | `--owner-login LOGIN` | `FLUX_OWNER_LOGIN` | The tailnet login that owns the server. Default: learned when the tailnet starts. |
@@ -131,6 +195,7 @@ In the TOML file, keys are the long flag names with `_`. `--no-scan`, `--no-jobs
 ```toml
 data_dir = "/srv/flux"
 tailnet = "off"                  # off | embedded | system
+tailnet_https = false            # HTTPS on the tailnet
 allow_host = ["media.example.com"]
 [[library]]
 name = "Movies"
@@ -146,7 +211,16 @@ path = "/Volumes/NAS/Movies"
 - **`system`**: uses this machine's running Tailscale. flux binds the machine's Tailscale addresses on its port and identifies each caller with `tailscale whois`.
 - **`embedded`**: flux runs its own Tailscale node through Truffle. It needs Truffle's Go `sidecar-slim`, found through `TRUFFLE_SIDECAR_PATH` or next to the binary. On first start, the Connect screen (or `GET /api/v1/tailnet`) shows a login link and QR code. After you sign in, the server is on your tailnet as `http://truffle-flux-<name>.<tailnet>.ts.net:8096`.
 
-On the tailnet, Tailscale tells flux who each caller is. The login that owns the node is the Owner, unless `--owner-login` names another. A `vibecook.dev/cap/flux` capability grant in your tailnet policy (`{"role": "kid"}`, `"viewer"`, `"admin"`, …) sets anyone else's role, and the default is Viewer. Nothing is exposed to the public internet, and flux has no passwords of its own. Neither tailnet mode has run end to end yet (see [Prototype gaps](#prototype-gaps)).
+#### HTTPS
+
+Browsers offer some features only to secure pages, WebGPU among them (the Wall, Flow and Shelf draw with it), and plain HTTP from another device isn't one, even inside the tailnet's encrypted tunnel. Switch on **Secure link (HTTPS)** on the Remote access screen, or pass `--tailnet-https`, and tailnet devices can open flux at `https://<machine>.<tailnet>.ts.net:<port>` with the tailnet's own Let's Encrypt certificate. It needs MagicDNS and HTTPS certificates turned on for the tailnet (Tailscale admin console, DNS page). Like any public certificate, it puts the machine's name in public Certificate Transparency logs.
+
+- **`system`**: flux gets this machine's certificate from tailscaled (`tailscale cert`) and serves HTTPS and plain HTTP on the same port: the first byte of a connection tells them apart, so `http://` links keep working. It asks again every 12 hours; tailscaled renews the certificate before it expires. A page opened over plain HTTP on the tailnet moves to the same route at the HTTPS address once it has checked it can reach it from that device. Until the certificate arrives, or if the tailnet issues none, the Remote access screen says why.
+- **`embedded`**: Truffle's node serves HTTPS only, on the same port.
+
+The setting is remembered in the data dir, like the mode; `--tailnet-https` or `FLUX_TAILNET_HTTPS` wins over it.
+
+On the tailnet, Tailscale tells flux who each caller is. The login that owns the node is the Owner, unless `--owner-login` names another. A `vibecook.dev/cap/flux` capability grant in your tailnet policy (`{"role": "kid"}`, `"viewer"`, `"admin"`, …) sets anyone else's role, and the default is Viewer. Nothing is exposed to the public internet, and flux has no passwords of its own. Embedded mode hasn't run end to end yet (see [Prototype gaps](#prototype-gaps)).
 
 ## Architecture
 
@@ -162,11 +236,12 @@ The principles are to skip work rather than speed it up, to make every playback 
 | `flux-hls` | Playback planner and index, stateless fMP4/CMAF segmenter, HLS playlists, ffmpeg transcodes |
 | `flux-meta` | TMDB client, offline export index, matcher, AI hypothesis trait, frame posters and opt-in AI posters |
 | `flux-net` | Local, LAN and tailnet listeners (Truffle or system Tailscale), WhoIs identity, admission limits |
-| `flux-server` | The binary: axum routes, sessions, jobs, SSE, static web UI |
+| `flux-server` | The binary: axum routes, sessions, jobs, SSE, static web UI; agent operations and MCP |
+| `flux-cli` | `flux`, the command line: the agent operations from a terminal, and MCP over stdio |
 | `web/` | React 19 + TypeScript + Vite client (hls.js) |
 | `tools/` | Corpus generators and benchmark harnesses |
 
-Dependencies point downward only: `server → {scan, hls, meta, net, catalog}`, `scan → {catalog, probe, names}`, `hls → probe`, and every crate → `core`.
+Dependencies point downward only: `server → {scan, hls, meta, net, catalog}`, `scan → {catalog, probe, names}`, `hls → probe`, and every crate → `core`. `flux-cli` talks to a running server over HTTP and depends on `core` only.
 
 ## Tests and benchmarks
 
@@ -193,9 +268,12 @@ These are still open. They come from [research/00-synthesis.md](research/00-synt
 
 ## Documentation
 
+- [vibecook-dev.github.io/flux](https://vibecook-dev.github.io/flux/): the website ([site/](site/)), with the web client in the page.
 - [docs/INSTALL.md](docs/INSTALL.md): release packages, Windows, Docker, a systemd unit, upgrading and building from source.
 - [docs/RELEASING.md](docs/RELEASING.md): how releases are made and verified.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the contract the crates are built against.
+- [docs/AGENT-NATIVE.md](docs/AGENT-NATIVE.md): flux for agents: the operations, MCP, the `flux` command line, skills, changesets and what agents are never shown.
+- [docs/LENSES.md](docs/LENSES.md): the web client's lenses and the lens kit.
 - [docs/prototype/](docs/prototype/): one report per component, plus [benchmarks.md](docs/prototype/benchmarks.md), [e2e.md](docs/prototype/e2e.md), [review.md](docs/prototype/review.md), [fixes.md](docs/prototype/fixes.md), [reverify.md](docs/prototype/reverify.md) and [audit.md](docs/prototype/audit.md) (every published number traced to its result file).
 - [docs/DECISIONS.md](docs/DECISIONS.md): settled project decisions and why.
 - [research/](research/): the research behind the design, starting with [00-synthesis.md](research/00-synthesis.md).

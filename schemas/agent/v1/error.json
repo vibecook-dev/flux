@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The body of a failed `POST /api/v1/ops/{name}`.",
+  "properties": {
+    "error": {
+      "description": "An operation's error.",
+      "properties": {
+        "code": {
+          "description": "What went wrong, for a program to act on.",
+          "oneOf": [
+            {
+              "const": "invalid",
+              "description": "The input is wrong: see the message, fix it and try again.",
+              "type": "string"
+            },
+            {
+              "const": "not_found",
+              "description": "No such item, image, changeset, library or operation.",
+              "type": "string"
+            },
+            {
+              "const": "forbidden",
+              "description": "Your role may not do this.",
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "It conflicts with how things are now (for example a field a person set, or a changeset already undone).",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "The server can't do it right now (a scan is not possible, a fetch failed); trying later may work.",
+              "type": "string"
+            },
+            {
+              "const": "too_large",
+              "description": "The input or a fetched file is too large.",
+              "type": "string"
+            },
+            {
+              "const": "internal",
+              "description": "A bug or an I/O error on the server.",
+              "type": "string"
+            }
+          ]
+        },
+        "message": {
+          "description": "What happened and what to do, in a sentence or two.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "ErrorBody",
+  "type": "object"
+}

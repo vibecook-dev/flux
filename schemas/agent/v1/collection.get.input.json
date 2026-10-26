@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`collection.get` input.",
+  "properties": {
+    "collection": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "cursor": {
+      "description": "`next` from the previous page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "1–200, default 50.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "collection"
+  ],
+  "title": "CollectionGetInput",
+  "type": "object"
+}

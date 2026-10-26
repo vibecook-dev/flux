@@ -1,0 +1,3 @@
+# Standalone package (not a monorepo); this file only carries pnpm settings.
+packages:
+  - .

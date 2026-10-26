@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A collection kept on the server.",
+  "properties": {
+    "added_by": {
+      "description": "Who made it (a login).",
+      "type": "string"
+    },
+    "agent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "count": {
+      "description": "Titles in it now.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cover": {
+      "description": "The first few titles (ids), for a cover.",
+      "items": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "created_at": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "everyone": {
+      "type": "boolean"
+    },
+    "id": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "rule": {
+      "additionalProperties": false,
+      "description": "The titles a rule takes into a collection: those that match every condition given (in a list, any of its values; names in any case). As the library changes, so does the collection.",
+      "properties": {
+        "countries": {
+          "description": "ISO 3166-1 codes (`JP`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "genres": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kinds": {
+          "description": "`movie`, `show` (default: both).",
+          "items": {
+            "enum": [
+              "movie",
+              "show",
+              "season",
+              "episode",
+              "extra"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "description": "ISO 639-1 codes (`ja`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "description": "In these libraries (default: every film and show library).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "people": {
+          "description": "Directed, written by or starring any of these.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "studios": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Text in the title or the original title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year_from": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "year_to": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "sources": {
+      "items": {
+        "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+        "properties": {
+          "title": {
+            "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "An `http` or `https` URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "updated_at": {
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "everyone",
+    "count",
+    "cover",
+    "added_by",
+    "sources",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "CollectionInfo",
+  "type": "object"
+}

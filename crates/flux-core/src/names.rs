@@ -19,6 +19,7 @@ pub const PARSER_VERSION: u16 = 4;
 /// `1917.mkv` in a movie library is a title, not an episode number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LibraryKind {
     Movies,
     Shows,
@@ -58,6 +59,7 @@ impl LibraryKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GuessKind {
     Movie,
     Episode,
@@ -70,6 +72,7 @@ pub enum GuessKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ExtraKind {
     Trailer,
     Featurette,
@@ -83,6 +86,7 @@ pub enum ExtraKind {
 
 /// External ids embedded in paths, e.g. `[tmdbid-603]`, `{imdb-tt0133093}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderIds {
     pub tmdb: Option<u64>,
     pub imdb: Option<String>,
@@ -115,6 +119,7 @@ impl ProviderIds {
 ///   Jellyfin multi-version labels (`Title (2010) - Bob's Cut`); a label that
 ///   is a resolution (`Title (2010) - 2160p`) goes to `resolution` instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NameGuess {
     pub kind: GuessKind,
     /// Movie title or show name, cleaned for display/search.

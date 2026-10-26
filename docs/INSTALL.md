@@ -86,6 +86,7 @@ differently: see [Windows](#windows)):
 ```
 flux-<version>-<target>/
   bin/flux-server
+  bin/flux                  the command line, for you and your agents (docs/AGENT-NATIVE.md)
   bin/sidecar-slim          Truffle's Tailscale sidecar (when the release bundles it)
   share/flux/web/           the web client
   LICENSE  README.md  THIRD_PARTY_LICENSES
@@ -117,9 +118,14 @@ shasum -a 256 -c --ignore-missing SHA256SUMS      # Linux: sha256sum -c --ignore
 tar -xzf "flux-$version-$target.tar.gz"
 sudo mv "flux-$version-$target" /opt/flux
 sudo ln -sf /opt/flux/bin/flux-server /usr/local/bin/flux-server
+sudo ln -sf /opt/flux/bin/flux /usr/local/bin/flux
 flux-server --check
 ```
 <!-- x-release-please-end -->
+
+`flux` is the command line agents use (docs/AGENT-NATIVE.md). If another
+`flux` is already on your `PATH` (FluxCD's, for Kubernetes), link this one
+under another name, such as `flux-media`.
 
 Every package also has a build-provenance attestation. This checks that the
 package was built by this repository's release workflow from the tagged
@@ -158,7 +164,8 @@ flux is private by default: it listens on 127.0.0.1 only, where callers are
 the Owner. `--lan 0.0.0.0:8097` adds a LAN listener whose callers are
 anonymous (they can browse and play, but not add libraries, scan or change
 remote access). Remote access with identities goes through Tailscale
-(`--tailnet system|embedded`, README §Remote access).
+(`--tailnet system|embedded`, README §Remote access), and can add HTTPS with
+the tailnet's certificate (`--tailnet-https`, README §HTTPS).
 
 ### As a service (Linux, systemd)
 
@@ -268,6 +275,7 @@ release has `flux-<version>-x86_64-pc-windows-msvc.zip`, one folder:
 ```
 flux-<version>-x86_64-pc-windows-msvc\
   flux-server.exe
+  flux.exe                  the command line, for you and your agents (docs/AGENT-NATIVE.md)
   sidecar-slim.exe          Truffle's Tailscale sidecar, for --tailnet embedded
   web\                      the web client
   LICENSE.txt  README.txt  THIRD_PARTY_LICENSES.txt
@@ -452,7 +460,9 @@ own names and addresses; add others, such as a reverse proxy's, with
 
 `--tailnet system` uses the installed Tailscale for Windows
 (`tailscale.exe`), and `--tailnet embedded` runs the bundled
-`sidecar-slim.exe`. Neither has been tried on Windows yet.
+`sidecar-slim.exe`. System mode runs on Windows 11 with Tailscale 1.102,
+HTTPS on the tailnet included (`--tailnet-https`); embedded mode hasn't
+been tried on Windows yet.
 
 ### Upgrading on Windows
 

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The titles a rule takes into a collection: those that match every condition given (in a list, any of its values; names in any case). As the library changes, so does the collection.",
+  "properties": {
+    "countries": {
+      "description": "ISO 3166-1 codes (`JP`).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "genres": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "kinds": {
+      "description": "`movie`, `show` (default: both).",
+      "items": {
+        "enum": [
+          "movie",
+          "show",
+          "season",
+          "episode",
+          "extra"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "languages": {
+      "description": "ISO 639-1 codes (`ja`).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "libraries": {
+      "description": "In these libraries (default: every film and show library).",
+      "items": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "people": {
+      "description": "Directed, written by or starring any of these.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "studios": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "text": {
+      "description": "Text in the title or the original title.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "year_from": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "year_to": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "title": "CollectionRule",
+  "type": "object"
+}

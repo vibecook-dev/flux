@@ -1,13 +1,12 @@
 /**
- * Poster and wide (continue-watching) cards. Hover or focus does three things:
+ * Poster cards (folders, more episodes). Hover or focus does three things:
  * preloads the detail route's code, prefetches the item's data, and lights the
  * room with the artwork's colour (bias lighting).
  */
 import { memo, type KeyboardEvent, type Ref } from 'react';
 import { setAmbientFromHash } from '../app/ambient';
 import { Link } from '../app/Link';
-import { formatRemaining } from '../api/format';
-import { parentTitle, prefetchItem } from '../api/queries';
+import { prefetchItem } from '../api/queries';
 import type { ItemSummary } from '../api/types';
 import { Art } from './Art';
 import { cardEdge, itemHref } from './card-utils';
@@ -60,34 +59,6 @@ export const PosterCard = memo(function PosterCard({ item, width, tabIndex, defe
       </div>
       <span className={styles.title}>{item.title}</span>
       <span className={`edge ${styles.edge}`}>{cardEdge(item) || ' '}</span>
-    </Link>
-  );
-});
-
-/** Landscape card with resume progress, for Continue watching. */
-export const WideCard = memo(function WideCard({ item, width, onKeyDown, tabIndex }: { item: ItemSummary; width: number; onKeyDown?: (e: KeyboardEvent<HTMLAnchorElement>) => void; tabIndex?: number }) {
-  const p = item.progress;
-  const frac = p && p.duration_ms > 0 ? p.position_ms / p.duration_ms : 0;
-  const art = item.kind === 'episode' ? item.poster : item.backdrop ?? item.poster;
-  const show = parentTitle(item);
-  return (
-    <Link to={itemHref(item)} className={`${styles.card} ${styles.wideCard}`} onIntent={() => intent(item)} onKeyDown={onKeyDown} tabIndex={tabIndex} data-nav-item>
-      <div className={styles.frame}>
-        <Art art={art} width={width} aspect="wide" title={item.title} showSourceLabel={item.kind !== 'episode'} />
-        <span className={styles.wideShade} aria-hidden="true" />
-        <span className={styles.wideText}>
-          <span className={styles.wideTitle}>{item.kind === 'episode' ? (show ?? item.title) : item.title}</span>
-          {p && (
-            <span className="edge">
-              {item.kind === 'episode' && item.subtitle ? `${item.subtitle} · ` : ''}
-              {formatRemaining(p.position_ms, p.duration_ms)}
-            </span>
-          )}
-        </span>
-        <span className={styles.progress} aria-hidden="true">
-          <span style={{ width: `${Math.max(3, frac * 100)}%` }} />
-        </span>
-      </div>
     </Link>
   );
 });

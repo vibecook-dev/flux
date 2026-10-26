@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`files.plan` input: name items' files by a scheme, or move files where you say. Nothing moves: the plan is a proposal to review and apply.",
+  "properties": {
+    "ids_in_names": {
+      "default": false,
+      "description": "Put the ids flux knows in folder names (`Interstellar (2014) [imdbid-tt0816692]`), which other media servers match by.",
+      "type": "boolean"
+    },
+    "items": {
+      "description": "Films, shows, seasons, episodes or extras whose files to name by `scheme` (a show: all its episodes and extras).",
+      "items": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "moves": {
+      "description": "Or: files to move where you say.",
+      "items": {
+        "additionalProperties": false,
+        "description": "A file to move where you say, in `files.plan`.",
+        "properties": {
+          "file": {
+            "description": "A video file (`files[].id` in `item.get`).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "to": {
+            "description": "Its new path relative to its library folder, `/` between folders (`Interstellar (2014)/Interstellar (2014).mkv`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "to"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "scheme": {
+      "default": "standard",
+      "description": "How `files.plan` names files.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "What Plex, Jellyfin, Emby and Kodi all read: `Title (Year)/Title (Year).mkv` (versions ` - Edition` or ` - 1080p`, parts ` - part2`); `Show (Year)/Season 01/Show (Year) - S01E02 - Episode Title.mkv`; extras in `Trailers/`, `Featurettes/`, … beside the film.",
+          "type": "string"
+        }
+      ]
+    },
+    "summary": {
+      "description": "What the plan does and why, for the person reviewing it.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary"
+  ],
+  "title": "PlanInput",
+  "type": "object"
+}

@@ -25,7 +25,16 @@ function setState(s: EventsState) {
 export function parseEvent(data: string): FluxEvent | null {
   try {
     const v = JSON.parse(data) as { type?: unknown };
-    if (v && (v.type === 'scan_progress' || v.type === 'items_changed' || v.type === 'source_availability' || v.type === 'tailnet')) {
+    if (
+      v &&
+      (v.type === 'scan_progress' ||
+        v.type === 'items_changed' ||
+        v.type === 'source_availability' ||
+        v.type === 'tailnet' ||
+        v.type === 'changes' ||
+        v.type === 'lenses' ||
+        v.type === 'collections')
+    ) {
       return v as FluxEvent;
     }
   } catch {

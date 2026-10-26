@@ -63,6 +63,8 @@ pub(crate) fn walk_extensions() -> impl Iterator<Item = &'static str> {
         .iter()
         .chain(flux_core::SIDECAR_EXTENSIONS)
         .copied()
+        // flux's own metadata files (`.flux.json`); `.nfo` is a sidecar.
+        .chain(["json"])
 }
 
 /// A video file name (by extension).

@@ -1,0 +1,22 @@
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  transform-origin: 50% 46%;
+  transition:
+    transform 0.66s var(--spring-soft),
+    border-radius 0.66s var(--spring-soft),
+    filter 0.45s var(--out);
+}
+
+.lensRoot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: 50% 50%;
+}
+
+.leaving {
+  pointer-events: none;
+}

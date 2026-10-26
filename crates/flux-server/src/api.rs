@@ -16,11 +16,11 @@ use flux_core::api::{
 };
 use serde::Deserialize;
 
-use crate::config::{tailnet_choice_path, TailnetChoice};
+use crate::config::{tailnet_choice_path, tailnet_https_path, tailnet_https_word, TailnetChoice};
 use crate::error::{ApiError, ApiResult};
 use crate::scan::{Priority, ScanMode};
 use crate::state::{AppState, Caller};
-use crate::{art, events, guard, media, play, web};
+use crate::{agent, art, events, guard, media, play, web};
 
 /// The whole HTTP surface, behind the cross-site guard (`guard`: Host
 /// allowlist, `X-Flux-Request` on unsafe `/api/` calls), which also covers
@@ -32,6 +32,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/libraries", get(list_libraries).post(create_library))
         .route("/api/v1/libraries/{id}/scan", post(scan_library))
         .route("/api/v1/libraries/{id}/items", get(library_items))
+        .route("/api/v1/collections/{id}/items", get(collection_items))
         .route("/api/v1/libraries/{id}/folders", get(library_folders))
         .route("/api/v1/home", get(home))
         .route("/api/v1/items/{id}", get(item))
@@ -46,6 +47,16 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/tailnet/connect", post(tailnet_connect))
         .route("/api/v1/events", get(events::sse))
         .route("/api/v1/art/{id}", get(art::get))
+        .route("/api/v1/agent", get(agent::http_manifest))
+        .route("/api/v1/agent/skills/{name}", get(agent::http_skill))
+        .route("/api/v1/ops/{name}", post(agent::http_op))
+        .route("/api/v1/schemas/{name}", get(agent::http_schema))
+        .route(
+            "/mcp",
+            post(agent::mcp::post)
+                .get(agent::mcp::get)
+                .delete(agent::mcp::delete),
+        )
         .route("/media/{id}/{*rest}", get(media::media))
         .fallback(web::fallback)
         // After every route and the fallback, so it wraps them all.
@@ -71,6 +82,7 @@ async fn server_info(State(st): State<Arc<AppState>>, caller: Caller) -> Json<Se
             .clone()
             .or_else(|| st.tailnet.info().dns_name),
         metadata: crate::metadata::info(&st.cfg.tmdb_exports),
+        https_url: st.tailnet.https_url(),
     })
 }
 
@@ -225,6 +237,37 @@ async fn library_items(
     Ok(Json(st.catalog.read(move |c| read::items_page(c, &q)).await?))
 }
 
+/// `GET /api/v1/collections/{id}/items?cursor=&limit=&sort=&filter=`: a
+/// collection's titles across libraries, paged and sorted as a library's
+/// (a collection someone else keeps for themselves is not found).
+async fn collection_items(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    id: Result<UrlPath<Id>, axum::extract::rejection::PathRejection>,
+    params: Result<Query<ItemsParams>, QueryRejection>,
+) -> ApiResult<Json<Page<ItemSummary>>> {
+    let id = id_of(id)?;
+    let Query(p) = params?;
+    let user = st.user_id(&caller).await?;
+    let mine = caller.identity.is_some().then_some(user);
+    let row = st
+        .catalog
+        .read(move |c| flux_catalog::collections::get(c, id))
+        .await?
+        .filter(|r| flux_catalog::collections::visible(r, mine))
+        .ok_or_else(|| ApiError::not_found(format!("No collection {id}")))?;
+    let q = read::ItemsQuery {
+        sort: p.sort.unwrap_or_default(),
+        cursor: p.cursor,
+        limit: p.limit.unwrap_or(100),
+        user_id: Some(user),
+        filter: p.filter,
+        collection: Some(row.id),
+        ..Default::default()
+    };
+    Ok(Json(st.catalog.read(move |c| read::items_page(c, &q)).await?))
+}
+
 /// `GET /api/v1/libraries/{id}/folders?folder=&cursor=&limit=&sort=`: one
 /// folder of a videos library; 400 for a library of another kind.
 async fn library_folders(
@@ -371,32 +414,50 @@ async fn tailnet(State(st): State<Arc<AppState>>) -> Json<TailnetInfo> {
     Json(st.tailnet.info())
 }
 
-/// `POST /api/v1/tailnet/connect` (owner/admin): switch remote access mode.
-/// The tailnet listener restarts in the new mode in the background (local
-/// and LAN connections are untouched); follow the `tailnet` SSE events (or
-/// poll) for the login URL and the final state.
+/// `POST /api/v1/tailnet/connect` (owner/admin): switch remote access mode,
+/// or HTTPS on the tailnet. The tailnet listener restarts in the background
+/// (local and LAN connections are untouched); follow the `tailnet` SSE
+/// events (or poll) for the login URL, the certificate and the final state.
 async fn tailnet_connect(
     State(st): State<Arc<AppState>>,
     caller: Caller,
     body: Result<Json<TailnetConnect>, JsonRejection>,
 ) -> ApiResult<Json<TailnetInfo>> {
     caller.require_admin()?;
-    let Json(TailnetConnect { mode }) = body?;
-    if mode == st.tailnet.mode() {
+    let Json(TailnetConnect { mode, https }) = body?;
+    let https = https.unwrap_or_else(|| st.tailnet.https());
+    let mode_changed = mode != st.tailnet.mode();
+    let https_changed = https != st.tailnet.https();
+    if !mode_changed && !https_changed {
         return Ok(Json(st.tailnet.info()));
     }
     let choice = TailnetChoice::from_api(mode);
-    if !st.tailnet.request_mode(choice) {
+    if !st.tailnet.request(choice, https) {
         return Err(ApiError::unavailable(
             "The server can't change its listeners right now",
         ));
     }
-    // Remembered for the next start (unless --tailnet/FLUX_TAILNET says otherwise).
-    if let Err(e) = std::fs::write(tailnet_choice_path(&st.cfg.data_dir), choice.as_str()) {
-        tracing::warn!(error = %e, "could not remember the tailnet mode");
+    // Remembered for the next start (unless the command line or the
+    // environment says otherwise: --tailnet, --tailnet-https).
+    let data_dir = &st.cfg.data_dir;
+    if mode_changed {
+        if let Err(e) = std::fs::write(tailnet_choice_path(data_dir), choice.as_str()) {
+            tracing::warn!(error = %e, "could not remember the tailnet mode");
+        }
+    }
+    if https_changed {
+        if let Err(e) = std::fs::write(tailnet_https_path(data_dir), tailnet_https_word(https)) {
+            tracing::warn!(error = %e, "could not remember HTTPS on the tailnet");
+        }
     }
     let mut info = st.tailnet.info();
     info.mode = mode;
+    info.https = https;
+    info.https_error = None;
+    if https_changed {
+        // The new listener reports its address once it serves.
+        info.url = None;
+    }
     info.state = if mode == flux_core::api::TailnetMode::Off {
         flux_core::api::TailnetState::Off
     } else {

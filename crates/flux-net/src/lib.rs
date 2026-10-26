@@ -6,7 +6,8 @@
 //!   LAN (optional) ─┼─ hyper http1 ─────────┤   (WhoIs → role)
 //!   tailnet ────────┘  half_close(true)     └─ Extension<ConnInfo>
 //!      ├ embedded: flux's own node via Truffle (listen_tcp, bridge identity)
-//!      └ system:   this machine's tailscaled (bind 100.x, `tailscale whois`)
+//!      └ system:   this machine's tailscaled (bind 100.x, `tailscale whois`;
+//!                  optionally HTTPS on the same port, see [`tls`])
 //! ```
 //!
 //! - **Localhost** callers get [`RolePolicy::localhost_identity`] (Owner by
@@ -42,9 +43,11 @@ pub mod serve;
 pub mod system;
 #[cfg(all(test, feature = "embedded"))]
 mod test_util;
+pub mod tls;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
@@ -52,6 +55,7 @@ use axum::Router;
 use flux_core::api::Identity;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -139,6 +143,10 @@ pub struct SystemConfig {
     pub whois_ttl: Duration,
     /// How often to look again while tailscaled is not running.
     pub retry_every: Duration,
+    /// Also serve HTTPS on the port, with this machine's MagicDNS
+    /// certificate from tailscaled ([`tls`]; needs HTTPS certificates
+    /// enabled for the tailnet). Plain HTTP keeps working.
+    pub https: bool,
 }
 
 impl Default for SystemConfig {
@@ -148,9 +156,15 @@ impl Default for SystemConfig {
             cli: None,
             whois_ttl: Duration::from_secs(60),
             retry_every: Duration::from_secs(15),
+            https: false,
         }
     }
 }
+
+/// First wait before asking tailscaled for the certificate again after a
+/// failure; doubled each time up to [`CERT_RETRY_MAX`].
+const CERT_RETRY_MIN: Duration = Duration::from_secs(30);
+const CERT_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
 
 /// Which Tailscale serves the tailnet listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,8 +208,12 @@ pub struct TailnetInfo {
     pub dns_name: Option<String>,
     /// Tailnet addresses being served.
     pub addrs: Vec<SocketAddr>,
-    /// HTTPS (embedded mode with `tls`).
+    /// Served over HTTPS: embedded mode with `tls` (HTTPS only), or system
+    /// mode with `https` once the certificate is loaded (HTTP too).
     pub tls: bool,
+    /// Why HTTPS was asked for but isn't serving (yet), e.g. the tailnet
+    /// issues no certificates.
+    pub tls_error: Option<String>,
     /// The login that owns the node (the flux Owner by default).
     pub owner_login: Option<String>,
     /// When the node's key expires (Unix ms); `None` when expiry is
@@ -278,6 +296,8 @@ impl TailnetStatus {
             key_expiry: None,
             system_tailscale: mode == Mode::System,
             last_error: None,
+            https: false,
+            https_error: None,
         };
         match self {
             TailnetStatus::Off => {}
@@ -305,6 +325,8 @@ impl TailnetStatus {
                 info.dns_name = t.dns_name.clone();
                 info.owner_login = t.owner_login.clone();
                 info.key_expiry = t.key_expiry;
+                info.https = t.tls;
+                info.https_error = t.tls_error.clone();
             }
             TailnetStatus::Unavailable { reason } => {
                 info.state = State::Unavailable;
@@ -359,6 +381,12 @@ pub(crate) struct Shared {
     admission: Arc<limits::Admission>,
     /// See [`ServeLimits::write_timeout`].
     write_timeout: Option<Duration>,
+    /// Bumped whenever the tailnet listener is replaced: a task of the old
+    /// one (a certificate fetch in flight) can't change the new one's state.
+    tailnet_gen: AtomicU64,
+    /// HTTPS for new connections (system mode), for the tailnet generation
+    /// that set it up.
+    tls: RwLock<Option<(u64, TlsAcceptor)>>,
 }
 
 #[derive(Clone)]
@@ -384,6 +412,8 @@ impl Shared {
             system: RwLock::new(None),
             admission: limits::Admission::new(ServeLimits::default()),
             write_timeout: ServeLimits::default().write_timeout,
+            tailnet_gen: AtomicU64::new(0),
+            tls: RwLock::new(None),
         })
     }
 
@@ -442,6 +472,46 @@ impl Shared {
             }
             _ => false,
         });
+    }
+
+    /// The current tailnet listener's generation.
+    fn tailnet_gen(&self) -> u64 {
+        self.tailnet_gen.load(Ordering::SeqCst)
+    }
+
+    /// [`update_running`](Self::update_running), only while the tailnet
+    /// listener of generation `gen` is the current one.
+    fn update_running_for(&self, gen: u64, f: impl FnOnce(&mut TailnetInfo)) {
+        self.status.send_if_modified(|s| match s {
+            TailnetStatus::Running(t) if self.tailnet_gen() == gen => {
+                let before = t.clone();
+                f(t);
+                *t != before
+            }
+            _ => false,
+        });
+    }
+
+    /// Serve HTTPS with `acceptor` from now on, if the tailnet listener of
+    /// generation `gen` is still the current one.
+    fn set_tls(&self, gen: u64, acceptor: TlsAcceptor) -> bool {
+        let mut slot = self.tls.write().unwrap_or_else(|p| p.into_inner());
+        if self.tailnet_gen() != gen {
+            return false;
+        }
+        *slot = Some((gen, acceptor));
+        true
+    }
+
+    /// HTTPS for a new connection, while the current tailnet listener serves it.
+    fn tls_acceptor(&self) -> Option<TlsAcceptor> {
+        let gen = self.tailnet_gen();
+        self.tls
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .filter(|(g, _)| *g == gen)
+            .map(|(_, a)| a.clone())
     }
 
     fn system_binding(&self) -> Option<SystemBinding> {
@@ -542,6 +612,8 @@ impl FluxNet {
             system: RwLock::new(None),
             admission: limits::Admission::new(config.limits),
             write_timeout: config.limits.write_timeout,
+            tailnet_gen: AtomicU64::new(0),
+            tls: RwLock::new(None),
         });
 
         let local = bind(config.local_addr).await?;
@@ -613,6 +685,10 @@ impl FluxNet {
     /// through [`tailnet_status`](Self::tailnet_status) as at start.
     pub async fn set_tailnet(&mut self, tailnet: TailnetConfig, grace: Duration) {
         let shared = &self.shared;
+        // From here the old listener's tasks leave the shared state alone,
+        // and new connections get no HTTPS until the new listener sets it up.
+        shared.tailnet_gen.fetch_add(1, Ordering::SeqCst);
+        *shared.tls.write().unwrap_or_else(|p| p.into_inner()) = None;
         let old = std::mem::replace(
             &mut *shared.tailnet.lock().unwrap_or_else(|p| p.into_inner()),
             Scope::child_of(&shared.shutdown),
@@ -676,9 +752,10 @@ fn spawn_tailnet(
         }
         TailnetConfig::System(system) => {
             let covered = [Some(local_addr), lan_addr].into_iter().flatten().collect();
+            let gen = shared.tailnet_gen();
             scope
                 .tracker
-                .spawn(run_system(system, covered, shared.clone(), scope.clone()));
+                .spawn(run_system(system, covered, gen, shared.clone(), scope.clone()));
         }
     }
 }
@@ -725,22 +802,60 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>, scope: Scope) {
 async fn serve_tcp(stream: TcpStream, remote: SocketAddr, shared: Arc<Shared>, token: CancellationToken) {
     let _ = stream.set_nodelay(true);
     let local = stream.local_addr().ok();
-    let (identity, conn) = shared.classify_tcp(local, remote).await;
-    serve::serve_connection(
-        stream,
-        shared.router.clone(),
-        identity,
-        conn,
-        token,
-        shared.write_timeout,
-    )
-    .await;
+    let Some(tls) = shared.tls_acceptor() else {
+        let (identity, conn) = shared.classify_tcp(local, remote).await;
+        serve::serve_connection(
+            stream,
+            shared.router.clone(),
+            identity,
+            conn,
+            token,
+            shared.write_timeout,
+        )
+        .await;
+        return;
+    };
+    // HTTPS is on: find out what the client speaks while finding out who it is.
+    let opening = async {
+        tokio::select! {
+            o = tls::opening(&stream, serve::HEADER_READ_TIMEOUT) => o,
+            _ = token.cancelled() => tls::Opening::Gone,
+        }
+    };
+    let ((identity, conn), opening) = tokio::join!(shared.classify_tcp(local, remote), opening);
+    let (router, write_timeout) = (shared.router.clone(), shared.write_timeout);
+    match opening {
+        tls::Opening::Plain => {
+            serve::serve_connection(stream, router, identity, conn, token, write_timeout).await;
+        }
+        tls::Opening::Tls => {
+            let handshake = tokio::time::timeout(tls::HANDSHAKE_TIMEOUT, tls.accept(stream));
+            let accepted = tokio::select! {
+                a = handshake => a,
+                _ = token.cancelled() => return,
+            };
+            match accepted {
+                Ok(Ok(stream)) => {
+                    serve::serve_connection(stream, router, identity, conn, token, write_timeout).await;
+                }
+                Ok(Err(e)) => tracing::debug!(error = %e, %remote, "TLS handshake failed"),
+                Err(_) => tracing::debug!(%remote, "TLS handshake timed out"),
+            }
+        }
+        tls::Opening::Gone => {}
+    }
 }
 
 /// System mode: wait for tailscaled to be running, bind our Tailscale
 /// addresses, and serve, until `scope` stops. Connections are classified in
 /// [`Shared::classify_tcp`].
-async fn run_system(config: SystemConfig, covered: Vec<SocketAddr>, shared: Arc<Shared>, scope: Scope) {
+async fn run_system(
+    config: SystemConfig,
+    covered: Vec<SocketAddr>,
+    gen: u64,
+    shared: Arc<Shared>,
+    scope: Scope,
+) {
     let client = Arc::new(SystemTailscale::new(
         system::find_cli(config.cli.as_deref()),
         config.whois_ttl,
@@ -813,15 +928,278 @@ async fn run_system(config: SystemConfig, covered: Vec<SocketAddr>, shared: Arc<
         dns_name: status.dns_name,
         addrs,
         tls: false,
+        tls_error: None,
         owner_login: shared.owner_login(),
         key_expiry: None,
         control_server: None,
     }));
+    if config.https {
+        scope
+            .tracker
+            .spawn(keep_certificate(client, gen, shared.clone(), scope.clone()));
+    }
+}
+
+/// System mode with HTTPS: get this machine's certificate from tailscaled,
+/// serve it, and ask again every [`tls::REFRESH_EVERY`] (sooner after a
+/// failure, backing off to [`CERT_RETRY_MAX`]) until `scope` stops. A
+/// renewed certificate is served from the next handshake; when a refresh
+/// fails, the one loaded keeps being served.
+async fn keep_certificate(client: Arc<SystemTailscale>, gen: u64, shared: Arc<Shared>, scope: Scope) {
+    let certs = Arc::new(tls::CertStore::default());
+    let acceptor = match tls::server_config(certs.clone()) {
+        Ok(config) => TlsAcceptor::from(config),
+        Err(e) => {
+            shared.update_running_for(gen, |t| t.tls_error = Some(e));
+            return;
+        }
+    };
+    let mut serving = false;
+    let mut backoff = CERT_RETRY_MIN;
+    loop {
+        let fetched = tokio::select! {
+            f = fetch_certificate(&client) => f,
+            _ = scope.token.cancelled() => return,
+        };
+        let wait = match fetched {
+            Ok((domain, key)) => {
+                certs.set(key);
+                if !serving {
+                    serving = shared.set_tls(gen, acceptor.clone());
+                    if serving {
+                        tracing::info!(%domain, "HTTPS on the tailnet, with tailscaled's certificate");
+                    }
+                }
+                shared.update_running_for(gen, |t| {
+                    t.tls = serving;
+                    t.tls_error = None;
+                });
+                backoff = CERT_RETRY_MIN;
+                tls::REFRESH_EVERY
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, serving, "HTTPS on the tailnet: no certificate from tailscaled");
+                shared.update_running_for(gen, |t| t.tls_error = Some(e));
+                let wait = backoff;
+                backoff = (backoff * 2).min(CERT_RETRY_MAX);
+                wait
+            }
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = scope.token.cancelled() => return,
+        }
+    }
+}
+
+/// This machine's certificate from tailscaled, and the name it is for.
+async fn fetch_certificate(client: &SystemTailscale) -> Result<(String, rustls::sign::CertifiedKey), String> {
+    let status = client.status().await.map_err(|e| e.to_string())?;
+    let domain = system::cert_domain(&status)?;
+    let pem = client.cert(&domain).await.map_err(|e| e.to_string())?;
+    let key = tls::certified_key_from_pem(&pem)?;
+    Ok((domain, key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::get;
+    use axum::Extension;
+    use rustls::pki_types::{CertificateDer, ServerName};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Answers `/path` with how the caller reached the server.
+    fn path_router() -> Router {
+        Router::new().route(
+            "/path",
+            get(|Extension(conn): Extension<ConnInfo>| async move { conn.path.as_str() }),
+        )
+    }
+
+    async fn local_net() -> FluxNet {
+        let config = FluxNetConfig {
+            local_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        };
+        FluxNet::start(config, path_router()).await.unwrap()
+    }
+
+    /// The whole response to `GET path` sent over `stream`.
+    async fn get_over<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+        mut stream: S,
+        host: &str,
+        path: &str,
+    ) -> std::io::Result<String> {
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        stream.write_all(req.as_bytes()).await?;
+        let mut out = Vec::new();
+        match stream.read_to_end(&mut out).await {
+            // A TLS peer that closes without close_notify still sent it all.
+            Err(e) if e.kind() != std::io::ErrorKind::UnexpectedEof => return Err(e),
+            _ => {}
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+
+    async fn http_get(addr: SocketAddr, path: &str) -> String {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        get_over(stream, "localhost", path).await.unwrap()
+    }
+
+    /// `GET path` over TLS to `name` at `addr`, trusting only `cert`.
+    async fn https_get(
+        addr: SocketAddr,
+        name: &str,
+        cert: &CertificateDer<'static>,
+        path: &str,
+    ) -> std::io::Result<String> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.clone()).unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(tls::provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let tcp = TcpStream::connect(addr).await?;
+        let stream = connector
+            .connect(ServerName::try_from(name.to_string()).unwrap(), tcp)
+            .await?;
+        get_over(stream, name, path).await
+    }
+
+    fn acceptor_for(pem: &str) -> TlsAcceptor {
+        let certs = Arc::new(tls::CertStore::default());
+        certs.set(tls::certified_key_from_pem(pem.as_bytes()).unwrap());
+        TlsAcceptor::from(tls::server_config(certs).unwrap())
+    }
+
+    #[tokio::test]
+    async fn https_and_http_share_a_port() {
+        let mut net = local_net().await;
+        let addr = net.local_addr();
+        let (pem, cert) = tls::tests::self_signed("flux.test");
+        let acceptor = acceptor_for(&pem);
+
+        // No HTTPS yet: a TLS client gets nowhere; plain HTTP works.
+        assert!(https_get(addr, "flux.test", &cert, "/path").await.is_err());
+        assert!(http_get(addr, "/path").await.ends_with("localhost"));
+
+        let gen = net.shared.tailnet_gen();
+        assert!(net.shared.set_tls(gen, acceptor.clone()));
+        // Both on one port, and the caller is classified the same either way.
+        let body = https_get(addr, "flux.test", &cert, "/path").await.unwrap();
+        assert!(
+            body.starts_with("HTTP/1.1 200") && body.ends_with("localhost"),
+            "{body}"
+        );
+        assert!(http_get(addr, "/path").await.ends_with("localhost"));
+
+        // A broken handshake costs only its own connection.
+        let mut junk = TcpStream::connect(addr).await.unwrap();
+        junk.write_all(&[0x16, 0x03, 0x01, 0x00, 0x05, 1, 2, 3, 4, 5])
+            .await
+            .unwrap();
+        let _ = junk.read_to_end(&mut Vec::new()).await;
+        assert!(https_get(addr, "flux.test", &cert, "/path").await.is_ok());
+
+        // Replacing the tailnet listener takes its HTTPS along, and a task of
+        // the old one can't put it back.
+        net.set_tailnet(TailnetConfig::Off, Duration::from_millis(100))
+            .await;
+        assert!(https_get(addr, "flux.test", &cert, "/path").await.is_err());
+        assert!(!net.shared.set_tls(gen, acceptor));
+        assert!(http_get(addr, "/path").await.ends_with("localhost"));
+        net.shutdown(Duration::from_secs(1)).await;
+    }
+
+    /// A `tailscale` stand-in: `status --json` prints `status`, `cert … <domain>`
+    /// prints `pem` for flux.tail1234.ts.net and fails for any other name.
+    #[cfg(unix)]
+    fn fake_cli(dir: &std::path::Path, status: &str, pem: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("status.json"), status).unwrap();
+        std::fs::write(dir.join("cert.pem"), pem).unwrap();
+        let cli = dir.join("tailscale");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  status) cat {d}/status.json ;;\n  cert) [ \"$6\" = flux.tail1234.ts.net ] || {{ echo \"bad domain $6\" >&2; exit 3; }}; cat {d}/cert.pem ;;\n  *) exit 2 ;;\nesac\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        cli
+    }
+
+    #[cfg(unix)]
+    const RUNNING: &str = r#"{"BackendState":"Running","TailscaleIPs":["100.64.0.1"],
+        "Self":{"DNSName":"flux.tail1234.ts.net.","TailscaleIPs":["100.64.0.1"],"UserID":1},
+        "User":{"1":{"LoginName":"owner@example.com"}},"CertDomains":["flux.tail1234.ts.net"]}"#;
+
+    /// Runs the certificate task against `cli` until the running tailnet's
+    /// info satisfies `done`; returns that info.
+    #[cfg(unix)]
+    async fn certificate_task(
+        net: &FluxNet,
+        cli: PathBuf,
+        done: impl Fn(&TailnetInfo) -> bool,
+    ) -> TailnetInfo {
+        net.shared.set_status(TailnetStatus::Running(TailnetInfo {
+            mode: TailnetMode::System,
+            dns_name: Some("flux.tail1234.ts.net".into()),
+            addrs: vec![net.local_addr()],
+            tls: false,
+            tls_error: None,
+            owner_login: None,
+            key_expiry: None,
+            control_server: None,
+        }));
+        let scope = net.shared.tailnet_scope();
+        let client = Arc::new(SystemTailscale::new(cli, Duration::from_secs(60)));
+        let task = keep_certificate(
+            client,
+            net.shared.tailnet_gen(),
+            net.shared.clone(),
+            scope.clone(),
+        );
+        scope.tracker.spawn(task);
+        let mut rx = net.tailnet_status();
+        let wait = async {
+            loop {
+                if let TailnetStatus::Running(t) = &*rx.borrow_and_update() {
+                    if done(t) {
+                        return t.clone();
+                    }
+                }
+                rx.changed().await.unwrap();
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait).await.unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn without_tailnet_certificates_https_says_how_to_turn_them_on() {
+        let dir = std::env::temp_dir().join(format!("flux-net-nocert-{}", std::process::id()));
+        let off = RUNNING.replace(
+            r#""CertDomains":["flux.tail1234.ts.net"]"#,
+            r#""CertDomains":null"#,
+        );
+        let cli = fake_cli(&dir, &off, "");
+        let net = local_net().await;
+
+        let info = certificate_task(&net, cli, |t| t.tls_error.is_some()).await;
+        assert!(!info.tls);
+        assert!(info.tls_error.unwrap().contains("admin console"));
+        assert!(net.shared.tls_acceptor().is_none());
+        assert!(net.tailnet_info().url.unwrap().starts_with("http://"));
+        net.shutdown(Duration::from_secs(1)).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tailnet_url_prefers_the_magicdns_name() {
@@ -830,6 +1208,7 @@ mod tests {
             dns_name: Some("mac.tail1234.ts.net".into()),
             addrs: vec!["100.64.0.1:8096".parse().unwrap()],
             tls: false,
+            tls_error: None,
             owner_login: None,
             key_expiry: None,
             control_server: None,
@@ -878,6 +1257,7 @@ mod tests {
             dns_name: Some("mac.tail1234.ts.net".into()),
             addrs: vec!["100.64.0.1:8096".parse().unwrap()],
             tls: false,
+            tls_error: Some("HTTPS certificates are off for this tailnet.".into()),
             owner_login: Some("james@example.com".into()),
             key_expiry: Some(1_790_000_000_000),
             control_server: None,
@@ -890,6 +1270,11 @@ mod tests {
         assert_eq!(running.owner_login.as_deref(), Some("james@example.com"));
         assert_eq!(running.key_expiry, Some(1_790_000_000_000));
         assert!(running.system_tailscale);
+        assert!(!running.https);
+        assert_eq!(
+            running.https_error.as_deref(),
+            Some("HTTPS certificates are off for this tailnet.")
+        );
 
         let failed = TailnetStatus::Failed { error: "boom".into() }.to_api(Mode::Embedded);
         assert_eq!(

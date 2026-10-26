@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Output of an operation that removes something.",
+  "properties": {
+    "removed": {
+      "description": "`false`: there was nothing to remove.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "removed"
+  ],
+  "title": "Removed",
+  "type": "object"
+}

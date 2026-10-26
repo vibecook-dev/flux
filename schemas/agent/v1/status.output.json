@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`status`.",
+  "properties": {
+    "contract": {
+      "description": "[`CONTRACT`].",
+      "type": "string"
+    },
+    "libraries": {
+      "items": {
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Top-level items: films, shows, videos.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "`movies`, `shows`, `mixed`, or `videos` (home videos and clips: one item per file, never matched).",
+            "oneOf": [
+              {
+                "enum": [
+                  "movies",
+                  "shows",
+                  "mixed"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "videos",
+                "description": "Home videos, clips and anything else that is neither a film nor a series (Plex's \"Other Videos\"): every file is its own item, titled after the file and browsed by folder. Nothing is grouped (no shows, versions or extras; only a true multi-part stack is one item) and nothing is matched against a metadata source.",
+                "type": "string"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "roots": {
+            "items": {
+              "properties": {
+                "available": {
+                  "description": "`false` while the folder doesn't answer (a NAS asleep, a drive unplugged): its items are kept, shown as offline.",
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "available"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "scanning": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "items",
+          "roots",
+          "scanning"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "metadata_source": {
+      "description": "What flux matches titles against by itself: `none` (titles come from file names, art from video frames: everything else is up to you), `tmdb`, or `exports` (offline suggestions only).",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "None: titles and years come from file and folder names, artwork from frames of the video.",
+          "type": "string"
+        },
+        {
+          "const": "tmdb",
+          "description": "TMDB online, with the server's key (`TMDB_READ_TOKEN` or `TMDB_API_KEY`).",
+          "type": "string"
+        },
+        {
+          "const": "exports",
+          "description": "TMDB's daily ID exports, offline: they suggest candidates but accept none on their own (no year or runtime to confirm a match).",
+          "type": "string"
+        }
+      ]
+    },
+    "policy": {
+      "description": "What flux won't show agents, and the house rules.",
+      "properties": {
+        "rules": {
+          "description": "The rules, one sentence each.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "withheld": {
+          "description": "Providers whose content flux never shows an agent, because their terms forbid using it with AI (`tmdb`). Fields from them are listed under `withheld` instead of their values: fill them from the open web, in your own words, with sources.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "withheld",
+        "rules"
+      ],
+      "type": "object"
+    },
+    "server": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "you": {
+      "description": "Who you are to this server.",
+      "properties": {
+        "agent": {
+          "description": "The agent flux takes you for (named by MCP, the `X-Flux-Agent` header or the CLI), or `null` for a person.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "login": {
+          "description": "Your login: a Tailscale login, `local` on the server's own machine off the tailnet, or `anonymous`.",
+          "type": "string"
+        },
+        "may": {
+          "description": "What your role lets you do.",
+          "properties": {
+            "admin": {
+              "description": "Scan libraries, decide proposals, keep lenses for everyone (Owner or Admin).",
+              "type": "boolean"
+            },
+            "apply": {
+              "description": "Change things directly: `items.edit` applies, `art.add`, `art.pin`, `changes.undo` (Owner or Admin).",
+              "type": "boolean"
+            },
+            "propose": {
+              "description": "Propose changes for an Owner or Admin to review (`items.edit` with mode `propose`; Viewers, Owners and Admins).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "apply",
+            "propose",
+            "admin"
+          ],
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "description": "`null` when anonymous.",
+          "enum": [
+            "owner",
+            "admin",
+            "viewer",
+            "kid",
+            "guest",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "login",
+        "name",
+        "may"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "contract",
+    "server",
+    "metadata_source",
+    "you",
+    "policy",
+    "libraries"
+  ],
+  "title": "Status",
+  "type": "object"
+}

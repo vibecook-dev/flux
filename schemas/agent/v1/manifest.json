@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`GET /api/v1/agent`: everything an agent needs to start.",
+  "properties": {
+    "contract": {
+      "description": "[`CONTRACT`].",
+      "type": "string"
+    },
+    "mcp": {
+      "description": "The MCP endpoint (Streamable HTTP): `/mcp`.",
+      "type": "string"
+    },
+    "ops": {
+      "description": "Run one with `POST /api/v1/ops/{name}` (JSON in, JSON out; send the header `X-Flux-Request: 1`, and `X-Flux-Agent: <your name>`).",
+      "items": {
+        "description": "One operation, as `GET /api/v1/agent` lists it.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "destructive": {
+            "description": "It may replace or remove what's there (always undoable).",
+            "type": "boolean"
+          },
+          "effect": {
+            "description": "What an operation changes.",
+            "oneOf": [
+              {
+                "const": "read",
+                "description": "Nothing.",
+                "type": "string"
+              },
+              {
+                "const": "write",
+                "description": "The library's data, through a changeset you can undo (or a proposal).",
+                "type": "string"
+              },
+              {
+                "const": "act",
+                "description": "Server state outside the journal: lenses, scans.",
+                "type": "string"
+              }
+            ]
+          },
+          "idempotent": {
+            "description": "Calling it twice with the same input changes nothing more.",
+            "type": "boolean"
+          },
+          "input": {
+            "description": "The input's JSON Schema."
+          },
+          "name": {
+            "description": "`items.find`, … (over MCP the dots are underscores: `items_find`).",
+            "type": "string"
+          },
+          "output": {
+            "description": "The output's JSON Schema."
+          },
+          "title": {
+            "type": "string"
+          },
+          "who": {
+            "description": "Who may call it, in words.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "description",
+          "effect",
+          "who",
+          "idempotent",
+          "destructive",
+          "input",
+          "output"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "policy": {
+      "description": "What flux won't show agents, and the house rules.",
+      "properties": {
+        "rules": {
+          "description": "The rules, one sentence each.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "withheld": {
+          "description": "Providers whose content flux never shows an agent, because their terms forbid using it with AI (`tmdb`). Fields from them are listed under `withheld` instead of their values: fill them from the open web, in your own words, with sources.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "withheld",
+        "rules"
+      ],
+      "type": "object"
+    },
+    "schemas": {
+      "description": "Schemas by name, at `/api/v1/schemas/{name}`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "server": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "skills": {
+      "items": {
+        "description": "A skill flux ships for agents (`skills/<name>/SKILL.md`).",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "description": "Where to fetch its `SKILL.md`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "url"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract",
+    "server",
+    "ops",
+    "mcp",
+    "skills",
+    "schemas",
+    "policy"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

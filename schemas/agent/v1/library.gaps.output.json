@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`library.gaps` output.",
+  "properties": {
+    "libraries": {
+      "items": {
+        "properties": {
+          "gaps": {
+            "description": "Items lacking each thing. `null`: the gap doesn't apply to the library's kind (a videos library is never matched).",
+            "properties": {
+              "backdrop": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "episode_titles": {
+                "description": "Shows with placeholder episode titles (and, in `episodes`, the episodes).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "identity": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offline": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "overview": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "poster": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "year": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Top-level items.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "What kind of library a root belongs to. It is a strong prior for parsing: `Show 1x03.mkv` in a movie library is still probably an episode, but `1917.mkv` in a movie library is a title, not an episode number.",
+            "oneOf": [
+              {
+                "enum": [
+                  "movies",
+                  "shows",
+                  "mixed"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "videos",
+                "description": "Home videos, clips and anything else that is neither a film nor a series (Plex's \"Other Videos\"): every file is its own item, titled after the file and browsed by folder. Nothing is grouped (no shows, versions or extras; only a true multi-part stack is one item) and nothing is matched against a metadata source.",
+                "type": "string"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "placeholder_episodes": {
+            "description": "Episodes titled \"Episode N\".",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "items",
+          "gaps"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "libraries"
+  ],
+  "title": "GapsOutput",
+  "type": "object"
+}

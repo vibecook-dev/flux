@@ -1,0 +1,680 @@
+/* Shelf: VHS tapes on floating wall shelves. Tokens are scoped to the lens; spines take their colour from the art. */
+.shelf {
+  --sh-wall-1: rgb(22 22 26 / 0.84);
+  --sh-wall-2: rgb(8 8 10 / 0.94);
+  --sh-light: rgb(255 236 212 / 0.085);
+  --sh-board-top-1: #36363d;
+  --sh-board-top-2: #141417;
+  --sh-board-edge-1: #2c2c32;
+  --sh-board-edge-2: #19191d;
+  --sh-board-hi: rgb(255 255 255 / 0.18);
+  --sh-shadow: rgb(0 0 0 / 0.62);
+  --sh-end-1: #4b4c53;
+  --sh-end-2: #222329;
+  --sh-tag-bg: #f2f0ea;
+  --sh-tag-ink: #141416;
+  --sh-shade: rgb(0 0 0 / 0.8);
+  --sh-shade-1: rgb(0 0 0 / 0.62);
+  background:
+    radial-gradient(80% 50% at 50% -6%, var(--sh-light), transparent 70%),
+    linear-gradient(to bottom, var(--sh-wall-1), var(--sh-wall-2));
+}
+
+:root[data-theme='light'] .shelf {
+  --sh-wall-1: rgb(242 243 245 / 0.84);
+  --sh-wall-2: rgb(220 223 228 / 0.94);
+  --sh-light: rgb(255 255 255 / 0.75);
+  --sh-board-top-1: #ffffff;
+  --sh-board-top-2: #dfe0e4;
+  --sh-board-edge-1: #f8f8f9;
+  --sh-board-edge-2: #d8d9de;
+  --sh-board-hi: rgb(255 255 255 / 1);
+  --sh-shadow: rgb(30 34 52 / 0.24);
+  --sh-end-1: #c8cbd2;
+  --sh-end-2: #9da1aa;
+  --sh-tag-bg: #ffffff;
+  --sh-tag-ink: #141416;
+  --sh-shade: rgb(0 0 0 / 0.6);
+  --sh-shade-1: rgb(0 0 0 / 0.4);
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  perspective: var(--persp, 1400px);
+  perspective-origin: 50% 15%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dragging {
+  cursor: grabbing;
+}
+
+.mini .scene {
+  pointer-events: none;
+}
+
+.world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* ── tapes ── */
+.slot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--tw, var(--w));
+  height: var(--h);
+  transform-style: preserve-3d;
+  cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tape {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform-origin: 50% 100% calc(var(--d) * -0.5);
+  transition: transform 0.62s var(--spring);
+}
+
+.slot:hover .tape,
+.kf .tape {
+  transform: translate3d(0, var(--hov-y), var(--pull)) rotateX(-5deg);
+}
+
+.out .tape {
+  transform: translate3d(0, var(--lift), var(--out)) rotateY(0deg);
+  transition: transform 0.36s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+.out.open .tape {
+  transform: translate3d(0, var(--lift), var(--out)) rotateY(-90deg) scale(1.05);
+  transition: transform 0.72s var(--spring);
+}
+
+.face {
+  position: absolute;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+.top {
+  left: 0;
+  top: calc(var(--d) * -1);
+  width: var(--tw, var(--w));
+  height: var(--d);
+  transform-origin: 50% 100%;
+  transform: rotateX(90deg);
+  background: linear-gradient(to top, var(--sp-top), color-mix(in oklab, var(--sp-top) 55%, #000));
+  border-radius: 1.5px;
+}
+
+.right {
+  left: var(--tw, var(--w));
+  top: 0;
+  width: var(--d);
+  height: var(--h);
+  transform-origin: 0 50%;
+  transform: rotateY(90deg);
+  background: var(--sp-bg2);
+  border-radius: 1.5px;
+  overflow: hidden;
+}
+
+/* The sleeve is the poster (built by art.ts, so frame/AI art keeps its label). */
+.right .sleeve {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 1.5px;
+}
+
+.right::after,
+.left::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--sh-shade-1), var(--sh-shade));
+  transition: opacity 0.5s var(--out);
+}
+
+.slot:hover .right::after,
+.slot:hover .left::after,
+.kf .right::after,
+.kf .left::after {
+  opacity: 0.55;
+}
+
+.right::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 28%, rgb(255 255 255 / 0.13) 44%, transparent 58%);
+  opacity: 0;
+  transition: opacity 0.6s var(--out) 0.2s;
+}
+
+.open .right::after {
+  opacity: 0;
+}
+
+.open .right::before {
+  opacity: 1;
+}
+
+.left {
+  left: calc(var(--d) * -1);
+  top: 0;
+  width: var(--d);
+  height: var(--h);
+  transform-origin: 100% 50%;
+  transform: rotateY(-90deg);
+  background: linear-gradient(to bottom, var(--sp-bg), var(--sp-bg2));
+  color: var(--sp-ink);
+  border-radius: 1.5px;
+  overflow: hidden;
+}
+
+.back {
+  position: absolute;
+  inset: 8% 10%;
+  font-size: calc(var(--d) * 0.05);
+  line-height: 1.35;
+  opacity: 0.78;
+}
+
+.back b {
+  display: block;
+  font-family: var(--font-cond);
+  font-stretch: 70%;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 1.7em;
+  line-height: 1;
+  margin-bottom: 0.6em;
+}
+
+.back p {
+  margin: 0 0 0.9em;
+}
+
+.back span {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+/* ── spines ── */
+.spine {
+  left: 0;
+  top: 0;
+  width: var(--tw, var(--w));
+  height: var(--h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 1.5px;
+  color: var(--sp-ink);
+  background: linear-gradient(to bottom, var(--sp-bg), var(--sp-bg2));
+  box-shadow:
+    inset 1px 0 0 rgb(255 255 255 / 0.09),
+    inset -1px 0 0 rgb(0 0 0 / 0.42),
+    inset 0 1px 0 rgb(255 255 255 / 0.14);
+  transition: filter 0.3s var(--out);
+}
+
+.spine::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgb(255 255 255 / 0.11), transparent 26%, transparent 68%, rgb(0 0 0 / 0.3)),
+    linear-gradient(90deg, transparent 6%, rgb(255 255 255 / 0.08) 20%, transparent 34%, transparent 76%, rgb(0 0 0 / 0.2));
+}
+
+.slot:hover .spine,
+.kf .spine {
+  filter: brightness(1.14) saturate(1.05);
+}
+
+.slot:focus-visible .spine,
+.kf .spine {
+  outline: 2px solid color-mix(in oklab, var(--focus) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* A drive that isn't answering: the tape stays on the shelf, greyed, and says so. */
+.offline .spine {
+  filter: grayscale(0.9) brightness(0.62);
+}
+
+.offline:hover .spine,
+.offline.kf .spine {
+  filter: grayscale(0.9) brightness(0.8);
+}
+
+.cap {
+  flex: none;
+  width: 100%;
+  height: calc(var(--h) * 0.115);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--yr);
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.capOff {
+  font-size: max(5px, calc(var(--w) * 0.16));
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
+.num {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-right: 1px;
+}
+
+.title {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--w) * 0.08);
+  overflow: hidden;
+}
+
+.title > span:first-child {
+  flex: none;
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  font-family: var(--font-cond);
+  font-stretch: 62%;
+  font-weight: 800;
+  font-size: var(--fs0);
+  line-height: 1;
+  letter-spacing: 0.012em;
+}
+
+.a {
+  font-size: 0.6em;
+  font-weight: 700;
+  margin-inline-end: 0.3em;
+  opacity: 0.9;
+}
+
+.sub {
+  font-size: 0.56em;
+  font-weight: 700;
+  margin-inline-start: 0.4em;
+  opacity: 0.85;
+}
+
+.chap {
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: max(6px, calc(var(--w) * 0.2));
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+
+.foot {
+  flex: none;
+  width: 100%;
+  height: calc(var(--h) * 0.135);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.foot svg {
+  display: block;
+  width: calc(var(--w) * 0.5);
+  height: auto;
+  color: currentColor;
+  opacity: 0.78;
+}
+
+.lbl {
+  font-family: var(--font-mono);
+  font-size: max(5px, calc(var(--w) * 0.15));
+  letter-spacing: 0.14em;
+  opacity: 0.55;
+}
+
+/* Studio: a deep colour of the film, rules in its accent. */
+.studio .cap,
+.box .cap {
+  box-shadow: inset 0 -2px 0 var(--sp-acc);
+}
+
+.studio .foot,
+.box .foot {
+  box-shadow: inset 0 2px 0 var(--sp-acc);
+}
+
+.box .cap {
+  box-shadow:
+    inset 0 -2px 0 var(--sp-acc),
+    inset 0 -5px 0 var(--sp-bg),
+    inset 0 -6px 0 var(--sp-acc);
+}
+
+/* Band: a block of colour at the top, the title in the same colour on black. */
+.band .cap {
+  height: calc(var(--h) * 0.2);
+  align-items: flex-end;
+  padding-bottom: calc(var(--w) * 0.18);
+  background: var(--sp-acc);
+  color: #111113;
+  font-weight: 500;
+}
+
+/* Number: a collector's edition, numbered, set wide and quiet. */
+.number .cap {
+  color: var(--sp-acc);
+}
+
+.number .title > span:first-child {
+  font-weight: 600;
+  font-stretch: 78%;
+  letter-spacing: 0.08em;
+  font-size: calc(var(--fs0) * 0.78);
+}
+
+/* Clamshells: ribbed plastic with a printed insert. */
+.clamw,
+.clamb {
+  border-radius: 2.5px;
+}
+
+.clamw {
+  background:
+    repeating-linear-gradient(to bottom, rgb(0 0 0 / 0.045) 0 1px, transparent 1px 4px),
+    linear-gradient(to bottom, var(--sp-bg), var(--sp-bg2));
+}
+
+.clamb {
+  background:
+    repeating-linear-gradient(to bottom, rgb(255 255 255 / 0.04) 0 1px, transparent 1px 4px),
+    linear-gradient(to bottom, var(--sp-bg), var(--sp-bg2));
+}
+
+.clamw .title,
+.clamb .title {
+  width: 72%;
+  border-radius: 1px;
+}
+
+.clamw .title {
+  background: #faf8f2;
+  color: #151518;
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.14);
+}
+
+.clamw .cap {
+  color: var(--sp-acc);
+}
+
+.clamb .title {
+  background: var(--sp-acc);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.14);
+}
+
+/* ── stickers ── */
+.st {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%) rotate(var(--rot, 0deg));
+  box-shadow: 0 1px 1.5px rgb(0 0 0 / 0.38);
+  pointer-events: none;
+}
+
+.stNew {
+  top: calc(var(--h) * 0.13);
+  padding: 2px 3px 1px;
+  border-radius: 2px;
+  background: #ffd84a;
+  color: #141414;
+  font-family: var(--font-cond);
+  font-stretch: 75%;
+  font-weight: 800;
+  font-size: max(7px, calc(var(--w) * 0.24));
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.stPrice {
+  bottom: calc(var(--h) * 0.15);
+  width: calc(var(--w) * 0.86);
+  padding: 2px 0 1px;
+  border-radius: 1.5px;
+  background: #fbfaf6;
+  color: #c6261c;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: max(6px, calc(var(--w) * 0.2));
+  text-align: center;
+  line-height: 1.1;
+}
+
+.stRewind {
+  top: 71%;
+  width: calc(var(--w) * 0.92);
+  padding: 2px 0;
+  border-radius: 1.5px;
+  background: #ffffff;
+  color: #cf261b;
+  font-family: var(--font-cond);
+  font-stretch: 70%;
+  font-weight: 800;
+  font-size: max(5px, calc(var(--w) * 0.15));
+  line-height: 1.05;
+  text-align: center;
+}
+
+.prog {
+  position: absolute;
+  top: 0;
+  right: 1.5px;
+  z-index: 2;
+  width: 2px;
+  height: calc(var(--p) * 100%);
+  border-radius: 0 0 2px 2px;
+  background: var(--sp-ink);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--sp-ink) 60%, transparent);
+  opacity: 0.9;
+}
+
+/* ── shelves, bookends, labels, light ── */
+.board {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: var(--bh);
+  transform-style: preserve-3d;
+  pointer-events: none;
+  transition:
+    width 0.5s var(--spring-soft),
+    transform 0.5s var(--spring-soft);
+}
+
+.boardEdge {
+  position: absolute;
+  inset: 0;
+  transform: translateZ(var(--lip));
+  border-radius: 1.5px;
+  background: linear-gradient(to bottom, var(--sh-board-hi) 0 1px, var(--sh-board-edge-1) 1px, var(--sh-board-edge-2));
+  box-shadow: 0 24px 32px -18px var(--sh-shadow);
+}
+
+.boardTop {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  top: calc(var(--bd) * -1);
+  height: var(--bd);
+  transform-origin: 50% 100%;
+  transform: translateZ(var(--lip)) rotateX(90deg);
+  background: linear-gradient(to top, var(--sh-board-top-1), var(--sh-board-top-2) 88%);
+}
+
+.glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  background: radial-gradient(56% 100% at 50% 0%, var(--sh-light), transparent 74%);
+  transition:
+    width 0.5s var(--spring-soft),
+    transform 0.5s var(--spring-soft);
+}
+
+.end {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--ew, 5px);
+  height: calc(var(--h) * 0.58);
+  transform-style: preserve-3d;
+  pointer-events: none;
+  transition: transform 0.5s var(--spring-soft);
+}
+
+.endFace {
+  position: absolute;
+  inset: 0;
+  border-radius: 1.5px 1.5px 0 0;
+  background: linear-gradient(90deg, var(--sh-board-hi) 0 1px, var(--sh-end-1) 1px, var(--sh-end-2));
+}
+
+.endSide {
+  position: absolute;
+  top: 0;
+  width: calc(var(--d) * 0.78);
+  height: 100%;
+  background: linear-gradient(90deg, var(--sh-end-1), var(--sh-end-2));
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+.endL .endSide {
+  left: calc(var(--d) * -0.78);
+  transform-origin: 100% 50%;
+  transform: rotateY(-90deg);
+}
+
+.endR .endSide {
+  left: 100%;
+  transform-origin: 0 50%;
+  transform: rotateY(90deg);
+}
+
+.tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 2px 6px 1px 5px;
+  border-radius: 2px;
+  background: var(--sh-tag-bg);
+  color: var(--sh-tag-ink);
+  font-family: var(--font-mono);
+  font-size: max(9px, calc(var(--w) * 0.26));
+  letter-spacing: 0.03em;
+  line-height: 1.25;
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.14),
+    0 1px 2px rgb(0 0 0 / 0.28);
+  pointer-events: none;
+  transition: transform 0.5s var(--spring-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tape,
+  .board,
+  .glow,
+  .end,
+  .tag {
+    transition: none;
+  }
+}
+
+/* ── the GPU Shelf: the canvas draws the room; invisible buttons stand in for the tapes in view ── */
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mini .canvas {
+  pointer-events: none;
+}
+
+.pointing {
+  cursor: pointer;
+}
+
+.mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.track {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+
+/* Invisible, but in the accessibility tree. */
+.ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  outline: none;
+  pointer-events: none;
+}
+
+.ghost[hidden] {
+  display: none;
+}

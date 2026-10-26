@@ -224,6 +224,15 @@ enum ProbeSrc<'a> {
     NotMedia,
 }
 
+/// What a file's fix says beyond its corrected guess ([`crate::fixes`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Pin {
+    /// The work the file belongs to.
+    pub of: Option<Id>,
+    /// The kind the fix gives it.
+    pub kind: Option<flux_core::agent::FixKind>,
+}
+
 /// Recompute bookkeeping shared by every write that changes file states or
 /// asset links.
 #[derive(Default)]
@@ -337,6 +346,21 @@ impl<'c> Apply<'c> {
         self.t.leaves.retain(|id| !deleted.contains(id));
         self.t.linked.retain(|id| !deleted.contains(id));
         self.t.parents.retain(|id| !deleted.contains(id));
+        // Items with new files take what the metadata files beside them
+        // say (a video found after its `.flux.json` or `.nfo`).
+        let fresh: Vec<Id> = {
+            let mut v: BTreeSet<Id> = self.r.created.iter().copied().collect();
+            v.extend(self.t.linked.iter().copied());
+            v.into_iter().filter(|id| !deleted.contains(id)).collect()
+        };
+        let described = crate::metafiles::apply_new_items(
+            self.conn,
+            self.root_id,
+            &fresh,
+            self.r.now,
+            self.r.job_max_attempts,
+        )?;
+        self.retitled.extend(described);
         let (updated, mut removed) = recompute(self.conn, self.r.now, &self.t, &self.r.created_meta)?;
         self.out.items_added = self
             .r
@@ -422,6 +446,98 @@ pub(crate) fn apply_batch(
             .execute(params![b.root_id, cursor])?;
     }
     ap.finish()
+}
+
+/// Place `files` again after their fixes changed ([`crate::fixes`]), as a
+/// re-parse places them: each by its stored guess, with the fix now in
+/// `file_fix`. `old` is the fix each was placed by before (for the retitle
+/// rules). Returns, per root, its library and what changed there.
+pub(crate) fn refix(
+    conn: &Connection,
+    files: &[(Id, Option<flux_core::agent::FileFix>)],
+    jobs: u32,
+) -> Result<Vec<(Id, ApplyOutcome)>> {
+    let mut list = Vec::with_capacity(files.len());
+    for (file, old_fix) in files {
+        let parsed = stored_guess(conn, *file)?.unwrap_or_else(NameGuess::unknown);
+        let old = match old_fix {
+            Some(f) => crate::fixes::apply(&parsed, f),
+            None => parsed,
+        };
+        list.push((*file, old));
+    }
+    place_again(conn, &list, jobs)
+}
+
+/// A file's stored guess.
+pub(crate) fn stored_guess(conn: &Connection, file: Id) -> Result<Option<NameGuess>> {
+    let json: Option<String> = conn
+        .prepare_cached("SELECT guess FROM file_meta WHERE file_id = ?1")?
+        .query_row([file], |r| r.get(0))
+        .optional()?
+        .flatten();
+    Ok(json.and_then(|j| parse_stored(file, "guess", &j)))
+}
+
+/// Place `files` again, each by its stored guess and its fix now, as a
+/// re-parse places them; with the guess each was placed by before (its fix
+/// applied), for the retitle rules: a file renamed (or re-fixed) takes the
+/// title its name gave its item along. Returns, per root, its library and
+/// what changed there.
+pub(crate) fn place_again(
+    conn: &Connection,
+    files: &[(Id, NameGuess)],
+    jobs: u32,
+) -> Result<Vec<(Id, ApplyOutcome)>> {
+    let mut by_root: std::collections::BTreeMap<Id, Vec<(Id, &NameGuess)>> =
+        std::collections::BTreeMap::new();
+    for (file, old) in files {
+        let root: Option<Id> = conn
+            .prepare_cached("SELECT root_id FROM file WHERE id = ?1")?
+            .query_row([file], |r| r.get(0))
+            .optional()?;
+        if let Some(root) = root {
+            by_root.entry(root).or_default().push((*file, old));
+        }
+    }
+    let mut out = Vec::with_capacity(by_root.len());
+    for (root, list) in by_root {
+        let (mut ap, _) = Apply::new(conn, root, 0, jobs)?;
+        for (file, old) in list {
+            let row: Option<(String, Option<Id>)> = conn
+                .prepare_cached("SELECT rel_path, asset_id FROM file WHERE id = ?1")?
+                .query_row([file], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            let Some((rel_path, asset)) = row else { continue };
+            let parsed = ap.load_guess(file)?.unwrap_or_else(NameGuess::unknown);
+            match crate::fixes::effective(conn, file, &parsed)? {
+                Some(e) => {
+                    let pin = Pin {
+                        of: e.of,
+                        kind: e.kind,
+                    };
+                    ap.place_by(file, &rel_path, asset, &e.guess, Some(old), ProbeSrc::Keep, pin)?;
+                }
+                None => ap.place_by(
+                    file,
+                    &rel_path,
+                    asset,
+                    &parsed,
+                    Some(old),
+                    ProbeSrc::Keep,
+                    Pin::default(),
+                )?,
+            }
+        }
+        if ap.placed_parent {
+            ap.retry_pending()?;
+        }
+        ap.regroup_word_extras()?;
+        ap.heal_titles()?;
+        let library = ap.r.library_id;
+        out.push((library, ap.finish()?));
+    }
+    Ok(out)
 }
 
 impl Apply<'_> {
@@ -859,9 +975,10 @@ impl Apply<'_> {
         Ok(json.and_then(|j| parse_stored(file_id, "probe", &j)))
     }
 
-    /// Place a file by its guess. `old`: the guess the file had before a
-    /// re-parse of the same path; a title its name gave an item follows
-    /// the new parse ([`Apply::retitle`]).
+    /// Place a file by its guess, corrected by the file's fix if it has one
+    /// ([`crate::fixes`]). `old`: the guess the file had before a re-parse
+    /// of the same path; a title its name gave an item follows the new
+    /// parse ([`Apply::retitle`]).
     fn place(
         &mut self,
         file_id: Id,
@@ -870,6 +987,60 @@ impl Apply<'_> {
         guess: &NameGuess,
         old: Option<&NameGuess>,
         probe: ProbeSrc<'_>,
+    ) -> Result<()> {
+        match crate::fixes::effective(self.conn, file_id, guess)? {
+            None => self.place_by(file_id, rel_path, current, guess, old, probe, Pin::default()),
+            Some(e) => {
+                let old = old
+                    .map(|o| crate::fixes::fixed(self.conn, file_id, o.clone()))
+                    .transpose()?;
+                let pin = Pin {
+                    of: e.of,
+                    kind: e.kind,
+                };
+                self.place_by(file_id, rel_path, current, &e.guess, old.as_ref(), probe, pin)
+            }
+        }
+    }
+
+    /// The work a fix pins a file to, if it is a top-level `kind` (`movie`,
+    /// `show`, or either for `None`) of this library; otherwise the file is
+    /// placed by its name.
+    fn pinned(&self, pin: &Pin, kind: Option<&str>) -> Result<Option<Id>> {
+        let Some(of) = pin.of else { return Ok(None) };
+        let found: Option<String> = self
+            .conn
+            .prepare_cached(
+                "SELECT kind FROM item WHERE id = ?1 AND parent_id IS NULL AND library_id = ?2
+                    AND kind IN ('movie', 'show')",
+            )?
+            .query_row(params![of, self.r.library_id], |r| r.get(0))
+            .optional()?;
+        Ok(match (found, kind) {
+            (Some(k), Some(want)) if k == want => Some(of),
+            (Some(_), None) => Some(of),
+            _ => {
+                tracing::debug!(
+                    of,
+                    "a file's fix pins it to a work that isn't there; placed by its name"
+                );
+                None
+            }
+        })
+    }
+
+    /// [`Apply::place`] with the guess already corrected: `pin` is what the
+    /// file's fix says beyond its guess.
+    #[allow(clippy::too_many_arguments)]
+    fn place_by(
+        &mut self,
+        file_id: Id,
+        rel_path: &str,
+        current: Option<Id>,
+        guess: &NameGuess,
+        old: Option<&NameGuess>,
+        probe: ProbeSrc<'_>,
+        pin: Pin,
     ) -> Result<()> {
         let conn = self.conn;
         if matches!(probe, ProbeSrc::Keep) && self.not_media(file_id)? {
@@ -894,13 +1065,23 @@ impl Apply<'_> {
                 self.link(file_id, current, &[item], edition.as_deref(), part, guess, probe)?;
             }
             Placement::Movie { work, edition, part } => {
-                if let Some((film, x)) = self.word_extra(guess, rel_path)? {
-                    let item = group::resolve_extra(conn, &mut self.r, film, &x)?;
-                    self.link(file_id, current, &[item], None, None, guess, probe)?;
-                    return Ok(());
+                // A file fixed to be a film (or pinned to one) is not taken
+                // for an extra of the film beside its folder.
+                let fixed_film = pin.of.is_some() || pin.kind == Some(flux_core::agent::FixKind::Movie);
+                if !fixed_film {
+                    if let Some((film, x)) = self.word_extra(guess, rel_path)? {
+                        let item = group::resolve_extra(conn, &mut self.r, film, &x)?;
+                        self.link(file_id, current, &[item], None, None, guess, probe)?;
+                        return Ok(());
+                    }
                 }
-                let item = group::resolve_work(conn, &mut self.r, "movie", &work, None)?;
-                if let Some(Placement::Movie { work: was, .. }) = &was {
+                let item = match self.pinned(&pin, Some("movie"))? {
+                    Some(p) => p,
+                    None => group::resolve_work(conn, &mut self.r, "movie", &work, None)?,
+                };
+                // A file fixed to belong to a work never names it: its own
+                // name names another (the work it was merged from).
+                if let (Some(Placement::Movie { work: was, .. }), None) = (&was, pin.of) {
                     self.retitle(item, &was.title, &work.title)?;
                 }
                 if was.is_some() {
@@ -923,7 +1104,17 @@ impl Apply<'_> {
                     Some(a) => show_of_asset(conn, a)?,
                     None => None,
                 };
-                let show_id = group::resolve_work(conn, &mut self.r, "show", &show, prefer)?;
+                let show_id = match self.pinned(&pin, Some("show"))? {
+                    Some(p) => {
+                        // The show owns the file's folder now, so the files
+                        // beside it join it too.
+                        if let Some(folder) = &show.folder {
+                            group::claim_folder(conn, &mut self.r, p, folder)?;
+                        }
+                        p
+                    }
+                    None => group::resolve_work(conn, &mut self.r, "show", &show, prefer)?,
+                };
                 // The episode the old parse put this file in, and the title
                 // it gave it (single-episode files name their episode).
                 let mut was_episode: Option<String> = None;
@@ -935,7 +1126,9 @@ impl Apply<'_> {
                     ..
                 }) = &was
                 {
-                    self.retitle(show_id, &was_show.title, &show.title)?;
+                    if pin.of.is_none() {
+                        self.retitle(show_id, &was_show.title, &show.title)?;
+                    }
                     if let ([ep], true) = (was_eps.as_slice(), (*was_season, was_eps) == (season, &episodes))
                     {
                         was_episode = Some(group::episode_title(ep, was_title.as_deref()));
@@ -977,8 +1170,10 @@ impl Apply<'_> {
                 self.placed_parent = true;
                 self.link(file_id, current, &items, None, None, guess, probe)?;
             }
-            Placement::Extra(x) => match group::find_extra_parent(conn, self.r.library_id, self.root_id, &x)?
-            {
+            Placement::Extra(x) => match match self.pinned(&pin, None)? {
+                Some(p) => Some(p),
+                None => group::find_extra_parent(conn, self.r.library_id, self.root_id, &x)?,
+            } {
                 Some(parent) => {
                     let item = group::resolve_extra(conn, &mut self.r, parent, &x)?;
                     self.link(file_id, current, &[item], None, None, guess, probe)?;
@@ -1296,10 +1491,22 @@ impl Apply<'_> {
             let Some(guess) = guess.and_then(|g| parse_stored::<NameGuess>(id, "guess", &g)) else {
                 continue;
             };
+            let (guess, pin) = match crate::fixes::effective(self.conn, id, &guess)? {
+                Some(e) => (
+                    e.guess,
+                    Pin {
+                        of: e.of,
+                        kind: e.kind,
+                    },
+                ),
+                None => (guess, Pin::default()),
+            };
             if let Placement::Extra(x) = group::place_in(self.kind, self.root_id, &guess, &rel_path) {
-                if let Some(parent) =
-                    group::find_extra_parent(self.conn, self.r.library_id, self.root_id, &x)?
-                {
+                let parent = match self.pinned(&pin, None)? {
+                    Some(p) => Some(p),
+                    None => group::find_extra_parent(self.conn, self.r.library_id, self.root_id, &x)?,
+                };
+                if let Some(parent) = parent {
                     let item = group::resolve_extra(self.conn, &mut self.r, parent, &x)?;
                     self.link(id, None, &[item], None, None, &guess, ProbeSrc::Keep)?;
                 }

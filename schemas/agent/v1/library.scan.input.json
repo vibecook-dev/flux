@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`library.scan` input.",
+  "properties": {
+    "library": {
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "library"
+  ],
+  "title": "ScanInput",
+  "type": "object"
+}

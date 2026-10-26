@@ -1,0 +1,324 @@
+/* Flow: covers on a glossy floor, lit by the room. */
+.flow {
+  --flow-refl: 0.34;
+  --flow-shade: 0.55;
+  --flow-contact: rgb(0 0 0 / 0.7);
+  --flow-r: 7px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+:root[data-theme='light'] .flow {
+  --flow-refl: 0.2;
+  --flow-contact: rgb(24 28 44 / 0.34);
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+}
+
+.cover {
+  position: absolute;
+  left: calc(50% - var(--cw) / 2);
+  top: calc(var(--floor) - var(--ch));
+  width: var(--cw);
+  height: var(--ch);
+  border-radius: var(--flow-r);
+  transform-origin: 50% 50%;
+  will-change: transform;
+  cursor: pointer;
+  -webkit-box-reflect: below 2px linear-gradient(transparent 64%, rgb(0 0 0 / var(--flow-refl)));
+}
+
+.art {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--flow-r);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.08);
+}
+
+/* Distance haze: covers in the stacks sink into the room's own colour. */
+.cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: var(--flow-r);
+  background: var(--bg);
+  opacity: calc(var(--sh, 0) * var(--flow-shade) * 1.6);
+  pointer-events: none;
+}
+
+.sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border-radius: var(--flow-r);
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(70% 55% at var(--mx, 50%) var(--my, 20%), rgb(255 255 255 / 0.26), transparent 70%),
+    linear-gradient(115deg, transparent 30%, rgb(255 255 255 / 0.07) 48%, transparent 62%);
+  mix-blend-mode: soft-light;
+  transition: opacity 0.35s var(--out);
+}
+
+.tilting .centre .sheen {
+  opacity: 1;
+}
+
+.centre {
+  cursor: zoom-in;
+}
+
+.dragging .cover {
+  cursor: grabbing;
+}
+
+.mini .cover {
+  cursor: default;
+}
+
+/* A glossy floor: a pool of light under the poster in front, and its contact shadow. */
+.floor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--floor);
+  height: calc(var(--ch) * 0.75);
+  pointer-events: none;
+  background:
+    radial-gradient(42% 70% at 50% 0%, color-mix(in oklab, var(--text) 7%, transparent), transparent 72%),
+    linear-gradient(to bottom, color-mix(in oklab, var(--text) 4%, transparent), transparent 40%);
+  -webkit-mask: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+  mask: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+}
+
+.contact {
+  position: absolute;
+  left: calc(50% - var(--cw) * 0.48);
+  width: calc(var(--cw) * 0.96);
+  top: calc(var(--floor) - 9px);
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--flow-contact), transparent);
+  filter: blur(5px);
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 0.2s linear;
+}
+
+/* The floor fades into the room, so reflections never fight the title. */
+.mist {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--floor) + 2px);
+  bottom: 0;
+  z-index: 1050;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in oklab, var(--bg) 58%, transparent) calc(var(--ch) * 0.2),
+    color-mix(in oklab, var(--bg) 82%, transparent) calc(var(--ch) * 0.36),
+    color-mix(in oklab, var(--bg) 86%, transparent)
+  );
+}
+
+/* The poster in front, named under the floor. */
+.title {
+  position: absolute;
+  left: 50%;
+  top: var(--title-y);
+  width: min(86vw, 680px);
+  height: 64px;
+  translate: -50% 0;
+  text-align: center;
+  pointer-events: none;
+  z-index: 1100;
+}
+
+.t {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateY(6px);
+  filter: blur(3px);
+  transition:
+    opacity 0.22s var(--out),
+    transform 0.4s var(--out),
+    filter 0.3s var(--out);
+}
+
+.t.on {
+  opacity: 1;
+  transform: none;
+  filter: none;
+  transition-delay: 0.04s;
+}
+
+.t b {
+  display: block;
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.t small {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Accessory: the scroll bar Cover Flow always had, made of glass. */
+.acc {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.accBtn {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--pill);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.accBtn:hover {
+  color: var(--text);
+  background: var(--glass-clear);
+}
+
+.accBtn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.next svg {
+  transform: scaleX(-1);
+}
+
+.accLabel {
+  min-width: 70px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+}
+
+.track {
+  position: relative;
+  width: 168px;
+  height: 44px;
+  margin: 0 6px;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: var(--pill);
+}
+
+.track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 4px;
+  background: var(--line);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.thumb {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 26px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 8px;
+  background: var(--text);
+  opacity: 0.86;
+  transition:
+    height 0.3s var(--spring),
+    margin-top 0.3s var(--spring),
+    opacity 0.2s;
+  will-change: transform;
+}
+
+.track:hover .thumb,
+.track:focus-visible .thumb,
+.scrubbing .thumb {
+  height: 12px;
+  margin-top: -6px;
+  opacity: 1;
+}
+
+@media (max-width: 640px) {
+  .track {
+    width: 86px;
+    margin: 0 8px;
+  }
+  .t b {
+    font-size: 1.125rem;
+  }
+}
+
+/* Flow on the GPU: the covers are drawn on a canvas; the floor, mist and title stay in the DOM. */
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* The covers in view, invisible: for screen readers and keyboard focus. */
+.option {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  opacity: 0;
+  border-radius: var(--flow-r);
+  outline: none;
+  pointer-events: none;
+}
+
+.option[hidden] {
+  display: none;
+}
+
+.gpu.over {
+  cursor: pointer;
+}
+
+.gpu.overCentre {
+  cursor: zoom-in;
+}
+
+.gpu.dragging {
+  cursor: grabbing;
+}

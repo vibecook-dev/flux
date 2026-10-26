@@ -4,6 +4,7 @@
 //! variant added to flux-core without updating this file fails to compile, and
 //! the TS mirror test then fails until `web/src/api/types.ts` is updated too.
 
+use flux_core::agent::*;
 use flux_core::api::*;
 use flux_core::*;
 use serde::Serialize;
@@ -355,11 +356,13 @@ fn tailnet_running() -> TailnetInfo {
         approve_url: None,
         tailnet_name: Some("tail1234.ts.net".into()),
         dns_name: Some("flux.tail1234.ts.net".into()),
-        url: Some("http://flux.tail1234.ts.net:8096".into()),
+        url: Some("https://flux.tail1234.ts.net:8096".into()),
         owner_login: Some("james@example.com".into()),
         key_expiry: None,
         system_tailscale: true,
         last_error: None,
+        https: true,
+        https_error: None,
     }
 }
 
@@ -372,7 +375,194 @@ fn tailnet_login() -> TailnetInfo {
         url: None,
         owner_login: None,
         system_tailscale: false,
+        https: false,
         ..tailnet_running()
+    }
+}
+
+fn changeset_summary() -> ChangesetSummary {
+    ChangesetSummary {
+        id: 3,
+        state: ChangesetState::Applied,
+        summary: "Identified Stalker (1979) from its Russian container title".into(),
+        agent: Some("claude-code".into()),
+        by: "james@example.com".into(),
+        created_at: 1_760_000_000_000,
+        decided_at: Some(1_760_000_000_000),
+        decided_by: Some("james@example.com".into()),
+        reverted_at: None,
+        reverted_by: None,
+        item_count: 1,
+        change_count: 2,
+        moves_files: false,
+    }
+}
+
+fn wiki() -> Link {
+    Link { url: "https://en.wikipedia.org/wiki/Stalker_(1979_film)".into(), title: Some("Wikipedia".into()) }
+}
+
+fn changeset() -> Changeset {
+    Changeset {
+        summary: changeset_summary(),
+        changes: vec![
+            Change {
+                item: 7,
+                title: Some("Stalker".into()),
+                field: "directors".into(),
+                before: None,
+                after: Some(json!(["Andrei Tarkovsky"])),
+                withheld: None,
+                sources: vec![wiki()],
+                state: ChangeState::Applied,
+            },
+            Change {
+                item: 7,
+                title: Some("Stalker".into()),
+                field: "overview".into(),
+                before: None,
+                after: Some(json!("A guide leads two men into the Zone.")),
+                withheld: Some("tmdb".into()),
+                sources: vec![wiki()],
+                state: ChangeState::Kept,
+            },
+        ],
+    }
+}
+
+fn stored_lens() -> StoredLens {
+    StoredLens {
+        id: "s-departure-board".into(),
+        everyone: false,
+        added_by: "james@example.com".into(),
+        agent: Some("claude-code".into()),
+        added_at: 1_760_000_000_000,
+        updated_at: 1_760_000_000_000,
+        spec: LensSpec {
+            name: "Departure board".into(),
+            blurb: "Titles on a split-flap board.".into(),
+            input: LensInput::Y,
+            step: 90.0,
+            window: 40,
+            animated: false,
+            css: ".lens .item { color: var(--text); }".into(),
+            scene: String::new(),
+            item: "<div class=\"art\"></div>{{title}}".into(),
+            layout: "function layout(items, view) { return items.map(() => ({})); }".into(),
+        },
+    }
+}
+
+fn collection() -> CollectionInfo {
+    CollectionInfo {
+        id: 3,
+        name: "Tarkovsky".into(),
+        description: Some("Andrei Tarkovsky's features".into()),
+        everyone: true,
+        rule: Some(CollectionRule { people: vec!["Andrei Tarkovsky".into()], year_from: Some(1960), ..CollectionRule::default() }),
+        count: 1,
+        cover: vec![7],
+        added_by: "james@example.com".into(),
+        agent: Some("claude-code".into()),
+        sources: vec![wiki()],
+        created_at: 1_760_000_000_000,
+        updated_at: 1_760_000_000_000,
+    }
+}
+
+fn agent_item_detail(guess: &NameGuess) -> AgentItemDetail {
+    let item = AgentItem {
+        id: 7,
+        kind: ItemKind::Movie,
+        library: 1,
+        parent: None,
+        title: "Stalker".into(),
+        year: Some(1979),
+        subtitle: None,
+        match_state: MatchState::Parsed,
+        gaps: vec![Gap::Backdrop],
+        poster: Some(ArtSource::Custom),
+        available: true,
+        path: Some("/media/Films/Stalker.1979.mkv".into()),
+    };
+    AgentItemDetail {
+        fields: Fields {
+            title: Some("Stalker".into()),
+            original_title: Some("Сталкер".into()),
+            year: Some(1979),
+            directors: Some(vec!["Andrei Tarkovsky".into()]),
+            cast: Some(vec![CastMember { name: "Alexander Kaidanovsky".into(), role: Some("Stalker".into()) }]),
+            languages: Some(vec!["ru".into()]),
+            countries: Some(vec!["SU".into()]),
+            links: Some(vec![wiki()]),
+            ids: Some([("wikidata".to_string(), "Q470613".to_string())].into()),
+            ..Fields::default()
+        },
+        sources: [(
+            "directors".to_string(),
+            FieldSource {
+                source: Source::Agent,
+                provider: None,
+                agent: Some("claude-code".into()),
+                by: Some("james@example.com".into()),
+                changeset: Some(3),
+                at: Some(1_760_000_000_000),
+                sources: vec![wiki()],
+            },
+        )]
+        .into(),
+        withheld: [("overview".to_string(), "tmdb".to_string())].into(),
+        match_confidence: None,
+        season_number: None,
+        episode_numbers: vec![],
+        files: vec![FileEvidence {
+            id: 70,
+            path: "Stalker.1979.mkv".into(),
+            root: "/media/Films".into(),
+            sidecars: vec!["Stalker.1979.nfo".into()],
+            fix: Some(FileFix { year: Some(1979), ..FileFix::default() }),
+            size: 4_000_000_000,
+            modified: Some(1_760_000_000_000),
+            available: true,
+            container: Some("MKV".into()),
+            duration_ms: Some(9_660_000),
+            container_title: Some("Сталкер".into()),
+            edition: None,
+            tracks: vec![TrackEvidence {
+                kind: "audio".into(),
+                codec: "AAC".into(),
+                language: Some("rus".into()),
+                title: None,
+                width: None,
+                height: None,
+                fps: None,
+                channels: Some(2),
+                hdr: None,
+                default: true,
+                forced: false,
+            }],
+            chapters: vec![],
+            subtitle_files: vec![],
+            parsed: Some(guess.clone()),
+        }],
+        folders: vec![],
+        art: vec![AgentArt {
+            id: 15,
+            kind: ArtKind::Poster,
+            source: ArtSource::Custom,
+            shown: true,
+            pinned: true,
+            width: Some(1000),
+            height: Some(1500),
+            credit: Some("Mosfilm".into()),
+            found_at: Some("https://en.wikipedia.org/wiki/Stalker_(1979_film)".into()),
+            generator: None,
+            url: Some("/api/v1/art/15".into()),
+            withheld: None,
+        }],
+        children: vec![],
+        changes: vec![changeset_summary()],
+        item,
     }
 }
 
@@ -393,13 +583,28 @@ fn main() {
         "Role": variants!(Role: Owner, Admin, Viewer, Kid, Guest),
         "ScanState": variants!(ScanState: Idle, Scanning, Watching, Unavailable, Error),
         "ItemKind": variants!(ItemKind: Movie, Show, Season, Episode, Extra),
-        "ArtSource": variants!(ArtSource: Provider, Local, Frame, Generated),
+        "ArtSource": variants!(ArtSource: Provider, Local, Frame, Generated, Custom),
         "ItemSort": variants!(ItemSort: Title, TitleDesc, Year, YearDesc, Added, AddedDesc),
         "FolderSort": variants!(FolderSort: Title, TitleDesc, Date, DateDesc),
         "ItemFilter": variants!(ItemFilter: Unwatched, InProgress, Uhd, Hdr),
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
         "MetadataSource": variants!(MetadataSource: None, Tmdb, Exports),
+        // The agent contract (flux_core::agent; web/src/api/agent.ts).
+        "Gap": variants!(Gap: Identity, Year, Overview, Poster, Backdrop, EpisodeTitles, Offline),
+        "MatchState": variants!(MatchState: Unmatched, Parsed, Matched, Locked),
+        "Source": variants!(Source: File, Provider, User, Agent, Sidecar),
+        "ChangesetState": variants!(ChangesetState: Proposed, Applied, Reverted, Rejected),
+        "ChangeState": variants!(ChangeState: Pending, Applied, Skipped, Reverted, Kept),
+        "ArtKind": variants!(ArtKind: Poster, Backdrop, Thumb, Logo),
+        "ArtOrigin": variants!(ArtOrigin: Found, Made, Generated),
+        "EditMode": variants!(EditMode: Apply, Propose),
+        "ErrorCode": variants!(ErrorCode: Invalid, NotFound, Forbidden, Conflict, Unavailable, TooLarge, Internal),
+        "LensInput": variants!(LensInput: X, Y, None),
+        "Effect": variants!(Effect: Read, Write, Act),
+        "FixKind": variants!(FixKind: Movie, Episode, Extra, Ignore),
+        "StepKind": variants!(StepKind: NewFolder, RenameFolder, MoveVideo, MoveCompanion, RemoveFolder),
+        "NamingScheme": variants!(NamingScheme: Standard),
     });
 
     // Display names used by Reason::explain (web/src/api/explain.ts mirrors them).
@@ -538,6 +743,7 @@ fn main() {
             path: "tailnet-direct".into(),
             tailnet_name: Some("flux.tail1234.ts.net".into()),
             metadata: MetadataInfo { source: MetadataSource::Tmdb },
+            https_url: Some("https://flux.tail1234.ts.net:8096".into()),
         }),
         "CreateLibrary": v(&CreateLibrary { name: "Movies".into(), kind: LibraryKind::Movies, roots: vec!["/m".into()] }),
         "Library": v(&Library {
@@ -604,7 +810,7 @@ fn main() {
         "PlanPreview": v(&PlanPreview::new(70, plans()[2].clone())),
         "MarkWatched": v(&MarkWatched { watched: true }),
         "TailnetInfo": v(&tailnet_running()),
-        "TailnetConnect": v(&TailnetConnect { mode: TailnetMode::Embedded }),
+        "TailnetConnect": v(&TailnetConnect { mode: TailnetMode::System, https: Some(true) }),
         "ProgressReport": v(&progress),
         "SessionDiagnostics": v(&SessionDiagnostics {
             session_id: "s1".into(),
@@ -622,7 +828,56 @@ fn main() {
             v(&Event::ItemsChanged { library_id: 1, added: vec![1], updated: vec![], removed: vec![2] }),
             v(&Event::SourceAvailability { library_id: 1, root: "/m".into(), available: false }),
             v(&Event::Tailnet { info: tailnet_login() }),
+            v(&Event::Changes { changeset: changeset_summary() }),
+            v(&Event::Lenses),
+            v(&Event::Collections),
         ],
+        "AgentItemDetail": v(&agent_item_detail(&name_guess)),
+        "ChangesListOutput": v(&ChangesListOutput { changesets: vec![changeset_summary()], next: None, proposed: 1 }),
+        "Changeset": v(&changeset()),
+        "Decided": v(&Decided {
+            changeset: changeset_summary(),
+            done: 2,
+            not_done: vec![NotDone { item: 7, field: "year".into(), reason: "it changed again since".into() }],
+        }),
+        "Lenses": v(&Lenses { lenses: vec![stored_lens()] }),
+        "FixOutput": v(&FixOutput {
+            changeset: Some(changeset_summary()),
+            files: vec![FixResult {
+                file: 71,
+                path: "Stalker (2).mkv".into(),
+                before: FilePlace { item: Some(8), title: Some("Stalker (2)".into()) },
+                after: Some(FilePlace { item: Some(7), title: Some("Stalker".into()) }),
+                fix: Some(FileFix { of: Some(7), ..FileFix::default() }),
+                unchanged: None,
+            }],
+        }),
+        "PlanOutput": v(&PlanOutput {
+            changeset: Some(changeset_summary()),
+            steps: vec![
+                PlanStep { step: StepKind::NewFolder, file: None, item: Some(7), root: "/media/Films".into(), from: None, to: Some("Stalker (1979)".into()) },
+                PlanStep { step: StepKind::MoveVideo, file: Some(70), item: Some(7), root: "/media/Films".into(), from: Some("Stalker.1979.mkv".into()), to: Some("Stalker (1979)/Stalker (1979).mkv".into()) },
+            ],
+            skipped: vec![PlanSkip { file: Some(72), item: Some(9), path: Some("x.mkv".into()), reason: "its drive doesn't answer".into() }],
+        }),
+        "Collections": v(&Collections { collections: vec![collection()] }),
+        "CollectionItems": v(&CollectionItems {
+            collection: collection(),
+            items: vec![agent_item_detail(&name_guess).item],
+            notes: [("7".to_string(), "Tarkovsky's last Soviet film".to_string())].into(),
+            next: None,
+            total: 1,
+        }),
+        "ErrorBody": v(&ErrorBody { error: OpError { code: ErrorCode::Conflict, message: "changeset 3 is reverted".into() } }),
+        "Manifest": v(&Manifest {
+            contract: CONTRACT.into(),
+            server: ServerAbout { name: "flux".into(), version: "0.1.0".into() },
+            ops: vec![],
+            mcp: "/mcp".into(),
+            skills: vec![SkillInfo { name: "flux".into(), description: "Work with a flux media server.".into(), url: "/api/v1/agent/skills/flux".into() }],
+            schemas: vec!["lens".into()],
+            policy: Policy { withheld: vec!["tmdb".into()], rules: vec!["Cite.".into()] },
+        }),
         "NameGuess": v(&name_guess),
     });
 

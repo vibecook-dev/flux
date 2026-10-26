@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::art::ArtStore;
-use crate::config::{persisted_tailnet, Config, LibrarySpec};
+use crate::config::{persisted_tailnet, persisted_tailnet_https, Config, LibrarySpec};
 use crate::events::EventBus;
 use crate::guard::HostAllowlist;
 use crate::net::{NetControl, TailnetView};
@@ -96,6 +96,7 @@ pub async fn build_state(
         tailnet: TailnetView::default(),
         hosts: HostAllowlist::new(&crate::config::host_name(), &cfg.allow_hosts),
         activity: Activity::default(),
+        mcp: Default::default(),
         started: t0,
         shutdown: CancellationToken::new(),
         cfg,
@@ -120,12 +121,17 @@ pub async fn start_with(
     } else {
         persisted_tailnet(&cfg.data_dir).unwrap_or(cfg.tailnet)
     };
+    let https = if cfg.tailnet_https_explicit {
+        cfg.tailnet_https
+    } else {
+        persisted_tailnet_https(&cfg.data_dir).unwrap_or(cfg.tailnet_https)
+    };
     let mut tasks = Vec::new();
     if let Some(rx) = scan_events {
         tasks.push(state.events.forward(rx));
     }
     let router = api::router(state.clone());
-    let net = net::start(&cfg, choice, router, state.clone())
+    let net = net::start(&cfg, choice, https, router, state.clone())
         .await
         .context("starting the listeners")?;
     let ready_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -133,10 +139,12 @@ pub async fn start_with(
         url = %format!("http://{}", net.local_addr),
         lan = ?net.lan_addr,
         tailnet = choice.as_str(),
+        tailnet_https = https,
         ready_ms = format!("{ready_ms:.1}"),
         "flux is ready"
     );
     crate::metadata::log_startup(&cfg.tmdb_exports);
+    write_server_file(&cfg.data_dir, net.local_addr);
 
     // Background work, after the API is up.
     {
@@ -247,6 +255,7 @@ impl Server {
             state, net, tasks, ..
         } = self;
         state.shutdown.cancel();
+        remove_server_file(&state.cfg.data_dir);
         net.shutdown(grace).await;
         let scanner = state.scanner.clone();
         let _ = tokio::task::spawn_blocking(move || scanner.shutdown(grace)).await;
@@ -262,6 +271,43 @@ impl Server {
             tracing::debug!(error = %e, "catalog writer shutdown");
         }
         tracing::info!("flux stopped");
+    }
+}
+
+/// The file in the data dir that tells the `flux` command line where this
+/// server listens (`server.json`): the local address, the process and the
+/// version. A stale one (a server that died) is harmless: the CLI tries
+/// the address, then the default.
+pub const SERVER_FILE: &str = "server.json";
+
+fn write_server_file(data_dir: &Path, local: SocketAddr) {
+    let host = match local.ip() {
+        ip if ip.is_unspecified() => "127.0.0.1".to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+        ip => ip.to_string(),
+    };
+    let body = serde_json::json!({
+        "url": format!("http://{host}:{}", local.port()),
+        "pid": std::process::id(),
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    let path = data_dir.join(SERVER_FILE);
+    let tmp = path.with_extension("json.part");
+    let ok = std::fs::write(&tmp, body.to_string()).and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = ok {
+        tracing::debug!(error = %e, "could not write {}", path.display());
+    }
+}
+
+fn remove_server_file(data_dir: &Path) {
+    let path = data_dir.join(SERVER_FILE);
+    // Only our own: another server may have started on this data dir since.
+    let ours = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|v| v["pid"] == std::process::id());
+    if ours {
+        let _ = std::fs::remove_file(path);
     }
 }
 

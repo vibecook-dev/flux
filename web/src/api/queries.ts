@@ -3,6 +3,7 @@
  * lets a detail page render its header instantly from the card that was
  * clicked (optimistic navigation) while the full ItemDetail loads.
  */
+import { manifest, op, type AgentItemDetail, type ChangesListOutput, type Collections, type Lenses } from './agent';
 import { api } from './client';
 import { prefetchQuery, useQuery } from './query';
 import type { Id, ItemDetail, ItemSummary } from './types';
@@ -15,6 +16,16 @@ export const keys = {
   children: (id: Id) => `children:${id}`,
   tailnet: 'tailnet',
   invites: 'invites',
+  /** Agents' and people's changesets (`changes.list`). */
+  changes: 'changes',
+  /** One item as the operations see it (`item.get`): details and where each came from. */
+  facts: (id: Id) => `facts:${id}`,
+  /** Lenses kept on the server (`lenses.list`). */
+  serverLenses: 'server-lenses',
+  /** `collections.list`. */
+  collections: 'collections',
+  /** `GET /api/v1/agent`. */
+  manifest: 'agent-manifest',
 } as const;
 
 export const useServer = () => useQuery(keys.server, api.server, { staleMs: 60_000 });
@@ -25,6 +36,13 @@ export const useChildren = (id: Id | null) =>
   useQuery(keys.children(id ?? -1), () => api.children(id ?? -1), { enabled: id !== null });
 export const useTailnet = () => useQuery(keys.tailnet, api.tailnet, { staleMs: 5_000 });
 export const useInvites = () => useQuery(keys.invites, api.invites);
+export const useChanges = (enabled = true) =>
+  useQuery(keys.changes, () => op<ChangesListOutput>('changes.list', { limit: 50 }), { staleMs: 5_000, enabled });
+export const useFacts = (id: Id) => useQuery(keys.facts(id), () => op<AgentItemDetail>('item.get', { item: id }));
+export const useServerLenses = (enabled = true) =>
+  useQuery(keys.serverLenses, () => op<Lenses>('lenses.list'), { staleMs: 30_000, enabled });
+export const useManifest = () => useQuery(keys.manifest, manifest, { staleMs: 300_000 });
+export const useCollections = () => useQuery(keys.collections, () => op<Collections>('collections.list'), { staleMs: 30_000 });
 
 const summaries = new Map<Id, ItemSummary>();
 

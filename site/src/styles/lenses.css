@@ -1,0 +1,392 @@
+/*
+ * Lenses: the app itself, living in the page (the web client in mock mode, in
+ * an iframe). It rises flat as you scroll to it (lenses.ts drives --tilt,
+ * --lift and --scale), cycles through its lenses while you watch, and stops as
+ * soon as you touch anything. Its glow takes the app's own room light.
+ */
+/* No stacking context here: in full screen the frame must rise above the page (z-index 90). */
+.app-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.app-glow {
+  position: absolute;
+  z-index: 0;
+  left: 2%;
+  right: 2%;
+  top: 20%;
+  bottom: -16%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--glow), white 12%), transparent);
+  filter: blur(80px);
+  opacity: 0.75;
+  transition: --glow 1.4s var(--out);
+  pointer-events: none;
+}
+
+.app-frame {
+  --tilt: 0deg;
+  --lift: 0px;
+  --scale: 1;
+  position: relative;
+  z-index: 1;
+  width: min(1280px, 100%, calc(78svh * 1.6));
+  aspect-ratio: 16 / 10;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #09090b;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.1),
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 70px 120px -50px rgb(0 0 0 / 0.95),
+    0 30px 60px -30px rgb(0 0 0 / 0.7);
+  transform: perspective(2200px) translateY(var(--lift)) rotateX(var(--tilt)) scale(var(--scale));
+  transform-origin: 50% 85%;
+  will-change: transform;
+  transition: box-shadow 0.5s var(--out);
+}
+
+/* Clicked into: the wheel now scrolls the app, and the rim says so. */
+.app-frame[data-engaged] {
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.24),
+    0 0 0 5px rgb(255 255 255 / 0.04),
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 70px 120px -50px rgb(0 0 0 / 0.95),
+    0 30px 60px -30px rgb(0 0 0 / 0.7);
+}
+
+.app-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #09090b;
+  opacity: 0;
+  transition: opacity 0.9s var(--out);
+}
+
+.app-frame[data-ready] iframe {
+  opacity: 1;
+}
+
+.app-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(70% 60% at 50% 40%, rgb(255 255 255 / 0.04), transparent 70%),
+    #09090b;
+  transition: opacity 0.7s var(--out);
+}
+
+.app-loading .mark {
+  width: 46px;
+  height: 36px;
+  fill: var(--text-2);
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.app-frame[data-ready] .app-loading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* On touch screens a tap opens flux full screen; on a computer the app takes the pointer directly. */
+.app-tap {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+@media (pointer: coarse) {
+  .app-tap {
+    display: block;
+  }
+}
+
+.app-expand,
+.app-close {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: var(--text);
+  transition:
+    opacity 0.3s var(--out),
+    transform 0.6s var(--spring),
+    background-color 0.25s var(--out);
+}
+
+.app-expand {
+  top: 12px;
+  left: 12px;
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+.app-frame:hover .app-expand,
+.app-expand:focus-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.app-expand:hover,
+.app-close:hover {
+  background-color: var(--glass-hi);
+}
+
+@media (pointer: coarse) {
+  .app-expand {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Top left, where the app keeps nothing of its own (its menu is top right). */
+.app-close {
+  display: none;
+  top: max(14px, env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+}
+
+.app-expand svg,
+.app-close svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Full screen: the same iframe (moving it would reload the app), fixed to the window. */
+.app-frame[data-full] {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  aspect-ratio: auto;
+  border-radius: 0;
+  transform-origin: 0 0;
+}
+
+.app-frame[data-full] .app-close {
+  display: grid;
+}
+
+.app-frame[data-full] .app-expand,
+.app-frame[data-full] .app-tap {
+  display: none;
+}
+
+html[data-app-full] {
+  overflow: hidden;
+}
+
+.app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 89;
+  background: rgb(4 4 6 / 0.7);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  opacity: 0;
+  transition: opacity 0.5s var(--out);
+}
+
+.app-backdrop[data-on] {
+  opacity: 1;
+}
+
+/* ── The lenses, as tabs that drive the app ── */
+
+.lens-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  width: min(1280px, 100%);
+  margin: 30px auto 0;
+}
+
+.lens-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 16px 20px;
+  border-radius: 18px;
+  text-align: left;
+  color: var(--text-3);
+  transition:
+    color 0.3s var(--out),
+    background-color 0.3s var(--out),
+    box-shadow 0.3s var(--out),
+    transform 0.6s var(--spring);
+}
+
+.lens-tab:hover {
+  color: var(--text-2);
+  background-color: rgb(255 255 255 / 0.025);
+}
+
+.lens-tab:active {
+  transform: scale(0.98);
+}
+
+.lens-tab[aria-selected='true'] {
+  color: var(--text);
+  background-color: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09);
+}
+
+.tab-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16.5px;
+  font-weight: 500;
+}
+
+.tab-head svg {
+  width: 21px;
+  height: 21px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tab-line {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-3);
+  transition: color 0.3s var(--out);
+}
+
+.lens-tab[aria-selected='true'] .tab-line {
+  color: var(--text-2);
+}
+
+/* While the lenses take turns, the one showing counts down to the next. */
+.tab-progress {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 9px;
+  height: 2px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.08);
+  opacity: 0;
+  transition: opacity 0.4s var(--out);
+}
+
+.tab-progress i {
+  display: block;
+  height: 100%;
+  background: var(--text-2);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+}
+
+.lens-tabs[data-cycling] .lens-tab[aria-selected='true'] .tab-progress {
+  opacity: 1;
+}
+
+/* On a computer each tab carries its own line; on a phone the chosen one's line shows below. */
+.lens-line {
+  display: none;
+  max-width: 520px;
+  min-height: 3.2em;
+  margin: 16px auto 0;
+  text-align: center;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  transition:
+    opacity 0.35s var(--out),
+    transform 0.5s var(--spring);
+}
+
+.lens-line[data-swap] {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.lenses .fineprint {
+  margin-top: 22px;
+  color: var(--text-4);
+}
+
+@media (max-width: 900px) {
+  .lens-tabs {
+    gap: 4px;
+  }
+
+  .lens-tab {
+    align-items: center;
+    gap: 6px;
+    padding: 12px 4px 16px;
+    text-align: center;
+  }
+
+  .tab-head {
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .tab-line {
+    display: none;
+  }
+
+  .tab-progress {
+    left: 12px;
+    right: 12px;
+    bottom: 6px;
+  }
+
+  .lens-line {
+    display: block;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-frame {
+    width: 100%;
+    aspect-ratio: 9 / 15;
+    max-height: 72svh;
+    border-radius: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-loading .mark {
+    animation: none;
+  }
+}

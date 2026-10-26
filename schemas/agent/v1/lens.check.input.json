@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Input holding a lens as written (checked for you, with defaults filled in).",
+  "properties": {
+    "spec": {
+      "description": "A lens: one way of seeing the library, written as data (docs/LENSES.md, \"The lens kit\"). flux removes from it anything that could run or load (scripts, links, images, `url()`, inline styles) and runs `layout` in a locked-down worker.",
+      "properties": {
+        "animated": {
+          "description": "Ask for a frame every tick (only if `layout` moves things by itself with `view.t`).",
+          "type": "boolean"
+        },
+        "blurb": {
+          "description": "One plain sentence: what it looks like and how you move through it (at most 160).",
+          "type": "string"
+        },
+        "css": {
+          "description": "The look. Every selector starts with `.lens` (at most 14,000 characters).",
+          "type": "string"
+        },
+        "input": {
+          "description": "Which scroll axis moves through the titles.",
+          "oneOf": [
+            {
+              "enum": [
+                "x",
+                "y"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "none",
+              "description": "Only the arrow keys.",
+              "type": "string"
+            }
+          ]
+        },
+        "item": {
+          "description": "HTML for one title, with `{{title}}`, `{{year}}`, … and `<div class=\"art\"></div>` where the poster goes (at most 4,000).",
+          "type": "string"
+        },
+        "layout": {
+          "description": "Source of `function layout(items, view)` (at most 16,000).",
+          "type": "string"
+        },
+        "name": {
+          "description": "One or two words (at most 28 characters).",
+          "type": "string"
+        },
+        "scene": {
+          "description": "Static HTML behind the titles, decoration only (at most 4,000).",
+          "type": "string"
+        },
+        "step": {
+          "description": "Pixels of scroll or drag per title (30–600).",
+          "format": "double",
+          "type": "number"
+        },
+        "window": {
+          "description": "Titles drawn either side of the position (8–150).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "blurb",
+        "input",
+        "step",
+        "window",
+        "animated",
+        "css",
+        "scene",
+        "item",
+        "layout"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "spec"
+  ],
+  "title": "LensCheckInput",
+  "type": "object"
+}

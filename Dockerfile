@@ -95,6 +95,7 @@ RUN groupadd --gid 1000 flux \
  && mkdir -p /config /media \
  && chown flux:flux /config \
  && ln -s /opt/flux/bin/flux-server /usr/local/bin/flux-server \
+ && if [ -x /opt/flux/bin/flux ]; then ln -s /opt/flux/bin/flux /usr/local/bin/flux; fi \
  && flux-server --version
 
 # In a container the listener binds every interface. Only callers on the

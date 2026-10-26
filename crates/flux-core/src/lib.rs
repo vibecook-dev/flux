@@ -1,7 +1,8 @@
 //! Shared domain types for flux.
 //!
 //! This crate is the contract between flux's engine crates. It holds plain
-//! data (no async, one dependency, plus the Windows API bindings on Windows)
+//! data (no async; serde and serde_json, plus the Windows API bindings on
+//! Windows, and `schemars` behind the `schema` feature)
 //! so every crate can depend on it without pulling anything else in. There
 //! are two exceptions to "no I/O": [`file_id`], the file identity every
 //! crate that opens media files must agree on, and [`tool`], which only
@@ -11,9 +12,13 @@
 //! - [`names`]: what a filename/folder parser guesses (title, year, SxxEyy, …).
 //! - [`plan`]: client capabilities and the explainable playback plan.
 //! - [`api`]: JSON shapes of the HTTP API shared by the server and the web client.
+//! - [`agent`]: the agent contract (`flux.agent/1`): what flux's operations
+//!   take and return over HTTP, the `flux` CLI and MCP. With the `schema`
+//!   feature these types (and the ones they use) also derive JSON Schemas.
 //! - [`file_id`]: which file a path or open handle names (Unix inodes, Windows file ids).
 //! - [`tool`]: how every crate starts ffmpeg, ffprobe and other helpers.
 
+pub mod agent;
 pub mod api;
 pub mod file_id;
 pub mod media;

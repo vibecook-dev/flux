@@ -153,7 +153,51 @@ function ConnectPanel({ t, onChange }: { t: TailnetInfo; onChange: (s: TailnetIn
   return null;
 }
 
-function ConnectedPanel({ t }: { t: TailnetInfo }) {
+/**
+ * HTTPS on the tailnet: browsers keep some features for secure pages (WebGPU,
+ * so the GPU-drawn lenses), and plain HTTP from another device isn't one.
+ */
+function HttpsRow({ t, onChange, onRestart }: { t: TailnetInfo; onChange: (s: TailnetInfo) => void; onRestart: (running: TailnetInfo) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const serving = t.https && !!t.url?.startsWith('https://');
+  const toggle = () => {
+    setBusy(true);
+    setErr(null);
+    onRestart(t);
+    api
+      .connectTailnet(t.mode, !t.https)
+      .then(onChange, (e: unknown) => setErr(e instanceof Error ? e.message : 'Couldn’t change HTTPS.'))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className={styles.https}>
+      <div className={styles.httpsText}>
+        <p className={styles.httpsTitle} id="https-title">
+          <Icon name="lock" /> Secure link (HTTPS)
+        </p>
+        <p className={styles.hint}>
+          Browsers save some features for secure pages, the GPU-drawn lenses among them. flux uses your tailnet’s own certificate, so its name appears in public certificate logs. http:// links keep working.
+        </p>
+        {t.https && !serving && !t.https_error && (
+          <p className={styles.waiting} role="status">
+            <span className={styles.pulse} aria-hidden="true" /> Getting the certificate…
+          </p>
+        )}
+        {t.https_error && (
+          <p className={styles.notice}>
+            <Icon name="warning" />
+            <span>{t.https_error}</span>
+          </p>
+        )}
+        {err && <p className={styles.error}>{err}</p>}
+      </div>
+      <button type="button" role="switch" aria-checked={t.https} aria-labelledby="https-title" className={styles.switch} disabled={busy} onClick={toggle} />
+    </div>
+  );
+}
+
+function ConnectedPanel({ t, onChange, onRestart }: { t: TailnetInfo; onChange: (s: TailnetInfo) => void; onRestart: (running: TailnetInfo) => void }) {
   const url = t.url ?? `http://${t.dns_name ?? 'flux'}`;
   return (
     <div className={`${styles.panelBody} ${styles.connected}`}>
@@ -186,6 +230,7 @@ function ConnectedPanel({ t }: { t: TailnetInfo }) {
         <QrCode value={url} size={148} label={`QR code to open ${url}`} />
         <span className="edge">Open on your phone</span>
       </div>
+      <HttpsRow t={t} onChange={onChange} onRestart={onRestart} />
     </div>
   );
 }
@@ -305,6 +350,10 @@ export default function Connect() {
   const invites = useInvites();
   const server = useServer();
   const t = tailnet.data;
+  // Switching HTTPS restarts the tailnet listener, which reports `starting`
+  // for a moment: keep showing the server as it was connected meanwhile.
+  const [held, setHeld] = useState<TailnetInfo | null>(null);
+  const connected = t?.state === 'running' ? t : t?.state === 'starting' && held ? { ...held, https: t.https, https_error: null } : null;
   const onChange = useCallback((s: TailnetInfo) => {
     setQueryData(keys.tailnet, s);
     if (s.state === 'running') invalidateQueries(keys.server);
@@ -332,10 +381,10 @@ export default function Connect() {
             <div className={`skeleton ${styles.panelSkeleton}`} />
           ) : (
             <section className={styles.panel} aria-label="Server connection">
-              {t.state === 'running' ? <ConnectedPanel t={t} /> : <ConnectPanel t={t} onChange={onChange} />}
+              {connected ? <ConnectedPanel t={connected} onChange={onChange} onRestart={setHeld} /> : <ConnectPanel t={t} onChange={onChange} />}
             </section>
           )}
-          {t?.state === 'running' && <InvitePanel invites={invites.data ?? []} />}
+          {connected && <InvitePanel invites={invites.data ?? []} />}
         </div>
       </div>
     </div>

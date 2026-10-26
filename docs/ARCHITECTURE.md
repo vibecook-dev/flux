@@ -23,7 +23,7 @@ The research behind every decision here is in `research/01..09`. This document i
    - The matcher returns a confidence and evidence.
 4. **Bounded everything.** Bounded queues, per-device I/O admission, explicit caches, cancellation tokens.
 5. **Never mistake "unreachable" for "deleted".** An asleep NAS makes items *unavailable*, never removed.
-6. **AI never blocks scan or playback, and never sees TMDB content** (TMDB API terms §1.C; research/05).
+6. **AI never blocks scan or playback, and never sees TMDB content** (TMDB API terms §1.C; research/05). That includes agents: what flux shows an agent leaves TMDB's text and images out (docs/AGENT-NATIVE.md).
 
 ## Crates
 
@@ -38,8 +38,10 @@ crates/
                 + ffmpeg-backed audio/video transcode segments
   flux-meta     TMDB client + offline TMDB export index, matcher, AI hypothesis trait,
                 artwork: frame posters (no AI) and opt-in genAI posters
-  flux-net      Truffle node (embedded Tailscale), tailnet + LAN listeners, WhoIs identity, hyper serving
-  flux-server   the binary: axum routes (flux_core::api), sessions, jobs, SSE, static web UI
+  flux-net      Truffle node (embedded Tailscale), tailnet + LAN listeners, WhoIs identity, hyper serving, tailnet HTTPS
+  flux-server   the binary: axum routes (flux_core::api), sessions, jobs, SSE, static web UI,
+                agent operations (flux_core::agent) over HTTP and MCP
+  flux-cli      `flux`, the command line: a client of a running server (the agent operations, MCP over stdio)
 web/            React 19 + TypeScript + Vite web client (hls.js), talks flux_core::api
 tools/          corpus generators and benchmark harnesses (Jellyfin baselines)
 ```
@@ -50,6 +52,7 @@ Dependencies point strictly downward, with no cycles:
 - `scan → {catalog, probe, names}`: the orchestrator needs the catalog's snapshot and writer functions, not just its types (docs/prototype/integration.md §5.1).
 - `hls → probe` (allowed, to reuse `flux_probe::ffprobe`)
 - every crate → `core`. `catalog`, `meta` and `net` depend on `core` only.
+- `cli` depends on `core` only: it talks to a running server over HTTP.
 
 ## Data flow
 
@@ -110,6 +113,11 @@ Dependencies point strictly downward, with no cycles:
 - `WAL`, `synchronous=NORMAL`.
 - Domain model: Library, Root, File (location), Asset (probed media), Item (movie / show / season / episode), UserState.
 - File identity: `(root, rel_path)` plus `(dev, ino)` and `btime` for rename/move detection.
+- Where each value came from (`item_field`): a provider, a person or an agent. A value a person or an agent set is locked: the matcher and the scanner's re-parse never overwrite it, and a merge carries it to the item that stays (`fields`).
+- Every edit through the agent operations is a changeset (`changes`): applied or proposed, journaled field by field, undoable while the fields still hold what it set.
+- A file's fix (`file_fix`, `fixes`) corrects what its name says: every placement goes by the stored guess with the fix applied, so a fix holds through rescans and re-parses. A pin (`of`) follows its work through merges.
+- Metadata files beside the videos (`.flux.json`, `.nfo`: `meta_file`, `metafiles`) are read once per change and rank between agents and providers; a value one no longer gives goes back to flux.
+- Collections (`collections`) are picked titles and/or a rule; a rule never counts a value the reader may not see.
 
 ### flux-scan
 
@@ -125,6 +133,7 @@ Dependencies point strictly downward, with no cycles:
 - Serve with hyper `http1::Builder::new().half_close(true)`. This is required to survive Truffle's per-direction idle reap (research/06 §3.4).
 - WhoIs identity is attached to each request (`Extension<Option<Identity>>`).
 - Connections are admitted per remote IP and in total (loopback has its own budget); over a limit a connection gets an immediate 503. A response that makes no write progress for 60 s is aborted.
+- HTTPS on the tailnet (system mode): rustls with tailscaled's MagicDNS certificate (`tailscale cert`), on the same port as plain HTTP. The first byte of a connection (a TLS handshake record is `0x16`) picks the protocol. TLS ends in flux, so WhoIs still sees the caller's own address. The certificate is fetched again every 12 hours and swapped in for new handshakes; a replaced tailnet listener takes its TLS along.
 
 ### flux-server
 
@@ -133,6 +142,8 @@ Dependencies point strictly downward, with no cycles:
 - One router layer guards every listener: a `Host` that isn't one of the server's names gets 421 (DNS rebinding); an unsafe `/api/` call needs `X-Flux-Request: 1` and no foreign `Origin`, else 403 (CSRF).
 - A file is served only from inside its library, or when it is exactly the file the scan recorded behind a link that leaves it.
 - Everything a caller can create is bounded: plans (on disk, LRU), sessions, event streams.
+- Agent operations (`agent`, docs/AGENT-NATIVE.md) are defined once (name, JSON Schemas, who may call them) and served at `/api/v1/ops/{name}`, over MCP at `/mcp`, and by the `flux` command line. A caller that names an agent never receives TMDB-sourced text or images, nor what flux read from `.nfo` files (`agent::policy`): principle 6 holds for agents too.
+- Files move only by a plan a person applies (`agent::files`): steps stay inside their library folder, are checked again right before they run, and use the platform's no-replace rename (never replacing, never copying across drives, never through a link); the catalog follows and items keep their ids.
 
 ## Dogfooding: Truffle and Mille
 

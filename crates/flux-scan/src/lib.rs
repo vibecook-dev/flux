@@ -359,6 +359,27 @@ pub struct Scanner {
     inner: Arc<engine::Inner>,
 }
 
+/// A hold on a library's watcher ([`Scanner::hold_watch`]); released when
+/// dropped.
+pub struct WatchHold {
+    inner: std::sync::Weak<engine::Inner>,
+    library_id: Id,
+}
+
+impl Drop for WatchHold {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.upgrade() {
+            let mut holds = job::lock(&inner.holds);
+            if let Some(n) = holds.get_mut(&self.library_id) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    holds.remove(&self.library_id);
+                }
+            }
+        }
+    }
+}
+
 impl Scanner {
     /// Starts the worker pool. Must be called inside a Tokio runtime only if
     /// the implementation needs one; callers may call it from sync code.
@@ -376,6 +397,19 @@ impl Scanner {
 
     /// Scan progress, item changes and source availability, for the SSE
     /// endpoint. Lagging receivers lose old events (broadcast semantics).
+    /// Hold the watcher of `library_id` until the hold is dropped: what it
+    /// sees is kept, and the rescan it asks for waits. For flux moving files
+    /// itself (a file plan): the catalog follows the files first, so the
+    /// rescan finds nothing to do instead of files gone and new ones. (On
+    /// Windows the scan can't follow a file by its inode.)
+    pub fn hold_watch(&self, library_id: Id) -> WatchHold {
+        *job::lock(&self.inner.holds).entry(library_id).or_insert(0) += 1;
+        WatchHold {
+            inner: Arc::downgrade(&self.inner),
+            library_id,
+        }
+    }
+
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Event> {
         self.inner.events.subscribe()
     }

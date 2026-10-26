@@ -38,7 +38,8 @@ export function blurhashDataUrl(hash: string, w = 8, h = 12): string | null {
     img.data.set(pixels);
     ctx.putImageData(img, 0, 0);
     const url = canvas.toDataURL('image/png');
-    if (cache.size > 4000) cache.clear();
+    // Enough for a 10,000-title library (each entry is a few hundred bytes).
+    if (cache.size > 12000) cache.clear();
     cache.set(key, url);
     return url;
   } catch {

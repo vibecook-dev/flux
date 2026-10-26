@@ -25,7 +25,7 @@ const ALLOWED = new Set([
   'MPL-2.0',
   'Unlicense',
   'BlueOak-1.0.0',
-  // Fonts (Archivo, Atkinson Hyperlegible): SIL Open Font License.
+  // Fonts (Archivo, Jost, DM Mono): SIL Open Font License.
   'OFL-1.1',
 ]);
 const LICENSE_FILE = /^(third[-_]party[-_])?(licen[cs]es?|copying|notice)([-._].*)?$/i;

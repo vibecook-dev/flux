@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`items.merge` input: films (or shows) that are one work.",
+  "properties": {
+    "dry_run": {
+      "default": false,
+      "type": "boolean"
+    },
+    "from": {
+      "description": "The films or shows that are the same work. Their files are fixed to belong to `into` (episodes keep their numbers); each goes once it's empty, and what people and agents set on it carries over.",
+      "items": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "into": {
+      "description": "The film or show to keep.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "mode": {
+      "default": "apply",
+      "description": "Apply now, or leave for an Owner or Admin to review.",
+      "oneOf": [
+        {
+          "const": "apply",
+          "description": "Change it now (Owner or Admin; anyone else's edit is proposed).",
+          "type": "string"
+        },
+        {
+          "const": "propose",
+          "description": "Make a proposal: nothing changes until it's applied in the app or with `changes.apply`.",
+          "type": "string"
+        }
+      ]
+    },
+    "summary": {
+      "description": "What's being merged and why, for the person reviewing it.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "into",
+    "from"
+  ],
+  "title": "MergeInput",
+  "type": "object"
+}

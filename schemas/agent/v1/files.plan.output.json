@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`files.plan` output.",
+  "properties": {
+    "changeset": {
+      "description": "The plan, a proposed changeset: nothing moves until it's applied (`changes.apply`, or in the app), and `changes.undo` puts everything back. `null` when there's nothing to do.",
+      "properties": {
+        "agent": {
+          "description": "The agent that made it; `null` for a person.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by": {
+          "description": "The person it was made by, or for (a login).",
+          "type": "string"
+        },
+        "change_count": {
+          "description": "How many changes it holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "decided_at": {
+          "description": "Applied or rejected.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "decided_by": {
+          "description": "Who applied or rejected a proposal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "item_count": {
+          "description": "How many items it changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "moves_files": {
+          "description": "It renames or moves files on disk (a file plan, `files.plan`).",
+          "type": "boolean"
+        },
+        "reverted_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reverted_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "applied"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "proposed",
+              "description": "Waiting for an Owner or Admin.",
+              "type": "string"
+            },
+            {
+              "const": "reverted",
+              "description": "Undone.",
+              "type": "string"
+            },
+            {
+              "const": "rejected",
+              "description": "A proposal turned down.",
+              "type": "string"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "summary",
+        "by",
+        "created_at",
+        "item_count",
+        "change_count",
+        "moves_files"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "skipped": {
+      "items": {
+        "description": "A file a plan leaves where it is, and why.",
+        "properties": {
+          "file": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "item": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "steps": {
+      "items": {
+        "description": "One step of a plan: what moves where, inside one library folder.",
+        "properties": {
+          "file": {
+            "description": "The video, for `move_video`.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "from": {
+            "description": "Relative to the library folder; `null` for a new folder.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item": {
+            "description": "The item it's for.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "The library folder.",
+            "type": "string"
+          },
+          "step": {
+            "description": "One step of a plan.",
+            "oneOf": [
+              {
+                "const": "new_folder",
+                "description": "Make a folder (`folder.new`).",
+                "type": "string"
+              },
+              {
+                "const": "rename_folder",
+                "description": "Rename a folder; everything in it comes along (`folder.path`).",
+                "type": "string"
+              },
+              {
+                "const": "move_video",
+                "description": "Rename or move a video (`file.path`).",
+                "type": "string"
+              },
+              {
+                "const": "move_companion",
+                "description": "Rename or move a file beside a video: subtitles, a metadata file, an image named like it (`file.path`).",
+                "type": "string"
+              },
+              {
+                "const": "remove_folder",
+                "description": "Remove a folder the plan leaves empty (`folder.gone`).",
+                "type": "string"
+              }
+            ]
+          },
+          "to": {
+            "description": "Relative to the library folder; `null` for a folder removed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "step",
+          "root"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "steps",
+    "skipped"
+  ],
+  "title": "PlanOutput",
+  "type": "object"
+}

@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`files.fix` input: one changeset over up to 200 files.",
+  "properties": {
+    "dry_run": {
+      "default": false,
+      "description": "Report where each file would go, and change nothing.",
+      "type": "boolean"
+    },
+    "fixes": {
+      "items": {
+        "additionalProperties": false,
+        "description": "One file's fix, in `files.fix`.",
+        "properties": {
+          "file": {
+            "description": "The file (`files[].id` in `item.get`).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "fix": {
+            "additionalProperties": false,
+            "description": "What it is. `null` (or `{}`) clears its fix: its name decides again.",
+            "properties": {
+              "edition": {
+                "description": "A film version's edition (\"Director's Cut\").",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "episodes": {
+                "description": "An episode's number, or its numbers for a file that holds several (`[1, 2]`).",
+                "items": {
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "extra": {
+                "description": "An extra's kind.",
+                "enum": [
+                  "trailer",
+                  "featurette",
+                  "behind_the_scenes",
+                  "deleted_scene",
+                  "interview",
+                  "short",
+                  "scene",
+                  "other",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "description": "What a file is, when flux's reading of its name is wrong.",
+                    "oneOf": [
+                      {
+                        "const": "movie",
+                        "description": "A film, or one version of a film.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "episode",
+                        "description": "An episode of a show.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "extra",
+                        "description": "Bonus material of a film or show: a trailer, a featurette…",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ignore",
+                        "description": "Not part of the library (a sample, a stray clip): flux keeps the file but shows it nowhere.",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "of": {
+                "description": "The film or show it belongs to: a top-level item of its library. A film's other version, a show's episode, an extra's film or show.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "part": {
+                "description": "A film's part, for one split over files (2 for `cd2`).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "season": {
+                "description": "An episode's season (0 for specials).",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "The title to group it under, as if its name said it: a film's title, or an episode's show.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "year": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "sources": {
+            "description": "The pages that support it.",
+            "items": {
+              "description": "A web page or file that supports a value, or a link to keep. In an input, a plain URL string is read as a link without a title.",
+              "properties": {
+                "title": {
+                  "description": "What it is (\"Wikipedia\", \"Official site\", \"Festival programme\").",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "description": "An `http` or `https` URL.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "mode": {
+      "default": "apply",
+      "description": "Apply now, or leave for an Owner or Admin to review.",
+      "oneOf": [
+        {
+          "const": "apply",
+          "description": "Change it now (Owner or Admin; anyone else's edit is proposed).",
+          "type": "string"
+        },
+        {
+          "const": "propose",
+          "description": "Make a proposal: nothing changes until it's applied in the app or with `changes.apply`.",
+          "type": "string"
+        }
+      ]
+    },
+    "summary": {
+      "description": "What these fixes are and why, for the person reviewing them.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "fixes"
+  ],
+  "title": "FixInput",
+  "type": "object"
+}

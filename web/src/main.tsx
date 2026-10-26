@@ -1,8 +1,10 @@
+import '@fontsource-variable/jost';
 import '@fontsource-variable/archivo/wdth.css';
-import '@fontsource-variable/atkinson-hyperlegible-next/index.css';
-import '@fontsource-variable/atkinson-hyperlegible-mono/index.css';
+import '@fontsource/dm-mono/400.css';
+import '@fontsource/dm-mono/500.css';
 import './styles/tokens.css';
 import './styles/base.css';
+import './styles/glass.css';
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -14,6 +16,12 @@ import { getClientCaps } from './caps/detect';
 if (!import.meta.env.VITE_FLUX_API || import.meta.env.VITE_FLUX_API === 'mock') {
   // The mock backend lives in its own chunk; requests wait until it is up.
   setRequestGate(import('./mock/browser').then((m) => m.startMock()));
+}
+
+// Opened over plain HTTP on the tailnet: move to the server's HTTPS address when
+// it has one (browsers keep WebGPU, and so the GPU lenses, for secure pages).
+if (!window.isSecureContext && import.meta.env.VITE_FLUX_API && import.meta.env.VITE_FLUX_API !== 'mock') {
+  void import('./app/secure').then((m) => m.upgradeToHttps());
 }
 
 // Detect playback capabilities while the user browses, so Play needs no probing.

@@ -5,6 +5,7 @@
 //!   └─ axum Router (api::router)
 //!        /api/v1/…        browse (flux-catalog), libraries + scans (flux-scan),
 //!                         play/plan/sessions (flux-hls), events (SSE), art (flux-meta output)
+//!        /api/v1/ops/…    agent operations (agent; docs/AGENT-NATIVE.md), and /mcp
 //!        /media/{plan}/…  HLS from flux-hls; /media/{asset}/file with Range
 //!        everything else  web/dist (SPA, strict CSP)
 //! background: startup scans, jobs (matching, frame posters), tailnet status
@@ -13,6 +14,7 @@
 //! The binary is `src/main.rs`; [`server::start`] runs the same server in
 //! tests and benchmarks.
 
+pub mod agent;
 pub mod api;
 pub mod art;
 pub mod config;

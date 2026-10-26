@@ -1,6 +1,9 @@
 /**
- * The player: full-bleed video, quiet controls that get out of the way, the
- * explainable stats overlay (i), and keyboard/remote control throughout.
+ * The player: the picture fills the window and the controls are glass that
+ * fades when you stop moving: a back button, a title pill that says how flux is
+ * playing the file, and one capsule of transport controls. The explainable stats
+ * overlay (i) and keyboard/remote control work throughout. Leaving partway keeps
+ * the session in the island as a ring, one tap from where you were.
  *
  * Flow: the Play click already sent POST /play (player/start.ts); here we take
  * that response, attach the engine, autoplay, and report progress + client
@@ -12,6 +15,7 @@ import { back, navigate, type RouteProps } from '../app/router';
 import { useTitle } from '../app/useTitle';
 import { api, FluxApiError } from '../api/client';
 import { resolveUrl } from '../config';
+import { planLabel, planTone } from '../api/explain';
 import { formatClock } from '../api/format';
 import { parentTitle, useItem, useServer } from '../api/queries';
 import { audioLabel, subtitleChoices, toBcp47 } from '../api/tracks';
@@ -20,9 +24,10 @@ import { Icon } from '../components/Icon';
 import { audioMenuNote, planAudioSwitch, playingTrack, restartNote, startingRendition, type AudioSwitchSample } from '../player/audio';
 import { attachEngine, type AttachedEngine } from '../player/engine';
 import { PlaybackMetrics, type MetricsSnapshot } from '../player/metrics';
-import { requestPlay, takePendingPlay, prefetchUrls, type PlayOptions } from '../player/start';
+import { requestPlay, startPlay, takePendingPlay, prefetchUrls, type PlayOptions } from '../player/start';
 import { StatsOverlay } from '../player/StatsOverlay';
 import styles from '../player/Player.module.css';
+import { currentRing, setRing } from '../shell/live';
 
 const EMPTY_METRICS: MetricsSnapshot = { ttffMs: null, lastSeekMs: null, seekSamples: [], stalls: 0, droppedFrames: 0, totalFrames: 0, bufferAheadS: 0, precise: true };
 
@@ -63,6 +68,26 @@ const SHORTCUTS: [string, string][] = [
   ['Esc', 'Back'],
 ];
 
+/** Ten-second skip icons with the numeral, like a remote's. */
+function Skip({ dir }: { dir: 'back' | 'forward' }) {
+  const arc = dir === 'back' ? 'M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v3.4h3.4' : 'M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v3.4h-3.4';
+  return (
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={arc} />
+      <text x="12" y="15.6" textAnchor="middle" fontSize="7.4" fontFamily="DM Mono, ui-monospace, monospace" fill="currentColor" stroke="none">
+        10
+      </text>
+    </svg>
+  );
+}
+
+/** "38 min left", "1:12 left" for the island's ring. */
+function remainingLabel(seconds: number): string {
+  const min = Math.max(1, Math.round(seconds / 60));
+  if (min < 60) return `${min} min left`;
+  return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')} left`;
+}
+
 export default function Player({ params, query }: RouteProps) {
   const itemId = Number(params.id);
   const token = query.get('t');
@@ -101,6 +126,13 @@ export default function Player({ params, query }: RouteProps) {
   const pendingAudioSwitch = useRef<number | null>(null);
   const audioLog = useRef<{ rendition: string | null; switches: AudioSwitchSample[] }>({ rendition: null, switches: [] });
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [flash, setFlash] = useState<{ icon: 'play' | 'pause'; key: number } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  // What the island needs when you leave: refreshed after every render, read in the unmount cleanup.
+  const leaving = useRef({ title: '', duration: 0, position: 0, ended: false });
+  useEffect(() => {
+    leaving.current = { title, duration: time.duration || (session?.res.duration_ms ?? 0) / 1000, position: time.current, ended };
+  });
 
   // 1. The play response: from the click (in flight) or a fresh request.
   useEffect(() => {
@@ -217,6 +249,47 @@ export default function Player({ params, query }: RouteProps) {
     };
   }, [session, buildReport, report]);
 
+  // The island keeps one session: a new player replaces it; leaving partway puts this one there.
+  useEffect(() => {
+    if (currentRing()?.kind === 'session') setRing(null);
+    return () => {
+      // The last position the video reported: by now the engine's own cleanup may have reset the element.
+      const { title: t, duration, position, ended: done } = leaving.current;
+      if (done || !duration) return;
+      const frac = position / duration;
+      if (frac > 0.02 && frac < 0.97) {
+        setRing({
+          kind: 'session',
+          progress: frac,
+          label: remainingLabel(duration - position),
+          aria: `Resume ${t || 'playback'}`,
+          itemId,
+          run: () => startPlay(itemId),
+        });
+      }
+    };
+  }, [itemId]);
+
+  useEffect(() => {
+    if (ended && currentRing()?.kind === 'session' && currentRing()?.itemId === itemId) setRing(null);
+  }, [ended, itemId]);
+
+  useEffect(() => {
+    const on = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', on);
+    return () => document.removeEventListener('fullscreenchange', on);
+  }, []);
+
+  // Controls fade a moment after the last movement while playing (and once playback starts).
+  const poke = useCallback(() => {
+    setChromeVisible(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setChromeVisible(false), 2600);
+  }, []);
+  useEffect(() => () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+
   // 3. Video element state → React (4 Hz timeupdate is plenty for the UI).
   useEffect(() => {
     const v = videoRef.current;
@@ -233,7 +306,7 @@ export default function Player({ params, query }: RouteProps) {
       ['play', () => setPaused(false)],
       ['pause', () => (setPaused(true), report())],
       ['waiting', () => setWaiting(true)],
-      ['playing', () => (setWaiting(false), setNeedsGesture(false))],
+      ['playing', () => (setWaiting(false), setNeedsGesture(false), poke())],
       ['canplay', () => setWaiting(false)],
       ['seeked', () => (sync(), report())],
       ['ended', () => (setEnded(true), report())],
@@ -243,7 +316,7 @@ export default function Player({ params, query }: RouteProps) {
     return () => {
       for (const [e, h] of handlers) v.removeEventListener(e, h);
     };
-  }, [session, report]);
+  }, [session, report, poke]);
 
   // 4. Periodic progress while playing; metrics refresh for the overlay.
   useEffect(() => {
@@ -304,20 +377,18 @@ export default function Player({ params, query }: RouteProps) {
     return () => v.textTracks.removeEventListener('addtrack', apply);
   }, [activeSub, session]);
 
-  // Auto-hide controls while playing.
-  const poke = useCallback(() => {
-    setChromeVisible(true);
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setChromeVisible(false), 2800);
-  }, []);
-  useEffect(() => () => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-  }, []);
   const showChrome = chromeVisible || paused || menu !== null || needsGesture || ended || Boolean(error);
+  // On a touch screen the first tap on a bare picture only brings the controls back.
+  const chromeShown = useRef(showChrome);
+  const tapRevealed = useRef(false);
+  useEffect(() => {
+    chromeShown.current = showChrome;
+  });
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
+    setFlash({ icon: v.paused ? 'play' : 'pause', key: performance.now() });
     if (v.paused) void v.play().catch(() => setNeedsGesture(true));
     else v.pause();
   }, []);
@@ -500,6 +571,13 @@ export default function Player({ params, query }: RouteProps) {
   const shownTime = scrub ?? time.current;
   const pct = time.duration > 0 ? (shownTime / time.duration) * 100 : 0;
   const bufPct = time.duration > 0 ? (time.buffered / time.duration) * 100 : 0;
+  // The title pill says how flux is playing this file, in its own colours.
+  const plan = session ? planLabel(session.res.plan) : null;
+  const tone = plan ? planTone(plan) : null;
+  const badge = item.data?.badges[0];
+  const isEpisode = item.data?.kind === 'episode';
+  const pillMeta = isEpisode ? item.data?.subtitle : item.data?.year ? String(item.data.year) : null;
+  const chapters = (asset?.probe?.chapters ?? []).filter((c) => c.start_ms > 0 && time.duration > 0 && c.start_ms / 1000 < time.duration - 1);
 
   return (
     <div
@@ -507,7 +585,10 @@ export default function Player({ params, query }: RouteProps) {
       className={styles.player}
       data-chrome={showChrome || undefined}
       onPointerMove={poke}
-      onPointerDown={poke}
+      onPointerDown={(e) => {
+        tapRevealed.current = e.pointerType === 'touch' && !chromeShown.current;
+        poke();
+      }}
     >
       <video
         ref={videoRef}
@@ -516,7 +597,8 @@ export default function Player({ params, query }: RouteProps) {
         preload="auto"
         crossOrigin="anonymous"
         onClick={() => {
-          if (menu) setMenu(null);
+          if (tapRevealed.current) tapRevealed.current = false;
+          else if (menu) setMenu(null);
           else togglePlay();
         }}
         onDoubleClick={toggleFullscreen}
@@ -533,22 +615,45 @@ export default function Player({ params, query }: RouteProps) {
       )}
 
       {needsGesture && !error && (
-        <button type="button" className={styles.bigPlay} onClick={togglePlay} aria-label="Play">
+        <button type="button" className={`${styles.bigPlay} glass glass-btn`} onClick={togglePlay} aria-label="Play">
           <Icon name="play" />
         </button>
       )}
 
+      {flash && !needsGesture && (
+        <div key={flash.key} className={styles.flash} aria-hidden="true">
+          <Icon name={flash.icon} />
+        </div>
+      )}
+
       <header className={styles.top}>
-        <button type="button" className={styles.iconBtn} onClick={leave} aria-label="Back to details">
+        <button type="button" className={`${styles.round} glass glass-btn`} onClick={leave} aria-label="Back to details" title="Back (esc)">
           <Icon name="back" />
         </button>
-        <div className={styles.titleBlock}>
-          <p className={styles.title}>{show ?? item.data?.title ?? ' '}</p>
-          {show && item.data && <p className="edge">{[item.data.subtitle, item.data.title].filter(Boolean).join(' · ')}</p>}
+        {item.data || plan ? (
+          <div className={`${styles.pill} glass`} title={session?.res.explain[0] ?? undefined}>
+            {tone && <span className={styles.dot} data-tone={tone} aria-hidden="true" />}
+            <span className={styles.pillTitle}>{show ?? item.data?.title ?? ' '}</span>
+            {pillMeta && <span className={`${styles.pillMeta} mono`}>{pillMeta}</span>}
+            {isEpisode && item.data?.title && <span className={styles.pillEpisode}>{item.data.title}</span>}
+            {plan && (
+              <span className={styles.pillPath}>
+                {plan}
+                {badge ? ` · ${badge}` : ''}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span />
+        )}
+        <div className={styles.topRight}>
+          <button type="button" className={`${styles.round} glass glass-btn`} onClick={() => setHelpOpen((o) => !o)} aria-label="Keyboard shortcuts" aria-pressed={helpOpen} title="Keyboard shortcuts (?)">
+            <Icon name="keyboard" />
+          </button>
+          <button type="button" className={`${styles.round} glass glass-btn`} onClick={() => setStatsOpen((o) => !o)} aria-label="Playback details" aria-pressed={statsOpen} title="Playback details (i)">
+            <Icon name="info" />
+          </button>
         </div>
-        <button type="button" className={styles.iconBtn} onClick={() => setHelpOpen((o) => !o)} aria-label="Keyboard shortcuts" aria-pressed={helpOpen}>
-          <Icon name="keyboard" />
-        </button>
       </header>
 
       {statsOpen && session && (
@@ -569,7 +674,7 @@ export default function Player({ params, query }: RouteProps) {
       )}
 
       {helpOpen && (
-        <section className={styles.help} aria-label="Keyboard shortcuts">
+        <section className={`${styles.help} glass`} aria-label="Keyboard shortcuts">
           <h2 className="edge">Keyboard</h2>
           <dl>
             {SHORTCUTS.map(([k, d]) => (
@@ -583,10 +688,10 @@ export default function Player({ params, query }: RouteProps) {
       )}
 
       {error && (
-        <div className={styles.errorPanel} role="alert">
+        <div className={`${styles.card} glass`} role="alert">
           <h2 className="display-m">Playback stopped</h2>
           <p>{error}</p>
-          <div className={styles.errorActions}>
+          <div className={styles.cardActions}>
             <button type="button" className="btn btn-primary" onClick={() => navigate(`/play/${itemId}?r=${Date.now()}`, { replace: true })}>
               Try again
             </button>
@@ -598,9 +703,9 @@ export default function Player({ params, query }: RouteProps) {
       )}
 
       {ended && !error && (
-        <div className={styles.endCard}>
+        <div className={`${styles.card} glass`}>
           <p className="display-m">Finished</p>
-          <div className={styles.errorActions}>
+          <div className={styles.cardActions}>
             <button type="button" className="btn" onClick={() => videoRef.current && ((videoRef.current.currentTime = 0), void videoRef.current.play())}>
               <Icon name="restart" /> Watch again
             </button>
@@ -611,58 +716,64 @@ export default function Player({ params, query }: RouteProps) {
         </div>
       )}
 
-      <footer className={styles.bottom}>
-        <div className={styles.scrubber}>
-          <span className={styles.trackBg} />
-          <span className={styles.trackBuf} style={{ width: `${bufPct}%` }} />
-          <span className={styles.trackFill} style={{ width: `${pct}%` }} />
-          <input
-            type="range"
-            min={0}
-            max={time.duration || 1}
-            step="any"
-            value={shownTime}
-            aria-label="Seek"
-            aria-valuetext={`${formatClock(shownTime * 1000)} of ${formatClock(time.duration * 1000)}`}
-            onChange={(e) => setScrub(Number(e.target.value))}
-            onPointerUp={() => {
-              if (scrub !== null && videoRef.current) videoRef.current.currentTime = scrub;
-              setScrub(null);
-            }}
-            onKeyDown={(e) => e.key.startsWith('Arrow') && e.preventDefault()}
-          />
-        </div>
-        <div className={styles.controls}>
-          <button type="button" className={styles.iconBtn} onClick={togglePlay} aria-label={paused ? 'Play' : 'Pause'}>
+      <footer className={`${styles.bar} glass`}>
+        <div className={styles.group}>
+          <button type="button" className={styles.btn} onClick={() => seekBy(-10)} aria-label="Back 10 seconds" title="Back 10 seconds (←)">
+            <Skip dir="back" />
+          </button>
+          <button type="button" className={`${styles.btn} ${styles.pp}`} onClick={togglePlay} aria-label={paused ? 'Play' : 'Pause'} title={paused ? 'Play (space)' : 'Pause (space)'}>
             <Icon name={paused ? 'play' : 'pause'} />
           </button>
-          <button type="button" className={styles.iconBtn} onClick={() => seekBy(-10)} aria-label="Back 10 seconds">
-            <Icon name="skipBack" />
+          <button type="button" className={styles.btn} onClick={() => seekBy(10)} aria-label="Forward 10 seconds" title="Forward 10 seconds (→)">
+            <Skip dir="forward" />
           </button>
-          <button type="button" className={styles.iconBtn} onClick={() => seekBy(10)} aria-label="Forward 10 seconds">
-            <Icon name="skipForward" />
-          </button>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={() => videoRef.current && (videoRef.current.muted = !videoRef.current.muted)}
-            aria-label={volume.muted ? 'Unmute' : 'Mute'}
-          >
-            <Icon name={volume.muted || volume.level === 0 ? 'mute' : 'volume'} />
-          </button>
-          <span className={`edge ${styles.clock}`}>
-            {formatClock(shownTime * 1000)} <span className={styles.clockSep}>/</span> {formatClock(time.duration * 1000)}
-          </span>
-          <span className={styles.spacer} />
+        </div>
 
+        <div className={styles.scrub}>
+          <span className={`${styles.time} mono`}>{formatClock(shownTime * 1000)}</span>
+          <div className={styles.scrubber}>
+            <span className={styles.trackBg} />
+            <span className={styles.trackBuf} style={{ width: `${bufPct}%` }} />
+            <span className={styles.trackFill} style={{ width: `${pct}%` }} />
+            {chapters.map((c) => (
+              <span key={c.start_ms} className={styles.tick} style={{ left: `${(c.start_ms / 1000 / time.duration) * 100}%` }} title={c.title ?? undefined} />
+            ))}
+            <span className={styles.knob} style={{ left: `${pct}%` }} />
+            <input
+              type="range"
+              min={0}
+              max={time.duration || 1}
+              step="any"
+              value={shownTime}
+              aria-label="Seek"
+              aria-valuetext={`${formatClock(shownTime * 1000)} of ${formatClock(time.duration * 1000)}`}
+              onChange={(e) => setScrub(Number(e.target.value))}
+              onPointerUp={() => {
+                if (scrub !== null && videoRef.current) videoRef.current.currentTime = scrub;
+                setScrub(null);
+              }}
+              onKeyDown={(e) => e.key.startsWith('Arrow') && e.preventDefault()}
+            />
+          </div>
+          <span className={`${styles.time} mono`}>−{formatClock(Math.max(0, time.duration - shownTime) * 1000)}</span>
+        </div>
+
+        <div className={styles.group}>
           {audioTracks.length > 1 && (
             <div className={styles.menuWrap}>
-              <button type="button" className={styles.textBtn} aria-haspopup="menu" aria-expanded={menu === 'audio'} onClick={() => setMenu(menu === 'audio' ? null : 'audio')}>
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Audio"
+                aria-haspopup="menu"
+                aria-expanded={menu === 'audio'}
+                title="Audio"
+                onClick={() => setMenu(menu === 'audio' ? null : 'audio')}
+              >
                 <Icon name="audio" />
-                <span className={styles.textBtnLabel}>Audio</span>
               </button>
               {menu === 'audio' && (
-                <div className={styles.menu} role="menu" aria-label="Audio" aria-describedby={audioNote ? 'audio-menu-note' : undefined}>
+                <div className={`${styles.menu} glass`} role="menu" aria-label="Audio" aria-describedby={audioNote ? 'audio-menu-note' : undefined}>
                   {audioTracks.map((t) => {
                     // Say which picks restart the stream (direct play says it once, below).
                     const d = session && !audioNote ? planAudioSwitch(session.res, currentRef, t.index, engineInfo.engine) : null;
@@ -685,12 +796,19 @@ export default function Player({ params, query }: RouteProps) {
 
           {subs.length + pictureSubs.length > 0 && (
             <div className={styles.menuWrap}>
-              <button type="button" className={styles.textBtn} aria-haspopup="menu" aria-expanded={menu === 'subs'} onClick={() => setMenu(menu === 'subs' ? null : 'subs')}>
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Subtitles"
+                aria-haspopup="menu"
+                aria-expanded={menu === 'subs'}
+                title="Subtitles (c)"
+                onClick={() => setMenu(menu === 'subs' ? null : 'subs')}
+              >
                 <Icon name="subtitles" />
-                <span className={styles.textBtnLabel}>Subtitles</span>
               </button>
               {menu === 'subs' && (
-                <div className={styles.menu} role="menu" aria-label="Subtitles">
+                <div className={`${styles.menu} glass`} role="menu" aria-label="Subtitles">
                   <button type="button" role="menuitemradio" aria-checked={activeSub === null && burned === null} onClick={() => chooseSub(null)}>
                     Off
                   </button>
@@ -710,11 +828,17 @@ export default function Player({ params, query }: RouteProps) {
             </div>
           )}
 
-          <button type="button" className={styles.iconBtn} onClick={() => setStatsOpen((o) => !o)} aria-label="Playback details" aria-pressed={statsOpen}>
-            <Icon name="info" />
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={() => videoRef.current && (videoRef.current.muted = !videoRef.current.muted)}
+            aria-label={volume.muted ? 'Unmute' : 'Mute'}
+            title={volume.muted ? 'Unmute (m)' : 'Mute (m)'}
+          >
+            <Icon name={volume.muted || volume.level === 0 ? 'mute' : 'volume'} />
           </button>
-          <button type="button" className={styles.iconBtn} onClick={toggleFullscreen} aria-label="Full screen">
-            <Icon name="fullscreen" />
+          <button type="button" className={styles.btn} onClick={toggleFullscreen} aria-label="Full screen" title="Full screen (f)">
+            <Icon name={fullscreen ? 'exitFullscreen' : 'fullscreen'} />
           </button>
         </div>
       </footer>

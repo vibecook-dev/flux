@@ -1,0 +1,171 @@
+.bar {
+  height: var(--bar-h);
+  padding: 6px;
+  border-radius: var(--pill);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transition:
+    padding 0.6s var(--spring),
+    gap 0.6s var(--spring);
+}
+
+.drop {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  height: 44px;
+  width: var(--dw, 90px);
+  translate: var(--dx, 6px) 0;
+  border-radius: var(--pill);
+  background: var(--glass-hi);
+  box-shadow:
+    inset 0 0 0 0.5px var(--rim),
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    0 4px 14px -6px var(--shade);
+  transition:
+    translate 0.62s var(--spring),
+    width 0.62s var(--spring),
+    opacity 0.2s;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.item {
+  position: relative;
+  z-index: 1;
+  height: 44px;
+  padding: 0 15px 0 13px;
+  border: 0;
+  border-radius: var(--pill);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 170px;
+  cursor: pointer;
+  transition:
+    color 0.25s var(--out),
+    max-width 0.6s var(--spring),
+    padding 0.6s var(--spring),
+    opacity 0.3s var(--out);
+}
+
+.item:hover,
+.item[aria-selected='true'] {
+  color: var(--text);
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: grid;
+}
+
+.icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.sep {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+  margin: 0 4px;
+  flex: none;
+  transition: opacity 0.3s;
+}
+
+.more {
+  position: relative;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--pill);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-2);
+  flex: none;
+  cursor: pointer;
+  transition:
+    color 0.25s var(--out),
+    width 0.6s var(--spring),
+    opacity 0.3s var(--out);
+}
+
+.more:hover {
+  color: var(--text);
+  background: var(--glass-clear);
+}
+
+/* Minimised while you browse: only the current lens stays. */
+.bar[data-mini] {
+  gap: 0;
+}
+
+.bar[data-mini] .item:not([aria-selected='true']),
+.bar[data-mini] .more,
+.bar[data-mini] .sep {
+  max-width: 0;
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  margin: 0;
+  opacity: 0;
+}
+
+.bar[data-mini] .item[aria-selected='true'] .name {
+  display: none;
+}
+
+.bar[data-mini] .item[aria-selected='true'] {
+  padding: 0 12px;
+}
+
+.accessory {
+  height: var(--bar-h);
+  padding: 6px;
+  border-radius: var(--pill);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.accessory[hidden] {
+  display: none !important;
+}
+
+.stack {
+  flex-direction: column-reverse !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.stack .accessory {
+  height: 48px;
+  padding: 2px;
+}
+
+@media (max-width: 640px) {
+  .item {
+    padding: 0 12px;
+  }
+  .item:not([aria-selected='true']) .name {
+    display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .item[aria-selected='true'] .name {
+    display: none;
+  }
+}

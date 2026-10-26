@@ -315,8 +315,12 @@ fn debounce_loop(
         if stop.load(Ordering::Relaxed) {
             return;
         }
+        // While flux itself moves files here (a held watcher), events are
+        // kept, and the rescan waits until it's done.
+        let held = inner.upgrade().is_some_and(|i| i.is_held(library_id));
         let wait = match first {
             None => Duration::from_millis(200),
+            Some(_) if held => Duration::from_millis(200),
             Some(f) => {
                 let quiet = settle.saturating_sub(last.elapsed());
                 let cap = max_delay.saturating_sub(f.elapsed());
@@ -342,7 +346,7 @@ fn debounce_loop(
             Err(RecvTimeoutError::Timeout) => {}
         }
         let Some(f) = first else { continue };
-        if last.elapsed() < settle && f.elapsed() < max_delay {
+        if held || (last.elapsed() < settle && f.elapsed() < max_delay) {
             continue;
         }
         let Some(inner) = inner.upgrade() else { return };

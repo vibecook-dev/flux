@@ -17,6 +17,7 @@ const PATHS = {
   check: 'm5 12.5 4.5 4.5L19 7.5',
   plus: 'M12 5v14M5 12h14',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  lock: 'M6 10.5h12V20H6zM8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5',
   copy: 'M9 9h10v11H9zM5 15V4h10',
   restart: 'M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4',
   volume: 'M4 9.5h3.5L12 5.5v13l-4.5-4H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11',
@@ -38,6 +39,7 @@ const PATHS = {
   keyboard: 'M3 6.5h18v11H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10',
   warning: 'M12 4 21 20H3zM12 10v4M12 17v.5',
   sparkle: 'M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2-5.2-1.8 5.2-1.8z',
+  agent: 'M4 5h16v11h-9l-5 4v-4H4zM9 10.5h.01M15 10.5h.01',
 } as const;
 
 export type IconName = keyof typeof PATHS;

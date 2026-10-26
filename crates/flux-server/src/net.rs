@@ -1,10 +1,10 @@
 //! Serving: the router on flux-net's listeners (never `axum::serve`: hyper
 //! with `half_close(true)`), and the tailnet state the API reports.
 //!
-//! The tailnet mode can change at runtime (`POST /api/v1/tailnet/connect`):
-//! `FluxNet::set_tailnet` replaces the tailnet listener alone (its in-flight
-//! requests get 2 s to finish); the local and LAN listeners and their
-//! connections carry on.
+//! The tailnet mode, and HTTPS on it, can change at runtime (`POST
+//! /api/v1/tailnet/connect`): `FluxNet::set_tailnet` replaces the tailnet
+//! listener alone (its in-flight requests get 2 s to finish); the local and
+//! LAN listeners and their connections carry on.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,6 +27,8 @@ pub struct TailnetView {
     current: RwLock<Option<(watch::Receiver<TailnetStatus>, api::TailnetMode)>>,
     /// A system tailscaled is running on this machine (probed once).
     system_tailscale: AtomicBool,
+    /// HTTPS on the tailnet is switched on (the latest setting asked for).
+    https: AtomicBool,
     control: OnceLock<mpsc::Sender<NetCmd>>,
     /// Bumped whenever another listener's status is attached, so a
     /// replaced listener's follower stops publishing.
@@ -41,7 +43,21 @@ impl TailnetView {
             None => TailnetStatus::Off.to_api(api::TailnetMode::Off),
         };
         info.system_tailscale |= self.system_tailscale.load(Ordering::Relaxed);
+        info.https = self.https();
+        if !info.https {
+            info.https_error = None;
+        }
         info
+    }
+
+    /// HTTPS on the tailnet is switched on.
+    pub fn https(&self) -> bool {
+        self.https.load(Ordering::SeqCst)
+    }
+
+    /// The tailnet's `https://` address, while HTTPS is on and serving.
+    pub fn https_url(&self) -> Option<String> {
+        self.info().url.filter(|u| u.starts_with("https://"))
     }
 
     /// The configured mode.
@@ -65,12 +81,18 @@ impl TailnetView {
         self.generation.load(Ordering::SeqCst) == generation
     }
 
-    /// Asks the listener supervisor to switch modes. `false` when the server
-    /// is not serving (tests that drive the router directly).
-    pub fn request_mode(&self, choice: TailnetChoice) -> bool {
-        self.control
+    /// Asks the listener supervisor to restart the tailnet listener in mode
+    /// `choice`, with HTTPS on or off. `false` when the server is not
+    /// serving (tests that drive the router directly).
+    pub fn request(&self, choice: TailnetChoice, https: bool) -> bool {
+        let sent = self
+            .control
             .get()
-            .is_some_and(|tx| tx.try_send(NetCmd::SetMode(choice)).is_ok())
+            .is_some_and(|tx| tx.try_send(NetCmd::Set(choice, https)).is_ok());
+        if sent {
+            self.https.store(https, Ordering::SeqCst);
+        }
+        sent
     }
 
     pub fn set_system_tailscale(&self, running: bool) {
@@ -79,7 +101,8 @@ impl TailnetView {
 }
 
 enum NetCmd {
-    SetMode(TailnetChoice),
+    /// Tailnet mode, and HTTPS on it.
+    Set(TailnetChoice, bool),
     Shutdown(Duration, oneshot::Sender<()>),
 }
 
@@ -100,17 +123,22 @@ impl NetControl {
     }
 }
 
-fn tailnet_config(choice: TailnetChoice, cfg: &Config, port: u16) -> TailnetConfig {
+/// The tailnet listener for `choice`. With `https`, embedded mode serves
+/// HTTPS only (Truffle's TLS listener); system mode serves HTTPS and plain
+/// HTTP on the one port.
+fn tailnet_config(choice: TailnetChoice, https: bool, cfg: &Config, port: u16) -> TailnetConfig {
     let port = if port == 0 { flux_net::DEFAULT_PORT } else { port };
     match choice {
         TailnetChoice::Off => TailnetConfig::Off,
         TailnetChoice::Embedded => {
             let mut e = flux_net::EmbeddedConfig::new(&cfg.data_dir, cfg.name.clone());
             e.port = port;
+            e.tls = https;
             TailnetConfig::Embedded(e)
         }
         TailnetChoice::System => TailnetConfig::System(SystemConfig {
             port,
+            https,
             ..SystemConfig::default()
         }),
     }
@@ -121,6 +149,7 @@ fn tailnet_config(choice: TailnetChoice, cfg: &Config, port: u16) -> TailnetConf
 pub async fn start(
     cfg: &Config,
     choice: TailnetChoice,
+    https: bool,
     router: Router,
     st: Arc<AppState>,
 ) -> Result<NetControl, NetError> {
@@ -136,7 +165,7 @@ pub async fn start(
     let config = FluxNetConfig {
         local_addr: cfg.local_addr,
         lan_addr: cfg.lan_addr,
-        tailnet: tailnet_config(choice, cfg, cfg.local_addr.port()),
+        tailnet: tailnet_config(choice, https, cfg, cfg.local_addr.port()),
         roles: RolePolicy {
             localhost_role: cfg.localhost_role,
             owner_login: cfg.owner_login.clone(),
@@ -144,6 +173,7 @@ pub async fn start(
         },
         limits,
     };
+    st.tailnet.https.store(https, Ordering::SeqCst);
     let mut net = FluxNet::start(config, router).await?;
     let local_addr = net.local_addr();
     let lan_addr = net.lan_addr();
@@ -155,11 +185,11 @@ pub async fn start(
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                NetCmd::SetMode(choice) => {
+                NetCmd::Set(choice, https) => {
                     // The tailnet listener serves on the local port.
-                    let tailnet = tailnet_config(choice, &cfg, local_addr.port());
+                    let tailnet = tailnet_config(choice, https, &cfg, local_addr.port());
                     net.set_tailnet(tailnet, Duration::from_secs(2)).await;
-                    tracing::info!(mode = choice.as_str(), "tailnet listener restarted");
+                    tracing::info!(mode = choice.as_str(), https, "tailnet listener restarted");
                     // Same status channel, new mode.
                     follow_tailnet(&st, &net);
                 }
@@ -294,6 +324,26 @@ pub fn probe_system_tailscale(st: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_reaches_either_tailnet_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::for_tests(dir.path());
+        for https in [false, true] {
+            match tailnet_config(TailnetChoice::System, https, &cfg, 18096) {
+                TailnetConfig::System(s) => assert_eq!((s.https, s.port), (https, 18096)),
+                other => panic!("{other:?}"),
+            }
+            match tailnet_config(TailnetChoice::Embedded, https, &cfg, 0) {
+                TailnetConfig::Embedded(e) => assert_eq!((e.tls, e.port), (https, flux_net::DEFAULT_PORT)),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(matches!(
+            tailnet_config(TailnetChoice::Off, true, &cfg, 18096),
+            TailnetConfig::Off
+        ));
+    }
 
     #[test]
     fn limits_fit_the_open_files_limit() {

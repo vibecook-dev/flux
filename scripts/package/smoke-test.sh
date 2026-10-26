@@ -185,6 +185,7 @@ case "$target" in
     # machine (a GitHub runner, a developer's) likely has the Visual C++
     # Redistributable, so vcruntime140.dll would load. Read the imports.
     exes=(flux-server.exe)
+    if [ -f "$root/flux.exe" ]; then exes+=(flux.exe); fi
     if [ -f "$root/sidecar-slim.exe" ]; then exes+=(sidecar-slim.exe); fi
     if ! (cd "$root" && "$python" "$here/pe-imports.py" --no-vc-redist "${exes[@]}") | sed 's/^/== imports of /'; then
       die "the package's .exe files must start without the Visual C++ Redistributable (see above)"
@@ -199,6 +200,17 @@ said=$(${run[@]+"${run[@]}"} "$bin" --version)
 echo "== $said"
 if [ "$version" != dev ]; then
   case "$said" in *"$version"*) ;; *) die "flux-server --version does not say $version" ;; esac
+fi
+# The command line, when the package has it.
+if [ "$windows" = true ]; then cli="$root/flux.exe"; else cli="$root/bin/flux"; fi
+if [ -f "$cli" ]; then
+  cli_said=$(${run[@]+"${run[@]}"} "$cli" --version)
+  echo "== $cli_said"
+  if [ "$version" != dev ]; then
+    case "$cli_said" in *"$version"*) ;; *) die "flux --version does not say $version" ;; esac
+  fi
+else
+  echo "== no flux command line in this package"
 fi
 # The ffmpeg capability check, where this flux-server has one.
 help=$(${run[@]+"${run[@]}"} "$bin" --help 2>&1 || true)

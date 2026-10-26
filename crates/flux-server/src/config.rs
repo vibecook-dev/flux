@@ -8,6 +8,7 @@
 //! data_dir = "/srv/flux"
 //! port = 8096
 //! tailnet = "off"            # off | embedded | system
+//! tailnet_https = false      # HTTPS on the tailnet, with its certificate
 //! allow_host = ["media.example.com"]
 //! watch = true
 //! [[library]]
@@ -188,6 +189,19 @@ pub struct Cli {
     /// Remote access over Tailscale [default: off].
     #[arg(long, env = "FLUX_TAILNET", value_enum)]
     pub tailnet: Option<TailnetChoice>,
+    /// Also serve HTTPS on the tailnet, with its MagicDNS certificate (needs
+    /// HTTPS certificates enabled for the tailnet). Browsers offer WebGPU
+    /// only to secure pages. With `system`, plain HTTP keeps working on the
+    /// same port [default: off, or as last switched in Remote access].
+    #[arg(
+        long,
+        env = "FLUX_TAILNET_HTTPS",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = BoolishValueParser::new()
+    )]
+    pub tailnet_https: Option<bool>,
     /// The built web client (web/dist) [default: ./web/dist or next to the binary].
     #[arg(long, env = "FLUX_WEB_DIR", value_name = "DIR")]
     pub web_dir: Option<PathBuf>,
@@ -267,6 +281,7 @@ struct FileConfig {
     bind: Option<IpAddr>,
     lan: Option<SocketAddr>,
     tailnet: Option<TailnetChoice>,
+    tailnet_https: Option<bool>,
     web_dir: Option<PathBuf>,
     name: Option<String>,
     scan: Option<bool>,
@@ -365,6 +380,11 @@ pub struct Config {
     /// The tailnet mode came from the command line or the environment; a
     /// mode chosen in the UI (persisted in the data dir) does not override it.
     pub tailnet_explicit: bool,
+    /// HTTPS on the tailnet ([`Cli::tailnet_https`]).
+    pub tailnet_https: bool,
+    /// [`tailnet_https`](Self::tailnet_https) came from the command line or
+    /// the environment, so the UI's last choice does not override it.
+    pub tailnet_https_explicit: bool,
     pub web_dir: Option<PathBuf>,
     pub name: String,
     pub scan: bool,
@@ -444,6 +464,8 @@ impl Config {
         let bind = cli.bind.or(file.bind).unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
         let tailnet_explicit = cli.tailnet.is_some();
         let tailnet = cli.tailnet.or(file.tailnet).unwrap_or_default();
+        let tailnet_https_explicit = cli.tailnet_https.is_some();
+        let tailnet_https = cli.tailnet_https.or(file.tailnet_https).unwrap_or(false);
         let ffmpeg = cli.ffmpeg.or(file.ffmpeg).unwrap_or_else(|| find_tool("ffmpeg"));
         let ffprobe = cli.ffprobe.or(file.ffprobe).unwrap_or_else(|| {
             let sibling = ffmpeg.with_file_name(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
@@ -481,6 +503,8 @@ impl Config {
             lan_addr: cli.lan.or(file.lan),
             tailnet,
             tailnet_explicit,
+            tailnet_https,
+            tailnet_https_explicit,
             web_dir,
             name: cli.name.or(file.name).unwrap_or_else(host_name),
             scan: !cli.no_scan && file.scan.unwrap_or(true),
@@ -526,6 +550,8 @@ impl Config {
             lan_addr: None,
             tailnet: TailnetChoice::Off,
             tailnet_explicit: true,
+            tailnet_https: false,
+            tailnet_https_explicit: true,
             web_dir: None,
             name: "flux-test".into(),
             scan: false,
@@ -714,6 +740,30 @@ pub fn tailnet_choice_path(data_dir: &Path) -> PathBuf {
 pub fn persisted_tailnet(data_dir: &Path) -> Option<TailnetChoice> {
     let s = std::fs::read_to_string(tailnet_choice_path(data_dir)).ok()?;
     TailnetChoice::from_str(s.trim(), true).ok()
+}
+
+/// Where HTTPS on the tailnet, as last switched in the UI, is remembered
+/// (`on` or `off`).
+pub fn tailnet_https_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("tailnet-https")
+}
+
+/// HTTPS on the tailnet as last switched in the UI, if ever.
+pub fn persisted_tailnet_https(data_dir: &Path) -> Option<bool> {
+    match std::fs::read_to_string(tailnet_https_path(data_dir)).ok()?.trim() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// The value [`persisted_tailnet_https`] reads back.
+pub fn tailnet_https_word(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 #[cfg(test)]
@@ -1001,6 +1051,36 @@ path = '{}'
         }
         assert!(!cfg(&["--tailnet", "off"]).probe_system_tailscale);
         assert!(cfg(&["--tailnet", "system"]).probe_system_tailscale);
+    }
+
+    #[test]
+    fn tailnet_https_from_flag_variable_file_or_the_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("flux.toml");
+        std::fs::write(&file, "tailnet = \"system\"\ntailnet_https = true\n").unwrap();
+        let d = dir.path().to_str().unwrap();
+        let f = file.to_str().unwrap();
+        let resolve = |args: &[&str]| {
+            let argv = [&["flux-server", "--data-dir", d][..], args].concat();
+            let cfg = Config::resolve(Cli::try_parse_from(argv).unwrap()).unwrap();
+            (cfg.tailnet_https, cfg.tailnet_https_explicit)
+        };
+        if std::env::var_os("FLUX_TAILNET_HTTPS").is_none() {
+            assert_eq!(resolve(&[]), (false, false), "off by default");
+            // The file's value is a default the UI's last choice overrides.
+            assert_eq!(resolve(&["--config", f]), (true, false));
+        }
+        assert_eq!(resolve(&["--tailnet-https"]), (true, true));
+        assert_eq!(resolve(&["--tailnet-https=false", "--config", f]), (false, true));
+        assert_eq!(resolve(&["--tailnet-https", "--tailnet", "system"]), (true, true));
+
+        assert_eq!(persisted_tailnet_https(dir.path()), None);
+        for on in [true, false] {
+            std::fs::write(tailnet_https_path(dir.path()), tailnet_https_word(on)).unwrap();
+            assert_eq!(persisted_tailnet_https(dir.path()), Some(on));
+        }
+        std::fs::write(tailnet_https_path(dir.path()), "maybe").unwrap();
+        assert_eq!(persisted_tailnet_https(dir.path()), None);
     }
 
     #[test]

@@ -1,0 +1,4 @@
+node_modules
+dist
+# The web client built as the live demo (pnpm demo); served at /demo/ by the dev server.
+.demo

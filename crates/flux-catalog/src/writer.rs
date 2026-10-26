@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use flux_core::api::{CreateLibrary, Id, Identity, Library, Progress};
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::changes::{Actor, Committed, PlannedItem};
 use crate::error::{CatalogError, Result, RootOverlap};
 use crate::jobs::{Backoff, ClaimJobs, Enqueued, Finished, JobLease, JobResult, JobSpec};
 use crate::model::{
@@ -644,6 +645,19 @@ impl Writer {
         self.exec_quiet(move |c| crate::sidecar::sync(c, root_id, &upserts, &removed))
     }
 
+    /// A scan's metadata files of a root ([`crate::metafiles::sync`]):
+    /// `upserts` new or changed (with what flux read from them), `removed`
+    /// proven gone. What they say is applied to the items they describe.
+    pub fn sync_meta_files(
+        &self,
+        root_id: Id,
+        upserts: Vec<crate::metafiles::MetaFileRow>,
+        removed: Vec<String>,
+    ) -> Request<ApplyOutcome> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::metafiles::sync(c, root_id, &upserts, &removed, now_ms(), jobs))
+    }
+
     /// Delete tombstoned files older than their grace period, and items left
     /// with nothing playable. `now_ms` is injectable for tests.
     pub fn purge_tombstones(&self, now_ms: i64) -> Request<PurgeOutcome> {
@@ -715,11 +729,13 @@ impl Writer {
     // ---- metadata -----------------------------------------------------------
 
     /// Apply provider/matcher metadata to an item. Items the user `locked`
-    /// are left alone (returns `false`). A movie or show whose title or
+    /// are left alone (returns `false`), and so is each field a person or
+    /// an agent set ([`crate::fields`]). A movie or show whose title or
     /// year changes gets its art job again: its frame poster carries them.
     pub fn update_item_metadata(&self, item_id: Id, m: ItemMetadata) -> Request<bool> {
         let jobs = self.apply_jobs;
         self.exec_quiet(move |c| {
+            let mut m = m;
             type Head = (String, String, Option<i64>, Option<Id>);
             let head = |c: &Connection| -> Result<Option<Head>> {
                 Ok(c.prepare_cached("SELECT match_state, title, year, parent_id FROM item WHERE id = ?1")?
@@ -732,6 +748,7 @@ impl Writer {
                 Some("locked") => return Ok(false),
                 _ => {}
             }
+            keep_locked_fields(c, item_id, &mut m)?;
             let old_doc = crate::fts::doc(c, item_id)?;
             let genres = m.genres.as_ref().map(serde_json::to_string).transpose()?;
             let evidence = m.match_evidence.as_ref().map(serde_json::to_string).transpose()?;
@@ -772,6 +789,30 @@ impl Writer {
             ])?;
             if let Some(old) = old_doc {
                 crate::fts::update(c, item_id, &old)?;
+            }
+            if let Some(p) = m.provider.as_deref() {
+                let row = crate::fields::FieldRow {
+                    source: crate::fields::PROVIDER.into(),
+                    provider: Some(p.to_string()),
+                    agent: None,
+                    actor: None,
+                    changeset: None,
+                    sources: Vec::new(),
+                    at: now_ms(),
+                };
+                let set = [
+                    ("title", m.title.is_some()),
+                    ("original_title", m.original_title.is_some()),
+                    ("year", m.year.is_some()),
+                    ("overview", m.overview.is_some()),
+                    ("genres", m.genres.is_some()),
+                    ("ids.tmdb", m.tmdb_id.is_some()),
+                    ("ids.tvdb", m.tvdb_id.is_some()),
+                    ("ids.imdb", m.imdb_id.is_some()),
+                ];
+                for (field, _) in set.iter().filter(|(_, set)| *set) {
+                    crate::fields::put_source(c, item_id, field, Some(&row))?;
+                }
             }
             if let (Some(b), Some(a)) = (before, head(c)?) {
                 let renamed = (&b.1, b.2) != (&a.1, a.2);
@@ -948,6 +989,226 @@ impl Writer {
         })
     }
 
+    // ---- changesets and lenses (agents) -----------------------------------------
+
+    /// Make `edits` a changeset: applied now, or (`propose`) proposed for a
+    /// person to decide; see [`crate::changes`]. Also returns what it
+    /// planned per item (changed, unchanged, refused fields).
+    pub fn commit_edit(
+        &self,
+        actor: Actor,
+        summary: String,
+        edits: Vec<crate::changes::ItemEdit>,
+        force: bool,
+        propose: bool,
+    ) -> Request<(Committed, Vec<PlannedItem>)> {
+        let jobs = self.apply_jobs;
+        self.exec_quiet(move |c| {
+            crate::changes::commit_edit(c, &actor, &summary, &edits, force, propose, now_ms(), jobs)
+        })
+    }
+
+    /// Apply a proposed changeset (`by` decides it). A structure change
+    /// in it places files again, so library counts are recomputed.
+    pub fn apply_proposal(&self, changeset: Id, by: String) -> Request<Committed> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::changes::apply_proposal(c, changeset, &by, now_ms(), jobs))
+    }
+
+    /// Fix what files are (`files.fix`, `items.merge`) as one changeset:
+    /// applied now, or (`propose`) proposed; a `dry_run` is worked out and
+    /// rolled back. Returns what changed for each file, as a reader that
+    /// may not see `hide` names the items. See [`crate::fixes`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_fixes(
+        &self,
+        actor: Actor,
+        summary: String,
+        edits: Vec<crate::fixes::FixEdit>,
+        propose: bool,
+        dry_run: bool,
+        hide: Vec<String>,
+    ) -> Request<(Committed, Vec<crate::fixes::FixOutcome>)> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| {
+            crate::fixes::commit(
+                c,
+                &actor,
+                &summary,
+                &edits,
+                propose,
+                dry_run,
+                &hide,
+                now_ms(),
+                jobs,
+            )
+        })
+    }
+
+    /// Turn a proposed changeset down.
+    pub fn reject_proposal(&self, changeset: Id, by: String) -> Request<Committed> {
+        self.exec_quiet(move |c| crate::changes::reject_proposal(c, changeset, &by, now_ms()))
+    }
+
+    /// Make or change a collection ([`crate::collections::put`]).
+    pub fn put_collection(&self, p: crate::collections::Put) -> Request<crate::collections::Row> {
+        self.exec_quiet(move |c| crate::collections::put(c, &p, now_ms()))
+    }
+
+    /// Forget collection `id` of `owner`.
+    pub fn remove_collection(&self, owner: Id, id: Id) -> Request<bool> {
+        self.exec_quiet(move |c| crate::collections::remove(c, owner, id))
+    }
+
+    /// Keep a file plan (`files.plan`) as a proposed changeset; see
+    /// [`crate::organize`].
+    pub fn propose_plan(
+        &self,
+        actor: Actor,
+        summary: String,
+        steps: Vec<crate::organize::Step>,
+    ) -> Request<Committed> {
+        self.exec_quiet(move |c| crate::organize::propose(c, &actor, &summary, &steps, now_ms()))
+    }
+
+    /// Record what moving a plan's files did (or, with `undo`, putting them
+    /// back): the catalog follows the files, and moved videos are placed
+    /// again by their new names. `by` decided it.
+    pub fn record_plan(
+        &self,
+        changeset: Id,
+        by: String,
+        done: Vec<crate::organize::Done>,
+        undo: bool,
+    ) -> Request<Committed> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::organize::record(c, changeset, &by, &done, undo, now_ms(), jobs))
+    }
+
+    /// Undo an applied changeset, where its fields still hold what it set.
+    pub fn revert_changeset(&self, changeset: Id, by: String) -> Request<Committed> {
+        let jobs = self.apply_jobs;
+        self.exec(move |c| crate::changes::revert(c, changeset, &by, now_ms(), jobs))
+    }
+
+    /// Add an image a person or an agent chose (`custom`, or `generated`
+    /// for AI art), found at `found_at`, and journal it as a changeset that
+    /// also pins it when `pin`. Returns the new image's id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_chosen_art(
+        &self,
+        actor: Actor,
+        summary: String,
+        item_id: Id,
+        art: NewArt,
+        found_at: Option<String>,
+        pin: bool,
+        sources: Vec<flux_core::agent::Link>,
+    ) -> Request<(Id, Committed)> {
+        self.exec_quiet(move |c| {
+            let exists = c
+                .prepare_cached("SELECT 1 FROM item WHERE id = ?1")?
+                .query_row([item_id], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(CatalogError::NotFound(format!("item {item_id}")));
+            }
+            c.prepare_cached(
+                "INSERT INTO art(item_id, kind, source, path, url, width, height, blurhash, generated, created_at,
+                                 attribution, generator, found_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?
+            .execute(params![
+                item_id,
+                art.kind.as_str(),
+                art_source_str(art.source),
+                art.path,
+                art.url,
+                art.width,
+                art.height,
+                art.blurhash,
+                art.source == flux_core::api::ArtSource::Generated,
+                now_ms(),
+                art.attribution,
+                art.generator,
+                found_at,
+            ])?;
+            let id = c.last_insert_rowid();
+            let kind = art.kind.as_str();
+            let show = if pin {
+                Some(id)
+            } else {
+                c.prepare_cached("SELECT id FROM art WHERE item_id = ?1 AND kind = ?2 AND pinned = 1")?
+                    .query_row(params![item_id, kind], |r| r.get(0))
+                    .optional()?
+            };
+            let out = crate::changes::commit_art(c, &actor, &summary, item_id, kind, Some(id), show, &sources, now_ms())?;
+            Ok((id, out))
+        })
+    }
+
+    /// Show image `art` for its item and kind (`None` with `item` and
+    /// `kind`: back to flux's own choice), journaled as a changeset.
+    pub fn choose_art(
+        &self,
+        actor: Actor,
+        summary: String,
+        item_id: Id,
+        kind: ArtKind,
+        art: Option<Id>,
+    ) -> Request<Committed> {
+        self.exec_quiet(move |c| {
+            if let Some(a) = art {
+                let owner: Option<(Id, String)> = c
+                    .prepare_cached("SELECT item_id, kind FROM art WHERE id = ?1")?
+                    .query_row([a], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?;
+                match owner {
+                    Some((i, k)) if i == item_id && k == kind.as_str() => {}
+                    Some(_) => {
+                        return Err(CatalogError::Invalid(format!(
+                            "image {a} isn't a {} of item {item_id}",
+                            kind.as_str()
+                        )))
+                    }
+                    None => return Err(CatalogError::NotFound(format!("image {a}"))),
+                }
+            }
+            crate::changes::commit_art(
+                c,
+                &actor,
+                &summary,
+                item_id,
+                kind.as_str(),
+                None,
+                art,
+                &[],
+                now_ms(),
+            )
+        })
+    }
+
+    /// Keep a lens on the server for `owner` (a user id, or
+    /// [`crate::lenses::EVERYONE`]).
+    pub fn put_lens(
+        &self,
+        owner: Id,
+        id: String,
+        spec: flux_core::agent::LensSpec,
+        added_by: String,
+        agent: Option<String>,
+    ) -> Request<flux_core::agent::StoredLens> {
+        self.exec_quiet(move |c| {
+            crate::lenses::put(c, owner, &id, &spec, &added_by, agent.as_deref(), now_ms())
+        })
+    }
+
+    /// Forget a lens kept on the server.
+    pub fn remove_lens(&self, owner: Id, id: String) -> Request<bool> {
+        self.exec_quiet(move |c| crate::lenses::remove(c, owner, &id))
+    }
+
     // ---- users and progress ---------------------------------------------------
 
     /// Find or create the user for a tailnet identity; updates the display
@@ -1109,6 +1370,58 @@ pub(crate) fn roots_overlap(a: &str, b: &str) -> bool {
 /// duplicate and trailing separators are ignored), and without regard to
 /// letter case on Windows and macOS, whose volumes usually ignore it.
 /// flux-server compares the folders' real paths too (symlinks, `..`).
+/// Drop from `m` what a person or an agent set on `item` (an id kept in
+/// `external_ids` stays as it is).
+fn keep_locked_fields(c: &Connection, item: Id, m: &mut ItemMetadata) -> Result<()> {
+    let locked = crate::fields::locked(c, item)?;
+    if locked.is_empty() {
+        return Ok(());
+    }
+    let has = |f: &str| locked.contains(f);
+    if has("title") {
+        m.title = None;
+    }
+    if has("original_title") {
+        m.original_title = None;
+    }
+    if has("year") {
+        m.year = None;
+    }
+    if has("overview") {
+        m.overview = None;
+    }
+    if has("genres") {
+        m.genres = None;
+    }
+    if has("ids.tmdb") {
+        m.tmdb_id = None;
+    }
+    if has("ids.tvdb") {
+        m.tvdb_id = None;
+    }
+    if has("ids.imdb") {
+        m.imdb_id = None;
+    }
+    if let Some(others) = m.other_ids.as_mut() {
+        let current = crate::fields::read(c, item)?
+            .map(|c| c.values)
+            .unwrap_or_default();
+        others.retain(|(k, _)| !has(&format!("ids.{k}")));
+        for f in locked.iter().filter_map(|f| f.strip_prefix("ids.")) {
+            if matches!(f, "tmdb" | "tvdb" | "imdb") {
+                continue;
+            }
+            if let Some(v) = current
+                .get(&format!("ids.{f}"))
+                .and_then(serde_json::Value::as_str)
+            {
+                others.push((f.to_string(), v.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn root_overlap(a: &str, b: &str) -> Option<RootOverlap> {
     let fold = |s: &str| {
         if cfg!(any(windows, target_os = "macos")) {

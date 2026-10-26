@@ -11,12 +11,17 @@ homepage.workspace = true
 [lints]
 workspace = true
 
+[features]
+# JSON Schemas of the agent contract (`agent`) and the types it uses, for
+# the server's manifest and the checked-in schemas/.
+schema = ["dep:schemars"]
+
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, optional = true }
 
 # File identity (`file_id`): volume serial number and file id of a handle.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
-[dev-dependencies]
-serde_json.workspace = true

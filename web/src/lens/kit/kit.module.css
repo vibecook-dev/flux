@@ -1,0 +1,62 @@
+/* The frame every kit lens draws into. Lens CSS targets the global names (.lens, .kit-scene, .kit-stage, .item, .is-focus, .art). */
+.kit {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  perspective: 1200px;
+  perspective-origin: 50% 48%;
+  transform-style: preserve-3d;
+}
+
+.item {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-style: preserve-3d;
+  cursor: pointer;
+  will-change: transform;
+  outline: none;
+}
+
+.item:focus-visible :global(.art) {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.fail {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  z-index: 10000;
+  max-width: min(440px, calc(100% - 32px));
+  padding: 16px 18px;
+  border-radius: 20px;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--text-2);
+  background: var(--glass-solid);
+  box-shadow: inset 0 0 0 0.5px var(--rim);
+}
+
+.fail b {
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.9375rem;
+}

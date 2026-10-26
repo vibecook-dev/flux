@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`art.add` input.",
+  "properties": {
+    "credit": {
+      "description": "Who to credit: the studio, the distributor, the photographer, the site. Needed for `found`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data_base64": {
+      "description": "The image itself (JPEG, PNG or WebP), base64.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "found_at": {
+      "description": "The page you found it on.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generator": {
+      "description": "The model, for `generated` (\"gpt-image-2\").",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "item": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "kind": {
+      "description": "Image kinds.",
+      "oneOf": [
+        {
+          "const": "poster",
+          "description": "2:3, with the title.",
+          "type": "string"
+        },
+        {
+          "const": "backdrop",
+          "description": "16:9, without text.",
+          "type": "string"
+        },
+        {
+          "const": "thumb",
+          "description": "An episode's still, 16:9.",
+          "type": "string"
+        },
+        {
+          "const": "logo",
+          "description": "The title as a transparent logo.",
+          "type": "string"
+        }
+      ]
+    },
+    "origin": {
+      "description": "How an image came to be.",
+      "oneOf": [
+        {
+          "const": "found",
+          "description": "Someone else made it (a studio's poster, a photograph): give `credit` and `found_at`.",
+          "type": "string"
+        },
+        {
+          "const": "made",
+          "description": "You made it without AI (a crop, a collage of the video's frames).",
+          "type": "string"
+        },
+        {
+          "const": "generated",
+          "description": "An AI model made it: give `generator`. It is labelled AI-generated wherever it shows. Make one only when the person asked for it.",
+          "type": "string"
+        }
+      ]
+    },
+    "pin": {
+      "default": true,
+      "description": "Show it from now on (default `true`).",
+      "type": "boolean"
+    },
+    "summary": {
+      "description": "For the changeset; default \"Added a poster\".",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url": {
+      "description": "The image's address (`http` or `https`; flux fetches it). Give this or `data_base64`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "item",
+    "kind",
+    "origin"
+  ],
+  "title": "ArtAddInput",
+  "type": "object"
+}

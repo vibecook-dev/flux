@@ -20,6 +20,14 @@
 //! - [`rekey`]: re-placing episode assets (anime absolute numbering), carrying user state.
 //! - [`merge`]: merging two works once provider ids agree (two show folders, one show).
 //! - [`sidecar`]: subtitle files beside the videos, and which belong to an asset.
+//! - [`metafiles`]: `.flux.json` and `.nfo` files beside the videos, and what they describe.
+//! - [`fields`]: the facts people and agents set, where each value came from, and the locks.
+//! - [`changes`]: changesets: every edit journaled, proposals, undo.
+//! - [`fixes`]: what a file is when its name says otherwise (structure fixes).
+//! - [`organize`]: plans that rename and move files, and what moving them changes.
+//! - [`agent_read`]: what agents read: gaps, finding items, an item's evidence.
+//! - [`lenses`]: lenses kept on the server.
+//! - [`collections`]: collections kept on the server: titles picked, or taken by a rule.
 //!
 //! ```no_run
 //! # async fn demo() -> flux_catalog::Result<()> {
@@ -36,13 +44,21 @@
 //! # Ok(()) }
 //! ```
 
+pub mod agent_read;
+pub mod changes;
+pub mod collections;
 pub mod error;
 pub mod facts;
+pub mod fields;
+pub mod fixes;
 pub(crate) mod fts;
 pub mod group;
 pub mod jobs;
+pub mod lenses;
 pub mod merge;
+pub mod metafiles;
 pub mod model;
+pub mod organize;
 pub mod read;
 pub mod rekey;
 pub mod scan_support;

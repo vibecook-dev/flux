@@ -474,6 +474,39 @@ async fn match_item(st: &AppState, ctx: &mut Ctx, item_id: Id) -> Result<(), Str
     if let Some(p) = &probe {
         q.audio_languages = MatchQuery::from_guess(&flux_core::NameGuess::unknown(), Some(p)).audio_languages;
     }
+    // Ids a person or an agent set (docs/AGENT-NATIVE.md): match by them
+    // instead of searching by title.
+    let set = st
+        .catalog
+        .read(move |c| {
+            let locked = flux_catalog::fields::locked(c, item_id)?;
+            let values = flux_catalog::fields::read(c, item_id)?
+                .map(|c| c.values)
+                .unwrap_or_default();
+            Ok((locked, values))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let given = |k: &str| {
+        set.0
+            .contains(k)
+            .then(|| {
+                set.1
+                    .get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .flatten()
+    };
+    if let Some(t) = given("ids.tmdb").and_then(|s| s.parse().ok()) {
+        q.ids.tmdb = Some(t);
+    }
+    if let Some(t) = given("ids.tvdb").and_then(|s| s.parse().ok()) {
+        q.ids.tvdb = Some(t);
+    }
+    if let Some(t) = given("ids.imdb") {
+        q.ids.imdb = Some(t);
+    }
 
     let mut details: Vec<(u64, Fetched)> = Vec::new();
     let candidates: Vec<Candidate> = if let Some(tmdb) = ctx.tmdb.clone() {
@@ -504,6 +537,25 @@ async fn online_candidates(
 ) -> Result<Vec<Candidate>, String> {
     let title = q.titles.first().cloned().unwrap_or_default();
     let mut out = Vec::new();
+    // A TMDB id someone set decides: its details, no search.
+    if let Some(id) = q.ids.tmdb {
+        match kind {
+            MediaKind::Movie => {
+                if let Ok(d) = tmdb.movie_details(id).await {
+                    out.push(Candidate::from_tmdb_movie_details(&d));
+                    details.push((d.id, fetched_movie(&d)));
+                    return Ok(out);
+                }
+            }
+            MediaKind::Tv => {
+                if let Ok(d) = tmdb.tv_details(id).await {
+                    out.push(Candidate::from_tmdb_tv_details(&d));
+                    details.push((d.id, fetched_tv(&d)));
+                    return Ok(out);
+                }
+            }
+        }
+    }
     match kind {
         MediaKind::Movie => {
             let found = tmdb
@@ -518,16 +570,7 @@ async fn online_candidates(
                 if i < 3 {
                     if let Ok(d) = tmdb.movie_details(r.id).await {
                         out.push(Candidate::from_tmdb_movie_details(&d));
-                        details.push((
-                            d.id,
-                            Fetched {
-                                title: Some(d.title.as_str().to_string()).filter(|s| !s.is_empty()),
-                                overview: Some(d.overview.as_str().to_string()).filter(|s| !s.is_empty()),
-                                genres: Some(d.genres.iter().map(|g| g.name.as_str().to_string()).collect()),
-                                poster: d.poster_path.clone(),
-                                backdrop: d.backdrop_path.clone(),
-                            },
-                        ));
+                        details.push((d.id, fetched_movie(&d)));
                         continue;
                     }
                 }
@@ -543,16 +586,7 @@ async fn online_candidates(
                 if i < 3 {
                     if let Ok(d) = tmdb.tv_details(r.id).await {
                         out.push(Candidate::from_tmdb_tv_details(&d));
-                        details.push((
-                            d.id,
-                            Fetched {
-                                title: Some(d.name.as_str().to_string()).filter(|s| !s.is_empty()),
-                                overview: Some(d.overview.as_str().to_string()).filter(|s| !s.is_empty()),
-                                genres: Some(d.genres.iter().map(|g| g.name.as_str().to_string()).collect()),
-                                poster: d.poster_path.clone(),
-                                backdrop: d.backdrop_path.clone(),
-                            },
-                        ));
+                        details.push((d.id, fetched_tv(&d)));
                         continue;
                     }
                 }
@@ -561,6 +595,26 @@ async fn online_candidates(
         }
     }
     Ok(out)
+}
+
+fn fetched_movie(d: &flux_meta::tmdb::MovieDetails) -> Fetched {
+    Fetched {
+        title: Some(d.title.as_str().to_string()).filter(|s| !s.is_empty()),
+        overview: Some(d.overview.as_str().to_string()).filter(|s| !s.is_empty()),
+        genres: Some(d.genres.iter().map(|g| g.name.as_str().to_string()).collect()),
+        poster: d.poster_path.clone(),
+        backdrop: d.backdrop_path.clone(),
+    }
+}
+
+fn fetched_tv(d: &flux_meta::tmdb::TvDetails) -> Fetched {
+    Fetched {
+        title: Some(d.name.as_str().to_string()).filter(|s| !s.is_empty()),
+        overview: Some(d.overview.as_str().to_string()).filter(|s| !s.is_empty()),
+        genres: Some(d.genres.iter().map(|g| g.name.as_str().to_string()).collect()),
+        poster: d.poster_path.clone(),
+        backdrop: d.backdrop_path.clone(),
+    }
 }
 
 async fn apply_match(
@@ -599,6 +653,8 @@ async fn apply_match(
             .and_then(|id| details.iter().position(|(d, _)| *d == id))
             .map(|i| details.swap_remove(i).1);
         if let (Some(f), Some(tmdb)) = (fetched, ctx.tmdb.clone()) {
+            // Recorded as TMDB's, field by field: agents are never shown it.
+            m.provider = Some("tmdb".to_string());
             m.title = f.title;
             m.overview = f.overview;
             m.genres = f.genres;

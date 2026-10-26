@@ -66,7 +66,7 @@
 
 .server dd {
   margin: 0;
-  font-weight: 620;
+  font-weight: 520;
   overflow-wrap: anywhere;
 }
 
@@ -276,7 +276,7 @@
 .kindPick legend {
   font-size: 0.85rem;
   color: var(--text-2);
-  font-weight: 600;
+  font-weight: 500;
   margin-bottom: 6px;
   padding: 0;
 }
@@ -297,7 +297,7 @@
   padding: 0 16px;
   border-radius: 999px;
   border: 1px solid var(--line-strong);
-  font-weight: 620;
+  font-weight: 520;
   cursor: pointer;
 }
 

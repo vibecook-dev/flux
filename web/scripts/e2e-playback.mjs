@@ -19,7 +19,7 @@
 // Writes bench/results/flux-e2e-playback.json.
 import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { NO_AV1_INIT, WORK, api, launchChrome, load1, machine, quietGate, sampleRss, startServer, summary, watchPage, writeResult } from './e2e-lib.mjs';
+import { ITEM, NO_AV1_INIT, WORK, api, launchChrome, load1, machine, quietGate, sampleRss, startServer, summary, watchPage, writeResult } from './e2e-lib.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 18498);
 const RUNS = Number(process.env.RUNS ?? 5);
@@ -130,9 +130,10 @@ for (const c of CASES) {
       const idx = d.assets.findIndex((a) => a.id === f.asset);
       if (idx >= 0) await radios.nth(idx).check({ force: true });
     }
-    // Every run starts at 0 (earlier runs leave a resume point).
-    const restart = page.locator('button', { hasText: 'From the start' });
-    const button = (await restart.count()) > 0 ? restart.first() : page.locator('button', { hasText: /^(Resume|Play)/ }).first();
+    // Every run starts at 0 (earlier runs leave a resume point). The item page is an
+    // overlay over the library, so its buttons are looked up inside it.
+    const restart = page.locator(`${ITEM} button`, { hasText: 'From the start' });
+    const button = (await restart.count()) > 0 ? restart.first() : page.locator(`${ITEM} button`, { hasText: /^(Resume|Play)/ }).first();
     await button.hover();
     await page.waitForTimeout(200);
     await page.evaluate(() => {
