@@ -1,0 +1,65 @@
+name: Pages
+
+# The website (site/) on GitHub Pages, at https://<owner>.github.io/<repo>/.
+# It embeds the web client, so a change to either publishes it again. Pages
+# serves the gh-pages branch, which holds only the built site: one commit,
+# replaced each time (site/scripts/publish-pages.mjs).
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - web/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write # push gh-pages
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Version from site/package.json "packageManager" (the same as web's).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: site/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # LTS
+          cache: pnpm
+          cache-dependency-path: |
+            site/pnpm-lock.yaml
+            web/pnpm-lock.yaml
+      # The site builds the web client (in mock mode) into itself.
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm install --frozen-lockfile
+        working-directory: site
+      - name: Build
+        working-directory: site
+        env:
+          SITE_BASE: /${{ github.event.repository.name }}/
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm release || echo "Keeping the committed release snapshot."
+          pnpm build
+      - name: Publish
+        working-directory: site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: node scripts/publish-pages.mjs --remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --message "Publish the website from ${GITHUB_SHA::7}"
