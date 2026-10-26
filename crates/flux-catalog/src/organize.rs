@@ -778,8 +778,13 @@ pub fn record(
                             "DELETE FROM file WHERE root_id = ?1 AND rel_path = ?2 AND id <> ?3",
                         )?
                         .execute(params![row.root, n, file])?;
-                        c.prepare_cached("UPDATE file SET rel_path = ?2, updated_at = ?3 WHERE id = ?1")?
-                            .execute(params![file, n, now])?;
+                        // There now, whatever a scan that ran meanwhile thought.
+                        c.prepare_cached(
+                            "UPDATE file SET rel_path = ?2, updated_at = ?3, tombstone_until = NULL,
+                                    state = CASE WHEN state = 'missing' THEN 'present' ELSE state END
+                              WHERE id = ?1",
+                        )?
+                        .execute(params![file, n, now])?;
                         if let Some(g) = &guess {
                             c.prepare_cached(
                                 "INSERT INTO file_meta(file_id, guess) VALUES (?1, ?2)

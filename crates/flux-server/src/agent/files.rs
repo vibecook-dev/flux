@@ -1427,6 +1427,31 @@ pub async fn run(ctx: &Ctx, cs: Id, undo: bool) -> Result<flux_catalog::changes:
         })
         .await
         .map_err(cat_err)?;
+    // The watchers of these libraries wait while the files move: the
+    // catalog follows them first, so their rescan finds nothing to do.
+    let libraries: BTreeSet<Id> = {
+        let roots: Vec<Id> = roots.keys().copied().collect();
+        ctx.st
+            .catalog
+            .read(move |c| {
+                let mut v = BTreeSet::new();
+                for r in roots {
+                    if let Ok(l) = c
+                        .prepare_cached("SELECT library_id FROM root WHERE id = ?1")?
+                        .query_row([r], |x| x.get::<_, Id>(0))
+                    {
+                        v.insert(l);
+                    }
+                }
+                Ok(v)
+            })
+            .await
+            .map_err(cat_err)?
+    };
+    let holds: Vec<_> = libraries
+        .iter()
+        .filter_map(|l| ctx.st.scanner.hold_watch(*l))
+        .collect();
     let done = tokio::task::spawn_blocking(move || {
         let mut order: Vec<&organize::StepRow> = rows
             .iter()
@@ -1491,7 +1516,9 @@ pub async fn run(ctx: &Ctx, cs: Id, undo: bool) -> Result<flux_catalog::changes:
         .writer()
         .record_plan(cs, ctx.login(), done, undo)
         .await
-        .map_err(cat_err)?;
+        .map_err(cat_err);
+    drop(holds);
+    let committed = committed?;
     announce(&ctx.st, &committed);
     Ok(committed)
 }

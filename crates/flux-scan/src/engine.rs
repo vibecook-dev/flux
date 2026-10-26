@@ -50,9 +50,19 @@ pub(crate) struct Inner {
     /// media: `(root, rel_path, size, mtime_ns)`. Not opened again while
     /// unchanged (they are never cataloged, so the catalog can't remember).
     pub rejected: Mutex<HashSet<(Id, String, u64, i64)>>,
+    /// Libraries whose watcher waits ([`crate::Scanner::hold_watch`]): how
+    /// many holds each has.
+    pub holds: Mutex<HashMap<Id, u32>>,
 }
 
 impl Inner {
+    /// Whether something holds the watcher of `library_id`.
+    pub(crate) fn is_held(&self, library_id: Id) -> bool {
+        crate::job::lock(&self.holds)
+            .get(&library_id)
+            .is_some_and(|n| *n > 0)
+    }
+
     pub(crate) fn new(catalog: Arc<Catalog>, cfg: ScanConfig, opts: ScannerOptions) -> Arc<Inner> {
         let (events, _) = broadcast::channel(1024);
         let pool = WorkerPool::new(cfg.workers);
@@ -80,6 +90,7 @@ impl Inner {
             fingerprints: crate::fp_later::Fingerprinter::default(),
             roots_seen: Mutex::new(HashMap::new()),
             rejected: Mutex::new(HashSet::new()),
+            holds: Mutex::new(HashMap::new()),
         })
     }
 

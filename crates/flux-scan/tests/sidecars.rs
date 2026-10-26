@@ -106,3 +106,33 @@ fn metadata_files_are_read_kept_current_and_applied() {
         .unwrap();
     assert!(src_of.is_none(), "{src_of:?}");
 }
+
+/// While flux moves files itself (a file plan) it holds the watcher: what
+/// changed is seen once the hold is dropped, not before.
+#[test]
+fn a_held_watcher_waits_and_then_sees_the_change() {
+    let Some(src) = clip(Clip::H264AacMp4) else {
+        return;
+    };
+    let scratch = Scratch::new("held-watcher");
+    let root = scratch.path("Films");
+    put_video(&root, VIDEO, &src);
+    let cat = open_catalog(&scratch.dir);
+    let s = scanner(&cat);
+    let (lib, root_id) = add_library(&cat, "Films", LibraryKind::Movies, &root);
+    scan(&s, lib);
+    s.watch(lib).unwrap();
+    std::thread::sleep(Duration::from_millis(400)); // the watcher is up
+
+    let hold = s.hold_watch(lib);
+    put_video(&root, "Heat (1995)/Heat (1995) - 4K.mp4", &src);
+    std::thread::sleep(Duration::from_millis(2500));
+    let seen =
+        |cat: &flux_catalog::Catalog| snapshot(cat, root_id).contains_key("Heat (1995)/Heat (1995) - 4K.mp4");
+    assert!(!seen(&cat), "a held watcher rescanned");
+    drop(hold);
+    assert!(
+        eventually(Duration::from_secs(20), || seen(&cat).then_some(())).is_some(),
+        "the change was never seen"
+    );
+}

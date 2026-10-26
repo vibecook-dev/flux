@@ -36,6 +36,12 @@ pub trait ScanService: Send + Sync + 'static {
     /// scan of this process, even one that wrote nothing) over the
     /// catalog's. Nothing by default.
     fn overlay_roots(&self, _lib: &mut flux_core::api::Library) {}
+    /// Hold the library's watcher while flux moves its files itself (a file
+    /// plan): the rescan it asks for waits until the hold is dropped.
+    /// Nothing to hold by default.
+    fn hold_watch(&self, _library_id: Id) -> Option<Box<dyn std::any::Any + Send>> {
+        None
+    }
 }
 
 /// The real orchestrator.
@@ -53,6 +59,10 @@ impl ScanService for FluxScanner {
         // "Idle with zero counts if it was never scanned by this process":
         // the catalog's stored status says more then.
         (s.started_at.is_some() || s.state != flux_core::api::ScanState::Idle).then_some(s)
+    }
+
+    fn hold_watch(&self, library_id: Id) -> Option<Box<dyn std::any::Any + Send>> {
+        Some(Box::new(self.inner.hold_watch(library_id)))
     }
 
     fn scan_library(&self, library_id: Id, mode: ScanMode, priority: Priority) -> Result<(), String> {
