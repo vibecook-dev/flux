@@ -88,6 +88,22 @@ async fn whoami(addr: SocketAddr) -> serde_json::Value {
     serde_json::from_slice(&body).unwrap()
 }
 
+/// Whether `addr` refuses connections, waiting up to five seconds for it.
+/// A listener flux has closed can accept for a moment longer: a process
+/// that another thread is starting at that instant (here, another test's
+/// fake `tailscale`) holds a copy of every open descriptor until its `exec`
+/// closes them, and the socket keeps listening until then.
+async fn closed(addr: SocketAddr) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(addr).await.is_ok() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
+}
+
 fn local_config() -> FluxNetConfig {
     FluxNetConfig {
         local_addr: "127.0.0.1:0".parse().unwrap(),
@@ -214,10 +230,7 @@ async fn graceful_shutdown_completes_in_flight_responses() {
     net.shutdown(Duration::from_secs(5)).await;
     let (status, body) = download.await.unwrap();
     assert_eq!((status, body.len()), (200, CHUNKS * CHUNK));
-    assert!(
-        TcpStream::connect(addr).await.is_err(),
-        "listener closed after shutdown"
-    );
+    assert!(closed(addr).await, "listener closed after shutdown");
 }
 
 /// Review SEC-3: one caller holding many idle connections (the reviewer's
@@ -575,10 +588,7 @@ async fn set_tailnet_replaces_only_the_tailnet_listener() {
     net.set_tailnet(TailnetConfig::Off, Duration::from_secs(1)).await;
     assert_eq!(*net.tailnet_status().borrow(), TailnetStatus::Off);
     assert_eq!(net.tailnet_mode(), TailnetMode::Off);
-    assert!(
-        TcpStream::connect(first).await.is_err(),
-        "the old tailnet listener is closed"
-    );
+    assert!(closed(first).await, "the old tailnet listener is closed");
     assert_eq!(
         whoami(local).await["path"],
         "localhost",
@@ -599,7 +609,7 @@ async fn set_tailnet_replaces_only_the_tailnet_listener() {
         "a local stream in flight survives tailnet switches"
     );
     net.shutdown(Duration::from_secs(2)).await;
-    assert!(TcpStream::connect(second).await.is_err());
-    assert!(TcpStream::connect(local).await.is_err());
+    assert!(closed(second).await, "the tailnet listener closed at shutdown");
+    assert!(closed(local).await, "the local listener closed at shutdown");
     let _ = std::fs::remove_dir_all(cli.parent().unwrap());
 }
