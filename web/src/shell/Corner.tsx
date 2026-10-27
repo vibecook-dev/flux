@@ -78,9 +78,10 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
         <div className={styles.head}>
           <b>{name}</b>
           <small>
-            {you ? `${you.role} · ` : ''}
+            {you && <span className={styles.role}>{you.role}</span>}
+            {you ? ' · ' : ''}
             {server.data?.name ?? 'flux'}
-            {server.data ? ` ${server.data.version}` : ''}
+            {server.data ? ` · ${server.data.version}` : ''}
           </small>
         </div>
         <Link to="/admin" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>

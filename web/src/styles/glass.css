@@ -4,6 +4,22 @@
  * tinted glass for the one action that matters on a screen (Play).
  * The rim catches a light that follows the pointer (--lx/--ly, set per element by shell/glass-light.ts).
  */
+
+/*
+ * The light is the glass's own, not inherited: moving it restyles the glass and its
+ * rim, never everything inside it (a search's results, a menu's items). The rim
+ * takes it from its glass explicitly.
+ */
+@property --lx {
+  syntax: '*';
+  inherits: false;
+}
+
+@property --ly {
+  syntax: '*';
+  inherits: false;
+}
+
 .glass {
   position: relative;
   isolation: isolate;
@@ -17,6 +33,8 @@
 }
 
 .glass::before {
+  --lx: inherit;
+  --ly: inherit;
   content: '';
   position: absolute;
   inset: 0;

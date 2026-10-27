@@ -107,18 +107,30 @@ export function Island(props: IslandProps) {
   }, [activity]);
 
   // ── shape: the island takes the size of whichever layer is showing ──
+  // Measured when the mode changes and when the showing layer changes size (the
+  // layers are always mounted), not after every render: typing re-renders the
+  // island on every key, and each measure forces a layout.
   useLayoutEffect(() => {
     const el = node.current;
     const layer = mode === 'open' ? openRef.current : mode === 'activity' ? actRef.current : restRef.current;
     if (!el || !layer) return;
+    document.documentElement.dataset.island = mode;
+    let panel = '';
+    let shape = '';
     const fit = () => {
       const panelW = Math.min(window.innerWidth <= 640 ? window.innerWidth - 32 : 620, window.innerWidth - 32);
-      el.style.setProperty('--panel-w', `${panelW}px`);
+      if (`${panelW}` !== panel) {
+        panel = `${panelW}`;
+        el.style.setProperty('--panel-w', `${panelW}px`);
+      }
       const w = mode === 'open' ? panelW : layer.offsetWidth;
+      const h = layer.offsetHeight;
+      const r = mode === 'rest' ? 22 : Math.min(30, h / 2);
+      if (`${w} ${h} ${r}` === shape) return;
+      shape = `${w} ${h} ${r}`;
       el.style.setProperty('--iw', `${w}px`);
-      el.style.setProperty('--ih', `${layer.offsetHeight}px`);
-      el.style.setProperty('--ir', mode === 'rest' ? '22px' : `${Math.min(30, layer.offsetHeight / 2)}px`);
-      document.documentElement.dataset.island = mode;
+      el.style.setProperty('--ih', `${h}px`);
+      el.style.setProperty('--ir', `${r}px`);
       refreshGlass();
     };
     fit();
@@ -129,7 +141,7 @@ export function Island(props: IslandProps) {
       ro.disconnect();
       window.removeEventListener('resize', fit);
     };
-  });
+  }, [mode]);
 
   return (
     <div ref={node} className={`${styles.island} glass`} data-mode={mode}>

@@ -1,13 +1,18 @@
 /**
  * Shelf: your library as VHS tapes on wall shelves, seen spine-on, the way a video
- * shop kept them. Point at a tape and it slides out; click and it turns to show
- * its sleeve, which opens as the detail. Shelves fill left to right in bays that
- * scroll sideways.
+ * shop kept them. Point at a tape and it lifts; rest on it and it comes out and
+ * turns to show its cover; click and the cover opens as the detail. On touch the
+ * first tap shows the cover and the second opens it; keyboard focus shows it too.
+ * Shelves fill left to right in bays that scroll sideways.
  *
  * Windowed: the whole shelf is planned (positions are just numbers), but only the
  * tapes in and near the visible bays are in the DOM, so a 13,000-title library
  * scrolls as smoothly as fifty tapes. Spines are painted from each title's
- * palette (its blurhash), so no poster is downloaded until a tape is pulled out.
+ * palette (its blurhash), so no poster is downloaded until a tape is pointed at.
+ *
+ * This is the Shelf where WebGPU isn't available (gpu-shelf.ts draws it otherwise);
+ * the turn is CSS: `translate` and `rotate` on their own springs, so a tape is out
+ * of the shelf before it turns (peek.ts says why).
  */
 import type { Id, ItemSummary } from '../../api/types';
 import { artElement, artLabel, loadArt } from '../art';
@@ -17,6 +22,7 @@ import { paletteOf } from '../palette';
 import { isNew, progressFraction } from '../sections';
 import type { Dir, LensContext, LensModule, LensView } from '../types';
 import { planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan } from './geometry';
+import { asideFalloff, peekDepth, peekWait } from './peek';
 import styles from './shelf.module.css';
 
 export { planShelf, spineLook, spineTitleParts } from './geometry';
@@ -27,9 +33,12 @@ const MINI_COUNT = 14;
 const MARK =
   '<svg viewBox="0 0 35 28" aria-hidden="true"><path d="M2 26 L20 2 L27 2 L9 26 Z" fill="currentColor"/><path d="M16 26 L28 10 L33 10 L21 26 Z" fill="currentColor" fill-opacity=".45"/></svg>';
 const CONDENSED = '800 20px "Archivo Variable"';
+/** The turn takes this long to show the cover (shelf.module.css `.peek`): an opened tape hands over to the detail then. */
+const TURN_MS = 560;
+/** A pointer's cover goes back this long after the pointer leaves the tapes. */
+const LEAVE_MS = 120;
 
 // ── the lens ──
-
 
 interface Tape {
   id: Id;
@@ -72,8 +81,21 @@ class ShelfView implements LensView {
   private drawnAt = Number.NaN;
   private focusId: Id | null = null;
   private openId: Id | null = null;
+  /** The tape under the pointer (by its place on the shelf), since when; the one showing its cover, since when, and who asked. */
+  private hoverId: Id | null = null;
+  private hoverSince = 0;
+  private peekId: Id | null = null;
+  private peekSince = 0;
+  private peekBy: 'pointer' | 'key' | 'touch' | 'open' | null = null;
+  private pointer: { x: number; y: number; t: number } | null = null;
+  private speed = 0;
+  private lastType = 'mouse';
+  private sceneRect: DOMRect | null = null;
+  /** Neighbours eased aside for the cover showing. */
+  private aside: HTMLElement[] = [];
   private raf = 0;
-  private hoverT: ReturnType<typeof setTimeout> | null = null;
+  private intentT: ReturnType<typeof setTimeout> | null = null;
+  private leaveT: ReturnType<typeof setTimeout> | null = null;
   private timers: ReturnType<typeof setTimeout>[] = [];
   private suppressClick = false;
   private dead = false;
@@ -139,7 +161,8 @@ class ShelfView implements LensView {
     s.setProperty('--lip', `${m.lip}px`);
     s.setProperty('--bd', `${m.bd}px`);
     s.setProperty('--pull', `${Math.round(W * 0.9)}px`);
-    s.setProperty('--out', `${Math.round(D / 2 + W / 2 + 28)}px`);
+    // Out far enough to turn clear of its neighbours (a box set's is the widest turn).
+    s.setProperty('--peek-z', `${peekDepth({ H, W, D, tw: m.boxW, gap: m.gap })}px`);
     s.setProperty('--lift', `${Math.round(-H * 0.05)}px`);
     s.setProperty('--hov-y', `${Math.round(-H * 0.055)}px`);
     s.setProperty('--fs0', `${(W * 0.52).toFixed(1)}px`);
@@ -194,6 +217,7 @@ class ShelfView implements LensView {
     }
     this.m = m;
     this.p = p;
+    this.sceneRect = null;
     this.position();
     this.draw(animate, true);
     // Tapes changed size (window, or more titles than fit): every title is set again for the new spine.
@@ -304,6 +328,7 @@ class ShelfView implements LensView {
     if (fresh.length) {
       this.fitTitles(fresh);
       if (this.focusId !== null) this.tapes.get(this.focusId)?.slot.classList.add(styles.kf);
+      if (this.peekId !== null) this.tapes.get(this.peekId)?.slot.classList.add(styles.peek);
       if (motion) {
         fresh.forEach((tape, k) => {
           tape.slot.animate([{ transform: `${tape.t} translate3d(0,-18px,-40px)`, opacity: 0 }, { transform: tape.t, opacity: 1 }], {
@@ -529,6 +554,7 @@ class ShelfView implements LensView {
         const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
         if (!d) return;
         e.preventDefault();
+        this.setHover(null);
         this.scrollTo(this.targetX + d * (e.deltaMode === 1 ? 32 : 1));
       },
       { passive: false },
@@ -569,29 +595,174 @@ class ShelfView implements LensView {
     on('pointercancel', up);
 
     const slotOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>(`.${styles.slot}`) : null);
-    on('pointerover', (e) => {
-      const s = slotOf(e.target);
-      if (!s || e.pointerType === 'touch') return;
-      const id = Number(s.dataset.id);
-      if (this.hoverT) clearTimeout(this.hoverT);
-      this.hoverT = setTimeout(() => {
-        const i = this.index.get(id);
-        if (i === undefined) return;
-        this.ctx.setFocus(id);
-        this.ctx.intent(this.items[i]);
-        const tape = this.tapes.get(id);
-        if (tape) loadArt(tape.sleeve);
-      }, 90);
+    // A cover the pointer or a tap turned goes back when the shelf moves.
+    const putBack = () => {
+      if (this.peekBy === 'pointer' || this.peekBy === 'touch') this.peek(null, 'pointer');
+    };
+    on('pointerdown', (e) => {
+      this.lastType = e.pointerType;
     });
+    on('pointermove', (e) => {
+      if (down?.drag) {
+        this.setHover(null);
+        putBack();
+        return;
+      }
+      if (e.pointerType === 'touch') return;
+      this.pointerMoved(e.clientX, e.clientY);
+    });
+    on('pointerleave', (e) => {
+      if (e.pointerType === 'touch' || down?.drag) return;
+      this.pointer = null;
+      this.setHover(null);
+    });
+    on('wheel', putBack, { passive: true });
     on('click', (e) => {
       if (this.suppressClick) return;
+      // What you see under the pointer: a cover out of the shelf, else the tape whose place it is.
       const s = slotOf(e.target);
-      if (s) this.openTape(Number(s.dataset.id));
+      const id = s ? Number(s.dataset.id) : this.slotAt(e.clientX, e.clientY);
+      const touch = this.lastType === 'touch';
+      if (id === null) {
+        if (touch) putBack();
+        return;
+      }
+      // A tap shows the cover first; tapping it again opens it.
+      if (touch && id !== this.peekId) {
+        this.peek(id, 'touch');
+        return;
+      }
+      this.openTape(id);
     });
     on('focusin', (e) => {
+      // Keyboard focus moving to a tape shows its cover (focus handed back to the same one doesn't).
       const s = slotOf(e.target);
-      if (s && Number(s.dataset.id) !== this.focusId) this.setKeyFocus(Number(s.dataset.id));
+      if (!s || Number(s.dataset.id) === this.focusId) return;
+      this.setKeyFocus(Number(s.dataset.id));
+      this.peek(Number(s.dataset.id), 'key');
     });
+  }
+
+  /** The tape whose place on the shelf is under a point (client coordinates), with half the gap either side. */
+  private slotAt(cx: number, cy: number): Id | null {
+    const r = (this.sceneRect ??= this.scene.getBoundingClientRect());
+    const x = cx - r.left + this.scrollX;
+    const y = cy - r.top;
+    const pad = this.m.gap / 2 + 0.25;
+    const held = this.hoverId !== null ? this.index.get(this.hoverId) : undefined;
+    for (const t of this.tapes.values()) {
+      const i = this.index.get(t.id);
+      if (i === undefined) continue;
+      const grace = i === held ? 3 : 0;
+      if (x >= this.X[i] - pad - grace && x < this.X[i] + this.widths[i] + pad + grace && y >= this.Y[i] - this.m.H * 0.06 && y < this.Y[i] + this.m.H) return t.id;
+    }
+    return null;
+  }
+
+  private pointerMoved(cx: number, cy: number): void {
+    const now = performance.now();
+    const p = this.pointer;
+    if (p) {
+      const dt = Math.max(1, now - p.t);
+      const v = Math.hypot(cx - p.x, cy - p.y) / dt;
+      this.speed = dt > 60 ? v : this.speed * 0.55 + v * 0.45;
+    }
+    this.pointer = { x: cx, y: cy, t: now };
+    const id = this.slotAt(cx, cy);
+    if (id === this.hoverId) {
+      if (id !== null && !this.intentT) this.armIntent();
+    } else this.setHover(id);
+  }
+
+  private setHover(id: Id | null): void {
+    if (id === this.hoverId) return;
+    this.hoverId = id;
+    this.hoverSince = performance.now();
+    if (this.intentT) clearTimeout(this.intentT);
+    this.intentT = null;
+    if (id === null) {
+      // Off the tapes: a cover the pointer turned goes back after a moment (a brief excursion keeps it).
+      if (this.peekBy === 'pointer' && this.peekId !== null && !this.leaveT) {
+        this.leaveT = setTimeout(() => {
+          this.leaveT = null;
+          if (this.hoverId === null && this.peekBy === 'pointer') this.peek(null, 'pointer');
+        }, LEAVE_MS);
+      }
+      return;
+    }
+    if (this.leaveT) clearTimeout(this.leaveT);
+    this.leaveT = null;
+    // Its poster starts loading now, so the cover is there when it turns.
+    const tape = this.tapes.get(id);
+    if (tape) loadArt(tape.sleeve);
+    this.armIntent();
+  }
+
+  /** When the pointer rests (or moves slowly) on a tape, turn it to show its cover; a fast sweep turns none. */
+  private armIntent(): void {
+    if (this.intentT) clearTimeout(this.intentT);
+    this.intentT = null;
+    if (this.hoverId === null || this.hoverId === this.peekId) return;
+    this.intentT = setTimeout(this.intent, this.intentWait());
+  }
+
+  private intentWait(): number {
+    const now = performance.now();
+    const resting = !this.pointer || now - this.pointer.t > 45;
+    const wait = peekWait(now - this.hoverSince, resting ? 0 : this.speed);
+    return Number.isFinite(wait) ? Math.max(0, wait) : 50;
+  }
+
+  private intent = (): void => {
+    this.intentT = null;
+    const id = this.hoverId;
+    if (id === null || id === this.peekId || this.dead) return;
+    const wait = this.intentWait();
+    if (wait > 0) {
+      this.intentT = setTimeout(this.intent, Math.max(16, wait));
+      return;
+    }
+    this.peek(id, 'pointer');
+  };
+
+  /** Turn this tape's cover to you (null: none); the one showing goes back as it does, and its neighbours ease aside. */
+  private peek(id: Id | null, by: 'pointer' | 'key' | 'touch' | 'open'): void {
+    if (this.leaveT) clearTimeout(this.leaveT);
+    this.leaveT = null;
+    this.peekBy = id === null ? null : by;
+    if (id === this.peekId) return;
+    const prev = this.peekId !== null ? this.tapes.get(this.peekId) : undefined;
+    prev?.slot.classList.remove(styles.peek);
+    for (const n of this.aside) n.style.translate = '';
+    this.aside = [];
+    this.peekId = id;
+    this.peekSince = performance.now();
+    if (id === null) return;
+    const i = this.index.get(id);
+    const tape = this.tapes.get(id);
+    if (i === undefined || !tape) return;
+    loadArt(tape.sleeve, true);
+    tape.slot.classList.add(styles.peek);
+    this.ctx.setFocus(id);
+    this.ctx.intent(this.items[i]);
+    if (reducedMotion()) return;
+    // The tapes beside it ease aside a little (each gap closing at most to nothing).
+    const { p, m } = this;
+    const same = (j: number) => j >= 0 && j < p.n && p.bay[j] === p.bay[i] && p.row[j] === p.row[i];
+    for (const dir of [1, -1]) {
+      const gaps: number[] = [];
+      for (let j = i + dir; same(j) && same(j + dir) && gaps.length < 6; j += dir) {
+        const a = dir > 0 ? j : j + dir;
+        gaps.push(this.X[a + 1] - this.X[a] - this.widths[a]);
+      }
+      asideFalloff(m.gap * 3, gaps).forEach((off, k) => {
+        const j = i + dir * (k + 1);
+        const n = same(j) ? this.tapes.get(this.items[j].id)?.slot : undefined;
+        if (!n) return;
+        n.style.translate = `${(dir * off).toFixed(2)}px 0`;
+        this.aside.push(n);
+      });
+    }
   }
 
   private markFocus(id: Id | null): void {
@@ -620,40 +791,29 @@ class ShelfView implements LensView {
     this.setKeyFocus(id);
     const tape = this.tapes.get(id);
     if (!tape) return;
-    loadArt(tape.sleeve, true);
+    const shown = this.peekId === id ? performance.now() - this.peekSince : 0;
+    this.peek(id, 'open');
     this.openId = id;
-    tape.slot.classList.add(styles.out);
     if (reducedMotion()) {
-      tape.slot.classList.add(styles.open);
       this.ctx.open(id, tape.sleeve);
       return;
     }
-    // Out first, then the turn, then the sleeve becomes the detail view.
+    // The cover turns to you (if it isn't already), then becomes the detail view.
     // Skip the hand-off if this lens has stopped being the one on screen (switched lens mid-turn).
     const live = () => !this.dead && this.openId === id && activeLens()?.view === this;
     this.timers.push(
-      setTimeout(() => {
-        if (live()) tape.slot.classList.add(styles.open);
-      }, 160),
-      setTimeout(() => {
-        if (live()) this.ctx.open(id, tape.sleeve);
-      }, 640),
+      setTimeout(
+        () => {
+          if (live()) this.ctx.open(id, tape.sleeve);
+        },
+        Math.max(0, TURN_MS - shown),
+      ),
     );
   }
 
   private closeTape(id: Id): void {
-    const tape = this.tapes.get(id);
     if (this.openId === id) this.openId = null;
-    if (!tape) return;
-    tape.slot.classList.remove(styles.open);
-    this.timers.push(
-      setTimeout(
-        () => {
-          if (this.openId !== id) tape.slot.classList.remove(styles.out);
-        },
-        reducedMotion() ? 0 : 320,
-      ),
-    );
+    if (this.peekId === id) this.peek(null, 'pointer');
   }
 
   // ── contract ──
@@ -661,6 +821,12 @@ class ShelfView implements LensView {
   update(items: readonly ItemSummary[]): void {
     this.setItems(items);
     this.relayout(true);
+  }
+
+  /** Keyboard focus to a tape, which shows its cover. */
+  private keyTo(id: Id): void {
+    this.setKeyFocus(id);
+    this.peek(id, 'key');
   }
 
   move(dir: Dir): boolean {
@@ -671,11 +837,11 @@ class ShelfView implements LensView {
       // The first tape on screen.
       let first = 0;
       while (first < n - 1 && this.X[first] - this.scrollX < this.m.padX) first++;
-      this.setKeyFocus(this.items[first].id);
+      this.keyTo(this.items[first].id);
       return true;
     }
     if (dir === 'left' || dir === 'right') {
-      this.setKeyFocus(this.items[clamp(cur + (dir === 'right' ? 1 : -1), 0, n - 1)].id);
+      this.keyTo(this.items[clamp(cur + (dir === 'right' ? 1 : -1), 0, n - 1)].id);
       return true;
     }
     const { p } = this;
@@ -692,7 +858,7 @@ class ShelfView implements LensView {
         best = i;
       }
     }
-    if (best >= 0) this.setKeyFocus(this.items[best].id);
+    if (best >= 0) this.keyTo(this.items[best].id);
     return true;
   }
 
@@ -706,7 +872,7 @@ class ShelfView implements LensView {
 
   rectOf(id: Id): DOMRect | null {
     const tape = this.tapes.get(id);
-    if (tape) return (this.openId === id ? tape.sleeve : tape.spine).getBoundingClientRect();
+    if (tape) return (this.openId === id || this.peekId === id ? tape.sleeve : tape.spine).getBoundingClientRect();
     // Off the window: where its spine would be (flat, ignoring perspective).
     const i = this.index.get(id);
     if (i === undefined) return null;
@@ -717,7 +883,7 @@ class ShelfView implements LensView {
   artOf(id: Id): HTMLElement | null {
     const tape = this.tapes.get(id);
     if (!tape) return null;
-    return this.openId === id ? tape.sleeve : tape.spine;
+    return this.openId === id || this.peekId === id ? tape.sleeve : tape.spine;
   }
 
   reveal(id: Id): void {
@@ -731,6 +897,10 @@ class ShelfView implements LensView {
 
   /** Covered by the detail view or the player; when it lifts, the tape goes back on the shelf. */
   pause(paused: boolean): void {
+    if (paused && this.intentT) {
+      clearTimeout(this.intentT);
+      this.intentT = null;
+    }
     if (!paused && this.openId !== null) this.closeTape(this.openId);
   }
 
@@ -739,7 +909,8 @@ class ShelfView implements LensView {
     this.ro.disconnect();
     for (const c of this.cleanup) c();
     if (this.raf) cancelAnimationFrame(this.raf);
-    if (this.hoverT) clearTimeout(this.hoverT);
+    if (this.intentT) clearTimeout(this.intentT);
+    if (this.leaveT) clearTimeout(this.leaveT);
     for (const t of this.timers) clearTimeout(t);
   }
 }

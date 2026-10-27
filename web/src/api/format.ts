@@ -56,26 +56,51 @@ export function formatBitrate(bps: number): string {
 const numberFmt = new Intl.NumberFormat();
 export const formatCount = (n: number): string => numberFmt.format(n);
 
+// Formatters are costly to make (tens of microseconds each): one of each, made on first use.
+let relative: Intl.RelativeTimeFormat | null = null;
+let shortDate: Intl.DateTimeFormat | null = null;
+
 /** "3 minutes ago", "yesterday" for epoch-ms timestamps. */
 export function formatAgo(epochMs: number, now = Date.now()): string {
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const rtf = (relative ??= new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }));
   const diff = (epochMs - now) / 1000;
   const abs = Math.abs(diff);
   if (abs < 60) return rtf.format(Math.round(diff), 'second');
   if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute');
   if (abs < 86400) return rtf.format(Math.round(diff / 3600), 'hour');
   if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), 'day');
-  return new Date(epochMs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return (shortDate ??= new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' })).format(epochMs);
 }
+
+// Folding runs for every title on every keystroke of a search and every layout of a
+// sectioned lens (10,000 titles): remember each result, and skip Unicode
+// normalisation for plain-ASCII text, which has nothing to strip.
+const folded = new Map<string, string>();
+const sortKeys = new Map<string, string>();
+const FOLD_CACHE = 40_000;
+// eslint-disable-next-line no-control-regex
+const ASCII = /^[\x00-\x7f]*$/;
 
 /** Strip accents and case for search: "Amélie" matches "amelie". */
 export function foldForSearch(s: string): string {
-  return s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  let f = folded.get(s);
+  if (f === undefined) {
+    f = ASCII.test(s) ? s.toLowerCase() : s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+    if (folded.size >= FOLD_CACHE) folded.clear();
+    folded.set(s, f);
+  }
+  return f;
 }
 
 /** Sort key that ignores a leading article ("The Matrix" sorts under M). */
 export function titleSortKey(title: string): string {
-  return foldForSearch(title).replace(/^(the|a|an)\s+/, '');
+  let k = sortKeys.get(title);
+  if (k === undefined) {
+    k = foldForSearch(title).replace(/^(the|a|an)\s+/, '');
+    if (sortKeys.size >= FOLD_CACHE) sortKeys.clear();
+    sortKeys.set(title, k);
+  }
+  return k;
 }
 
 const PATH_LABELS: Record<string, string> = {

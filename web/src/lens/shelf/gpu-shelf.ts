@@ -5,13 +5,23 @@
  *
  * - Each spine is painted once with Canvas 2D (spine.ts) into a sprite sheet, a few
  *   per frame as tapes come into view; until then a tape shows its colours.
- * - There is no depth buffer, so a frame is drawn back to front: the light on the
- *   wall and the boards, the tapes' sides and tops in the order they hide each
- *   other, the spines, the boards' lips and labels, and last the tapes that are off
- *   the shelf (the part of their sides still inside the shelf goes with the shelf).
+ * - Everything is lit (scene3d.ts materials): card sleeves and plastic clamshells,
+ *   wooden boards and painted bookends, under a lamp above the shelf and a light
+ *   whose highlight follows the pointer, with shade where the shelf hides things
+ *   and soft shadows on the wall, on the boards and behind a tape you take out.
+ *   When only the light moves, the frame redraws without rebuilding the scene.
+ * - Pointing at a tape lifts it; resting on it brings it out and turns its cover to
+ *   you (peek.ts: springs, so it reverses smoothly from wherever it is). Its
+ *   neighbours ease aside. Click opens it; on touch the first tap shows the cover
+ *   and the second opens; keyboard focus shows the cover.
+ * - There is no depth buffer, so a frame is drawn back to front: the wall and its
+ *   shadows, the boards, the tapes' sides and tops in the order they hide each
+ *   other, the spines, the shadows of tapes taken out, the boards' lips and labels,
+ *   and last the tapes that are off the shelf (the part of their sides still inside
+ *   the shelf goes with the shelf).
  * - The DOM keeps what it is good at: an invisible copy of the tapes in view, with
  *   the DOM Shelf's roles and labels, for screen readers, and one element that
- *   carries keyboard focus.
+ *   carries keyboard focus (over the cover while it shows).
  */
 import { decode } from 'blurhash';
 import type { Id, ItemSummary } from '../../api/types';
@@ -20,24 +30,26 @@ import { artLabel } from '../art';
 import { activeLens } from '../bridge';
 import { clamp, el, rand01, reducedMotion } from '../dom';
 import type { Gpu } from '../gpu/device';
-import { bezier, lerp, soft, spring } from '../gpu/motion';
+import { bezier, lerp, soft } from '../gpu/motion';
 import { classFor, posterCache, type PosterCache } from '../gpu/posters';
 import { clock } from '../gpu/quads';
-import { corners, FLAG3D, inside, KIND3D, prepareScene3D, Quad3DBatch, Scene3DRenderer } from '../gpu/scene3d';
+import { corners, FLAG3D, inside, KIND3D, MAT3D, prepareScene3D, Quad3DBatch, Scene3DRenderer, type Camera } from '../gpu/scene3d';
 import { SpriteSheet, type Sprite } from '../gpu/sprites';
 import { textAtlas, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { paletteOf } from '../palette';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
 import type { Dir, LensContext, LensModule, LensView } from '../types';
 import { planShelf, shelfLayout, shelfMetrics, spineLook, type Metrics, type ShelfLayout, type ShelfPlan, type SpineLook } from './geometry';
+import { asideFalloff, BACK_C, BACK_K, LIFT_C, LIFT_K, PEEK_C, PEEK_K, peekPath, peekWait, spring0, stepSpring, tapePose, type PoseDims, type Spring } from './peek';
 import styles from './shelf.module.css';
-import { backKey, grayHex, mixBlackOklab, paintBack, paintEdge, paintGlow, paintRamp, paintSheen, paintSpine, spineKey, type ShelfFonts } from './spine';
-import { facing, I3, place, REST, rotX, rotY, splitAtDepth, tapeFaces, type M3, type Placed, type TapeFaces, type TapeMove } from './transform';
+import { backKey, grayHex, mixBlackOklab, paintBack, paintEdge, paintGlow, paintRamp, paintSpine, spineKey, type ShelfFonts } from './spine';
+import { boxCorners, facing, I3, place, REST, rotX, rotY, splitAtDepth, tapeFaces, type M3, type Placed, type TapeFaces, type TapeMove } from './transform';
 import { cssColor, dcColor, hexColor } from '../gpu/colors';
 
 type RGBA = readonly [number, number, number, number];
 type Span = [number, number];
-type Stage = 'rest' | 'pull' | 'out' | 'open';
+/** Who asked a tape to show its cover: the pointer resting on it, the keyboard, a tap, or opening it. */
+type PeekBy = 'pointer' | 'key' | 'touch' | 'open';
 
 const MINI_COUNT = 14;
 const CONDENSED = '800 20px "Archivo Variable"';
@@ -48,23 +60,25 @@ const INK: RGBA = [0.914, 0.902, 0.875, 1];
 const PILL: RGBA = [8 / 255, 8 / 255, 10 / 255, 1];
 
 // Timings (seconds) and curves, as shelf.module.css and shelf.ts have them.
-const PULL_S = 0.62;
-const OUT_S = 0.36;
-const OPEN_S = 0.72;
-const LIT_S = 0.3;
-const SHADE_S = 0.5;
-const SHEEN_S = 0.6;
-const SHEEN_DELAY = 0.2;
 const SLIDE_S = 0.52;
 const ENTER_S = 0.42;
 const ENTER_STAGGER = 0.018;
 const SINK_S = 0.26;
 const EXTRA_S = 0.5;
-const OUT_CURVE = bezier(0.3, 0.8, 0.3, 1);
-const EASE_OUT = bezier(0.2, 0.8, 0.2, 1);
+/** Reduced motion: the cover fades in where the tape stands, this fast. */
+const FADE_S = 0.15;
 const EASE_IN = bezier(0.42, 0, 1, 1);
 /** `--spring-soft` (tokens.css): boards, bookends and labels sliding to a new layout. */
 const SPRING_SOFT = [0, 0.032, 0.106, 0.201, 0.303, 0.403, 0.496, 0.579, 0.652, 0.715, 0.768, 0.813, 0.849, 0.88, 0.904, 0.924, 0.94, 0.953, 0.963, 0.971, 0.978, 0.983, 0.987, 0.99, 0.992, 0.994, 0.995, 0.996, 0.997, 0.998, 1];
+/** A pointer peek waits this long after the pointer leaves the tapes before going back (a brief excursion keeps it). */
+const LEAVE_MS = 120;
+/** How far along its peek a tape waits for a neighbour's cover to turn away (out of the shelf, not turning: peek.ts). */
+const WAIT_AT = 0.2;
+/** Card: satin; clamshell plastic: glossy (spines carry their own gloss, spine.ts). */
+const GLOSS_CARD = 0.5;
+const GLOSS_PLASTIC = 0.82;
+const GLOSS_WOOD = 0.32;
+const GLOSS_PAINT = 0.28;
 
 function springSoft(p: number): number {
   if (p <= 0) return 0;
@@ -80,16 +94,14 @@ const RY_RIGHT = rotY(Math.PI / 2);
 const RY_LEFT = rotY(-Math.PI / 2);
 const RX_TOP = rotX(Math.PI / 2);
 
-/** A value easing to a target, with an optional delay (CSS `transition-delay`). */
+/** A value easing to a target over a fixed time (reduced motion's fade). */
 class Ease {
   from: number;
   to: number;
   start = 0;
   dur = 0;
-  private curve: (p: number) => number;
 
-  constructor(curve: (p: number) => number, value: number) {
-    this.curve = curve;
+  constructor(value: number) {
     this.from = value;
     this.to = value;
   }
@@ -97,57 +109,47 @@ class Ease {
   value(now: number): number {
     if (this.dur <= 0 || now >= this.start + this.dur) return this.to;
     if (now <= this.start) return this.from;
-    return lerp(this.from, this.to, this.curve((now - this.start) / this.dur));
+    return lerp(this.from, this.to, (now - this.start) / this.dur);
   }
 
   done(now: number): boolean {
     return this.dur <= 0 || now >= this.start + this.dur;
   }
 
-  set(to: number, now: number, dur: number, delay = 0): void {
+  set(to: number, now: number, dur: number): void {
     if (to === this.to) return;
     this.from = this.value(now);
     this.to = to;
-    this.start = now + delay;
+    this.start = now;
     this.dur = dur;
   }
 }
 
-/** A tape off its resting place: where it is going and how (the DOM Shelf's classes, as numbers). */
+/** A tape off its resting place: its lift (pointed at) and its turn to show its cover, as springs, and where that puts it. */
 interface Anim {
-  stage: Stage;
-  from: TapeMove;
-  to: TapeMove;
-  start: number;
-  dur: number;
-  curve: (p: number) => number;
-  /** Spine brightness (hover, keyboard focus), the shade on its sides, the light across a turned sleeve. */
-  lit: Ease;
-  shadeL: Ease;
-  shadeR: Ease;
-  sheen: Ease;
-}
-
-function poseAt(a: Anim, now: number): TapeMove {
-  if (a.dur <= 0 || now >= a.start + a.dur) return a.to;
-  const e = a.curve(clamp((now - a.start) / a.dur, 0, 1));
-  const f = a.from;
-  const t = a.to;
-  return { ty: lerp(f.ty, t.ty, e), tz: lerp(f.tz, t.tz, e), rx: lerp(f.rx, t.rx, e), ry: lerp(f.ry, t.ry, e), s: lerp(f.s, t.s, e) };
+  lift: Spring;
+  peek: Spring;
+  /** Reduced motion: the turned tape fades in over the one on the shelf instead (0–1). */
+  fade: Ease;
+  pose: TapeMove;
 }
 
 /** Per title: its spine look and colours, worked out once. */
 interface TapeLook {
   item: ItemSummary;
   look: SpineLook;
+  /** A clamshell (plastic) rather than a card sleeve. */
+  clam: boolean;
+  /** Its own grain and wear. */
+  seed: number;
   /** The spine until its sprite is painted (offline: greyed). */
   bg: RGBA;
   bg2: RGBA;
-  /** The back cover's gradient and the top of the box. */
+  /** The back cover's gradient and the top of the box (the lighting shades its back). */
   fbg: RGBA;
   fbg2: RGBA;
   top: RGBA;
-  topDark: RGBA;
+  topBack: RGBA;
   /** The sleeve until its poster is in: the art's average colour, or the title's two colours. */
   paper: RGBA;
   paper2: RGBA | null;
@@ -169,11 +171,14 @@ interface Active {
   tw: number;
   a: number;
   depth: number;
+  pose: TapeMove;
+  /** Pointed at (0–1): a brighter spine. */
   lit: number;
-  shadeL: number;
-  shadeR: number;
-  sheen: number;
+  /** How much of its foot still stands on the board (shade there). */
+  foot: number;
   ring: boolean;
+  /** Reduced motion: a turned copy over the tape, which stays on the shelf. */
+  copy: boolean;
   spine: Placed | null;
   top: Placed | null;
   right: Placed | null;
@@ -226,8 +231,8 @@ interface Theme {
   hi: string;
   end1: string;
   end2: string;
-  shade: string;
-  shade1: string;
+  shadow: RGBA;
+  dark: boolean;
   fonts: ShelfFonts;
 }
 
@@ -318,11 +323,13 @@ export class GpuShelfView implements LensView {
   private m!: Metrics;
   private p!: ShelfPlan;
   private lay!: ShelfLayout;
-  private poses!: Record<Stage, TapeMove>;
   private faces = new Map<number, TapeFaces>();
   private X = new Float64Array(0);
   private Y = new Float64Array(0);
   private widths = new Float64Array(0);
+  /** How far each tape has eased aside for a neighbour showing its cover (px), and which are. */
+  private aside = new Float64Array(0);
+  private asideSet: number[] = [];
   private rowFirst = new Int32Array(1);
   /** Where each tape was drawn in the last frame (view coordinates), and how opaque. */
   private dx = new Float64Array(0);
@@ -334,7 +341,9 @@ export class GpuShelfView implements LensView {
   private actById = new Map<Id, Active>();
   private crop0 = 0;
   private crop = 1;
+  /** Poster size for a sleeve on the shelf; `coverCls` for the cover that's out and turned to you (sharp, crop and all). */
   private posterCls = 1;
+  private coverCls = 1;
 
   private viewW = 0;
   private viewH = 0;
@@ -350,13 +359,20 @@ export class GpuShelfView implements LensView {
 
   private focusId: Id | null = null;
   private hoverId: Id | null = null;
+  private hoverSince = 0;
+  /** The tape showing its cover (or turning to), and who asked. */
+  private peekId: Id | null = null;
+  private peekBy: PeekBy | null = null;
   private openId: Id | null = null;
+  /** Opened, turning: the detail view takes over once its cover faces you. */
+  private opening: Id | null = null;
   private hiddenId: Id | null = null;
   private eagerId: Id | null = null;
-  private outs = new Set<Id>();
-  private opened = new Set<Id>();
   private wanted = new Set<Id>();
   private anims = new Map<Id, Anim>();
+  /** Springs moved this frame (the scene changes): spines aren't snapped to pixels mid-move. */
+  private springing = false;
+  private rm = false;
   private slides = new Map<Id, { x: number; y: number; start: number }>();
   private enters = new Map<Id, number>();
   private ghosts: Ghost[] = [];
@@ -364,6 +380,16 @@ export class GpuShelfView implements LensView {
   private extraFrom: Map<string, Ext> | null = null;
   private extraStart = 0;
 
+  /** The lamp above the shelf; the highlight that follows the pointer (where it lands, how strong). */
+  private lamp: [number, number, number, number] = [0, 0, 0, 1];
+  private glint: [number, number, number, number] = [0, 0, 0, 0];
+  private room: [number, number, number, number] = [0.5, 0.85, 1, 100];
+  private gx = spring0();
+  private gy = spring0();
+  private gOn = spring0();
+
+  /** The batch needs building again (anything but the lights or the time changed). */
+  private dirty = true;
   private paintPending = false;
   private paintedNow = 0;
   private budget = 8;
@@ -371,16 +397,22 @@ export class GpuShelfView implements LensView {
   private paused = false;
   private dead = false;
   private lastTrim = 0;
-  private pointer: { x: number; y: number } | null = null;
+  private pointer: { x: number; y: number; t: number } | null = null;
+  /** The pointer's speed, px/ms, smoothed. */
+  private speed = 0;
+  private lastType = 'mouse';
   private down: { id: number; x: number; s: number; lx: number; lt: number; v: number; drag: boolean } | null = null;
   private suppressClick = false;
-  private hoverT: ReturnType<typeof setTimeout> | null = null;
+  private intentT: ReturnType<typeof setTimeout> | null = null;
+  private leaveT: ReturnType<typeof setTimeout> | null = null;
   private settleT: ReturnType<typeof setTimeout> | null = null;
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private ro: ResizeObserver;
   private cleanup: (() => void)[] = [];
   /** After a lost GPU: the DOM Shelf, which this view then forwards to. */
   private dom: LensView | null = null;
+  /** Where the focus element was put (over the slot, or over the cover while it shows). */
+  private focusOnCover = false;
   // Scratch faces for tapes at rest.
   private fSpine = blank();
   private fTop = blank();
@@ -414,6 +446,7 @@ export class GpuShelfView implements LensView {
     this.text = textAtlas(gpu);
     this.theme = this.readTheme();
     this.mountedAt = clock();
+    this.rm = reducedMotion();
     // Hold the shared poster cache while drawing from it (freed a while after the last lens lets go).
     this.cleanup.push(this.posters.retain(), this.posters.onReady(this.invalidate), this.text.onChange(this.invalidate), gpu.onLost(() => this.fallBack()));
     this.watchTheme();
@@ -443,20 +476,23 @@ export class GpuShelfView implements LensView {
   private readTheme(): Theme {
     const cs = getComputedStyle(this.root);
     const v = (k: string, d: string) => cs.getPropertyValue(k).trim() || d;
+    const top1 = v('--sh-board-top-1', '#36363d');
+    const t = cssColor(top1, BLACK);
     return {
       focus: cssColor(v('--focus', '#fff'), WHITE),
       tagBg: cssColor(v('--sh-tag-bg', '#f2f0ea'), WHITE),
       tagInk: cssColor(v('--sh-tag-ink', '#141416'), BLACK),
       light: v('--sh-light', 'rgb(255 236 212 / 0.085)'),
-      top1: v('--sh-board-top-1', '#36363d'),
+      top1,
       top2: v('--sh-board-top-2', '#141417'),
       edge1: v('--sh-board-edge-1', '#2c2c32'),
       edge2: v('--sh-board-edge-2', '#19191d'),
       hi: v('--sh-board-hi', 'rgb(255 255 255 / 0.18)'),
       end1: v('--sh-end-1', '#4b4c53'),
       end2: v('--sh-end-2', '#222329'),
-      shade: v('--sh-shade', 'rgb(0 0 0 / 0.8)'),
-      shade1: v('--sh-shade-1', 'rgb(0 0 0 / 0.62)'),
+      shadow: cssColor(v('--sh-shadow', 'rgb(0 0 0 / 0.62)'), [0, 0, 0, 0.62]),
+      // Dark boards: the dark room (the light theme's room is brighter, its highlights gentler).
+      dark: 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2] < 0.5,
       fonts: {
         mono: v('--font-mono', 'ui-monospace, monospace'),
         cond: v('--font-cond', '"Archivo Variable", sans-serif'),
@@ -474,9 +510,16 @@ export class GpuShelfView implements LensView {
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     mq.addEventListener('change', refresh);
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const still = () => {
+      this.rm = motion.matches;
+      this.invalidate();
+    };
+    motion.addEventListener('change', still);
     this.cleanup.push(
       () => mo.disconnect(),
       () => mq.removeEventListener('change', refresh),
+      () => motion.removeEventListener('change', still),
     );
   }
 
@@ -517,6 +560,11 @@ export class GpuShelfView implements LensView {
     this.renderer.resize(this.viewW * dpr, this.viewH * dpr);
     this.ox = this.viewW / 2;
     this.oy = this.viewH * 0.15;
+    // The glint rests where the lamp's own highlight would be, until a pointer moves it.
+    if (!this.pointer) {
+      this.gx.x = this.gx.to = this.ox;
+      this.gy.x = this.gy.to = this.oy;
+    }
   }
 
   private setItems(items: readonly ItemSummary[]): void {
@@ -580,27 +628,23 @@ export class GpuShelfView implements LensView {
     this.p = p;
     this.position();
     if (prevH !== m.H) this.faces.clear();
-    const W = m.W;
-    this.poses = {
-      rest: REST,
-      pull: { ty: Math.round(-m.H * 0.055), tz: Math.round(W * 0.9), rx: (-5 * Math.PI) / 180, ry: 0, s: 1 },
-      out: { ty: Math.round(-m.H * 0.05), tz: Math.round(m.D / 2 + W / 2 + 28), rx: 0, ry: 0, s: 1 },
-      open: { ty: Math.round(-m.H * 0.05), tz: Math.round(m.D / 2 + W / 2 + 28), rx: 0, ry: -Math.PI / 2, s: 1.05 },
-    };
-    for (const a of this.anims.values()) a.to = this.poses[a.stage];
     // The sleeve is a 2:3 poster cut to the box's proportions (object-fit: cover).
     this.crop = Math.min(1, (m.D / m.H) * 1.5);
     this.crop0 = (1 - this.crop) / 2;
-    this.posterCls = classFor(m.D * 1.1 * this.dpr);
+    // Sharp when the cover turns to you (out in front of the shelf, a little larger):
+    // only the cropped middle of the poster spans the cover, so that one asks for more.
+    this.posterCls = classFor(m.D * 1.15 * this.dpr);
+    this.coverCls = classFor((m.D * 1.15 * this.dpr) / this.crop);
     this.ensureSheet();
     if (this.focusId !== null && !this.index.has(this.focusId)) {
       this.focusId = null;
       if (this.focusEl) this.focusEl.hidden = true;
     }
     if (this.openId !== null && !this.index.has(this.openId)) this.openId = null;
+    if (this.peekId !== null && !this.index.has(this.peekId)) this.peekAt(null, 'pointer');
     if (this.hoverId !== null && !this.index.has(this.hoverId)) this.setHover(null);
     const now = clock();
-    const motion = before !== null && before.size > 0 && !reducedMotion();
+    const motion = before !== null && before.size > 0 && !this.rm;
     this.syncWindow(true);
     if (motion) {
       // Tapes still here slide to their new places; tapes new to the view drop in; tapes gone sink back.
@@ -639,6 +683,8 @@ export class GpuShelfView implements LensView {
       this.dy = new Float64Array(n);
       this.dz = new Float64Array(n);
       this.da = new Float64Array(n);
+      this.aside = new Float64Array(n);
+      this.asideSet = [];
     }
     for (let i = 0; i < n; i++) {
       this.X[i] = this.lay.x0 + p.bay[i] * this.lay.stride + p.x[i];
@@ -668,6 +714,11 @@ export class GpuShelfView implements LensView {
       this.faces.set(tw, f);
     }
     return f;
+  }
+
+  private dims(i: number): PoseDims {
+    const m = this.m;
+    return { H: m.H, W: m.W, D: m.D, tw: this.widths[i], gap: m.gap };
   }
 
   /**
@@ -710,12 +761,14 @@ export class GpuShelfView implements LensView {
     l = {
       item,
       look,
+      clam: look.style === 'clamw' || look.style === 'clamb',
+      seed: rand01(`${item.id}:wear`),
       bg: hexColor(grayHex(look.bg, off)),
       bg2: hexColor(grayHex(look.bg2, off)),
       fbg: hexColor(look.bg),
       fbg2: hexColor(look.bg2),
       top: hexColor(look.top),
-      topDark: hexColor(mixBlackOklab(look.top, 0.55)),
+      topBack: hexColor(mixBlackOklab(look.top, 0.8)),
       paper: edge ? edge[0] : (dc ?? hexColor(pal.c1)),
       paper2: edge ? edge[1] : dc ? null : hexColor(pal.c2),
       z: -rand01(`${item.id}:z`) * 3,
@@ -810,26 +863,23 @@ export class GpuShelfView implements LensView {
     return sp;
   }
 
-  /** A gradient of the shelf's (board, lip, bookends, light, shade): painted once per theme and size. */
+  /** A gradient of the shelf's (board, lip, bookends, light): painted once per theme and size. */
   private fx(key: string, paint: (c: CanvasRenderingContext2D, w: number, h: number) => void, w?: number, h?: number): Sprite | null {
     const sp = this.sheet?.get(key, paint, w, h, 64) ?? null;
     if (!sp) this.paintPending = true;
     return sp;
   }
 
-  private shadeSprite(): Sprite | null {
-    const t = this.theme;
-    return this.fx(`fx|shade|${t.shade1}|${t.shade}`, (c, w, h) =>
-      paintRamp(c, w, h, 'h', [
-        [0, t.shade1],
-        [1, t.shade],
-      ]),
-    );
-  }
-
   // ── frames ──
 
+  /** Something in the scene changed: build it again next frame. */
   private invalidate = (): void => {
+    this.dirty = true;
+    this.relight();
+  };
+
+  /** Only the lights or the time moved: draw the same scene again. */
+  private relight = (): void => {
     if (!this.raf && !this.dead && !this.dom) this.raf = requestAnimationFrame(this.frame);
   };
 
@@ -837,42 +887,94 @@ export class GpuShelfView implements LensView {
     this.raf = 0;
     if (this.dead || this.dom || !this.sheet) return;
     const now = clock();
-    const dt = clamp(now - this.lastT, 0, 0.1);
+    // After a rest the first frame steps as one frame, not the whole rest.
+    const gap = now - this.lastT;
+    const dt = gap > 0.05 ? 1 / 120 : Math.max(0, gap);
     this.lastT = now;
     if (!this.mini && Math.min(window.devicePixelRatio || 1, 3) !== this.dpr) {
       this.measure();
       this.relayout(null);
     }
     const scrolling = this.stepScroll(dt);
+    this.springing = this.stepSprings(dt, now);
+    const glinting = this.stepLights(dt);
     const posters = this.posters;
-    // Upload first: a slot drawn in the last frame is still "in use" and can't be evicted for a new one.
-    posters.upload();
-    posters.begin();
-    this.sheet.begin();
-    this.paintedNow = 0;
-    // Spines come in fast on a fresh shelf, a few per frame while it scrolls.
-    this.budget = now - this.mountedAt < 0.8 ? 24 : 8;
-    const gen = this.text.gen;
-    this.build(now);
-    if (this.text.gen !== gen) this.build(now);
-    if (scrolling || now - this.mountedAt < 1.5) this.prefetch();
-    this.text.flush();
     const sheet = this.sheet;
-    this.renderer.draw(
-      this.batch,
-      { width: this.viewW, height: this.viewH, persp: this.m.persp, originX: this.ox, originY: this.oy, dpr: this.dpr, time: now },
-      { posters: posters.views(), glyphs: this.text.view, sprites: sheet.view, key: `${posters.version}|${this.sheetSerial}.${sheet.version}` },
-    );
-    posters.pump();
-    if (performance.now() - this.lastTrim > 5000) {
-      this.lastTrim = performance.now();
-      posters.trim();
+    const fresh = this.dirty || scrolling || this.springing || posters.pending;
+    if (fresh) {
+      this.dirty = false;
+      this.asideNow();
+      // Upload first: a slot drawn in the last frame is still "in use" and can't be evicted for a new one.
+      posters.upload();
+      posters.begin();
+      sheet.begin();
+      this.paintedNow = 0;
+      // Spines come in fast on a fresh shelf, a few per frame while it scrolls.
+      this.budget = now - this.mountedAt < 0.8 ? 24 : 8;
+      const gen = this.text.gen;
+      this.build(now);
+      if (this.text.gen !== gen) this.build(now);
+      if (scrolling || now - this.mountedAt < 1.5) this.prefetch();
+      this.text.flush();
+    }
+    this.renderer.draw(this.batch, this.camera(now), { posters: posters.views(), glyphs: this.text.view, sprites: sheet.view, key: `${posters.version}|${this.sheetSerial}.${sheet.version}` }, fresh);
+    if (fresh) {
+      posters.pump();
+      if (performance.now() - this.lastTrim > 5000) {
+        this.lastTrim = performance.now();
+        posters.trim();
+      }
     }
     const moving = this.settle(now);
     // Painting that ran out of budget goes on next frame (unless nothing could be painted at all).
-    const painting = this.paintPending && this.paintedNow > 0;
-    if ((scrolling || moving || painting || posters.pending || now < posters.fadeUntil) && !this.paused) this.invalidate();
+    const painting = fresh && this.paintPending && this.paintedNow > 0;
+    if (this.paused) return;
+    if (scrolling || this.springing || moving || painting || posters.pending) this.invalidate();
+    else if (glinting || now < posters.fadeUntil) this.relight();
   };
+
+  private camera(now: number): Camera {
+    return { width: this.viewW, height: this.viewH, persp: this.m.persp, originX: this.ox, originY: this.oy, dpr: this.dpr, time: now, light: this.lamp, glint: this.glint, room: this.room };
+  }
+
+  /**
+   * The lamp hangs above the shelf, a little in front; the glint is a second, small
+   * light placed so its highlight on the spines lands just above the pointer (it
+   * follows on a soft spring, and fades when the pointer leaves). Still under reduced
+   * motion. True while the glint is moving.
+   */
+  private stepLights(dt: number): boolean {
+    const { m, ox, oy, viewW, viewH } = this;
+    const persp = m.persp;
+    this.lamp[0] = ox + viewW * 0.08;
+    this.lamp[1] = -viewH * 0.35;
+    this.lamp[2] = persp * 0.6;
+    this.lamp[3] = 1;
+    const dark = this.theme.dark;
+    this.room[0] = dark ? 0.5 : 0.66;
+    this.room[1] = dark ? 1 : 0.55;
+    this.room[2] = dark ? 1 : 0.6;
+    this.room[3] = m.D;
+    const on = !this.mini && !this.rm && this.pointer !== null ? 1 : 0;
+    this.gOn.to = on;
+    let moving = false;
+    if (this.rm || this.mini) {
+      this.gOn.x = this.gOn.to;
+      this.gOn.v = 0;
+    } else {
+      moving = stepSpring(this.gx, dt, 90, 19) || moving;
+      moving = stepSpring(this.gy, dt, 90, 19) || moving;
+      moving = stepSpring(this.gOn, dt, 60, 15.5) || moving;
+    }
+    // Where its highlight should land, and where that puts the light (mirrored in the plane of the spines).
+    const gz = persp * 0.75;
+    const k = (persp + gz) / persp;
+    this.glint[0] = ox + (this.gx.x - ox) * k;
+    this.glint[1] = oy + (this.gy.x - 40 - oy) * k;
+    this.glint[2] = gz;
+    this.glint[3] = (dark ? 1.5 : 1.1) * Math.max(0, this.gOn.x);
+    return moving;
+  }
 
   /** Smooth scrolling towards the target (shelf.ts: 15% of the way per frame at 120 Hz). */
   private stepScroll(dt: number): boolean {
@@ -884,14 +986,102 @@ export class GpuShelfView implements LensView {
     return this.scrollX !== this.targetX;
   }
 
+  /**
+   * Lifts and turns, one step (reduced motion: no motion, the cover fades in over the
+   * tape instead). Hands an opened tape to the detail view once its cover faces you.
+   * True while any spring is still moving.
+   */
+  private stepSprings(dt: number, now: number): boolean {
+    let moving = false;
+    let out = 0;
+    // A cover still turned towards you, going back: the next tape waits partway out
+    // until it has turned away (so the two never meet), and it hurries.
+    const going: number[] = [];
+    for (const [id, a] of this.anims) {
+      if (a.peek.x > 0.02) out++;
+      const i = this.index.get(id);
+      if (i !== undefined && a.peek.to === 0 && peekPath(a.peek.x).turn > 0.2) going.push(i);
+    }
+    const blocked = (i: number) => going.some((j) => j !== i && this.p.row[j] === this.p.row[i] && this.p.bay[j] === this.p.bay[i] && Math.abs(this.X[j] - this.X[i]) < this.m.D);
+    for (const [id, a] of this.anims) {
+      const i = this.index.get(id);
+      if (i === undefined) {
+        this.anims.delete(id);
+        continue;
+      }
+      let busy: boolean;
+      if (this.rm || this.mini) {
+        a.lift.x = a.lift.to;
+        a.peek.x = a.peek.to;
+        a.lift.v = 0;
+        a.peek.v = 0;
+        busy = !a.fade.done(now);
+      } else {
+        busy = stepSpring(a.lift, dt, LIFT_K, LIFT_C);
+        const back = a.peek.to < a.peek.x;
+        // Another tape on its way out (or a third tape out): the ones going back hurry.
+        const hurry = back && (out > 1 || this.peekId !== null) ? 2.5 : 1;
+        const wait = a.peek.to === 1 && going.length > 0 && blocked(i);
+        if (wait) a.peek.to = WAIT_AT;
+        if (stepSpring(a.peek, dt, (back ? BACK_K : PEEK_K) * hurry, (back ? BACK_C : PEEK_C) * Math.sqrt(hurry))) busy = true;
+        if (wait) {
+          a.peek.to = 1;
+          busy = true;
+        }
+        // Going back, it seats: no overshoot into the wall.
+        if (a.peek.x < 0) {
+          a.peek.x = 0;
+          a.peek.v = Math.max(0, a.peek.v);
+        }
+        if (a.lift.x < 0) {
+          a.lift.x = 0;
+          a.lift.v = Math.max(0, a.lift.v);
+        }
+      }
+      tapePose(this.rm ? 0 : a.lift.x, this.rm ? 0 : a.peek.x, this.dims(i), a.pose);
+      if (busy) moving = true;
+      if (this.opening === id && (this.rm || peekPath(a.peek.x).turn >= 0.97)) this.handOff(id);
+      if (!busy && a.lift.to === 0 && a.peek.to === 0 && a.lift.x === 0 && a.peek.x === 0 && a.fade.value(now) === 0) this.anims.delete(id);
+    }
+    this.placeFocusOnCover();
+    return moving;
+  }
+
+  /** Tapes beside one showing its cover ease aside (never into each other). */
+  private asideNow(): void {
+    const set = this.asideSet;
+    for (const i of set) this.aside[i] = 0;
+    set.length = 0;
+    if (this.rm || this.mini) return;
+    const { p, m } = this;
+    const n = p.n;
+    const amount = m.gap * 3;
+    for (const [id, a] of this.anims) {
+      if (a.peek.x <= 0.001) continue;
+      const i = this.index.get(id);
+      if (i === undefined) continue;
+      const s = amount * Math.min(1, peekPath(a.peek.x).out);
+      const same = (j: number) => j >= 0 && j < n && p.bay[j] === p.bay[i] && p.row[j] === p.row[i];
+      for (const dir of [1, -1]) {
+        const gaps: number[] = [];
+        for (let j = i + dir; same(j) && same(j + dir) && gaps.length < 6; j += dir) {
+          const a0 = dir > 0 ? j : j + dir;
+          gaps.push(this.X[a0 + 1] - this.X[a0] - this.widths[a0]);
+        }
+        const offs = asideFalloff(s, gaps);
+        for (let k = 0; k < offs.length; k++) {
+          const j = i + dir * (k + 1);
+          if (!same(j)) break;
+          this.aside[j] += dir * offs[k];
+          set.push(j);
+        }
+      }
+    }
+  }
+
   /** Drop finished animations; true while any is still running. */
   private settle(now: number): boolean {
     let moving = false;
-    for (const [id, a] of this.anims) {
-      const done = (a.dur <= 0 || now >= a.start + a.dur) && a.lit.done(now) && a.shadeL.done(now) && a.shadeR.done(now) && a.sheen.done(now);
-      if (!done) moving = true;
-      else if (a.stage === 'rest' && a.lit.to === 0) this.anims.delete(id);
-    }
     for (const [id, s] of this.slides) {
       if (now >= s.start + SLIDE_S) this.slides.delete(id);
       else moving = true;
@@ -921,10 +1111,10 @@ export class GpuShelfView implements LensView {
     return [first, last];
   }
 
-  /** Where tape `i` is drawn now (a search slides it, a new one drops in), into dx/dy/dz/da. */
+  /** Where tape `i` is drawn now (a search slides it, a new one drops in, a neighbour nudges it), into dx/dy/dz/da. */
   private placeTape(i: number, l: TapeLook, now: number): void {
     const id = l.item.id;
-    let x = this.X[i];
+    let x = this.X[i] + this.aside[i];
     let y = this.Y[i];
     let z = l.z;
     let a = 1;
@@ -1020,8 +1210,9 @@ export class GpuShelfView implements LensView {
       }
     }
     this.collectActive(now, lo, hi);
+    this.wantNear();
 
-    // 1. The light on the wall, the boards' tops (seen from above).
+    // 1. The wall: the light on it, the boards' shadows; the boards' tops (seen from above) and the shade where tapes stand on them.
     const glow = this.fx(`fx|glow|${this.theme.light}`, (c, w, h) => paintGlow(c, w, h, this.theme.light));
     for (const row of rows) {
       if (glow) {
@@ -1030,7 +1221,12 @@ export class GpuShelfView implements LensView {
         this.sprite(o, glow, 1);
       }
     }
-    for (const row of rows) if (oy < row.by) this.boardTop(row, sx);
+    for (const row of rows) this.wallShadow(row, sx);
+    for (const row of rows) {
+      if (oy >= row.by) continue;
+      this.boardTop(row, sx);
+      this.footShade(row);
+    }
     // 2. Tapes leaving the results, sinking back into the shelf.
     for (const g of this.ghosts) this.ghost(g, now);
     // 3. Sides and tops, row by row, in the order they hide each other: left of the
@@ -1038,14 +1234,15 @@ export class GpuShelfView implements LensView {
     for (const row of rows) this.sides(row, lo, hi);
     // 4. The spines on the shelf and the bookends' faces. A still shelf puts each spine
     //    on whole device pixels at exactly its size, so its sprite is drawn texel for pixel.
-    const still = this.targetX === this.scrollX && !this.down?.drag && !reflow;
+    const still = this.targetX === this.scrollX && !this.down?.drag && !reflow && !this.springing;
     const { ox, dpr } = this;
     const persp = m.persp;
     for (const row of rows) {
       for (let i = row.i0; i < row.i1; i++) {
         if (this.X[i] + this.widths[i] < lo || this.X[i] > hi) continue;
         const id = this.items[i].id;
-        if (this.actById.has(id) || id === this.hiddenId) continue;
+        const t = this.actById.get(id);
+        if ((t && !t.copy) || id === this.hiddenId) continue;
         const l = this.lookOf(this.items[i]);
         const tw = this.widths[i];
         const z = this.dz[i];
@@ -1058,10 +1255,15 @@ export class GpuShelfView implements LensView {
           y = oy + (Math.round((oy + (y - oy) / w) * dpr) / dpr - oy) * w;
         }
         const f = setFace(this.fSpine, x + tw / 2, y + m.H / 2, z, tw, m.H, 0, 0, I3);
-        this.spine(l, f, tw, this.da[i], l.item.available ? 1 : 0.62, false);
+        const lit = this.anims.get(id)?.lift.x ?? 0;
+        // (Under a turned copy, the copy carries the focus ring.)
+        const ring = id === this.focusId && !this.mini && !t;
+        this.spine(l, f, tw, this.da[i], l.item.available ? lerp(1, 1.08, lit) : lerp(0.62, 0.8, lit), ring, 1);
       }
       this.endFaces(row, sx);
     }
+    // 4b. Tapes off the shelf cast soft shadows on it, from the lamp.
+    for (const t of this.act) if (!t.copy) this.dropShadow(t);
     // 5. The boards' lips and the section labels on them.
     for (const row of rows) this.lip(row, sx);
     this.tags(fb, lb, now);
@@ -1083,7 +1285,16 @@ export class GpuShelfView implements LensView {
       if (this.X[i] + tw < lo - m.D || this.X[i] > hi + m.D) continue;
       const l = this.lookOf(this.items[i]);
       this.placeTape(i, l, now);
-      const pose = poseAt(a, now);
+      let pose = a.pose;
+      let alpha = this.da[i];
+      const copy = this.rm || this.mini;
+      if (copy) {
+        // Reduced motion: the tape stays put; its cover fades in over it, turned to you.
+        const f = a.fade.value(now);
+        if (f <= 0.002) continue;
+        pose = tapePose(0, 1, this.dims(i));
+        alpha *= f;
+      } else if (pose.tz === 0 && pose.ty === 0 && pose.ry === 0 && pose.rx === 0) continue;
       const F = this.facesFor(tw);
       const at: [number, number, number] = [this.dx[i], this.dy[i], this.dz[i]];
       const put = (f: TapeFaces['spine']) => {
@@ -1097,13 +1308,13 @@ export class GpuShelfView implements LensView {
         id,
         l,
         tw,
-        a: this.da[i],
+        a: alpha,
         depth: this.dz[i] + pose.tz,
-        lit: a.lit.value(now),
-        shadeL: a.shadeL.value(now),
-        shadeR: a.shadeR.value(now),
-        sheen: a.sheen.value(now),
+        pose,
+        lit: copy ? 0 : a.lift.x,
+        foot: clamp(1 - pose.tz / 14, 0, 1) * clamp(1 + pose.ty / 6, 0, 1),
         ring: id === this.focusId && !this.mini,
+        copy,
         spine: put(F.spine),
         top: put(F.top),
         right,
@@ -1115,6 +1326,18 @@ export class GpuShelfView implements LensView {
       this.actById.set(id, t);
     }
     act.sort((p, q) => p.depth - q.depth);
+  }
+
+  /** Posters of the tape under the pointer (or focused) and its neighbours load ahead, so a cover is there when it turns. */
+  private wantNear(): void {
+    const id = this.hoverId ?? this.focusId;
+    if (id === null || this.mini) return;
+    const i = this.index.get(id);
+    if (i === undefined) return;
+    for (let j = Math.max(0, i - 2); j <= Math.min(this.items.length - 1, i + 2); j++) {
+      const art = this.items[j].poster;
+      if (art) this.posters.want(art, this.coverCls, j === i ? 1 : 200 + Math.abs(j - i));
+    }
   }
 
   /** Sides and tops of one row (see build, step 3), and its bookends' sides. */
@@ -1148,10 +1371,10 @@ export class GpuShelfView implements LensView {
     const l = this.lookOf(item);
     const a = this.da[i];
     const t = this.actById.get(item.id);
-    if (t) {
+    if (t && !t.copy) {
       // Off the shelf: the part of its sides still inside the shelf goes in with the shelf.
-      if (t.right && t.splitR?.back) this.sleeve(t.l, t.right, t.splitR.back, t.a, t.shadeR, 0, true);
-      if (t.left && t.splitL?.back) this.backCover(t.l, t.left, t.splitL.back, t.a, t.shadeL, true);
+      if (t.right && t.splitR?.back) this.sleeve(t.l, t.right, t.splitR.back, t.a, 1, true);
+      if (t.left && t.splitL?.back) this.backCover(t.l, t.left, t.splitL.back, t.a, 1, true);
       return;
     }
     const tw = this.widths[i];
@@ -1159,12 +1382,14 @@ export class GpuShelfView implements LensView {
     const y = this.dy[i];
     const z = this.dz[i];
     const half = m.D / 2;
+    // Beside a neighbour a side is in deep shade; at the end of a row, less.
+    const shade = exposed ? 0.3 : 1;
     if (side === 'right') {
       const f = setFace(this.fSide, x + tw, y + m.H / 2, z - half, m.D, m.H, 0, Math.PI / 2, RY_RIGHT);
-      this.sleeve(l, f, [-half, half], a, 1, 0, exposed);
+      this.sleeve(l, f, [-half, half], a, shade, exposed);
     } else if (side === 'left') {
       const f = setFace(this.fSide, x, y + m.H / 2, z - half, m.D, m.H, 0, -Math.PI / 2, RY_LEFT);
-      this.backCover(l, f, [-half, half], a, 1, exposed);
+      this.backCover(l, f, [-half, half], a, shade, exposed);
     }
     if (oy < y) this.top(l, setFace(this.fTop, x + tw / 2, y, z - half, tw, m.D, Math.PI / 2, 0, RX_TOP), tw, a);
   }
@@ -1172,26 +1397,34 @@ export class GpuShelfView implements LensView {
   /** The tape that is off the shelf: the front of its sides, its top and its spine (back faces culled). */
   private activeTape(t: Active): void {
     const off = !t.l.item.available;
-    if (t.right && t.splitR?.front) this.sleeve(t.l, t.right, t.splitR.front, t.a, t.shadeR, t.sheen, true);
-    if (t.left && t.splitL?.front) this.backCover(t.l, t.left, t.splitL.front, t.a, t.shadeL, true);
+    if (t.right && t.splitR?.front) this.sleeve(t.l, t.right, t.splitR.front, t.a, 1, true);
+    if (t.left && t.splitL?.front) this.backCover(t.l, t.left, t.splitL.front, t.a, 1, true);
     if (t.top) this.top(t.l, t.top, t.tw, t.a);
     const hidden = this.hiddenId === t.id && this.openId !== t.id;
-    if (t.spine && !hidden) this.spine(t.l, t.spine, t.tw, t.a, off ? lerp(0.62, 0.8, t.lit) : lerp(1, 1.14, t.lit), t.ring);
+    if (t.spine && !hidden) this.spine(t.l, t.spine, t.tw, t.a, off ? lerp(0.62, 0.8, t.lit) : lerp(1, 1.08, t.lit), t.ring, t.foot);
   }
 
   // ── faces ──
 
-  /** A quad on a placed face: centred at (u, v) from the face's centre, w×h, turned with the face. */
-  private on(f: Placed, u: number, v: number, w: number, h: number, kind: number, radius = 0): number {
+  /**
+   * A quad on a placed face: centred at (u, v) from the face's centre, w×h, turned
+   * with the face; `out` lifts it off the face along its normal (a decal on it).
+   */
+  private on(f: Placed, u: number, v: number, w: number, h: number, kind: number, radius = 0, out = 0): number {
     const s = f.s;
     let x = f.x;
     let y = f.y;
     let z = f.z;
+    const q = f.m;
     if (u !== 0 || v !== 0) {
-      const q = f.m;
       x += (q[0] * u + q[1] * v) * s;
       y += (q[3] * u + q[4] * v) * s;
       z += (q[6] * u + q[7] * v) * s;
+    }
+    if (out !== 0) {
+      x += q[2] * out;
+      y += q[5] * out;
+      z += q[8] * out;
     }
     const o = this.batch.add(x, y, z, w * s, h * s, kind, radius * s);
     if (f.rx !== 0 || f.ry !== 0 || f.rz !== 0) this.batch.rotate(o, f.rx, f.ry, f.rz);
@@ -1206,13 +1439,21 @@ export class GpuShelfView implements LensView {
     b.texture(o, sp.layer, 0, 0);
   }
 
-  private spine(l: TapeLook, f: Placed, tw: number, a: number, tint: number, ring: boolean): void {
+  /** The material of a tape's box: card or a clamshell's plastic. */
+  private box(o: number, l: TapeLook, shade: number): void {
+    this.batch.material(o, l.clam ? MAT3D.plastic : MAT3D.print, l.clam ? GLOSS_PLASTIC : GLOSS_CARD, l.seed, shade);
+  }
+
+  /** `foot`: how much of it stands on the board (the shade at its foot and beside its neighbours). */
+  private spine(l: TapeLook, f: Placed, tw: number, a: number, tint: number, ring: boolean, foot: number): void {
     const b = this.batch;
     const H = this.m.H;
-    const radius = l.look.style === 'clamw' || l.look.style === 'clamb' ? 2.5 : 1.5;
+    const radius = l.clam ? 2.5 : 1.5;
     const sp = this.spineSprite(l, tw, this.budget);
     const o = this.on(f, 0, 0, tw, H, sp ? KIND3D.sprite : KIND3D.poster, radius);
     b.opacity(o, a);
+    // Card is satin; the sprite's alpha makes plastic and stickers glossy.
+    b.material(o, MAT3D.spine, GLOSS_CARD * 0.9, l.seed, foot);
     if (sp) {
       const c = this.tint;
       c[0] = tint;
@@ -1229,7 +1470,7 @@ export class GpuShelfView implements LensView {
     }
     if (ring) {
       // outline: 2px solid (focus at 60%), outline-offset: 2px
-      const r = this.on(f, 0, 0, tw + 8, H + 8, KIND3D.ring, radius + 4);
+      const r = this.on(f, 0, 0, tw + 8, H + 8, KIND3D.ring, radius + 4, 0.75);
       b.color(r, this.theme.focus, 0.6 * a);
       b.extra(r, 2);
     }
@@ -1239,14 +1480,18 @@ export class GpuShelfView implements LensView {
     const b = this.batch;
     const o = this.on(f, 0, 0, tw, this.m.D, KIND3D.poster, 1.5);
     b.opacity(o, a);
-    // linear-gradient(to top, top, 55% top in black): light at the front edge.
-    b.color(o, l.topDark);
+    // Its colour, a little darker at the back; the light and the shade under the next board do the rest.
+    b.color(o, l.topBack);
     b.uv(o, l.top[0], l.top[1], l.top[2], 1);
     b.flags(o, FLAG3D.gradient);
+    this.box(o, l, 0);
   }
 
-  /** The sleeve (the tape's right side): its poster once wanted, marks, the shade, and the light when turned. */
-  private sleeve(l: TapeLook, f: Placed, span: Span, a: number, shade: number, sheen: number, full: boolean): void {
+  /**
+   * The sleeve (the tape's right side): its poster once wanted, and its marks where it
+   * shows whole. `shade`: how deep in shade it is beside its neighbour (0–1).
+   */
+  private sleeve(l: TapeLook, f: Placed, span: Span, a: number, shade: number, full: boolean): void {
     const b = this.batch;
     const { D, H } = this.m;
     const [ua, ub] = span;
@@ -1262,6 +1507,7 @@ export class GpuShelfView implements LensView {
     const id = item.id;
     const o = this.on(f, uc, 0, sw, H, KIND3D.poster, whole ? 1.5 : 0);
     b.opacity(o, a);
+    this.box(o, l, shade);
     const hidden = this.hiddenId === id && this.openId === id;
     let flags = whole && !hidden ? FLAG3D.hairline : 0;
     if (hidden) {
@@ -1269,7 +1515,8 @@ export class GpuShelfView implements LensView {
       b.color(o, l.fbg2);
     } else {
       const art = item.poster;
-      const hit = art && this.wanted.has(id) ? this.posters.get(art, this.posterCls, id === this.eagerId ? -1e6 : id === this.hoverId || id === this.focusId ? 0 : 1000, true) : null;
+      const near = id === this.eagerId || id === this.peekId || id === this.hoverId || id === this.focusId;
+      const hit = art && this.wanted.has(id) ? this.posters.get(art, near ? this.coverCls : this.posterCls, id === this.eagerId ? -1e6 : near ? 0 : 1000, true) : null;
       b.color(o, l.paper);
       if (hit) {
         b.uv(o, this.crop0 + t0 * this.crop, 0, this.crop0 + t1 * this.crop, 1);
@@ -1282,17 +1529,9 @@ export class GpuShelfView implements LensView {
     }
     b.flags(o, flags);
     if (full && !hidden) this.marks(item, f, ua, ub, a);
-    if (shade > 0.002) {
-      const s = this.shadeSprite();
-      if (s) this.sprite(this.on(f, uc, 0, sw, H, KIND3D.sprite), s, shade * a, t0, t1);
-    }
-    if (sheen > 0.002) {
-      const s = this.fx(`fx|sheen|${D}|${H}`, (c, w, h) => paintSheen(c, w, h, D, H));
-      if (s) this.sprite(this.on(f, uc, 0, sw, H, KIND3D.sprite), s, sheen * a, t0, t1);
-    }
   }
 
-  /** The back cover (the tape's left side): its colours, the words on it where it shows, and the shade. */
+  /** The back cover (the tape's left side): its colours and, where it shows, the words on it. */
   private backCover(l: TapeLook, f: Placed, span: Span, a: number, shade: number, full: boolean): void {
     const b = this.batch;
     const { D, H } = this.m;
@@ -1309,28 +1548,30 @@ export class GpuShelfView implements LensView {
     b.color(o, l.fbg);
     b.uv(o, l.fbg2[0], l.fbg2[1], l.fbg2[2], 1);
     b.flags(o, FLAG3D.gradient);
+    this.box(o, l, shade);
     if (full) {
+      // The words are printed on it: lit and shaded with it.
       const s = this.backSprite(l);
-      if (s) this.sprite(this.on(f, uc, 0, sw, H, KIND3D.sprite), s, a, t0, t1);
-    }
-    if (shade > 0.002) {
-      const s = this.shadeSprite();
-      if (s) this.sprite(this.on(f, uc, 0, sw, H, KIND3D.sprite), s, shade * a, t0, t1);
+      if (s) {
+        const w = this.on(f, uc, 0, sw, H, KIND3D.sprite, whole ? 1.5 : 0);
+        this.sprite(w, s, a, t0, t1);
+        this.box(w, l, shade);
+      }
     }
   }
 
   private glyphOn(f: Placed, g: Glyph, x: number, y: number, color: RGBA, a: number): void {
     // (x, y): the glyph quad's top-left, from the face's top-left corner.
     const { D, H } = this.m;
-    const o = this.on(f, x + g.w / 2 - D / 2, y + g.h / 2 - H / 2, g.w, g.h, KIND3D.text);
+    const o = this.on(f, x + g.w / 2 - D / 2, y + g.h / 2 - H / 2, g.w, g.h, KIND3D.text, 0, 0.75);
     this.batch.color(o, color, a);
     this.batch.uv(o, g.u0, g.v0, g.u1, g.v1);
   }
 
-  /** A box on the sleeve, from the face's top-left corner (CSS-style). */
+  /** A box on the sleeve, from the face's top-left corner (CSS-style), lifted off it a hair. */
   private boxOn(f: Placed, x: number, y: number, w: number, h: number, kind: number, radius: number): number {
     const { D, H } = this.m;
-    return this.on(f, x + w / 2 - D / 2, y + h / 2 - H / 2, w, h, kind, radius);
+    return this.on(f, x + w / 2 - D / 2, y + h / 2 - H / 2, w, h, kind, radius, 0.75);
   }
 
   /** Progress, watched, new and offline marks and the frame/AI label, as art.ts puts them on the sleeve. */
@@ -1419,6 +1660,27 @@ export class GpuShelfView implements LensView {
 
   // ── the shelf ──
 
+  /**
+   * The board's shadow on the wall under it: the lamp is above, so the wall just below a
+   * board is in its shade, fading lower down. Drawn on the wall's plane, where it lands
+   * under the board's lip as seen from the eye.
+   */
+  private wallShadow(row: ShelfRow, sx: number): void {
+    const { m, ox, oy, theme: t } = this;
+    const persp = m.persp;
+    const zw = -m.D - 7;
+    // The lip's foot on screen, and the point on the wall behind it.
+    const kLip = persp / (persp - m.lip);
+    const kWall = (persp - zw) / persp;
+    const toWall = (x: number, y: number): [number, number] => [ox + (ox + (x - ox) * kLip - ox) * kWall, oy + (oy + (y - oy) * kLip - oy) * kWall];
+    const [x0, y0] = toWall(row.x - sx, row.by + m.bh);
+    const [x1] = toWall(row.x + row.w - sx, row.by + m.bh);
+    const blur = Math.max(10, m.head * 0.95);
+    const o = this.batch.add((x0 + x1) / 2, y0, zw, x1 - x0 + blur * 0.5, blur * 2, KIND3D.shadow, 4);
+    this.batch.color(o, t.shadow, t.dark ? 0.62 : 0.55);
+    this.batch.extra(o, blur);
+  }
+
   private boardTop(row: ShelfRow, sx: number): void {
     const { m, theme: t } = this;
     const s = this.fx(`fx|top|${t.top1}|${t.top2}`, (c, w, h) =>
@@ -1432,6 +1694,37 @@ export class GpuShelfView implements LensView {
     const o = this.batch.add(row.x + row.w / 2 - sx, row.by, m.lip - m.bd / 2, row.w, m.bd, KIND3D.sprite);
     this.batch.rotate(o, Math.PI / 2, 0, 0);
     this.sprite(o, s, 1);
+    this.batch.material(o, MAT3D.wood, GLOSS_WOOD, rand01(`board:${row.b}:${row.r}`));
+  }
+
+  /**
+   * Where the tapes stand on the board, a soft shade along their feet (ambient light
+   * can't reach under them): one soft strip per run of tapes, a hair above the board.
+   */
+  private footShade(row: ShelfRow): void {
+    const { m, theme: t } = this;
+    const b = this.batch;
+    const blur = Math.max(4, m.W * 0.16);
+    let start = -1;
+    const flush = (i0: number, i1: number) => {
+      const x0 = this.dx[i0];
+      const x1 = this.dx[i1] + this.widths[i1];
+      const o = b.add((x0 + x1) / 2, row.by - 0.75, 0, x1 - x0 + blur, blur * 2, KIND3D.shadow, 2);
+      b.rotate(o, Math.PI / 2, 0, 0);
+      b.color(o, BLACK, t.dark ? 0.7 : 0.32);
+      b.extra(o, blur);
+    };
+    let prev = -1;
+    for (const i of this.drawn) {
+      if (i < row.i0 || i >= row.i1) continue;
+      if (start < 0) start = i;
+      else if (this.dx[i] - (this.dx[prev] + this.widths[prev]) > m.gap * 2.5 + 0.5) {
+        flush(start, prev);
+        start = i;
+      }
+      prev = i;
+    }
+    if (start >= 0) flush(start, prev);
   }
 
   private lip(row: ShelfRow, sx: number): void {
@@ -1442,6 +1735,7 @@ export class GpuShelfView implements LensView {
     if (!s) return;
     const o = this.batch.add(row.x + row.w / 2 - sx, row.by + m.bh / 2, m.lip, row.w, m.bh, KIND3D.sprite, 1.5);
     this.sprite(o, s, 1);
+    this.batch.material(o, MAT3D.wood, GLOSS_WOOD, rand01(`board:${row.b}:${row.r}`));
   }
 
   private endFaces(row: ShelfRow, sx: number): void {
@@ -1454,6 +1748,7 @@ export class GpuShelfView implements LensView {
     for (const x of [row.endL, row.endR]) {
       const o = this.batch.add(x + m.ew / 2 - sx, row.endY + h / 2, 0, m.ew, h, KIND3D.sprite, 1);
       this.sprite(o, s, 1);
+      this.batch.material(o, MAT3D.paint, GLOSS_PAINT);
     }
   }
 
@@ -1472,6 +1767,47 @@ export class GpuShelfView implements LensView {
     const o = this.batch.add(x - this.scrollX, row.endY + h / 2, -d / 2, d, h, KIND3D.sprite);
     this.batch.rotate(o, 0, side === 'left' ? -Math.PI / 2 : Math.PI / 2, 0);
     this.sprite(o, s, 1);
+    this.batch.material(o, MAT3D.paint, GLOSS_PAINT);
+  }
+
+  /**
+   * A tape off the shelf casts a soft shadow on the tapes behind it: its box, seen from
+   * the lamp, on the plane just in front of the spines; softer and lighter the further out.
+   */
+  private dropShadow(t: Active): void {
+    const pose = t.pose;
+    if (pose.tz < 2) return;
+    const { m, lamp } = this;
+    const zs = 1;
+    const F = this.facesFor(t.tw);
+    const pts = boxCorners([this.dx[t.i], this.dy[t.i], this.dz[t.i]], pose, F.origin, t.tw, m.H, m.D);
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    let lift = 0;
+    let n = 0;
+    for (const p of pts) {
+      // Only what is out in front of the shelf casts a shadow on it.
+      if (p[2] <= zs) continue;
+      const k = (lamp[2] - zs) / Math.max(1, lamp[2] - p[2]);
+      const x = lamp[0] + (p[0] - lamp[0]) * k;
+      const y = lamp[1] + (p[1] - lamp[1]) * k;
+      x0 = Math.min(x0, x);
+      x1 = Math.max(x1, x);
+      y0 = Math.min(y0, y);
+      y1 = Math.max(y1, y);
+      lift += p[2] - zs;
+      n++;
+    }
+    if (!n) return;
+    lift /= n;
+    const blur = 3 + lift * 0.16;
+    const strength = clamp(lift / 24, 0, 1) * (this.theme.dark ? 0.5 : 0.28) * t.a;
+    if (strength < 0.01) return;
+    const o = this.batch.add((x0 + x1) / 2, (y0 + y1) / 2, zs, x1 - x0 + blur, y1 - y0 + blur, KIND3D.shadow, 4 + blur * 0.3);
+    this.batch.color(o, BLACK, strength);
+    this.batch.extra(o, blur);
   }
 
   /** Section labels on the boards' lips. */
@@ -1520,6 +1856,7 @@ export class GpuShelfView implements LensView {
     const sp = this.sheet?.get(g.l.shown ?? g.l.key, this.paintSpineNow, g.tw * k, m.H * k, 0) ?? null;
     const f = setFace(this.fSpine, x + g.tw / 2, g.y + m.H / 2, z, g.tw, m.H, 0, 0, I3);
     const o = this.on(f, 0, 0, g.tw, m.H, sp ? KIND3D.sprite : KIND3D.poster, 1.5);
+    this.batch.material(o, MAT3D.spine, GLOSS_CARD * 0.9, g.l.seed, 1);
     const tint = g.l.item.available ? 1 : 0.62;
     if (sp) {
       this.sprite(o, sp, a);
@@ -1590,10 +1927,8 @@ export class GpuShelfView implements LensView {
       }
     }
     this.windowIds = ids;
-    const keep = (id: Id) => ids.has(id) || id === this.openId || id === this.focusId || id === this.hoverId;
+    const keep = (id: Id) => ids.has(id) || id === this.openId || id === this.focusId || id === this.hoverId || id === this.peekId;
     for (const id of this.wanted) if (!keep(id)) this.wanted.delete(id);
-    for (const id of this.outs) if (!keep(id)) this.outs.delete(id);
-    for (const id of this.opened) if (!keep(id)) this.opened.delete(id);
     for (const id of this.anims.keys()) if (!keep(id)) this.anims.delete(id);
   }
 
@@ -1663,17 +1998,53 @@ export class GpuShelfView implements LensView {
     f.hidden = false;
     f.dataset.id = String(id);
     f.setAttribute('aria-label', artLabel(item));
-    f.style.transform = `translate(${this.X[i]}px, ${this.Y[i]}px)`;
-    f.style.width = `${this.widths[i]}px`;
-    f.style.height = `${this.m.H}px`;
+    const r = this.focusOnCover ? this.coverRect(i) : null;
+    if (r) {
+      // Over the cover as it shows (track coordinates), where a screen reader draws its outline.
+      f.style.transform = `translate(${(r.x + this.scrollX).toFixed(1)}px, ${r.y.toFixed(1)}px)`;
+      f.style.width = `${r.width.toFixed(1)}px`;
+      f.style.height = `${r.height.toFixed(1)}px`;
+    } else {
+      f.style.transform = `translate(${this.X[i]}px, ${this.Y[i]}px)`;
+      f.style.width = `${this.widths[i]}px`;
+      f.style.height = `${this.m.H}px`;
+    }
     this.syncTwin();
+  }
+
+  /** The focus element follows the focused tape's cover out and back (only when it turns past halfway, not every frame). */
+  private placeFocusOnCover(): void {
+    const id = this.focusId;
+    if (id === null || !this.focusEl) return;
+    const a = this.anims.get(id);
+    const shown = !!a && (this.rm ? a.fade.to > 0 : peekPath(a.peek.x).turn > 0.5);
+    if (shown === this.focusOnCover) return;
+    this.focusOnCover = shown;
+    this.placeFocus(id);
+  }
+
+  /** The sleeve of tape `i` turned to you (its pose as it ends up), in view coordinates. */
+  private coverRect(i: number): DOMRect | null {
+    const { m } = this;
+    const tw = this.widths[i];
+    const F = this.facesFor(tw);
+    const pose = tapePose(0, 1, this.dims(i));
+    const f = place(F.right, [this.X[i] - this.scrollX, this.Y[i], this.lookOf(this.items[i]).z], pose, F.origin);
+    const c = corners(f, { persp: m.persp, originX: this.ox, originY: this.oy });
+    if (c.some((q) => !q)) return null;
+    const pts = c as { x: number; y: number }[];
+    const xs = pts.map((q) => q.x);
+    const ys = pts.map((q) => q.y);
+    const x0 = Math.min(...xs);
+    const y0 = Math.min(...ys);
+    return new DOMRect(x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0);
   }
 
   // ── scrolling ──
 
   private scrollTo(x: number, immediate = false): void {
     this.targetX = clamp(x, 0, this.lay.maxX);
-    if ((immediate || reducedMotion()) && this.scrollX !== this.targetX) {
+    if ((immediate || this.rm) && this.scrollX !== this.targetX) {
       this.scrollX = this.targetX;
       this.scrolled();
     }
@@ -1694,37 +2065,25 @@ export class GpuShelfView implements LensView {
 
   // ── tape states ──
 
-  /** Move a tape to the pose its state asks for, the way the DOM Shelf's CSS transitions would. */
+  /** Point a tape's springs where its state asks: lifted while pointed at or focused, turned while it shows its cover. */
   private refresh(id: Id, instant = false): void {
-    const open = this.opened.has(id);
-    const out = this.outs.has(id);
-    const hover = id === this.hoverId;
-    const kf = id === this.focusId && !this.mini;
-    const lit = hover || kf;
-    // CSS: a hovered tape keeps its hover pose over `.out` (more specific), but not over `.out.open`.
-    const stage: Stage = open ? 'open' : hover ? 'pull' : out ? 'out' : kf ? 'pull' : 'rest';
+    const lift = id === this.hoverId || (id === this.focusId && !this.mini) ? 1 : 0;
+    const peek = id === this.peekId || id === this.openId ? 1 : 0;
     let a = this.anims.get(id);
     if (!a) {
-      if (stage === 'rest' && !lit) return;
-      a = { stage: 'rest', from: REST, to: REST, start: 0, dur: 0, curve: spring, lit: new Ease(EASE_OUT, 0), shadeL: new Ease(EASE_OUT, 1), shadeR: new Ease(EASE_OUT, 1), sheen: new Ease(EASE_OUT, 0) };
+      if (!lift && !peek) return;
+      a = { lift: spring0(), peek: spring0(), fade: new Ease(0), pose: { ...REST } };
       this.anims.set(id, a);
     }
-    const now = clock();
-    const still = instant || this.mini || reducedMotion();
-    if (a.stage !== stage) {
-      a.from = poseAt(a, now);
-      a.to = this.poses[stage];
-      a.start = now;
-      // The transition is the one the new classes carry (shelf.module.css).
-      a.dur = still ? 0 : open ? OPEN_S : out ? OUT_S : PULL_S;
-      a.curve = !open && out ? OUT_CURVE : spring;
-      a.stage = stage;
+    a.lift.to = lift;
+    a.peek.to = peek;
+    if (instant) {
+      a.lift.x = lift;
+      a.lift.v = 0;
+      a.peek.x = peek;
+      a.peek.v = 0;
     }
-    a.lit.set(lit ? 1 : 0, now, still ? 0 : LIT_S);
-    a.shadeL.set(lit ? 0.55 : 1, now, still ? 0 : SHADE_S);
-    // A hovered sleeve keeps its shade even turned (`.slot:hover .right::after` outranks `.open .right::after`).
-    a.shadeR.set(hover ? 0.55 : open ? 0 : kf ? 0.55 : 1, now, still ? 0 : SHADE_S);
-    a.sheen.set(open ? 1 : 0, now, still ? 0 : SHEEN_S, still ? 0 : SHEEN_DELAY);
+    a.fade.set(peek, clock(), instant ? 0 : FADE_S);
     this.invalidate();
   }
 
@@ -1732,22 +2091,74 @@ export class GpuShelfView implements LensView {
     if (id === this.hoverId) return;
     const prev = this.hoverId;
     this.hoverId = id;
+    this.hoverSince = performance.now();
     if (prev !== null) this.refresh(prev);
     if (id !== null) this.refresh(id);
     this.canvas.classList.toggle(styles.pointing, id !== null);
-    if (this.hoverT) clearTimeout(this.hoverT);
-    this.hoverT = null;
+    if (id === null) {
+      if (this.intentT) clearTimeout(this.intentT);
+      this.intentT = null;
+      // Off the tapes: a cover the pointer turned goes back after a moment (a brief excursion keeps it).
+      if (this.peekBy === 'pointer' && this.peekId !== null && !this.leaveT) {
+        this.leaveT = setTimeout(() => {
+          this.leaveT = null;
+          if (this.hoverId === null && this.peekBy === 'pointer') this.peekAt(null, 'pointer');
+        }, LEAVE_MS);
+      }
+      return;
+    }
+    if (this.leaveT) clearTimeout(this.leaveT);
+    this.leaveT = null;
+    this.wanted.add(id);
+    this.armIntent();
+  }
+
+  /** When the pointer rests (or moves slowly) on the tape it points at, turn it to show its cover. */
+  private armIntent(): void {
+    if (this.intentT) clearTimeout(this.intentT);
+    this.intentT = null;
+    const id = this.hoverId;
+    if (id === null || id === this.peekId || this.paused || this.mini) return;
+    this.intentT = setTimeout(this.intent, this.intentWait());
+  }
+
+  private intentWait(): number {
+    const now = performance.now();
+    // A pointer that has stopped sends no more moves: its speed is nil.
+    const resting = !this.pointer || now - this.pointer.t > 45;
+    const wait = peekWait(now - this.hoverSince, resting ? 0 : this.speed);
+    return Number.isFinite(wait) ? Math.max(0, wait) : 50;
+  }
+
+  private intent = (): void => {
+    this.intentT = null;
+    const id = this.hoverId;
+    if (id === null || id === this.peekId || this.dead || this.dom || this.paused) return;
+    const wait = this.intentWait();
+    if (wait > 0) {
+      this.intentT = setTimeout(this.intent, Math.max(16, wait));
+      return;
+    }
+    this.peekAt(id, 'pointer');
+  };
+
+  /** Turn this tape's cover to you (null: none); the one showing goes back as it does. */
+  private peekAt(id: Id | null, by: PeekBy): void {
+    if (this.leaveT) clearTimeout(this.leaveT);
+    this.leaveT = null;
+    const prev = this.peekId;
+    this.peekBy = id === null ? null : by;
+    if (id === prev) return;
+    this.peekId = id;
+    if (prev !== null) this.refresh(prev);
     if (id === null) return;
-    // A beat later (so passing over doesn't): light the room, warm the detail, load the sleeve.
-    this.hoverT = setTimeout(() => {
-      this.hoverT = null;
-      const i = this.index.get(id);
-      if (i === undefined || this.dead) return;
+    const i = this.index.get(id);
+    if (i !== undefined) {
       this.ctx.setFocus(id);
       this.ctx.intent(this.items[i]);
-      this.wanted.add(id);
-      this.invalidate();
-    }, 90);
+    }
+    this.wanted.add(id);
+    this.refresh(id);
   }
 
   private setKeyFocus(id: Id, instant = false): void {
@@ -1761,6 +2172,7 @@ export class GpuShelfView implements LensView {
     this.ctx.setFocus(id);
     this.ctx.intent(this.items[i]);
     this.wanted.add(id);
+    this.focusOnCover = false;
     this.placeFocus(id);
     const f = this.focusEl;
     if (f && document.activeElement !== f) f.focus({ preventScroll: true });
@@ -1775,6 +2187,11 @@ export class GpuShelfView implements LensView {
     this.timers.add(t);
   }
 
+  /** Whether this lens is still the one on screen and this tape still the one opening (a lens switch mid-turn skips the hand-off). */
+  private live(id: Id): boolean {
+    return !this.dead && this.openId === id && activeLens()?.view === this;
+  }
+
   private openTape(id: Id): void {
     if (!this.index.has(id)) return;
     if (this.openId !== null && this.openId !== id) this.closeTape(this.openId);
@@ -1782,64 +2199,63 @@ export class GpuShelfView implements LensView {
     this.wanted.add(id);
     this.eagerId = id;
     this.openId = id;
-    this.outs.add(id);
+    this.peekAt(id, 'open');
     this.refresh(id);
-    if (reducedMotion()) {
-      this.opened.add(id);
-      this.refresh(id);
-      this.ctx.open(id, null);
-      return;
-    }
-    // Out first, then the turn, then the sleeve becomes the detail view.
-    // Skip the hand-off if this lens has stopped being the one on screen (switched lens mid-turn).
-    const live = () => !this.dead && this.openId === id && activeLens()?.view === this;
+    // The cover turns to you (if it isn't already), then becomes the detail view (stepSprings hands it over).
+    this.opening = id;
     this.later(() => {
-      if (!live()) return;
-      this.opened.add(id);
-      this.refresh(id);
-    }, 160);
-    this.later(() => {
-      if (live()) this.ctx.open(id, null);
-    }, 640);
+      if (this.opening === id) this.handOff(id);
+    }, 900);
+    this.invalidate();
+  }
+
+  private handOff(id: Id): void {
+    this.opening = null;
+    if (this.live(id)) this.ctx.open(id, null);
   }
 
   private closeTape(id: Id): void {
     if (this.openId === id) this.openId = null;
-    this.opened.delete(id);
+    if (this.opening === id) this.opening = null;
+    if (this.peekId === id) this.peekAt(null, 'pointer');
     this.refresh(id);
-    this.later(
-      () => {
-        if (this.openId === id) return;
-        this.outs.delete(id);
-        this.refresh(id);
-      },
-      reducedMotion() ? 0 : 320,
-    );
   }
 
   // ── input ──
 
-  /** The tape under a point (view coordinates): tapes off the shelf first, then spines, then sides and tops. */
-  private tapeAt(px: number, py: number): number {
-    const { m, ox, oy } = this;
-    const persp = m.persp;
-    const cam = { persp, originX: ox, originY: oy };
+  /** The tape off the shelf under a point (view coordinates), front first: what you see there. */
+  private activeAt(px: number, py: number): number {
+    const cam = { persp: this.m.persp, originX: this.ox, originY: this.oy };
     for (let k = this.act.length - 1; k >= 0; k--) {
       const t = this.act[k];
       for (const f of [t.spine, t.right, t.left, t.top]) {
         if (f && inside(px, py, corners(f, cam))) return t.i;
       }
     }
+    return -1;
+  }
+
+  /**
+   * The tape whose place on the shelf is under a point (view coordinates): its spine
+   * (with half the gap either side, so nothing flickers between tapes), else the top or
+   * side you see of it. Tapes out of the shelf count by their place, so sweeping across a
+   * cover moves on tape by tape; the tape pointed at keeps a few pixels' grace.
+   */
+  private slotAt(px: number, py: number): number {
+    const { m, ox, oy } = this;
+    const persp = m.persp;
+    const pad = m.gap / 2 + 0.25;
     let side = -1;
+    const held = this.hoverId !== null ? this.index.get(this.hoverId) : undefined;
     for (const i of this.drawn) {
-      if (this.actById.has(this.items[i].id)) continue;
       const x = this.dx[i];
       const y = this.dy[i];
       const z = this.dz[i];
       const tw = this.widths[i];
       const w = (persp - z) / persp;
-      const x0 = ox + (x - ox) / w;
-      const x1 = ox + (x + tw - ox) / w;
+      const grace = i === held ? 3 : 0;
+      const x0 = ox + (x - pad - ox) / w - grace;
+      const x1 = ox + (x + tw + pad - ox) / w + grace;
       const y0 = oy + (y - oy) / w;
       const y1 = oy + (y + m.H - oy) / w;
       if (px >= x0 && px < x1 && py >= y0 && py < y1) return i;
@@ -1864,8 +2280,27 @@ export class GpuShelfView implements LensView {
 
   private hoverAt(px: number, py: number): void {
     if (this.down?.drag) return;
-    const i = this.tapeAt(px, py);
-    this.setHover(i >= 0 ? this.items[i].id : null);
+    const i = this.slotAt(px, py);
+    const id = i >= 0 ? this.items[i].id : null;
+    if (id === this.hoverId) {
+      if (id !== null && !this.intentT) this.armIntent();
+    } else this.setHover(id);
+  }
+
+  private pointerMoved(x: number, y: number): void {
+    const now = performance.now();
+    const p = this.pointer;
+    if (p) {
+      const dt = Math.max(1, now - p.t);
+      const v = Math.hypot(x - p.x, y - p.y) / dt;
+      // Smoothed over a few moves; a pause between moves counts as slow.
+      this.speed = dt > 60 ? v : this.speed * 0.55 + v * 0.45;
+    }
+    this.pointer = { x, y, t: now };
+    this.gx.to = x;
+    this.gy.to = y;
+    this.relight();
+    this.hoverAt(x, y);
   }
 
   private bind(): void {
@@ -1873,6 +2308,10 @@ export class GpuShelfView implements LensView {
     const on = <K extends keyof HTMLElementEventMap>(t: HTMLElement, type: K, fn: (e: HTMLElementEventMap[K]) => void, opts?: AddEventListenerOptions) => {
       t.addEventListener(type, fn as EventListener, opts);
       this.cleanup.push(() => t.removeEventListener(type, fn as EventListener, opts));
+    };
+    // A cover the pointer or a tap turned goes back when the shelf moves.
+    const putBack = () => {
+      if (this.peekBy === 'pointer' || this.peekBy === 'touch') this.peekAt(null, 'pointer');
     };
     on(
       c,
@@ -1883,11 +2322,13 @@ export class GpuShelfView implements LensView {
         if (!d) return;
         e.preventDefault();
         this.setHover(null);
+        putBack();
         this.scrollTo(this.targetX + d * (e.deltaMode === 1 ? 32 : 1));
       },
       { passive: false },
     );
     on(c, 'pointerdown', (e) => {
+      this.lastType = e.pointerType;
       if (e.button !== 0) return;
       this.down = { id: e.pointerId, x: e.clientX, s: this.targetX, lx: e.clientX, lt: performance.now(), v: 0, drag: false };
     });
@@ -1900,6 +2341,7 @@ export class GpuShelfView implements LensView {
           c.setPointerCapture(e.pointerId);
           c.classList.add(styles.dragging);
           this.setHover(null);
+          putBack();
         }
         if (d.drag) {
           const now = performance.now();
@@ -1911,8 +2353,7 @@ export class GpuShelfView implements LensView {
         }
       }
       if (e.pointerType === 'touch') return;
-      this.pointer = { x: e.offsetX, y: e.offsetY };
-      this.hoverAt(e.offsetX, e.offsetY);
+      this.pointerMoved(e.offsetX, e.offsetY);
     });
     const up = (e: PointerEvent) => {
       const d = this.down;
@@ -1931,12 +2372,26 @@ export class GpuShelfView implements LensView {
     on(c, 'pointerleave', (e) => {
       if (e.pointerType === 'touch' || this.down?.drag) return;
       this.pointer = null;
+      this.relight();
       this.setHover(null);
     });
     on(c, 'click', (e) => {
       if (this.suppressClick) return;
-      const i = this.tapeAt(e.offsetX, e.offsetY);
-      if (i >= 0) this.openTape(this.items[i].id);
+      // What you see under the pointer: a cover that's out, else the tape whose place it is.
+      let i = this.activeAt(e.offsetX, e.offsetY);
+      if (i < 0) i = this.slotAt(e.offsetX, e.offsetY);
+      const touch = this.lastType === 'touch';
+      if (i < 0) {
+        if (touch) putBack();
+        return;
+      }
+      const id = this.items[i].id;
+      // A tap shows the cover first; tapping it again opens it.
+      if (touch && id !== this.peekId) {
+        this.peekAt(id, 'touch');
+        return;
+      }
+      this.openTape(id);
     });
     // The invisible buttons: screen readers focus and press them.
     const g = this.group;
@@ -1947,8 +2402,11 @@ export class GpuShelfView implements LensView {
         if (id !== null) this.openTape(id);
       });
       on(g, 'focusin', (e) => {
+        // A screen reader moving to another tape shows its cover (focus handed back to the same one doesn't).
         const id = idOf(e.target);
-        if (id !== null && id !== this.focusId) this.setKeyFocus(id);
+        if (id === null || id === this.focusId) return;
+        this.setKeyFocus(id);
+        this.peekAt(id, 'key');
       });
     }
   }
@@ -1978,32 +2436,35 @@ export class GpuShelfView implements LensView {
     const n = this.items.length;
     if (!n) return false;
     const cur = this.focusId !== null ? this.index.get(this.focusId) : undefined;
+    let next = -1;
     if (cur === undefined) {
       // The first tape on screen.
       let first = 0;
       while (first < n - 1 && this.X[first] - this.scrollX < this.m.padX) first++;
-      this.setKeyFocus(this.items[first].id);
-      return true;
-    }
-    if (dir === 'left' || dir === 'right') {
-      this.setKeyFocus(this.items[clamp(cur + (dir === 'right' ? 1 : -1), 0, n - 1)].id);
-      return true;
-    }
-    const { p } = this;
-    const bay = p.bay[cur];
-    const row = p.row[cur] + (dir === 'down' ? 1 : -1);
-    const mid = p.x[cur] + this.widths[cur] / 2;
-    let best = -1;
-    let bd = Infinity;
-    for (let i = p.bayStart[bay]; i < p.bayStart[bay + 1]; i++) {
-      if (p.row[i] !== row) continue;
-      const d = Math.abs(p.x[i] + this.widths[i] / 2 - mid);
-      if (d < bd) {
-        bd = d;
-        best = i;
+      next = first;
+    } else if (dir === 'left' || dir === 'right') {
+      next = clamp(cur + (dir === 'right' ? 1 : -1), 0, n - 1);
+    } else {
+      const { p } = this;
+      const bay = p.bay[cur];
+      const row = p.row[cur] + (dir === 'down' ? 1 : -1);
+      const mid = p.x[cur] + this.widths[cur] / 2;
+      let bd = Infinity;
+      for (let i = p.bayStart[bay]; i < p.bayStart[bay + 1]; i++) {
+        if (p.row[i] !== row) continue;
+        const d = Math.abs(p.x[i] + this.widths[i] / 2 - mid);
+        if (d < bd) {
+          bd = d;
+          next = i;
+        }
       }
     }
-    if (best >= 0) this.setKeyFocus(this.items[best].id);
+    if (next >= 0) {
+      const id = this.items[next].id;
+      this.setKeyFocus(id);
+      // Keyboard focus shows the cover.
+      this.peekAt(id, 'key');
+    }
     return true;
   }
 
@@ -2016,7 +2477,7 @@ export class GpuShelfView implements LensView {
     return false;
   }
 
-  /** The sleeve when the tape is turned, else the spine, as projected on screen (client coordinates). */
+  /** The sleeve when the tape is turned towards you, else the spine, as projected on screen (client coordinates). */
   rectOf(id: Id): DOMRect | null {
     if (this.dom) return this.dom.rectOf(id);
     const i = this.index.get(id);
@@ -2031,7 +2492,10 @@ export class GpuShelfView implements LensView {
     const l = this.lookOf(this.items[i]);
     this.placeTape(i, l, now);
     const F = this.facesFor(tw);
-    const f = place(this.openId === id ? F.right : F.spine, [this.dx[i], this.dy[i], this.dz[i]], a ? poseAt(a, now) : REST, F.origin);
+    const fade = a ? a.fade.value(now) : 0;
+    const pose = !a ? REST : this.rm || this.mini ? (fade > 0.5 ? tapePose(0, 1, this.dims(i)) : REST) : a.pose;
+    const turned = pose.ry < -Math.PI / 4;
+    const f = place(turned ? F.right : F.spine, [this.dx[i], this.dy[i], this.dz[i]], pose, F.origin);
     const c = corners(f, { persp: m.persp, originX: this.ox, originY: this.oy });
     if (c.some((q) => !q)) return null;
     const pts = c as { x: number; y: number }[];
@@ -2075,6 +2539,10 @@ export class GpuShelfView implements LensView {
   pause(paused: boolean): void {
     if (this.dom) return this.dom.pause?.(paused);
     this.paused = paused;
+    if (paused) {
+      if (this.intentT) clearTimeout(this.intentT);
+      this.intentT = null;
+    }
     if (!paused && this.openId !== null) this.closeTape(this.openId);
     if (!paused) this.invalidate();
   }
@@ -2087,7 +2555,8 @@ export class GpuShelfView implements LensView {
     this.cleanup = [];
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
-    if (this.hoverT) clearTimeout(this.hoverT);
+    if (this.intentT) clearTimeout(this.intentT);
+    if (this.leaveT) clearTimeout(this.leaveT);
     if (this.settleT) clearTimeout(this.settleT);
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();

@@ -3,8 +3,9 @@ import type { ItemSummary } from '../../api/types';
 import { corners } from '../gpu/scene3d';
 import { fallbackPalette } from '../palette';
 import { planShelf, shelfLayout, shelfMetrics, spineLook } from './geometry';
+import { asideFalloff, DWELL, FAST, intrusion, LIFT_C, LIFT_K, PEEK_C, PEEK_K, peekDepth, peekPath, peekWait, spring0, stepSpring, tapePose, TURN_FROM } from './peek';
 import { backKey, backLines, grayHex, mixBlackOklab, spineKey } from './spine';
-import { apply, euler, facing, mul, place, REST, rotX, rotY, rotZ, splitAtDepth, tapeFaces, type M3, type TapeMove, type V3 } from './transform';
+import { apply, boxCorners, euler, facing, mul, place, REST, rotX, rotY, rotZ, splitAtDepth, tapeFaces, type M3, type TapeMove, type V3 } from './transform';
 
 // ── a CSS 3D reference: 4×4 matrices composed the way the DOM Shelf's CSS composes them ──
 
@@ -178,6 +179,163 @@ describe('transform: splitAtDepth', () => {
         }
       }
     }
+  });
+});
+
+describe('transform: boxCorners', () => {
+  it('puts the box where its faces are (the spine and the sleeve corners among its corners)', () => {
+    const tw = 39;
+    const H = 294;
+    const D = 162;
+    const F = tapeFaces(tw, H, D);
+    const at: V3 = [120, 80, -1.5];
+    const move: TapeMove = { ty: -15, tz: 129, rx: -0.03, ry: -0.9, s: 1 };
+    const box = boxCorners(at, move, F.origin, tw, H, D);
+    expect(box).toHaveLength(8);
+    for (const face of ['spine', 'right'] as const) {
+      const p = place(F[face], at, move, F.origin);
+      for (const [sx, sy] of [
+        [-1, -1],
+        [1, -1],
+        [-1, 1],
+        [1, 1],
+      ]) {
+        const d = apply(p.m, [(sx * p.w) / 2, (sy * p.h) / 2, 0]);
+        const c: V3 = [p.x + d[0], p.y + d[1], p.z + d[2]];
+        expect(box.some((b) => close(b, c, 1e-6))).toBe(true);
+      }
+    }
+  });
+});
+
+describe('peek: the turn to show a cover', () => {
+  const sizes = [
+    shelfMetrics({ vw: 1440, vh: 900, safeTop: 76, safeBottom: 88, mini: false }),
+    shelfMetrics({ vw: 390, vh: 844, safeTop: 60, safeBottom: 90, mini: false }),
+    shelfMetrics({ vw: 2560, vh: 1440, safeTop: 76, safeBottom: 88, mini: false }),
+  ];
+
+  it('never swings a tape into the tapes beside it, all the way out and round (pointed at or not, box sets too)', () => {
+    for (const m of sizes) {
+      for (const tw of [m.W, m.boxW]) {
+        const d = { H: m.H, W: m.W, D: m.D, tw, gap: m.gap };
+        for (let p = 0; p <= 1.08; p += 0.0025) {
+          for (const lift of [0, 0.5, 1]) {
+            const pose = tapePose(lift, p, d);
+            expect(intrusion(tw, m.D, m.gap, -pose.ry, pose.tz)).toBe(0);
+          }
+        }
+      }
+    }
+  });
+
+  it('measures intrusion: a tape turned in its slot sweeps into its neighbours', () => {
+    expect(intrusion(39, 162, 2, 0, 0)).toBe(0);
+    expect(intrusion(39, 162, 2, 0.4, 0)).toBeGreaterThan(50);
+    expect(intrusion(39, 162, 2, Math.PI / 2, 162 / 2 + 39 / 2)).toBeCloseTo(0, 6);
+  });
+
+  it('starts on the shelf, ends facing you, slides out before it turns', () => {
+    const m = sizes[0];
+    const d = { H: m.H, W: m.W, D: m.D, tw: m.W, gap: m.gap };
+    const rest = tapePose(0, 0, d);
+    for (const k of ['ty', 'tz', 'rx', 'ry'] as const) expect(Math.abs(rest[k])).toBe(0);
+    expect(rest.s).toBe(1);
+    const shown = tapePose(0, 1, d);
+    expect(shown.ry).toBeCloseTo(-Math.PI / 2);
+    expect(shown.tz).toBe(peekDepth(d));
+    // Its sleeve faces the eye, its spine and back don't.
+    const F = tapeFaces(m.W, m.H, m.D);
+    const at: V3 = [700, 200, 0];
+    expect(facing(place(F.right, at, shown, F.origin), 720, 135, m.persp)).toBe(true);
+    expect(facing(place(F.left, at, shown, F.origin), 720, 135, m.persp)).toBe(false);
+    // Nothing turns before it is most of the way out.
+    expect(peekPath(TURN_FROM).turn).toBe(0);
+    expect(peekPath(TURN_FROM).out).toBeGreaterThan(0.8);
+    // Pointed at: the DOM Shelf's hover pose (lifted, a little out, tipped 5°).
+    const lifted = tapePose(1, 0, d);
+    expect(lifted.ty).toBeCloseTo(-m.H * 0.055);
+    expect(lifted.tz).toBeCloseTo(m.W * 0.9);
+    expect(lifted.rx).toBeCloseTo((-5 * Math.PI) / 180);
+  });
+
+  it('moves smoothly along the way: no jumps between nearby points of the turn', () => {
+    const m = sizes[0];
+    const d = { H: m.H, W: m.W, D: m.D, tw: m.W, gap: m.gap };
+    let prev = tapePose(1, 0, d);
+    for (let p = 0.002; p <= 1.05; p += 0.002) {
+      const q = tapePose(1, p, d);
+      expect(Math.abs(q.tz - prev.tz)).toBeLessThan(3);
+      expect(Math.abs(q.ry - prev.ry)).toBeLessThan(0.03);
+      expect(Math.abs(q.ty - prev.ty)).toBeLessThan(0.5);
+      prev = { ...q };
+    }
+  });
+});
+
+describe('peek: springs', () => {
+  it('settles on its target, a touch past it on the way (the cover), and stops', () => {
+    const s = spring0();
+    s.to = 1;
+    let peak = 0;
+    let t = 0;
+    while (stepSpring(s, 1 / 120, PEEK_K, PEEK_C) && t < 5) {
+      peak = Math.max(peak, s.x);
+      t += 1 / 120;
+    }
+    expect(s.x).toBe(1);
+    expect(s.v).toBe(0);
+    expect(t).toBeLessThan(1.2);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThan(1.06);
+  });
+
+  it('turns back from where it is, at the speed it has (a retarget keeps its velocity)', () => {
+    const s = spring0();
+    s.to = 1;
+    for (let k = 0; k < 12; k++) stepSpring(s, 1 / 120, LIFT_K, LIFT_C);
+    const x = s.x;
+    const v = s.v;
+    expect(v).toBeGreaterThan(0);
+    s.to = 0;
+    expect(s.x).toBe(x);
+    expect(s.v).toBe(v);
+    stepSpring(s, 1 / 120, LIFT_K, LIFT_C);
+    // Still moving on a little before it comes back: no jump, no stop.
+    expect(s.x).toBeGreaterThan(x);
+    expect(Math.abs(s.x - x)).toBeLessThan(v / 60);
+  });
+
+  it('copes with a slow frame (steps it in small pieces)', () => {
+    const a = spring0();
+    const b = spring0();
+    a.to = 1;
+    b.to = 1;
+    stepSpring(a, 1 / 15, PEEK_K, PEEK_C);
+    for (let k = 0; k < 8; k++) stepSpring(b, 1 / 120, PEEK_K, PEEK_C);
+    expect(a.x).toBeCloseTo(b.x, 2);
+  });
+});
+
+describe('peek: intent and neighbours', () => {
+  it('turns a tape the pointer rests on, waits longer for one it is moving over, never for a sweep', () => {
+    expect(peekWait(0, 0)).toBe(DWELL);
+    expect(peekWait(DWELL, 0)).toBe(0);
+    expect(peekWait(DWELL, 0.3)).toBeGreaterThan(0);
+    expect(peekWait(DWELL + 200, 0.3)).toBe(0);
+    expect(peekWait(10_000, FAST * 1.5)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('eases neighbours aside without ever closing a gap past nothing', () => {
+    const gaps = [2, 2, 2, 2, 2];
+    const offs = asideFalloff(6, gaps);
+    expect(offs[0]).toBe(6);
+    for (let k = 1; k < offs.length; k++) expect(offs[k - 1] - offs[k]).toBeLessThanOrEqual(gaps[k - 1] + 1e-9);
+    expect(offs).toEqual([6, 4, 2]);
+    // A section's wider gap takes up the rest: nothing beyond it moves.
+    expect(asideFalloff(6, [2, 15, 2])).toEqual([6, 4]);
+    expect(asideFalloff(6, [])).toEqual([6]);
+    expect(asideFalloff(0, [2, 2])).toEqual([]);
   });
 });
 

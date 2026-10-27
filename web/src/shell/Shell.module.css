@@ -68,6 +68,7 @@
 /* While something opens over the library, the bottom bar steps aside. */
 :root[data-overlay='item'] .bottom,
 :root[data-overlay='admin'] .bottom,
+:root[data-overlay='changes'] .bottom,
 :root[data-overlay='connect'] .bottom,
 :root[data-overlay='gallery'] .bottom {
   transform: translateY(140%);
@@ -77,9 +78,32 @@
 
 :root[data-overlay='gallery'] .top,
 :root[data-overlay='admin'] .top,
+:root[data-overlay='changes'] .top,
 :root[data-overlay='connect'] .top {
   opacity: 0;
   pointer-events: none;
+}
+
+/* A title's page dims the lights in either theme (routes/Item.module.css): the
+   island and the corner over it dim with it, rather than stay light on a dark page. */
+:root[data-theme='light'][data-overlay='item'] .top {
+  color-scheme: dark;
+  --text: #f3f3f0;
+  --text-2: rgb(243 243 240 / 0.74);
+  --text-3: rgb(243 243 240 / 0.5);
+  --line: rgb(255 255 255 / 0.1);
+  --line-strong: rgb(255 255 255 / 0.18);
+  --glass: rgb(28 28 34 / 0.42);
+  --glass-hi: rgb(52 52 60 / 0.5);
+  --glass-clear: rgb(255 255 255 / 0.08);
+  --glass-solid: rgb(18 18 22 / 0.86);
+  --rim: rgb(255 255 255 / 0.18);
+  --sheen: rgb(255 255 255 / 0.62);
+  --shade: rgb(0 0 0 / 0.42);
+  --focus: #fff;
+  --surface: #17171c;
+  --surface-2: #202027;
+  --surface-3: #2b2b33;
 }
 
 /* The library steps back when the lens gallery opens. */

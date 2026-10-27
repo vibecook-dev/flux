@@ -36,7 +36,8 @@ import { FOLDER_SORTS, ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
 import { channelLayout, codecShort, planLabel } from '../api/explain';
 import { addOtherAudioTracks, predictPlan } from '../plan/predict';
 import { agentHandlers } from './agent';
-import { hash32, posterSvg, wideSvg } from './art';
+import { hash32 } from './art';
+import { artResponse } from './art-serve';
 import type { MockDb } from './db';
 import { mockFolderPage } from './folders';
 import { mediaFor, type MockMedia } from './media';
@@ -210,6 +211,13 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
   };
 
   return [
+    // Art first: MSW tries handlers in order, and each try reads the cookies and
+    // parses the URL on the main thread, so the most requested route goes first.
+    http.get(u('/api/v1/art/:artId'), async ({ params, request }) => {
+      const res = await artResponse(db, String(params.artId), new URL(request.url).searchParams.get('w'), request.signal);
+      return res ?? notFound('Art');
+    }),
+
     // flux's request guard (docs/prototype/web.md, Phase D contract): unsafe
     // methods under /api/ need `X-Flux-Request: 1` and, when the browser sends
     // an Origin, flux's own. The mock is stricter than flux and wants the header
@@ -448,28 +456,6 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
             sseClients.add(client);
           }),
         ]),
-
-    http.get(u('/api/v1/art/:artId'), ({ params }) => {
-      const art = String(params.artId);
-      const [kind, idStr] = art.split('-');
-      const id = Number(idStr);
-      const rec = db.get(id);
-      if (!rec) return notFound('Art');
-      const owner = rec.showId !== null && kind !== 's' ? db.get(rec.showId) ?? rec : rec;
-      const seedKey = `${owner.title}|${owner.year}`;
-      let svg: string;
-      if (kind === 's') {
-        svg = wideSvg({ seed: `${seedKey}|S${rec.season}E${rec.episodes[0]}`, source: 'provider' });
-      } else if (kind === 'b') {
-        const src = owner.posterSource === 'generated' ? 'generated' : 'provider';
-        svg = wideSvg({ seed: seedKey, source: src });
-      } else {
-        const seed = rec.kind === 'season' ? `${seedKey}|season${rec.season}` : seedKey;
-        const title = rec.kind === 'season' ? `${owner.title} · ${rec.title}` : owner.title;
-        svg = posterSvg({ seed, title, year: owner.year, source: owner.posterSource ?? 'provider' });
-      }
-      return new HttpResponse(svg, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=31536000, immutable' } });
-    }),
 
     // WebVTT sidecars for text subtitle tracks.
     http.get(u('/media/:session/s/:file'), ({ params }) => {

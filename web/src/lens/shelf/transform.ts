@@ -172,6 +172,24 @@ export function tapeFaces(tw: number, H: number, D: number): TapeFaces {
 }
 
 /**
+ * The eight corners of a tape's box (tw × H × D, its spine at z = 0 of its slot) in
+ * the world: the slot's top-left `at`, moved by `move` about `origin` (as `place`).
+ */
+export function boxCorners(at: V3, move: TapeMove, origin: V3, tw: number, H: number, D: number): V3[] {
+  const r = mul(rotY(move.ry), rotX(move.rx));
+  const out: V3[] = [];
+  for (const x of [0, tw]) {
+    for (const y of [0, H]) {
+      for (const z of [-D, 0]) {
+        const d = apply(r, [(x - origin[0]) * move.s, (y - origin[1]) * move.s, (z - origin[2]) * move.s]);
+        out.push([at[0] + origin[0] + d[0], at[1] + origin[1] + move.ty + d[1], at[2] + origin[2] + move.tz + d[2]]);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Splits a placed face (unscaled size fw×fh) at the plane z = z0 across its width:
  * `front` is the span [ua, ub] (face units from its centre) that is in front of the
  * plane over the face's whole height, `back` the rest. The renderer has no depth

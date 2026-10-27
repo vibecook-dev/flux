@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { fallbackPalette } from '../palette';
+import { shelfMetrics } from './geometry';
+import { intrusion, peekDepth } from './peek';
 import { planShelf, spineLook, spineTitleParts } from './shelf';
+
+describe('the DOM Shelf’s turn', () => {
+  it('brings every tape (plain or a box set) out far enough to turn clear of its neighbours at any angle', () => {
+    // shelf.ts sets one --peek-z for the shelf, a box set's (the widest turn).
+    for (const [vw, vh] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      const m = shelfMetrics({ vw, vh, safeTop: 60, safeBottom: 90, mini: false });
+      const z = peekDepth({ H: m.H, W: m.W, D: m.D, tw: m.boxW, gap: m.gap });
+      for (const tw of [m.W, m.boxW]) {
+        for (let a = 0; a <= 90; a += 1) expect(intrusion(tw, m.D, m.gap, (a * Math.PI) / 180, z)).toBe(0);
+      }
+    }
+  });
+});
 
 const base = { rows: 2, fullW: 1000, bayW: 900, W: 30, gap: 2, secGap: 15 };
 

@@ -14,6 +14,7 @@
  */
 import { setupWorker } from 'msw/browser';
 import { METADATA_SOURCES } from '../api/types';
+import { installArtFetch } from './art-serve';
 import { createMockDb, type Fixtures } from './db';
 import { startDemoBridge } from './demo-bridge';
 import fixturesUrl from './fixtures.json?url';
@@ -56,5 +57,6 @@ export async function startMock(): Promise<void> {
     // it controls, whatever their path.
     serviceWorker: { url: `${import.meta.env.BASE_URL}mockServiceWorker.js`, options: { scope: import.meta.env.BASE_URL } },
   });
+  installArtFetch(db);
   startDemoBridge();
 }
