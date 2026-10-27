@@ -10,7 +10,6 @@
  * - frame: a letterboxed "frame from the file" with a typeset title (no AI)
  * - generated: softer painterly gradients (stands in for opt-in genAI art)
  */
-import { encode } from 'blurhash';
 
 type RGB = [number, number, number];
 
@@ -173,60 +172,164 @@ function composition(seed: string, kind: 'poster' | 'wide', style: 'provider' | 
 
 // ───────────── sampling (for blurhash) ─────────────
 
-function sample(comp: Comp, x: number, y: number, aspect: number): RGB {
-  let c: RGB = [0, 0, 0];
+// The library holds 13,000 titles and each needs a placeholder: sampling and
+// encoding run for every one as its page arrives, so both avoid allocating
+// (the colour is three numbers, not a new array per layer) and the encoder uses
+// lookup tables instead of a pow() and two cos() per pixel per component. The
+// hashes are the same as the blurhash package's `encode` gives.
+
+/** The colour at (x, y) into out[o..o+2], blending layer by layer and rounding as `mix` does. */
+function sampleInto(comp: Comp, x: number, y: number, aspect: number, out: Uint8Array, o: number): void {
+  let r = 0;
+  let g = 0;
+  let b = 0;
   for (const l of comp.layers) {
+    let c: RGB | null = null;
+    let t = 0;
     switch (l.t) {
       case 'bg':
-        c = mix(l.top, l.bottom, y);
+        r = Math.round(l.top[0] + (l.bottom[0] - l.top[0]) * y);
+        g = Math.round(l.top[1] + (l.bottom[1] - l.top[1]) * y);
+        b = Math.round(l.top[2] + (l.bottom[2] - l.top[2]) * y);
         break;
       case 'circle': {
         const dx = (x - l.cx) * aspect;
         const dy = y - l.cy;
-        if (dx * dx + dy * dy <= l.r * l.r) c = mix(c, l.c, l.a ?? 1);
+        if (dx * dx + dy * dy <= l.r * l.r) {
+          c = l.c;
+          t = l.a ?? 1;
+        }
         break;
       }
       case 'ring': {
-        const d = Math.hypot((x - l.cx) * aspect, y - l.cy);
-        if (Math.abs(d - l.r) <= l.w / 2) c = mix(c, l.c, l.a ?? 1);
+        const dx = (x - l.cx) * aspect;
+        const dy = y - l.cy;
+        if (Math.abs(Math.sqrt(dx * dx + dy * dy) - l.r) <= l.w / 2) {
+          c = l.c;
+          t = l.a ?? 1;
+        }
         break;
       }
       case 'rect':
-        if (x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h) c = mix(c, l.c, l.a ?? 1);
+        if (x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h) {
+          c = l.c;
+          t = l.a ?? 1;
+        }
         break;
       case 'tri': {
-        const [[ax, ay], [bx, by], [cx2, cy2]] = l.pts;
+        const p = l.pts;
+        const ax = p[0][0];
+        const ay = p[0][1];
+        const bx = p[1][0];
+        const by = p[1][1];
+        const cx2 = p[2][0];
+        const cy2 = p[2][1];
         const s1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
         const s2 = (cx2 - bx) * (y - by) - (cy2 - by) * (x - bx);
         const s3 = (ax - cx2) * (y - cy2) - (ay - cy2) * (x - cx2);
-        if ((s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)) c = mix(c, l.c, l.a ?? 1);
+        if ((s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)) {
+          c = l.c;
+          t = l.a ?? 1;
+        }
         break;
       }
       case 'glow': {
-        const d = Math.hypot((x - l.cx) * aspect, y - l.cy) / l.r;
-        if (d < 1) c = mix(c, l.c, l.a * (1 - d) * (1 - d));
+        const dx = (x - l.cx) * aspect;
+        const dy = y - l.cy;
+        const d = Math.sqrt(dx * dx + dy * dy) / l.r;
+        if (d < 1) {
+          c = l.c;
+          t = l.a * (1 - d) * (1 - d);
+        }
         break;
       }
     }
+    if (c) {
+      r = Math.round(r + (c[0] - r) * t);
+      g = Math.round(g + (c[1] - g) * t);
+      b = Math.round(b + (c[2] - b) * t);
+    }
   }
-  return c;
+  out[o] = r;
+  out[o + 1] = g;
+  out[o + 2] = b;
+}
+
+function sample(comp: Comp, x: number, y: number, aspect: number): RGB {
+  const px = new Uint8Array(3);
+  sampleInto(comp, x, y, aspect, px, 0);
+  return [px[0], px[1], px[2]];
+}
+
+const B83 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~';
+const enc83 = (n: number, length: number): string => {
+  let s = '';
+  for (let i = 1; i <= length; i++) s += B83[Math.floor(Math.floor(n) / 83 ** (length - i)) % 83];
+  return s;
+};
+/** sRGB byte → linear light. */
+const LINEAR = Float64Array.from({ length: 256 }, (_, v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4));
+const toSrgb = (value: number): number => {
+  const v = Math.max(0, Math.min(1, value));
+  return v <= 0.0031308 ? Math.trunc(v * 12.92 * 255 + 0.5) : Math.trunc((1.055 * v ** (1 / 2.4) - 0.055) * 255 + 0.5);
+};
+const signPow = (v: number, e: number): number => Math.sign(v) * Math.abs(v) ** e;
+/** cos(π·k·i/size) for k < n and i < size, per (n, size). */
+const cosines = new Map<string, Float64Array>();
+function cosTable(n: number, size: number): Float64Array {
+  const key = `${n}x${size}`;
+  let t = cosines.get(key);
+  if (!t) {
+    t = new Float64Array(n * size);
+    for (let k = 0; k < n; k++) for (let i = 0; i < size; i++) t[k * size + i] = Math.cos((Math.PI * k * i) / size);
+    cosines.set(key, t);
+  }
+  return t;
 }
 
 /** Real blurhash of the composition (what a server computes at ingest). */
 function blurhashOf(comp: Comp, w: number, h: number, cx: number, cy: number): string {
-  const px = new Uint8ClampedArray(w * h * 4);
+  const n = w * h;
+  const px = new Uint8Array(n * 3);
   const aspect = w / h;
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const [r, g, b] = sample(comp, (i + 0.5) / w, (j + 0.5) / h, aspect);
-      const o = (j * w + i) * 4;
-      px[o] = r;
-      px[o + 1] = g;
-      px[o + 2] = b;
-      px[o + 3] = 255;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) sampleInto(comp, (i + 0.5) / w, (j + 0.5) / h, aspect, px, (j * w + i) * 3);
+  const lin = new Float64Array(n * 3);
+  for (let k = 0; k < n * 3; k++) lin[k] = LINEAR[px[k]];
+  const cosX = cosTable(cx, w);
+  const cosY = cosTable(cy, h);
+  const factors: number[][] = [];
+  for (let y = 0; y < cy; y++) {
+    for (let x = 0; x < cx; x++) {
+      const norm = x === 0 && y === 0 ? 1 : 2;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let j = 0; j < h; j++) {
+        const fy = norm * cosY[y * h + j];
+        for (let i = 0; i < w; i++) {
+          const basis = fy * cosX[x * w + i];
+          const o = (j * w + i) * 3;
+          r += basis * lin[o];
+          g += basis * lin[o + 1];
+          b += basis * lin[o + 2];
+        }
+      }
+      factors.push([r / n, g / n, b / n]);
     }
   }
-  return encode(px, w, h, cx, cy);
+  const [dc, ...ac] = factors;
+  let hash = enc83(cx - 1 + (cy - 1) * 9, 1);
+  let max = 1;
+  if (ac.length) {
+    const actual = Math.max(...ac.map((f) => Math.max(...f)));
+    const quantised = Math.floor(Math.max(0, Math.min(82, Math.floor(actual * 166 - 0.5))));
+    max = (quantised + 1) / 166;
+    hash += enc83(quantised, 1);
+  } else hash += enc83(0, 1);
+  hash += enc83((toSrgb(dc[0]) << 16) + (toSrgb(dc[1]) << 8) + toSrgb(dc[2]), 4);
+  const q = (v: number) => Math.floor(Math.max(0, Math.min(18, Math.floor(signPow(v / max, 0.5) * 9 + 9.5))));
+  for (const f of ac) hash += enc83(q(f[0]) * 19 * 19 + q(f[1]) * 19 + q(f[2]), 2);
+  return hash;
 }
 
 // ───────────── SVG rendering ─────────────
@@ -300,51 +403,192 @@ export interface ArtSpec {
   source: 'provider' | 'local' | 'frame' | 'generated' | 'custom';
 }
 
-/** 2:3 poster SVG. */
-export function posterSvg(spec: ArtSpec): string {
-  const W = 400;
-  const H = 600;
+/** Native sizes: what an `?w=`-less request gets, and the space art is laid out in. */
+export const ART_SIZE = { poster: [400, 600], wide: [1280, 720] } as const;
+
+/** A line of type on a poster. */
+interface Line {
+  s: string;
+  x: number;
+  y: number;
+  size: number;
+  weight: number;
+  fill: string;
+  opacity: number;
+  spacing: number;
+}
+
+/**
+ * What a poster shows, worked out once for both renderers: a composition filling
+ * the poster, or (frame posters) a 16:9 frame letterboxed at y 120..345, then
+ * the type in drawing order.
+ */
+function posterPlan(spec: ArtSpec): { comp: Comp; frame: boolean; lines: Line[] } {
+  const H = ART_SIZE.poster[1];
   const style = spec.source === 'generated' ? 'generated' : spec.source === 'frame' ? 'frame' : 'provider';
-  const id = `a${hash32(spec.seed).toString(36)}`;
   if (style === 'frame') {
     // A letterboxed frame from the file, title typeset underneath (no AI).
     const comp = composition(spec.seed, 'wide', 'provider');
-    const frame = layersSvg(comp, W, 225, id);
-    const lines = wrap(spec.title.toUpperCase(), 16, 3);
-    const longest = Math.max(...lines.map((l) => l.length));
-    const size = Math.min(lines.length > 2 ? 38 : 46, Math.floor(344 / (0.56 * longest)));
-    const text = lines
+    const words = wrap(spec.title.toUpperCase(), 16, 3);
+    const longest = Math.max(...words.map((l) => l.length));
+    const size = Math.min(words.length > 2 ? 38 : 46, Math.floor(344 / (0.56 * longest)));
+    const lines: Line[] = words.map((s, i) =>
       // First baseline sits a cap-height below the year line (y 372), so they never touch.
-      .map((ln, i) => `<text x="28" y="${386 + size * 0.8 + i * (size + 2)}" font-family="${FONT}" font-weight="700" font-size="${size}" fill="#efeae2" letter-spacing="1">${esc(ln)}</text>`)
-      .join('');
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#101012"/><svg y="120" width="${W}" height="225" viewBox="0 0 ${W} 225">${frame}</svg>${text}<text x="28" y="372" font-family="${FONT}" font-size="15" fill="#9c9aa3" letter-spacing="3">${spec.year ?? ''}</text></svg>`;
+      ({ s, x: 28, y: 386 + size * 0.8 + i * (size + 2), size, weight: 700, fill: '#efeae2', opacity: 1, spacing: 1 }),
+    );
+    lines.push({ s: `${spec.year ?? ''}`, x: 28, y: 372, size: 15, weight: 400, fill: '#9c9aa3', opacity: 1, spacing: 3 });
+    return { comp, frame: true, lines };
   }
   const comp = composition(spec.seed, 'poster', style);
-  const lines = wrap(spec.title.toUpperCase(), spec.title.length > 22 ? 14 : 11, 3);
+  const words = wrap(spec.title.toUpperCase(), spec.title.length > 22 ? 14 : 11, 3);
   // Condensed bold caps run ~0.56 em per glyph; shrink so the longest line fits 340 px.
-  const longest = Math.max(...lines.map((l) => l.length));
-  const size = Math.min(lines.length >= 3 ? 46 : lines.length === 2 ? 56 : spec.title.length > 8 ? 60 : 72, Math.floor(340 / (0.56 * longest)));
-  const top = H - 36 - (lines.length - 1) * (size * 0.95);
-  const text = lines
-    .map((ln, i) => `<text x="30" y="${top + i * size * 0.95}" font-family="${FONT}" font-weight="800" font-size="${size}" fill="${css(comp.ink)}" letter-spacing="0.5">${esc(ln)}</text>`)
-    .join('');
-  const year = spec.year
-    ? `<text x="32" y="${top - size - 4}" font-family="${FONT}" font-size="16" font-weight="600" fill="${css(comp.ink)}" fill-opacity="0.8" letter-spacing="4">${spec.year}</text>`
-    : '';
-  const shade = `<defs><linearGradient id="${id}s" x1="0" y1="0" x2="0" y2="1"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.55"/></linearGradient></defs><rect width="${W}" height="${H}" fill="url(#${id}s)"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${layersSvg(comp, W, H, id)}${shade}${year}${text}</svg>`;
+  const longest = Math.max(...words.map((l) => l.length));
+  const size = Math.min(words.length >= 3 ? 46 : words.length === 2 ? 56 : spec.title.length > 8 ? 60 : 72, Math.floor(340 / (0.56 * longest)));
+  const top = H - 36 - (words.length - 1) * (size * 0.95);
+  const lines: Line[] = [];
+  if (spec.year) lines.push({ s: String(spec.year), x: 32, y: top - size - 4, size: 16, weight: 600, fill: css(comp.ink), opacity: 0.8, spacing: 4 });
+  for (const [i, s] of words.entries()) lines.push({ s, x: 30, y: top + i * size * 0.95, size, weight: 800, fill: css(comp.ink), opacity: 1, spacing: 0.5 });
+  return { comp, frame: false, lines };
 }
+
+const lineSvg = (l: Line) =>
+  `<text x="${l.x}" y="${l.y}" font-family="${FONT}" font-weight="${l.weight}" font-size="${l.size}" fill="${l.fill}"${l.opacity < 1 ? ` fill-opacity="${l.opacity}"` : ''} letter-spacing="${l.spacing}">${esc(l.s)}</text>`;
+
+/** 2:3 poster SVG. */
+export function posterSvg(spec: ArtSpec): string {
+  const [W, H] = ART_SIZE.poster;
+  const id = `a${hash32(spec.seed).toString(36)}`;
+  const { comp, frame, lines } = posterPlan(spec);
+  const text = lines.map(lineSvg).join('');
+  if (frame) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#101012"/><svg y="120" width="${W}" height="225" viewBox="0 0 ${W} 225">${layersSvg(comp, W, 225, id)}</svg>${text}</svg>`;
+  }
+  const shade = `<defs><linearGradient id="${id}s" x1="0" y1="0" x2="0" y2="1"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.55"/></linearGradient></defs><rect width="${W}" height="${H}" fill="url(#${id}s)"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${layersSvg(comp, W, H, id)}${shade}${text}</svg>`;
+}
+
+const wideComp = (spec: Pick<ArtSpec, 'seed' | 'source'>) => composition(spec.seed, 'wide', spec.source === 'generated' ? 'generated' : 'provider');
 
 /** 16:9 backdrop or episode still SVG (textless, like provider backdrops). */
 export function wideSvg(spec: Pick<ArtSpec, 'seed' | 'source'>): string {
-  const W = 1280;
-  const H = 720;
-  const style = spec.source === 'generated' ? 'generated' : 'provider';
-  const comp = composition(spec.seed, 'wide', style);
+  const [W, H] = ART_SIZE.wide;
   const id = `w${hash32(spec.seed).toString(36)}`;
   // A soft vignette makes the flat shapes read as a lit frame.
   const vignette = `<defs><radialGradient id="${id}v" cx="0.5" cy="0.45" r="0.75"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.55"/></radialGradient></defs><rect width="${W}" height="${H}" fill="url(#${id}v)"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice">${layersSvg(comp, W, H, id)}${vignette}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice">${layersSvg(wideComp(spec), W, H, id)}${vignette}</svg>`;
+}
+
+// ───────────── canvas rendering ─────────────
+// The same pictures drawn on a canvas, so a worker can encode them as JPEG
+// (art-raster.ts): a browser decodes a JPEG off the main thread, as it does a
+// real server's art, where an SVG must be rasterised on the main thread.
+
+type Ctx2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+
+const rgba = ([r, g, b]: RGB, a: number) => `rgba(${r},${g},${b},${a})`;
+
+function drawLayers(ctx: Ctx2D, comp: Comp, W: number, H: number): void {
+  for (const l of comp.layers) {
+    switch (l.t) {
+      case 'bg': {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, css(l.top));
+        g.addColorStop(1, css(l.bottom));
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+        break;
+      }
+      case 'circle':
+        ctx.fillStyle = rgba(l.c, l.a ?? 1);
+        ctx.beginPath();
+        ctx.arc(l.cx * W, l.cy * H, l.r * H, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      case 'ring':
+        ctx.strokeStyle = rgba(l.c, l.a ?? 1);
+        ctx.lineWidth = l.w * H;
+        ctx.beginPath();
+        ctx.arc(l.cx * W, l.cy * H, l.r * H, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      case 'rect':
+        ctx.fillStyle = rgba(l.c, l.a ?? 1);
+        ctx.fillRect(l.x * W, l.y * H, l.w * W, l.h * H);
+        break;
+      case 'tri':
+        ctx.fillStyle = rgba(l.c, l.a ?? 1);
+        ctx.beginPath();
+        for (const [x, y] of l.pts) ctx.lineTo(x * W, y * H);
+        ctx.closePath();
+        ctx.fill();
+        break;
+      case 'glow': {
+        const x = l.cx * W;
+        const y = l.cy * H;
+        const r = l.r * H;
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, rgba(l.c, l.a));
+        g.addColorStop(1, rgba(l.c, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+    }
+  }
+}
+
+/** A dark ramp over `0..1` of a unit box, transparent until `from` (the poster shade and backdrop vignette). */
+function darken(g: CanvasGradient, from: number): CanvasGradient {
+  g.addColorStop(from, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.55)');
+  return g;
+}
+
+/** What one art request draws. */
+export interface ArtDraw {
+  kind: 'poster' | 'wide';
+  spec: ArtSpec;
+}
+
+/** Draw `art` in its native size's space (`ART_SIZE`); scale the context first for another size. */
+export function drawArt(ctx: Ctx2D, art: ArtDraw): void {
+  const [W, H] = ART_SIZE[art.kind];
+  if (art.kind === 'wide') {
+    drawLayers(ctx, wideComp(art.spec), W, H);
+    // The vignette's circle is in the box's units, so it is an ellipse on a 16:9 frame.
+    ctx.save();
+    ctx.scale(W, H);
+    ctx.fillStyle = darken(ctx.createRadialGradient(0.5, 0.45, 0, 0.5, 0.45, 0.75), 0.55);
+    ctx.fillRect(0, 0, 1, 1);
+    ctx.restore();
+    return;
+  }
+  const { comp, frame, lines } = posterPlan(art.spec);
+  if (frame) {
+    ctx.fillStyle = '#101012';
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(0, 120);
+    ctx.beginPath();
+    ctx.rect(0, 0, W, 225);
+    ctx.clip();
+    drawLayers(ctx, comp, W, 225);
+    ctx.restore();
+  } else {
+    drawLayers(ctx, comp, W, H);
+    ctx.fillStyle = darken(ctx.createLinearGradient(0, 0, 0, H), 0.55);
+    ctx.fillRect(0, 0, W, H);
+  }
+  for (const l of lines) {
+    ctx.font = `${l.weight} ${l.size}px ${FONT}`;
+    ctx.letterSpacing = `${l.spacing}px`;
+    ctx.globalAlpha = l.opacity;
+    ctx.fillStyle = l.fill;
+    ctx.fillText(l.s, l.x, l.y);
+  }
+  ctx.globalAlpha = 1;
 }
 
 const hashCache = new Map<string, string>();
