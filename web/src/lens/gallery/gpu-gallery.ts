@@ -17,8 +17,8 @@
  *   that follows their projected size (in √2 steps, with hysteresis), so they stay
  *   crisp up close and don't shimmer far away, where they fade out.
  *
- * The DOM keeps the haze and vignette (core.ts), the Tour button, and invisible
- * buttons over the works in view (screen readers, keyboard focus, the item-page flight).
+ * The DOM keeps the haze and vignette (core.ts) and invisible buttons over the
+ * works in view (screen readers, keyboard focus, the item-page flight).
  */
 import type { Id, ItemSummary } from '../../api/types';
 import { sourceLabel } from '../../components/art-label';

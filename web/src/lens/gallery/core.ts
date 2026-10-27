@@ -1,7 +1,7 @@
 /**
  * What both Galleries share (the DOM one in gallery.ts, the WebGPU one in
  * gpu-gallery.ts): how the show is hung, where each piece's frame, mat and label
- * go, and the walk itself (the camera, its glides, input, the tour and reflows).
+ * go, and the walk itself (the camera, its glides, input and reflows).
  * A renderer draws the corridor around `pose` and answers a few hooks.
  */
 import { formatCount } from '../../api/format';
@@ -39,7 +39,6 @@ export const FRAME_SHIFT = 78; // frames sit left of the piece centre to leave r
 export const AHEAD = 5600;
 export const BEHIND = 520;
 
-const WALK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13" cy="4.6" r="1.6"/><path d="m9.5 21 2.3-6.2L14.5 17v4M11.8 14.8l.8-5.6 2.8 2.6 2.6.7M12.6 9.2 9.6 10.6 8.5 13.5"/></svg>';
 
 // ── the show (pure, exported for tests) ──
 
@@ -327,9 +326,6 @@ export abstract class GalleryCore implements LensView {
   private last = 0;
   private wheeling = false;
   private snapT: ReturnType<typeof setTimeout> | null = null;
-  private touring = false;
-  private tourTimer: ReturnType<typeof setInterval> | null = null;
-  private tourBtn: HTMLButtonElement | null = null;
   private suppressClick = false;
   private entranceD = -620;
   private ro: ResizeObserver | null = null;
@@ -359,10 +355,7 @@ export abstract class GalleryCore implements LensView {
     this.showChanged(true);
     this.apply();
     this.emitFocus();
-    if (!this.mini) {
-      this.bind();
-      this.buildAccessory();
-    }
+    if (!this.mini) this.bind();
     this.ro = new ResizeObserver(() => {
       this.measure();
       if (this.mode === 'walk' && !this.tween) this.snapPose();
@@ -633,10 +626,9 @@ export abstract class GalleryCore implements LensView {
     return this.root.classList.contains(styles.dragging);
   }
 
-  /** Any touch of the controls ends the tour and leaves a close-up. */
+  /** Any touch of the controls leaves a close-up. */
   private touch(): void {
     this.lastInput = performance.now();
-    if (this.touring) this.stopTour();
     if (this.mode === 'view' || this.tween) {
       this.tween = null;
       this.mode = 'walk';
@@ -694,57 +686,6 @@ export abstract class GalleryCore implements LensView {
     return false;
   }
 
-  // ── tour ──
-
-  private buildAccessory(): void {
-    const b = el('button', styles.tour, { type: 'button', 'aria-pressed': 'false', title: 'Walk the exhibition on its own' });
-    b.innerHTML = WALK;
-    b.append(el('span', null, null, 'Tour'));
-    b.addEventListener('click', () => (this.touring ? this.stopTour() : this.startTour()));
-    this.tourBtn = b;
-    this.ctx.setAccessory(b);
-  }
-
-  private setTourLabel(on: boolean): void {
-    if (!this.tourBtn) return;
-    this.tourBtn.setAttribute('aria-pressed', String(on));
-    const span = this.tourBtn.querySelector('span');
-    if (span) span.textContent = on ? 'Stop tour' : 'Tour';
-  }
-
-  private startTour(): void {
-    if (!this.works.length) return;
-    this.touring = true;
-    this.setTourLabel(true);
-    const step = () => {
-      if (!this.touring || this.paused) return;
-      const i = Math.round(this.tv);
-      if (i >= this.works.length - 1) {
-        // Back to the entrance, through a quick fade.
-        this.surface().animate([{ opacity: 1 }, { opacity: 0 }, { opacity: 1 }], { duration: 900 });
-        setTimeout(() => {
-          this.t = this.tv = -1;
-          this.snapPose();
-          this.apply();
-          this.emitFocus();
-        }, 450);
-      } else {
-        this.tv = i + 1;
-        this.wheeling = false;
-        this.kick();
-      }
-    };
-    step();
-    this.tourTimer = setInterval(step, 4200);
-  }
-
-  private stopTour(): void {
-    this.touring = false;
-    if (this.tourTimer) clearInterval(this.tourTimer);
-    this.tourTimer = null;
-    this.setTourLabel(false);
-  }
-
   // ── contract ──
 
   update(items: readonly ItemSummary[], total: number): void {
@@ -794,7 +735,6 @@ export abstract class GalleryCore implements LensView {
     if (on) {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
-      if (this.touring) this.stopTour();
     } else if (this.mode === 'view') this.leaveView();
     else this.kick();
   }
@@ -804,7 +744,6 @@ export abstract class GalleryCore implements LensView {
     this.stopped = true;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
-    this.stopTour();
     if (this.snapT) clearTimeout(this.snapT);
     this.ro?.disconnect();
     for (const c of this.cleanup) c();

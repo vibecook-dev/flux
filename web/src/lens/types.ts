@@ -48,7 +48,7 @@ export interface LensContext {
   /** Open the title's detail; `art` is where its poster is now (the shell flies it from there). */
   open(id: Id, art?: Element | null): void;
   play(id: Id): void;
-  /** One small control lent to the lens bar (zoom, a scrubber, a tour). */
+  /** One small control lent to the lens bar (zoom, a scrubber). */
   setAccessory(node: HTMLElement | null): void;
   /** Lets the shell tuck the bars away while you browse. */
   scrolled(dir: 'down' | 'up' | 'top'): void;
