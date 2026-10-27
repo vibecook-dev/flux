@@ -65,9 +65,19 @@
   gap: 12px;
   padding: calc(12px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px));
   background: linear-gradient(180deg, rgb(0 0 0 / 0.5), transparent);
+  /* Only its buttons and pill take the pointer (so resting on the shade doesn't count as on the controls). */
+  pointer-events: none;
   transition:
     opacity 0.5s var(--out),
     transform 0.6s var(--spring-soft);
+}
+
+.top > * {
+  pointer-events: auto;
+}
+
+.player:not([data-chrome]) .top > * {
+  pointer-events: none;
 }
 
 .topRight {
@@ -195,6 +205,21 @@
   pointer-events: none;
 }
 
+/* Once faded, hidden controls aren't drawn at all: their glass would otherwise re-blur every frame of the video. */
+.top,
+.bar {
+  visibility: visible;
+}
+
+.player:not([data-chrome]) .top,
+.player:not([data-chrome]) .bar {
+  visibility: hidden;
+  transition:
+    opacity 0.5s var(--out),
+    transform 0.6s var(--spring-soft),
+    visibility 0s linear 0.6s;
+}
+
 .group {
   flex: none;
   display: flex;
@@ -269,90 +294,305 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * The scrub bar (Scrubber.tsx draws it every frame). Nothing here animates
+ * layout: the fills slide and the knob moves by translate, set inline; the rail
+ * thickens with scaleY and the knob grows from an inner ::after, so the
+ * compositor does it all.
+ */
 .scrubber {
   position: relative;
   flex: 1;
-  height: 26px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 8px;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.trackBg,
-.trackBuf,
-.trackFill {
-  position: absolute;
-  left: 0;
-  top: 11px;
-  height: 4px;
-  border-radius: 4px;
+.scrubber:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.85);
+  outline-offset: 3px;
+}
+
+.rail {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.17);
+  transform: scaleY(1);
+  transition: transform 0.38s var(--spring-soft);
   pointer-events: none;
-  transition:
-    height var(--t-fast) var(--ease),
-    top var(--t-fast) var(--ease);
 }
 
-.trackBg {
-  right: 0;
+.scrubber[data-hover] .rail,
+.scrubber[data-dragging] .rail,
+.scrubber:focus-visible .rail {
+  transform: scaleY(1.7);
+}
+
+.railBuf,
+.railHover,
+.railFill {
+  position: absolute;
+  inset: 0;
+  transform: translate3d(-100%, 0, 0);
+}
+
+.railBuf {
+  background: rgb(255 255 255 / 0.3);
+}
+
+/* Where the pointer is: a lighter wash from the start to it. */
+.railHover {
   background: rgb(255 255 255 / 0.2);
+  opacity: 0;
+  transition: opacity 0.2s var(--out);
+  will-change: transform;
 }
 
-.trackBuf {
-  background: rgb(255 255 255 / 0.34);
+.scrubber[data-hover] .railHover {
+  opacity: 1;
 }
 
-.trackFill {
-  background: var(--text);
+.railFill {
+  background: linear-gradient(90deg, rgb(243 243 240 / 0.86), #fff);
+  will-change: transform;
 }
 
+/* Chapters: small gaps in the rail. */
 .tick {
   position: absolute;
-  top: 11px;
-  width: 2px;
-  height: 4px;
-  margin-left: -1px;
-  background: rgb(0 0 0 / 0.6);
-  pointer-events: none;
-  transition:
-    height var(--t-fast) var(--ease),
-    top var(--t-fast) var(--ease);
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  margin-left: -1.5px;
+  background: rgb(0 0 0 / 0.5);
 }
 
 .knob {
   position: absolute;
-  top: 6px;
+  left: -8px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.knob::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 5px rgb(255 255 255 / 0.16),
+    0 2px 10px rgb(0 0 0 / 0.45);
+  transform: scale(0);
+  transition: transform 0.42s var(--spring);
+}
+
+.scrubber[data-hover] .knob::after,
+.scrubber:focus-visible .knob::after {
+  transform: scale(1);
+}
+
+.scrubber[data-dragging] .knob::after {
+  transform: scale(1.18);
+  transition-duration: 0.3s;
+}
+
+/* No hover on touch screens: the knob is always there to grab. */
+@media (hover: none) {
+  .knob::after {
+    transform: scale(0.85);
+  }
+}
+
+/* The time under the pointer (and the chapter), riding above the rail. */
+.bubble {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 11px;
+  border-radius: var(--pill);
+  font-size: 0.78rem;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s var(--out);
+}
+
+.scrubber[data-hover] .bubble,
+.scrubber[data-dragging] .bubble {
+  opacity: 1;
+}
+
+.bubbleChapter {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 8px;
+  border-left: 0.5px solid var(--line-strong);
+  color: var(--text-2);
+}
+
+.bubbleChapter:empty {
+  display: none;
+}
+
+/* Volume: a glass slider over the mute button while the pointer is there. */
+.volume {
+  position: relative;
+}
+
+.volumePop {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 14px);
+  width: 46px;
+  height: 150px;
+  margin-left: -23px;
+  border-radius: var(--pill);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px) scale(0.92);
+  transform-origin: 50% 100%;
+  pointer-events: none;
+  transition:
+    opacity 0.22s var(--out),
+    transform 0.45s var(--spring),
+    visibility 0s linear 0.45s;
+}
+
+.volume[data-open] .volumePop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.volTrack {
+  position: relative;
+  width: 30px;
+  height: 112px;
+  display: flex;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 8px;
+  outline: none;
+}
+
+.volTrack:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.85);
+  outline-offset: 3px;
+}
+
+.volRail {
+  position: relative;
+  width: 5px;
+  height: 100%;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.17);
+}
+
+.volFill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, rgb(243 243 240 / 0.86), #fff);
+  transform: translate3d(0, 100%, 0);
+  will-change: transform;
+}
+
+.volKnob {
+  position: absolute;
+  left: 50%;
+  top: -7px;
   width: 14px;
   height: 14px;
   margin-left: -7px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 0.16),
+    0 2px 8px rgb(0 0 0 / 0.45);
+  will-change: transform;
   pointer-events: none;
-  transition: transform 0.3s var(--spring);
 }
 
-.scrubber:hover .trackBg,
-.scrubber:hover .trackBuf,
-.scrubber:hover .trackFill,
-.scrubber:hover .tick {
-  top: 10px;
-  height: 6px;
+.volTrack[data-dragging] .volKnob {
+  scale: 1.15;
 }
 
-.scrubber:hover .knob {
-  transform: scale(1.25);
+/* Phones have volume buttons. */
+@media (hover: none) {
+  .volumePop {
+    display: none;
+  }
 }
 
-.scrubber input {
+/* ±10 s: a pill on that side of the picture that counts up while you keep pressing. */
+.skip {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
+  z-index: 4;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px 12px 14px;
+  border-radius: var(--pill);
+  font-size: 1.05rem;
+  color: #fff;
+  pointer-events: none;
+  animation: skip-pop 0.9s var(--out) forwards;
 }
 
-.scrubber:has(input:focus-visible) {
-  outline: 2px solid #fff;
-  outline-offset: 4px;
-  border-radius: 6px;
+.skip[data-dir='back'] {
+  left: 9%;
+}
+
+.skip[data-dir='forward'] {
+  right: 9%;
+}
+
+.skip svg {
+  width: 26px;
+  height: 26px;
+}
+
+@keyframes skip-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.86);
+  }
+  14% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-50%) scale(1.04);
+  }
 }
 
 /* ── menus grow out of the button that opened them ── */
@@ -448,6 +688,13 @@
   place-items: center;
   pointer-events: none;
   z-index: 3;
+  animation: spinner-in 0.25s var(--out) 0.35s both;
+}
+
+@keyframes spinner-in {
+  from {
+    opacity: 0;
+  }
 }
 
 .spinner span {
@@ -813,5 +1060,24 @@
   .flash,
   .menu {
     animation: none;
+  }
+  .skip {
+    animation-name: skip-fade;
+  }
+  .rail,
+  .knob::after {
+    transition: none;
+  }
+}
+
+@keyframes skip-fade {
+  0%,
+  70% {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-50%);
   }
 }

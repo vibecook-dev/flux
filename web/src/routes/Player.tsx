@@ -16,7 +16,6 @@ import { useTitle } from '../app/useTitle';
 import { api, FluxApiError } from '../api/client';
 import { resolveUrl } from '../config';
 import { planLabel, planTone } from '../api/explain';
-import { formatClock } from '../api/format';
 import { parentTitle, useItem, useServer } from '../api/queries';
 import { audioLabel, subtitleChoices, toBcp47 } from '../api/tracks';
 import type { AudioRef, PlayResponse, ProgressReport, SessionDiagnostics } from '../api/types';
@@ -24,6 +23,9 @@ import { Icon } from '../components/Icon';
 import { audioMenuNote, planAudioSwitch, playingTrack, restartNote, startingRendition, type AudioSwitchSample } from '../player/audio';
 import { attachEngine, type AttachedEngine } from '../player/engine';
 import { PlaybackMetrics, type MetricsSnapshot } from '../player/metrics';
+import { createClock, pendingTarget, seekLanded, seekStarted } from '../player/playhead';
+import { type Chapter, Scrubber } from '../player/Scrubber';
+import { Volume } from '../player/Volume';
 import { requestPlay, startPlay, takePendingPlay, prefetchUrls, type PlayOptions } from '../player/start';
 import { StatsOverlay } from '../player/StatsOverlay';
 import styles from '../player/Player.module.css';
@@ -106,7 +108,10 @@ export default function Player({ params, query }: RouteProps) {
   const [engineInfo, setEngineInfo] = useState<{ engine: AttachedEngine['engine'] | null; version: string | null }>({ engine: null, version: null });
   const [metrics, setMetrics] = useState<MetricsSnapshot>(EMPTY_METRICS);
   const [live, setLive] = useState<{ rendition: string | null; bandwidth: number | null }>({ rendition: null, bandwidth: null });
-  const [time, setTime] = useState({ current: 0, duration: 0, buffered: 0 });
+  const [duration, setDuration] = useState(0);
+  // The playhead (player/playhead.ts): one clock for the player's life, read by the scrub bar every frame.
+  const clock = useRef(createClock());
+  const position = useRef(0);
   const [paused, setPaused] = useState(true);
   const [waiting, setWaiting] = useState(true);
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -117,8 +122,8 @@ export default function Player({ params, query }: RouteProps) {
   const [chromeVisible, setChromeVisible] = useState(true);
   const [activeSub, setActiveSub] = useState<number | null>(null);
   const [diag, setDiag] = useState<SessionDiagnostics | null>(null);
-  const [scrub, setScrub] = useState<number | null>(null);
-  const [volume, setVolume] = useState({ level: 1, muted: false });
+  // Only what changes the button's icon and label: dragging the volume re-renders nothing (player/Volume.tsx).
+  const [volume, setVolume] = useState({ muted: false, silent: false });
   // The audio rendition picked in this session (in-place switches); the session's own default otherwise.
   const [audioSel, setAudioSel] = useState<{ sessionId: string; ref: AudioRef } | null>(null);
   const [lastAudioSwitch, setLastAudioSwitch] = useState<AudioSwitchSample | null>(null);
@@ -127,11 +132,14 @@ export default function Player({ params, query }: RouteProps) {
   const audioLog = useRef<{ rendition: string | null; switches: AudioSwitchSample[] }>({ rendition: null, switches: [] });
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [flash, setFlash] = useState<{ icon: 'play' | 'pause'; key: number } | null>(null);
+  // ±10 s presses close together add up ("+30 s") in one indicator.
+  const [skip, setSkip] = useState<{ dir: 1 | -1; total: number; key: number } | null>(null);
+  const skipRun = useRef<{ dir: 1 | -1; total: number; at: number } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   // What the island needs when you leave: refreshed after every render, read in the unmount cleanup.
   const leaving = useRef({ title: '', duration: 0, position: 0, ended: false });
   useEffect(() => {
-    leaving.current = { title, duration: time.duration || (session?.res.duration_ms ?? 0) / 1000, position: time.current, ended };
+    leaving.current = { title, duration: duration || (session?.res.duration_ms ?? 0) / 1000, position: position.current, ended };
   });
 
   // 1. The play response: from the click (in flight) or a fresh request.
@@ -144,6 +152,7 @@ export default function Player({ params, query }: RouteProps) {
     req.then(
       (res) => {
         if (!live) return;
+        setDuration((d) => d || (res.duration_ms ?? 0) / 1000);
         setSession({ res, t0, options });
         setActiveSub(options.subtitleTrack ?? burnedSubtitle(res) ?? res.subtitles.find((s) => s.forced)?.track ?? null);
       },
@@ -218,6 +227,14 @@ export default function Player({ params, query }: RouteProps) {
     };
     setEnded(false);
     setWaiting(true);
+    // The playhead waits where this stream starts (a resume point, or where a
+    // restart picks up) until the video is there. Set here, after the old
+    // stream's cleanup has reset the element and before any frame draws, so it
+    // never shows the 0 in between. A resume point at the very end starts from
+    // the top (as the engine does).
+    const startS = session.res.start_ms / 1000;
+    const total = (session.res.duration_ms ?? 0) / 1000;
+    if (startS > 0 && !(total > 0 && startS >= total - 1)) seekStarted(clock.current, startS, performance.now());
     const onAudioSwitched = (ref: AudioRef) => {
       const t = pendingAudioSwitch.current;
       if (t === null) return;
@@ -280,43 +297,56 @@ export default function Player({ params, query }: RouteProps) {
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
 
-  // Controls fade a moment after the last movement while playing (and once playback starts).
+  // Controls fade a moment after the last movement while playing (and once playback starts),
+  // but not while the pointer rests on them.
+  const overControls = useRef(false);
   const poke = useCallback(() => {
     setChromeVisible(true);
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setChromeVisible(false), 2600);
+    const hide = () => {
+      if (overControls.current) hideTimer.current = setTimeout(hide, 2600);
+      else setChromeVisible(false);
+    };
+    hideTimer.current = setTimeout(hide, 2600);
   }, []);
+  const controlHover = {
+    onPointerEnter: (e: React.PointerEvent) => {
+      if (e.pointerType === 'mouse') overControls.current = true;
+    },
+    onPointerLeave: (e: React.PointerEvent) => {
+      if (e.pointerType !== 'mouse') return;
+      overControls.current = false;
+      poke();
+    },
+  };
   useEffect(() => () => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
   }, []);
 
-  // 3. Video element state → React (4 Hz timeupdate is plenty for the UI).
+  // 3. Video element state → React. The time itself isn't state: the scrub bar
+  // reads the element every frame (player/Scrubber.tsx), so playing re-renders nothing.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const sync = () => {
-      let buffered = 0;
-      for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 0.25) buffered = Math.max(buffered, v.buffered.end(i));
-      setTime({ current: v.currentTime, duration: Number.isFinite(v.duration) ? v.duration : (session?.res.duration_ms ?? 0) / 1000, buffered });
-    };
+    const sync = () => setDuration(Number.isFinite(v.duration) && v.duration > 0 ? v.duration : (session?.res.duration_ms ?? 0) / 1000);
     const handlers: [string, () => void][] = [
-      ['timeupdate', sync],
       ['durationchange', sync],
-      ['progress', sync],
-      ['play', () => setPaused(false)],
+      ['loadedmetadata', sync],
+      ['seeking', () => setEnded(false)],
+      ['play', () => (setPaused(false), setEnded(false))],
       ['pause', () => (setPaused(true), report())],
       ['waiting', () => setWaiting(true)],
       ['playing', () => (setWaiting(false), setNeedsGesture(false), poke())],
       ['canplay', () => setWaiting(false)],
-      ['seeked', () => (sync(), report())],
+      ['seeked', () => (seekLanded(clock.current), report())],
       ['ended', () => (setEnded(true), report())],
-      ['volumechange', () => setVolume({ level: v.volume, muted: v.muted })],
+      ['volumechange', () => setVolume((p) => (p.muted === v.muted && p.silent === (v.volume === 0) ? p : { muted: v.muted, silent: v.volume === 0 }))],
     ];
     for (const [e, h] of handlers) v.addEventListener(e, h);
     return () => {
       for (const [e, h] of handlers) v.removeEventListener(e, h);
     };
-  }, [session, report, poke]);
+  }, [session, report, poke, clock]);
 
   // 4. Periodic progress while playing; metrics refresh for the overlay.
   useEffect(() => {
@@ -393,10 +423,51 @@ export default function Player({ params, query }: RouteProps) {
     else v.pause();
   }, []);
 
-  const seekBy = useCallback((s: number) => {
+  /** Every seek comes here: the playhead goes to `t` at once and stays there until the video lands. */
+  const seekTo = useCallback(
+    (t: number) => {
+      const v = videoRef.current;
+      if (!v) return;
+      const end = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : duration;
+      const target = Math.max(0, Math.min(end > 0 ? end - 0.25 : t, t));
+      seekStarted(clock.current, target, performance.now());
+      v.currentTime = target;
+    },
+    [clock, duration],
+  );
+
+  /** ±s from where the playhead is (a seek still on its way counts, so repeated presses add up). */
+  const seekBy = useCallback(
+    (s: number) => {
+      const v = videoRef.current;
+      if (!v) return;
+      seekTo((pendingTarget(clock.current) ?? v.currentTime) + s);
+      const dir = s > 0 ? 1 : -1;
+      const now = performance.now();
+      const run = skipRun.current;
+      const total = run && run.dir === dir && now - run.at < 900 ? run.total + Math.abs(s) : Math.abs(s);
+      skipRun.current = { dir, total, at: now };
+      setSkip({ dir, total, key: now });
+    },
+    [clock, seekTo],
+  );
+
+  /** Volume, 0..1; raising it from silence unmutes. */
+  const setLevel = useCallback((level: number) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min((v.duration || Infinity) - 0.5, v.currentTime + s));
+    v.volume = Math.min(1, Math.max(0, level));
+    if (v.volume > 0 && v.muted) v.muted = false;
+  }, []);
+
+  /** Mute, or unmute to a level you can hear (unmuting at zero would still be silent). */
+  const toggleMute = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.muted || v.volume === 0) {
+      if (v.volume === 0) v.volume = 0.5;
+      v.muted = false;
+    } else v.muted = true;
   }, []);
 
   const toggleFullscreen = useCallback(() => {
@@ -413,8 +484,12 @@ export default function Player({ params, query }: RouteProps) {
     (patch: Partial<PlayOptions>, audioRestart = false) => {
       const v = videoRef.current;
       if (!session || !v) return;
-      const options: PlayOptions = { ...session.options, subtitleTrack: activeSub, startMs: Math.round(v.currentTime * 1000), assetId: session.res.asset_id, ...patch };
+      const at = pendingTarget(clock.current) ?? v.currentTime;
+      const options: PlayOptions = { ...session.options, subtitleTrack: activeSub, startMs: Math.round(at * 1000), assetId: session.res.asset_id, ...patch };
       const t0 = performance.now();
+      // The new stream starts at `at`: stop here while it loads, rather than
+      // playing on and then jumping back to it (picture, sound and playhead).
+      v.pause();
       setWaiting(true);
       requestPlay(itemId, options).then(
         (res) => {
@@ -424,7 +499,7 @@ export default function Player({ params, query }: RouteProps) {
         (err: unknown) => setError(errorMessage(err)),
       );
     },
-    [session, activeSub, itemId],
+    [session, activeSub, itemId, clock],
   );
 
   /**
@@ -525,7 +600,7 @@ export default function Player({ params, query }: RouteProps) {
         }
         case 'm':
         case 'M':
-          if (videoRef.current) videoRef.current.muted = !videoRef.current.muted;
+          toggleMute();
           break;
         case 'f':
         case 'F':
@@ -548,15 +623,12 @@ export default function Player({ params, query }: RouteProps) {
           else if (!document.fullscreenElement) leave();
           break;
         default:
-          if (/^[0-9]$/.test(e.key)) {
-            const v = videoRef.current;
-            if (v && Number.isFinite(v.duration)) v.currentTime = (Number(e.key) / 10) * v.duration;
-          }
+          if (/^[0-9]$/.test(e.key) && duration > 0) seekTo((Number(e.key) / 10) * duration);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, seekBy, toggleFullscreen, cycleSubs, leave, poke, menu, helpOpen]);
+  }, [togglePlay, seekBy, seekTo, toggleMute, duration, toggleFullscreen, cycleSubs, leave, poke, menu, helpOpen]);
 
   const audioTracks = asset?.probe?.tracks.filter((t) => t.kind === 'audio') ?? [];
   const currentAudio = session ? playingTrack(session.res, currentRef) : null;
@@ -568,16 +640,17 @@ export default function Player({ params, query }: RouteProps) {
   const burned = session ? burnedSubtitle(session.res) : null;
   const pictureSubs = choices.filter((c) => c.burnIn);
   const subLabel = (track: number, fallback: string) => choices.find((c) => c.track === track)?.label ?? fallback;
-  const shownTime = scrub ?? time.current;
-  const pct = time.duration > 0 ? (shownTime / time.duration) * 100 : 0;
-  const bufPct = time.duration > 0 ? (time.buffered / time.duration) * 100 : 0;
   // The title pill says how flux is playing this file, in its own colours.
   const plan = session ? planLabel(session.res.plan) : null;
   const tone = plan ? planTone(plan) : null;
   const badge = item.data?.badges[0];
   const isEpisode = item.data?.kind === 'episode';
   const pillMeta = isEpisode ? item.data?.subtitle : item.data?.year ? String(item.data.year) : null;
-  const chapters = (asset?.probe?.chapters ?? []).filter((c) => c.start_ms > 0 && time.duration > 0 && c.start_ms / 1000 < time.duration - 1);
+  const chapterList = asset?.probe?.chapters;
+  const chapters = useMemo<Chapter[]>(
+    () => (chapterList ?? []).filter((c) => c.start_ms > 0 && duration > 0 && c.start_ms / 1000 < duration - 1).map((c) => ({ start: c.start_ms / 1000, title: c.title ?? null })),
+    [chapterList, duration],
+  );
 
   return (
     <div
@@ -626,7 +699,17 @@ export default function Player({ params, query }: RouteProps) {
         </div>
       )}
 
-      <header className={styles.top}>
+      {skip && (
+        <div key={skip.key} className={`${styles.skip} glass`} data-dir={skip.dir > 0 ? 'forward' : 'back'} aria-hidden="true" onAnimationEnd={() => setSkip(null)}>
+          <Skip dir={skip.dir > 0 ? 'forward' : 'back'} />
+          <span className="mono">
+            {skip.dir > 0 ? '+' : '−'}
+            {skip.total} s
+          </span>
+        </div>
+      )}
+
+      <header className={styles.top} {...controlHover}>
         <button type="button" className={`${styles.round} glass glass-btn`} onClick={leave} aria-label="Back to details" title="Back (esc)">
           <Icon name="back" />
         </button>
@@ -706,7 +789,14 @@ export default function Player({ params, query }: RouteProps) {
         <div className={`${styles.card} glass`}>
           <p className="display-m">Finished</p>
           <div className={styles.cardActions}>
-            <button type="button" className="btn" onClick={() => videoRef.current && ((videoRef.current.currentTime = 0), void videoRef.current.play())}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                seekTo(0);
+                void videoRef.current?.play();
+              }}
+            >
               <Icon name="restart" /> Watch again
             </button>
             <button type="button" className="btn btn-primary" onClick={leave}>
@@ -716,7 +806,7 @@ export default function Player({ params, query }: RouteProps) {
         </div>
       )}
 
-      <footer className={`${styles.bar} glass`}>
+      <footer className={`${styles.bar} glass`} {...controlHover}>
         <div className={styles.group}>
           <button type="button" className={styles.btn} onClick={() => seekBy(-10)} aria-label="Back 10 seconds" title="Back 10 seconds (←)">
             <Skip dir="back" />
@@ -729,34 +819,7 @@ export default function Player({ params, query }: RouteProps) {
           </button>
         </div>
 
-        <div className={styles.scrub}>
-          <span className={`${styles.time} mono`}>{formatClock(shownTime * 1000)}</span>
-          <div className={styles.scrubber}>
-            <span className={styles.trackBg} />
-            <span className={styles.trackBuf} style={{ width: `${bufPct}%` }} />
-            <span className={styles.trackFill} style={{ width: `${pct}%` }} />
-            {chapters.map((c) => (
-              <span key={c.start_ms} className={styles.tick} style={{ left: `${(c.start_ms / 1000 / time.duration) * 100}%` }} title={c.title ?? undefined} />
-            ))}
-            <span className={styles.knob} style={{ left: `${pct}%` }} />
-            <input
-              type="range"
-              min={0}
-              max={time.duration || 1}
-              step="any"
-              value={shownTime}
-              aria-label="Seek"
-              aria-valuetext={`${formatClock(shownTime * 1000)} of ${formatClock(time.duration * 1000)}`}
-              onChange={(e) => setScrub(Number(e.target.value))}
-              onPointerUp={() => {
-                if (scrub !== null && videoRef.current) videoRef.current.currentTime = scrub;
-                setScrub(null);
-              }}
-              onKeyDown={(e) => e.key.startsWith('Arrow') && e.preventDefault()}
-            />
-          </div>
-          <span className={`${styles.time} mono`}>−{formatClock(Math.max(0, time.duration - shownTime) * 1000)}</span>
-        </div>
+        <Scrubber video={videoRef} clock={clock} duration={duration} chapters={chapters} shown={showChrome} onSeek={seekTo} onActivity={poke} position={position} />
 
         <div className={styles.group}>
           {audioTracks.length > 1 && (
@@ -828,15 +891,7 @@ export default function Player({ params, query }: RouteProps) {
             </div>
           )}
 
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={() => videoRef.current && (videoRef.current.muted = !videoRef.current.muted)}
-            aria-label={volume.muted ? 'Unmute' : 'Mute'}
-            title={volume.muted ? 'Unmute (m)' : 'Mute (m)'}
-          >
-            <Icon name={volume.muted || volume.level === 0 ? 'mute' : 'volume'} />
-          </button>
+          <Volume video={videoRef} muted={volume.muted} silent={volume.silent} onLevel={setLevel} onToggleMute={toggleMute} />
           <button type="button" className={styles.btn} onClick={toggleFullscreen} aria-label="Full screen" title="Full screen (f)">
             <Icon name={fullscreen ? 'exitFullscreen' : 'fullscreen'} />
           </button>
