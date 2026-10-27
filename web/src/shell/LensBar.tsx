@@ -1,8 +1,8 @@
 /**
  * The lens bar: your pinned lenses, a glass drop on the current one that flows to
  * the next, the door to all lenses, and one control the current lens lends it.
- * It shrinks to the current lens while you scroll down and comes back when you
- * scroll up.
+ * It shrinks to the current lens while the lens scrolls and comes back as soon as
+ * the scrolling stops, or the moment you reach for it (the shell decides: Shell.tsx).
  */
 import { useLayoutEffect, useRef } from 'react';
 import { LENS_ICONS } from '../lens/registry';

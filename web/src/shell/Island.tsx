@@ -198,6 +198,8 @@ function OpenPanel(props: IslandProps & { input: RefObject<HTMLInputElement | nu
   const [value, setValue] = useState(seed ?? text);
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  // Whether this search has answered yet (results, none, or an error): until then the panel keeps what it showed.
+  const [answered, setAnswered] = useState(false);
   const [sel, setSel] = useState(0);
 
   // Focus the field the moment it exists, so fast typing after the first letter lands in it.
@@ -226,9 +228,12 @@ function OpenPanel(props: IslandProps & { input: RefObject<HTMLInputElement | nu
           setResults(r);
           setSel(0);
           setState('done');
+          setAnswered(true);
         })
         .catch(() => {
-          if (!ctl.signal.aborted) setState('error');
+          if (ctl.signal.aborted) return;
+          setState('error');
+          setAnswered(true);
         });
     }, 80);
     return () => {
@@ -238,6 +243,20 @@ function OpenPanel(props: IslandProps & { input: RefObject<HTMLInputElement | nu
   }, [term]);
 
   const shown = useMemo(() => (term ? results.slice(0, 6) : []), [term, results]);
+  // A search starting over drops the last one's results (they'd flash for the new words).
+  const edit = (v: string) => {
+    setValue(v);
+    onText(v);
+    if (!v.trim()) {
+      setResults([]);
+      setState('idle');
+      setAnswered(false);
+    }
+  };
+  // Until a search first answers, the panel keeps what it showed: it changes size once (to
+  // the results), not twice (to nothing, then to the results). After that, typing more keeps
+  // the last answer up until the next one.
+  const waiting = term !== '' && !answered;
   useEffect(() => {
     const it = shown[sel];
     if (it) prefetchItem(it);
@@ -260,10 +279,7 @@ function OpenPanel(props: IslandProps & { input: RefObject<HTMLInputElement | nu
           aria-expanded={shown.length > 0}
           aria-controls={listId}
           aria-activedescendant={shown[sel] ? `${listId}-${sel}` : undefined}
-          onChange={(e) => {
-            setValue(e.target.value);
-            onText(e.target.value);
-          }}
+          onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown' && shown.length) {
               e.preventDefault();
@@ -279,17 +295,15 @@ function OpenPanel(props: IslandProps & { input: RefObject<HTMLInputElement | nu
             } else if (e.key === 'Escape') {
               e.preventDefault();
               e.stopPropagation();
-              if (value) {
-                setValue('');
-                onText('');
-              } else onOpenChange(false);
+              if (value) edit('');
+              else onOpenChange(false);
             }
           }}
         />
         <kbd className="mono">esc</kbd>
       </div>
       <div className={styles.scroll}>
-        {term ? (
+        {term && !waiting ? (
           <Results {...props} term={term} shown={shown} state={state} sel={sel} setSel={setSel} listId={listId} />
         ) : (
           <Home {...props} />

@@ -39,20 +39,17 @@
   animation: enter 0.46s var(--out);
 }
 
-.overlay[data-leaving] {
-  animation: leave 0.42s var(--out) forwards;
-}
-
 @keyframes enter {
   from {
     opacity: 0;
   }
 }
 
-@keyframes leave {
-  to {
-    opacity: 0;
-  }
+/* Back from the player (or opened by a link): there already, no entrance. Leaving fades it in the shell (Shell.module.css). */
+.overlay[data-restored],
+.overlay[data-restored] .main,
+.overlay[data-restored] .posterNote {
+  animation: none;
 }
 
 .backdrop {
@@ -129,6 +126,11 @@
   align-content: center;
   min-height: 100svh;
   padding: calc(84px + env(safe-area-inset-top, 0px)) max(var(--edge-x), 7vw) 48px;
+}
+
+/* The words rise in; the poster doesn't (it flies in from the lens, and lands where it is). */
+.main,
+.posterNote {
   animation: rise 0.6s var(--spring-soft);
 }
 
@@ -157,7 +159,6 @@
   box-shadow:
     0 50px 90px -34px rgb(0 0 0 / 0.85),
     0 0 0 0.5px rgb(255 255 255 / 0.12);
-  will-change: transform;
 }
 
 .posterNote {

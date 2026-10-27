@@ -100,6 +100,7 @@ export class TextAtlas {
     // outside the page gets the platform default (heavier on macOS than the page's
     // antialiased text): keep it in the page, hidden.
     this.canvas.hidden = true;
+    this.canvas.style.display = 'none';
     this.canvas.setAttribute('aria-hidden', 'true');
     document.body.append(this.canvas);
     const ctx = this.canvas.getContext('2d');

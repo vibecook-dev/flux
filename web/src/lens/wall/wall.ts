@@ -492,7 +492,12 @@ export class WallView implements LensView {
       }, 110);
       this.showTip(t);
     });
-    on(this.content, 'pointerleave', () => this.hideTip());
+    on(this.content, 'pointerleave', () => {
+      // Passing over posters on the way off the wall (to the lens bar) doesn't move the focus.
+      if (this.hoverT) clearTimeout(this.hoverT);
+      this.hoverT = null;
+      this.hideTip();
+    });
     on(this.content, 'click', (e) => {
       const tile = (e.target as HTMLElement).closest<HTMLElement>(`.${styles.tile}`);
       if (!tile || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

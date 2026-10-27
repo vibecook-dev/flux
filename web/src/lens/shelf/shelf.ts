@@ -18,12 +18,14 @@ import type { Id, ItemSummary } from '../../api/types';
 import { artElement, artLabel, loadArt } from '../art';
 import { activeLens } from '../bridge';
 import { clamp, el, rand01, reducedMotion } from '../dom';
+import { rectQuad } from '../flight';
 import { paletteOf } from '../palette';
 import { isNew, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
 import { bandHeight, bandLabel, collectorNo, planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan, type SpineStyle } from './geometry';
 import { asideFalloff, peekDepth, peekWait } from './peek';
 import styles from './shelf.module.css';
+import { paintSpine } from './spine';
 
 export { planShelf, spineLook, spineTitleParts } from './geometry';
 export type { ShelfPlan, ShelfPlanInput, SpineLook, SpineStyle } from './geometry';
@@ -108,6 +110,8 @@ class ShelfView implements LensView {
   private timers: ReturnType<typeof setTimeout>[] = [];
   private suppressClick = false;
   private dead = false;
+  /** The tape whose poster is flying (hidden meanwhile). */
+  private hiddenId: Id | null = null;
   private ro: ResizeObserver;
   private cleanup: (() => void)[] = [];
 
@@ -141,8 +145,14 @@ class ShelfView implements LensView {
         () => undefined,
       );
     }
-    // Arriving from another lens (or back from detail): keep your place on the shelf.
-    if (!this.mini && ctx.focus !== null && this.index.has(ctx.focus)) this.reveal(ctx.focus);
+    // Arriving from another lens (or back from detail): keep your place on the shelf, its
+    // tape already lifted (as the GPU Shelf has it: a poster flying here lands where it ends up).
+    if (!this.mini && ctx.focus !== null && this.index.has(ctx.focus)) {
+      root.classList.add(styles.settle);
+      this.reveal(ctx.focus);
+      void root.offsetWidth;
+      requestAnimationFrame(() => root.classList.remove(styles.settle));
+    }
   }
 
   private setItems(items: readonly ItemSummary[]): void {
@@ -304,6 +314,10 @@ class ShelfView implements LensView {
           tape = this.makeTape(item);
           tape.slot.style.transform = t;
           tape.t = t;
+          if (item.id === this.hiddenId) {
+            tape.sleeve.style.visibility = 'hidden';
+            tape.spine.style.visibility = 'hidden';
+          }
           fresh.push(tape);
           frag.append(tape.slot);
           continue;
@@ -899,6 +913,46 @@ class ShelfView implements LensView {
     return this.openId === id || this.peekId === id ? tape.sleeve : tape.spine;
   }
 
+  /**
+   * The tape as you see it, for flights: its cover when turned towards you, else its
+   * spine, with a painting of the spine (spine.ts paints what the CSS draws), as the
+   * GPU Shelf does: a poster turns from or into it on the way.
+   */
+  spotOf(id: Id): Spot | null {
+    const tape = this.tapes.get(id);
+    const i = this.index.get(id);
+    if (!tape || i === undefined) return null;
+    const turned = this.openId === id || this.peekId === id;
+    const r = (turned ? tape.sleeve : tape.spine).getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const img = tape.sleeve.querySelector('img');
+    const src = img && img.complete && img.naturalWidth > 0 ? img.currentSrc || img.src : null;
+    if (turned) return { quad: rectQuad(r), radius: 1.5, src, lift: 0.55 };
+    return { quad: rectQuad(r), radius: 1.5, src, lift: 0.3, face: this.spineFace(i) };
+  }
+
+  private spineFace(i: number): HTMLCanvasElement | null {
+    const item = this.items[i];
+    const tw = this.widths[i];
+    const k = Math.min(3, window.devicePixelRatio || 1);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.ceil(tw * k));
+    c.height = Math.max(1, Math.ceil(this.m.H * k));
+    // In the page while it paints, for the page's font smoothing.
+    c.style.display = 'none';
+    this.root.append(c);
+    const ctx = c.getContext('2d');
+    if (ctx) {
+      const cs = getComputedStyle(this.root);
+      const v = (name: string, d: string) => cs.getPropertyValue(name).trim() || d;
+      const fonts = { mono: v('--font-mono', 'ui-monospace, monospace'), cond: v('--font-cond', '"Archivo Variable", sans-serif'), body: v('--font-body', 'system-ui, sans-serif') };
+      paintSpine(ctx, item, spineLook(item, paletteOf(item)), { tw, H: this.m.H, W: this.m.W }, k, fonts);
+    }
+    c.remove();
+    c.style.display = '';
+    return ctx ? c : null;
+  }
+
   reveal(id: Id): void {
     const i = this.index.get(id);
     if (i === undefined) return;
@@ -906,6 +960,22 @@ class ShelfView implements LensView {
     this.focusId = id;
     this.draw(false);
     this.markFocus(id);
+  }
+
+  /** Its poster is flying (to the detail page, or between lenses): its cover and spine wait, hidden. */
+  hide(id: Id | null): void {
+    const was = this.hiddenId;
+    if (was === id) return;
+    if (was !== null) this.showArt(was, true);
+    this.hiddenId = id;
+    if (id !== null) this.showArt(id, false);
+  }
+
+  private showArt(id: Id, on: boolean): void {
+    const tape = this.tapes.get(id);
+    if (!tape) return;
+    tape.sleeve.style.visibility = on ? '' : 'hidden';
+    tape.spine.style.visibility = on ? '' : 'hidden';
   }
 
   /** Covered by the detail view or the player; when it lifts, the tape goes back on the shelf. */

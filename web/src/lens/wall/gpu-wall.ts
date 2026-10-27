@@ -13,13 +13,14 @@ import type { Id, ItemSummary } from '../../api/types';
 import { sourceLabel } from '../../components/art-label';
 import { artLabel } from '../art';
 import { clamp, el, prefs, reducedMotion } from '../dom';
+import { rectQuad } from '../flight';
 import type { Gpu } from '../gpu/device';
 import { lerp, lerpRect, soft, spring, Tween, type Rect } from '../gpu/motion';
 import { classFor, posterCache, type PosterCache } from '../gpu/posters';
 import { clock, FLAG, KIND, prepareQuads, QuadBatch, QuadRenderer, type RGBA } from '../gpu/quads';
 import { textAtlas, wrap, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
 import { LEVELS, layoutWall, rowAt, type Row } from './layout';
 import styles from './wall.module.css';
 import { cssColor, dcColor, paperOf } from '../gpu/colors';
@@ -94,6 +95,14 @@ interface Look {
 
 function radiusOf(level: number): number {
   return level === 0 ? 3 : level === 1 ? 6 : 8;
+}
+
+/** A title you point at is drawn a little larger and lifted (in the mosaic, much larger). */
+function hoverRect(base: Rect, hv: number, level: number): Rect {
+  if (hv === 0) return base;
+  const s = 1 + hv * (level === 0 ? 0.4 : 0.025);
+  const lift = level === 0 ? 0 : 3 * hv;
+  return { x: base.x - (base.w * (s - 1)) / 2, y: base.y - (base.h * (s - 1)) / 2 - lift, w: base.w * s, h: base.h * s };
 }
 
 
@@ -434,13 +443,7 @@ export class GpuWallView implements LensView {
     const cap = LEVELS[this.level].cap * look.caps;
     if (base.y > bottom || base.y + base.h + cap < top || a <= 0.002) return;
     const hv = this.hovers.get(item.id)?.value(now) ?? 0;
-    let r = base;
-    if (hv !== 0) {
-      const s = 1 + hv * (this.level === 0 ? 0.4 : 0.025);
-      const lift = this.level === 0 ? 0 : 3 * hv;
-      r = { x: base.x - (base.w * (s - 1)) / 2, y: base.y - (base.h * (s - 1)) / 2 - lift, w: base.w * s, h: base.h * s };
-    }
-    this.tile(item, i, r, base, a, look, hv);
+    this.tile(item, i, hoverRect(base, hv, this.level), base, a, look, hv);
   }
 
   private tile(item: ItemSummary, i: number, r: Rect, base: Rect, a: number, look: Look, hv: number): void {
@@ -1268,6 +1271,19 @@ export class GpuWallView implements LensView {
     if (i < 0) return null;
     const rr = this.root.getBoundingClientRect();
     return new DOMRect(rr.left + this.px[i], rr.top + this.py[i] - this.scroller.scrollTop, this.tileW, this.tileW * 1.5);
+  }
+
+  /** The title as drawn (a little larger and lifted while you point at it), for flights. */
+  spotOf(id: Id): Spot | null {
+    if (this.dom) return this.dom.spotOf?.(id) ?? null;
+    const i = this.items.findIndex((x) => x.id === id);
+    if (i < 0) return null;
+    const rr = this.root.getBoundingClientRect();
+    const hv = this.hovers.get(id)?.value(clock()) ?? 0;
+    const r = hoverRect({ x: rr.left + this.px[i], y: rr.top + this.py[i] - this.scroller.scrollTop, w: this.tileW, h: this.tileW * 1.5 }, hv, this.level);
+    const radius = this.level === 0 && hv > 0 ? lerp(radiusOf(0), 5, Math.min(1, hv)) : radiusOf(this.level);
+    const art = this.items[i].poster;
+    return { quad: rectQuad({ left: r.x, top: r.y, width: r.w, height: r.h }), radius, src: art ? this.posters.readyUrl(art) : null, lift: 0.25 + 0.4 * Math.min(1, hv) };
   }
 
   /** The focus link, moved onto the title (the shell gives it keyboard focus back after an overlay). */

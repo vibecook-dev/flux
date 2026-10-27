@@ -819,3 +819,9 @@
 .ghost[hidden] {
   display: none;
 }
+
+/* Arriving with a title in focus: its tape is lifted already, not lifted in front of you (shelf.ts). */
+.settle .slot,
+.settle .slot * {
+  transition: none !important;
+}

@@ -58,6 +58,34 @@ export interface LensContext {
   intent(item: ItemSummary): void;
 }
 
+/** A point on screen (client px). */
+export interface Pt {
+  x: number;
+  y: number;
+}
+
+/** Corners on screen (client px): top-left, top-right, bottom-right, bottom-left. */
+export type Quad = readonly [Pt, Pt, Pt, Pt];
+
+/** Where a title's art is on screen as drawn, for the flights between places (flight.ts). */
+export interface Spot {
+  quad: Quad;
+  /** Corner radius there (CSS px at that size). */
+  radius: number;
+  /** An image of the art the browser already has (what the lens drew), if known. */
+  src: string | null;
+  /** How far it stands off what's behind it, 0–1 (the flying poster's shadow there). */
+  lift?: number;
+  /** The art's own width / height when the quad is in perspective (default: a 2:3 poster). */
+  aspect?: number;
+  /**
+   * What the place shows when it isn't the poster itself (a tape's spine): a
+   * flight from here starts as this and turns into the poster on the way, and
+   * one landing here turns into this.
+   */
+  face?: HTMLCanvasElement | null;
+}
+
 export interface LensView {
   /** New results (search typing, a filter, a page of a loading library). */
   update(items: readonly ItemSummary[], total: number): void;
@@ -67,10 +95,19 @@ export interface LensView {
   key?(e: KeyboardEvent): boolean;
   /** Where a title's artwork is on screen, for the flight into detail and back. */
   rectOf(id: Id): DOMRect | null;
+  /**
+   * Where a title's art is as drawn: its four corners (a poster in perspective
+   * isn't a rectangle), corner radius and image, so a flight lands exactly on it.
+   * Lenses without it are asked `rectOf` (and `artOf` for the rest).
+   */
+  spotOf?(id: Id): Spot | null;
   artOf?(id: Id): HTMLElement | null;
   /** Bring a title into view and focus it (search Enter, coming back from detail). */
   reveal?(id: Id): void;
-  /** Hide one title's art (its poster is flying into the detail page), or show it again with null. */
+  /**
+   * Hide one title's art while its poster flies (to the detail page, or to another
+   * lens), or show it again with null. Without it the shell hides `artOf(id)`.
+   */
   hide?(id: Id | null): void;
   /** Stop animation loops while covered by detail or the player. */
   pause?(paused: boolean): void;

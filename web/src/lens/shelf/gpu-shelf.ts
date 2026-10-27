@@ -29,6 +29,7 @@ import { sourceLabel } from '../../components/art-label';
 import { artLabel } from '../art';
 import { activeLens } from '../bridge';
 import { clamp, el, rand01, reducedMotion } from '../dom';
+import { projectedQuad } from '../flight';
 import type { Gpu } from '../gpu/device';
 import { bezier, lerp, soft } from '../gpu/motion';
 import { classFor, posterCache, type PosterCache } from '../gpu/posters';
@@ -38,7 +39,7 @@ import { SpriteSheet, type Sprite } from '../gpu/sprites';
 import { textAtlas, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { paletteOf } from '../palette';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
 import { bandHeight, bandLabel, planShelf, shelfLayout, shelfMetrics, spineLook, type Metrics, type ShelfLayout, type ShelfPlan, type SpineLook } from './geometry';
 import { asideFalloff, BACK_C, BACK_K, LIFT_C, LIFT_K, PEEK_C, PEEK_K, peekPath, peekWait, spring0, stepSpring, tapePose, type PoseDims, type Spring } from './peek';
 import styles from './shelf.module.css';
@@ -1405,6 +1406,8 @@ export class GpuShelfView implements LensView {
     if (t.top) this.top(t.l, t.top, t.tw, t.a);
     const hidden = this.hiddenId === t.id && this.openId !== t.id;
     if (t.spine && !hidden) this.spine(t.l, t.spine, t.tw, t.a, off ? lerp(0.62, 0.8, t.lit) : lerp(1, 1.08, t.lit), t.ring, t.foot);
+    // Its poster is flying here (or away): the focus ring stays, where it lands.
+    else if (t.spine && t.ring) this.ring(t.l, t.spine, t.tw, t.a);
   }
 
   // ── faces ──
@@ -1471,12 +1474,15 @@ export class GpuShelfView implements LensView {
       b.uv(o, l.bg2[0] * tint, l.bg2[1] * tint, l.bg2[2] * tint, 1);
       b.flags(o, FLAG3D.gradient);
     }
-    if (ring) {
-      // outline: 2px solid (focus at 60%), outline-offset: 2px
-      const r = this.on(f, 0, 0, tw + 8, H + 8, KIND3D.ring, radius + 4, 0.75);
-      b.color(r, this.theme.focus, 0.6 * a);
-      b.extra(r, 2);
-    }
+    if (ring) this.ring(l, f, tw, a);
+  }
+
+  /** The focus ring round a spine: outline: 2px solid (focus at 60%), outline-offset: 2px. */
+  private ring(l: TapeLook, f: Placed, tw: number, a: number): void {
+    const b = this.batch;
+    const r = this.on(f, 0, 0, tw + 8, this.m.H + 8, KIND3D.ring, (l.clam ? 2.5 : 1.5) + 4, 0.75);
+    b.color(r, this.theme.focus, 0.6 * a);
+    b.extra(r, 2);
   }
 
   private top(l: TapeLook, f: Placed, tw: number, a: number): void {
@@ -1522,8 +1528,8 @@ export class GpuShelfView implements LensView {
     const p = this.on(f, uc, Hb / 2, sw, H - Hb, KIND3D.poster, radius);
     b.opacity(p, a);
     this.box(p, l, shade);
-    if (this.hiddenId === id && this.openId === id) {
-      // Its poster is flying to the detail page: the bare box where it was.
+    if (this.hiddenId === id) {
+      // Its poster is flying (to the detail page, or between lenses): the bare box where it was.
       b.color(p, l.fbg2);
       b.flags(p, FLAG3D.openTop);
       if (full) this.bandMarks(l, f, ua, ub, a);
@@ -2151,6 +2157,9 @@ export class GpuShelfView implements LensView {
       a.lift.v = 0;
       a.peek.x = peek;
       a.peek.v = 0;
+      // Posed now, not at the next frame: where it is can be asked at once (a flight lands on it).
+      const i = this.index.get(id);
+      if (i !== undefined) tapePose(this.rm ? 0 : lift, this.rm ? 0 : peek, this.dims(i), a.pose);
     }
     a.fade.set(peek, clock(), instant ? 0 : FADE_S);
     this.invalidate();
@@ -2546,6 +2555,23 @@ export class GpuShelfView implements LensView {
     return false;
   }
 
+  /** The face of tape `i` you see: its poster when it is turned towards you, else its spine (corners as projected, view px). */
+  private faceCorners(i: number): { c: ({ x: number; y: number } | null)[]; turned: boolean } | null {
+    const { m } = this;
+    const id = this.items[i].id;
+    const tw = this.widths[i];
+    const now = clock();
+    const a = this.anims.get(id);
+    const l = this.lookOf(this.items[i]);
+    this.placeTape(i, l, now);
+    const F = this.facesFor(tw);
+    const fade = a ? a.fade.value(now) : 0;
+    const pose = !a ? REST : this.rm || this.mini ? (fade > 0.5 ? tapePose(0, 1, this.dims(i)) : REST) : a.pose;
+    const turned = pose.ry < -Math.PI / 4;
+    const f = place(turned ? F.poster : F.spine, [this.dx[i], this.dy[i], this.dz[i]], pose, F.origin);
+    return { c: corners(f, { persp: m.persp, originX: this.ox, originY: this.oy }), turned };
+  }
+
   /** The poster on the sleeve when the tape is turned towards you, else the spine, as projected on screen (client coordinates). */
   rectOf(id: Id): DOMRect | null {
     if (this.dom) return this.dom.rectOf(id);
@@ -2556,23 +2582,58 @@ export class GpuShelfView implements LensView {
     const tw = this.widths[i];
     const sx = this.X[i] - this.scrollX;
     if (sx + tw < -m.D || sx > this.viewW + m.D) return new DOMRect(r.left + sx, r.top + this.Y[i], tw, m.H);
-    const now = clock();
-    const a = this.anims.get(id);
-    const l = this.lookOf(this.items[i]);
-    this.placeTape(i, l, now);
-    const F = this.facesFor(tw);
-    const fade = a ? a.fade.value(now) : 0;
-    const pose = !a ? REST : this.rm || this.mini ? (fade > 0.5 ? tapePose(0, 1, this.dims(i)) : REST) : a.pose;
-    const turned = pose.ry < -Math.PI / 4;
-    const f = place(turned ? F.poster : F.spine, [this.dx[i], this.dy[i], this.dz[i]], pose, F.origin);
-    const c = corners(f, { persp: m.persp, originX: this.ox, originY: this.oy });
-    if (c.some((q) => !q)) return null;
-    const pts = c as { x: number; y: number }[];
+    const fc = this.faceCorners(i);
+    if (!fc || fc.c.some((q) => !q)) return null;
+    const pts = fc.c as { x: number; y: number }[];
     const xs = pts.map((q) => q.x);
     const ys = pts.map((q) => q.y);
     const x0 = Math.min(...xs);
     const y0 = Math.min(...ys);
     return new DOMRect(r.left + x0, r.top + y0, Math.max(...xs) - x0, Math.max(...ys) - y0);
+  }
+
+  /**
+   * The tape as you see it, for flights: its cover when turned towards you, else
+   * its spine, with a painting of the spine (a poster flying from it turns from
+   * the spine into the poster; one landing on it turns into the spine).
+   */
+  spotOf(id: Id): Spot | null {
+    if (this.dom) return this.dom.spotOf?.(id) ?? null;
+    const i = this.index.get(id);
+    if (i === undefined) return null;
+    const tw = this.widths[i];
+    const sx = this.X[i] - this.scrollX;
+    if (sx + tw < 0 || sx > this.viewW) return null;
+    const fc = this.faceCorners(i);
+    const r = this.root.getBoundingClientRect();
+    const quad = fc ? projectedQuad(fc.c, r.left, r.top) : null;
+    if (!fc || !quad) return null;
+    const art = this.items[i].poster;
+    const src = art ? this.posters.readyUrl(art) : null;
+    if (fc.turned) return { quad, radius: 1.5, src, lift: 0.55 };
+    return { quad, radius: 1.5, src, lift: 0.3, face: this.spineFace(i) };
+  }
+
+  /** Tape `i`'s spine painted on a canvas of its own (as the sprite sheet paints it, without the lamp). */
+  private spineFace(i: number): HTMLCanvasElement | null {
+    const l = this.lookOf(this.items[i]);
+    const tw = this.widths[i];
+    const k = Math.min(3, this.dpr);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.ceil(tw * k));
+    c.height = Math.max(1, Math.ceil(this.m.H * k));
+    // In the page while it paints, for the page's font smoothing (adopt says why).
+    c.style.display = 'none';
+    this.root.append(c);
+    const ctx = c.getContext('2d');
+    if (!ctx) {
+      c.remove();
+      return null;
+    }
+    paintSpine(ctx, l.item, l.look, { tw, H: this.m.H, W: this.m.W }, k, this.theme.fonts);
+    c.remove();
+    c.style.display = '';
+    return c;
   }
 
   /** The focus element, moved onto the tape (the shell gives it keyboard focus back after an overlay). */

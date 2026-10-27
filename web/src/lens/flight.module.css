@@ -1,0 +1,68 @@
+/* A poster in flight (flight.ts): above the lens, the detail page and the chrome (flights happen when nothing else is open over them; the lens gallery hands over without one). */
+.ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 35;
+  pointer-events: none;
+  transform-origin: 0 0;
+  will-change: transform, opacity;
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+}
+
+/* The same hairline edge the posters have (art.module.css), over the image. */
+.face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+}
+
+.shade {
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    0 28px 56px -18px rgb(0 0 0 / 0.62),
+    0 10px 22px -10px rgb(0 0 0 / 0.4);
+  opacity: 0.25;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+}
+
+/* A spine (or another face that isn't the poster), stretched to the ghost: the flight maps it back onto its own shape. */
+.turn {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+}
+
+.hi {
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+.hi.on {
+  opacity: 1;
+}

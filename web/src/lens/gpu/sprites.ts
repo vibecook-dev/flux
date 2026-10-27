@@ -50,6 +50,7 @@ export class SpriteSheet {
     this.canvas.height = this.cellH;
     // In the page, hidden: canvas text gets the page's font smoothing (text.ts says why).
     this.canvas.hidden = true;
+    this.canvas.style.display = 'none';
     this.canvas.setAttribute('aria-hidden', 'true');
     document.body.append(this.canvas);
     const ctx = this.canvas.getContext('2d');

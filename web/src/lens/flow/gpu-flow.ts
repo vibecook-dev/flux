@@ -14,6 +14,7 @@ import type { Id, ItemSummary } from '../../api/types';
 import { sourceLabel } from '../../components/art-label';
 import { artLabel } from '../art';
 import { clamp, el } from '../dom';
+import { projectedQuad } from '../flight';
 import type { Gpu } from '../gpu/device';
 import { bezier, soft, Tween } from '../gpu/motion';
 import { classFor, posterCache, type PosterCache, type PosterHit } from '../gpu/posters';
@@ -22,7 +23,7 @@ import { corners, FLAG3D, inside, KIND3D, prepareScene3D, Quad3DBatch, Scene3DRe
 import { SpriteSheet, type Sprite } from '../gpu/sprites';
 import { textAtlas, wrap, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
 import { coverPose, edgeOpacity, FlowCore, shadeOf, type CoverState, type Metrics } from './core';
 import styles from './flow.module.css';
 import { cssColor, dcColor, paperOf } from '../gpu/colors';
@@ -892,6 +893,19 @@ export class GpuFlowView extends FlowCore<GCover> {
   rectOf(id: Id): DOMRect | null {
     if (this.dom) return this.dom.rectOf(id);
     return this.screenBox(id);
+  }
+
+  /** A cover as drawn (its corners, in perspective), for flights. */
+  spotOf(id: Id): Spot | null {
+    if (this.dom) return this.dom.spotOf?.(id) ?? null;
+    const c = this.covers.get(id);
+    const i = this.index.get(id);
+    if (!c || i === undefined) return null;
+    const rr = this.root.getBoundingClientRect();
+    const quad = projectedQuad(corners(coverQuad(c.at, this.m), flowCamera(this.m)), rr.left, rr.top);
+    if (!quad) return null;
+    const art = this.items[i]?.poster;
+    return { quad, radius: RADIUS, src: art ? this.posters.readyUrl(art) : null, lift: 0.5 };
   }
 
   /** The focusable stand-in for the poster in front (where the shell puts keyboard focus back), or a cover's option. */

@@ -6,11 +6,17 @@
   box-sizing: border-box;
 }
 
+/*
+ * The app fills the window and every page that scrolls scrolls itself (a lens,
+ * the detail page, a sheet), so the window never does: no scroll bar with
+ * nothing to scroll. The one page that scrolls the window (a videos library's
+ * folders) turns it back on (Shell.module.css).
+ */
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   background: var(--bg);
-  scrollbar-gutter: stable;
+  overflow: hidden;
 }
 
 body {
@@ -24,7 +30,9 @@ body {
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+  /* clip, not hidden: hidden would make the body a scroll box of its own, and a sticky
+     bar on the one page that scrolls the window (folders) would stick to it, not the window. */
+  overflow-x: clip;
 }
 
 img,
@@ -33,6 +41,14 @@ video,
 canvas {
   display: block;
   max-width: 100%;
+}
+
+/* `hidden` still hides them (the rule above would beat the browser's own). */
+img[hidden],
+svg[hidden],
+video[hidden],
+canvas[hidden] {
+  display: none;
 }
 
 button,
