@@ -1,9 +1,10 @@
 /**
  * The Shelf as numbers, shared by the DOM Shelf (shelf.ts) and the GPU Shelf
  * (gpu-shelf.ts): how big a tape is on this screen, which spine treatment each
- * title gets, and where every tape goes on the shelves. Pure functions.
+ * title gets, the band across the top of its cover, and where every tape goes on
+ * the shelves. Pure functions.
  */
-import type { ItemSummary } from '../../api/types';
+import type { Id, ItemSummary } from '../../api/types';
 import { clamp, rand01 } from '../dom';
 import { deepen, luminance, mixHex, type Palette } from '../palette';
 
@@ -85,6 +86,28 @@ export function spineTitleParts(title: string): { article: string | null; main: 
   const colon = t.indexOf(':');
   if (colon > 0 && colon < t.length - 1) return { article, main: t.slice(0, colon), sub: t.slice(colon + 1).trim() };
   return { article, main: t, sub: null };
+}
+
+/** A collector's edition's number, on its spine and its cover. */
+export function collectorNo(id: Id): number {
+  return Math.floor(rand01(`${id}:no`) * 880) + 101;
+}
+
+// ── the cover ──
+
+/**
+ * The band across the top of a cover. The poster spans the box's width whole, and
+ * what a 2:3 poster leaves of the box's height is printed like the spine (on a real
+ * 4.1 × 7.5 in sleeve, its top 1.3 in).
+ */
+export function bandHeight(D: number, H: number): number {
+  return Math.max(0, H - D * 1.5);
+}
+
+/** What the band says on its right: a collector's №, else the year. */
+export function bandLabel(item: Pick<ItemSummary, 'id' | 'year'>, look: Pick<SpineLook, 'style'>): string {
+  if (look.style === 'number') return `№ ${collectorNo(item.id)}`;
+  return item.year ? String(item.year) : '';
 }
 
 // ── sizes ──

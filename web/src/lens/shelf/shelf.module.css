@@ -146,14 +146,125 @@
   overflow: hidden;
 }
 
-/* The sleeve is the poster (built by art.ts, so frame/AI art keeps its label). */
+/*
+ * The sleeve is the poster (built by art.ts, so frame/AI art keeps its label), whole
+ * at the box's width under the band. Printed on the same card, it meets the band
+ * square, with no hairline there.
+ */
 .right .sleeve {
   position: absolute;
-  inset: 0;
+  inset: var(--band) 0 0;
   width: 100%;
-  height: 100%;
+  height: auto;
   aspect-ratio: auto;
-  border-radius: 1.5px;
+  border-radius: 0 0 1.5px 1.5px;
+}
+
+.right .sleeve::after {
+  box-shadow:
+    inset 1px 0 0 rgb(255 255 255 / 0.07),
+    inset -1px 0 0 rgb(255 255 255 / 0.07),
+    inset 0 -1px 0 rgb(255 255 255 / 0.07);
+}
+
+/*
+ * The band across the top of the cover: what the poster leaves of the box's height,
+ * printed like the spine and ruled off as its cap is. One element: the year (a
+ * collector's №) is its text, the flux mark and VIDEO its ::before and ::after.
+ * gpu-shelf.ts draws the same (spine.ts `bandColors`).
+ */
+.cover {
+  --ink: var(--sp-ink);
+  --rule: inset 0 -2px 0 var(--sp-acc);
+  --hair: rgb(255 255 255 / 0.07);
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--band);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--band) * 0.12);
+  padding: 0 calc(var(--d) * 0.075) 2px;
+  background: var(--sp-bg);
+  color: var(--ink);
+  /* The rules, over the box's hairline edge (the poster has its own, from art.ts). */
+  box-shadow:
+    var(--rule),
+    inset 0 1px 0 var(--hair),
+    inset 1px 0 0 var(--hair),
+    inset -1px 0 0 var(--hair);
+  font-family: var(--font-mono);
+  font-size: calc(var(--band) * 0.25);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/*
+ * The flux mark (shelf.ts `MARK`), drawn with no image, mask, transform or opacity:
+ * each made a fallback shelf slower to paint or to lay out as bays scroll in. Its
+ * two strokes share one slant (3 across for 4 up), so each is a stripe of a gradient
+ * at right angles to it, across a band of the box: the second at 45%, both at 85%.
+ * Their edges soften over a pixel, as the SVG's antialias.
+ */
+.cover::before {
+  --s1: color-mix(in srgb, var(--ink) 85%, transparent);
+  --s2: color-mix(in srgb, var(--ink) 38%, transparent);
+  content: '';
+  order: -2;
+  flex: none;
+  width: calc(var(--band) * 0.46);
+  aspect-ratio: 35 / 28;
+  background:
+    linear-gradient(126.87deg, transparent calc(37.74% - 0.5px), var(--s1) calc(37.74% + 0.5px) calc(50.94% - 0.5px), transparent calc(50.94% + 0.5px)) 0 50% / 100% 85.714% no-repeat,
+    linear-gradient(126.87deg, transparent calc(59.57% - 0.5px), var(--s2) calc(59.57% + 0.5px) calc(70.21% - 0.5px), transparent calc(70.21% + 0.5px)) 0 83.333% / 100% 57.143% no-repeat;
+}
+
+.cover::after {
+  content: 'VIDEO';
+  order: -1;
+  margin-right: auto;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+  font-size: calc(var(--band) * 0.22);
+  letter-spacing: 0.18em;
+}
+
+/* A collector's: one fine rule, the № in its accent. */
+.coverNumber {
+  --rule: inset 0 -1px 0 var(--sp-acc);
+  color: var(--sp-acc);
+}
+
+/* A box set: its cap's double rule. */
+.coverBox {
+  --rule: inset 0 -2px 0 var(--sp-acc), inset 0 -5px 0 var(--sp-bg), inset 0 -6px 0 var(--sp-acc);
+}
+
+/* Band: its cap's block of colour and dark type. Clamshells: the printed insert's colours. */
+.coverBand,
+.coverClamw,
+.coverClamb {
+  --rule: 0 0 transparent;
+  padding-bottom: 0;
+}
+
+.coverBand {
+  --ink: #111113;
+  background: var(--sp-acc);
+}
+
+.coverClamw {
+  --ink: #151518;
+  background: #faf8f2;
+}
+
+.coverClamb {
+  background: var(--sp-acc);
+}
+
+/* Offline: greyed and dimmed, as its spine is. */
+.offline .cover {
+  filter: grayscale(0.9) brightness(0.62);
 }
 
 .right::after,

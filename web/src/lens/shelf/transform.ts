@@ -150,23 +150,25 @@ export function facing(p: Placed, ox: number, oy: number, persp: number): boolea
 /**
  * A tape's four visible faces at rest, in its own space (CSS: the spine, the top
  * hinged back with `rotateX(90deg)`, the sleeve on its right and the back cover on
- * its left, both `rotateY(±90deg)`), and the point it moves about
- * (`transform-origin: 50% 100% calc(var(--d) * -0.5)`).
+ * its left, both `rotateY(±90deg)`), the poster on the sleeve below its band, and
+ * the point it moves about (`transform-origin: 50% 100% calc(var(--d) * -0.5)`).
  */
 export interface TapeFaces {
   spine: Face;
   top: Face;
   right: Face;
   left: Face;
+  poster: Face;
   origin: V3;
 }
 
-export function tapeFaces(tw: number, H: number, D: number): TapeFaces {
+export function tapeFaces(tw: number, H: number, D: number, band = 0): TapeFaces {
   return {
     spine: { c: [tw / 2, H / 2, 0], w: tw, h: H, r: I3 },
     top: { c: [tw / 2, 0, -D / 2], w: tw, h: D, r: rotX(Math.PI / 2) },
     right: { c: [tw, H / 2, -D / 2], w: D, h: H, r: rotY(Math.PI / 2) },
     left: { c: [0, H / 2, -D / 2], w: D, h: H, r: rotY(-Math.PI / 2) },
+    poster: { c: [tw, (H + band) / 2, -D / 2], w: D, h: H - band, r: rotY(Math.PI / 2) },
     origin: [tw / 2, H, -D / 2],
   };
 }

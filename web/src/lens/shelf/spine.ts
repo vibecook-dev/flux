@@ -16,7 +16,7 @@ import type { ItemSummary } from '../../api/types';
 import { rand01 } from '../dom';
 import { hex, rgb } from '../palette';
 import { isNew, progressFraction } from '../sections';
-import { spineTitleParts, type SpineLook } from './geometry';
+import { collectorNo, spineTitleParts, type SpineLook } from './geometry';
 
 export interface ShelfFonts {
   /** CSS font-family lists. */
@@ -79,6 +79,33 @@ export function mixBlackOklab(c: string, k: number): string {
   const f = k * k * k;
   const [r, g, b] = rgb(c);
   return hex([toSrgb(toLinear(r) * f), toSrgb(toLinear(g) * f), toSrgb(toLinear(b) * f)]);
+}
+
+/** CSS `grayscale(0.9) brightness(0.62)` on a colour: an offline tape's print, as its spine is filtered. */
+export function offlineHex(c: string): string {
+  const [r, g, b] = rgb(grayHex(c));
+  return hex([r * 0.62, g * 0.62, b * 0.62]);
+}
+
+/**
+ * The band across the top of a cover, as shelf.module.css prints it (`.cover`): the
+ * spine's colours carried round the corner, as a sleeve's print wraps, ruled off as
+ * the spine's cap is. Offline, greyed and dimmed like the spine.
+ */
+export function bandColors(look: SpineLook, off: boolean): { fill: string; ink: string; rule: string | null } {
+  const c = off ? offlineHex : (x: string) => x;
+  switch (look.style) {
+    case 'band':
+      // The spine's cap: its accent, dark type.
+      return { fill: c(look.acc), ink: c('#111113'), rule: null };
+    case 'clamw':
+      // A clamshell's printed insert.
+      return { fill: c('#faf8f2'), ink: c('#151518'), rule: null };
+    case 'clamb':
+      return { fill: c(look.acc), ink: c(look.ink), rule: null };
+    default:
+      return { fill: c(look.bg), ink: c(look.ink), rule: c(look.acc) };
+  }
 }
 
 function rgba(c: string, a: number): string {
@@ -269,7 +296,7 @@ export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, loo
     ctx.fillText('OFFLINE', tw / 2, centred(capY, size));
     ctx.globalAlpha = 1;
   } else if (look.style === 'number') {
-    const no = String(Math.floor(rand01(`${item.id}:no`) * 880) + 101);
+    const no = String(collectorNo(item.id));
     setFont(ctx, mono, yr, 400, 'normal', 0.01);
     const numW = ctx.measureText(no).width;
     setFont(ctx, mono, yr * 0.8, 400, 'normal', 0.01);

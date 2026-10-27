@@ -21,7 +21,7 @@ import { clamp, el, rand01, reducedMotion } from '../dom';
 import { paletteOf } from '../palette';
 import { isNew, progressFraction } from '../sections';
 import type { Dir, LensContext, LensModule, LensView } from '../types';
-import { planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan } from './geometry';
+import { bandHeight, bandLabel, collectorNo, planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan, type SpineStyle } from './geometry';
 import { asideFalloff, peekDepth, peekWait } from './peek';
 import styles from './shelf.module.css';
 
@@ -33,6 +33,15 @@ const MINI_COUNT = 14;
 const MARK =
   '<svg viewBox="0 0 35 28" aria-hidden="true"><path d="M2 26 L20 2 L27 2 L9 26 Z" fill="currentColor"/><path d="M16 26 L28 10 L33 10 L21 26 Z" fill="currentColor" fill-opacity=".45"/></svg>';
 const CONDENSED = '800 20px "Archivo Variable"';
+/** The band across a cover, in its spine's treatment (a studio spine's is the band's own). */
+const COVER: Record<SpineStyle, string> = {
+  studio: '',
+  box: styles.coverBox,
+  number: styles.coverNumber,
+  band: styles.coverBand,
+  clamw: styles.coverClamw,
+  clamb: styles.coverClamb,
+};
 /** The turn takes this long to show the cover (shelf.module.css `.peek`): an opened tape hands over to the detail then. */
 const TURN_MS = 560;
 /** A pointer's cover goes back this long after the pointer leaves the tapes. */
@@ -157,6 +166,7 @@ class ShelfView implements LensView {
     s.setProperty('--h', `${H}px`);
     s.setProperty('--w', `${W}px`);
     s.setProperty('--d', `${D}px`);
+    s.setProperty('--band', `${bandHeight(D, H)}px`);
     s.setProperty('--bh', `${bh}px`);
     s.setProperty('--lip', `${m.lip}px`);
     s.setProperty('--bd', `${m.bd}px`);
@@ -433,7 +443,7 @@ class ShelfView implements LensView {
       cap.classList.add(styles.capOff);
       cap.textContent = 'OFFLINE';
     }
-    else if (look.style === 'number') cap.append(el('span', styles.num, null, '№'), String((Math.floor(rand01(`${item.id}:no`) * 880) + 101).toString()));
+    else if (look.style === 'number') cap.append(el('span', styles.num, null, '№'), String(collectorNo(item.id)));
     else cap.textContent = item.year ? String(item.year) : '—';
     const tbox = el('div', styles.title);
     const parts = spineTitleParts(item.kind === 'episode' && item.parent_title ? item.parent_title : item.title);
@@ -455,9 +465,12 @@ class ShelfView implements LensView {
     // The top of the box; the sleeve (front cover) on its right side, the back cover on its left.
     const topFace = el('div', `${styles.face} ${styles.top}`);
     const right = el('div', `${styles.face} ${styles.right}`);
+    // The band across the cover's top, printed like the spine (its year is the element's
+    // text; the mark and VIDEO are CSS), and the poster whole below it.
+    const band = el('div', `${styles.cover} ${COVER[look.style]}`, null, bandLabel(item, look) || null);
     // The poster only loads when the tape comes off the shelf; until then the blurhash paints it.
     const sleeve = artElement(item, { width: this.m.D, defer: true, className: styles.sleeve });
-    right.append(sleeve);
+    right.append(band, sleeve);
     const left = el('div', `${styles.face} ${styles.left}`);
     const meta = [item.year ? String(item.year) : '', item.kind === 'show' ? 'SERIES' : item.kind === 'movie' ? 'FEATURE' : '', ...item.badges.slice(0, 3)].filter(Boolean).join(' · ');
     left.append(el('div', styles.back, null, el('b', null, null, item.title), el('p', null, null, item.parent_title && item.kind !== 'show' ? item.parent_title : 'flux video'), el('span', null, null, meta)));

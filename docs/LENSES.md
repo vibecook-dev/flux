@@ -42,7 +42,7 @@ Every lens follows the same rules:
 | --- | --- |
 | Wall (`src/lens/wall`) | Everything at once, like a photo library: four densities from a mosaic of decades to posters with captions, anchored where you point. Drawn with WebGPU (below): a pinch follows your fingers live and settles on the nearest density, and a zoom morphs every tile on screen. Held arrow keys scroll with the focus. |
 | Flow (`src/lens/flow`) | Cover Flow: one poster faces you, the rest wait in two stacks. Drawn with WebGPU. |
-| Shelf (`src/lens/shelf`) | VHS tapes on shelves, spines painted from each poster's colours; rest on one and it comes out and turns to show its cover (a tap on touch, keyboard focus too). Card sleeves, plastic clamshells and wooden boards, lit. Drawn with WebGPU. |
+| Shelf (`src/lens/shelf`) | VHS tapes on shelves, spines painted from each poster's colours; rest on one and it comes out and turns to show its cover (a tap on touch, keyboard focus too): the whole poster, under a band printed like the spine with the flux VIDEO mark and the year. Card sleeves, plastic clamshells and wooden boards, lit. Drawn with WebGPU. |
 | Gallery (`src/lens/gallery`) | An exhibition you walk through: framed posters, wall labels, a room per section. Drawn with WebGPU, with a depth buffer. |
 
 To add one: write the module, then add an entry (id, name, icon, blurb, `load`) to `FIRST_PARTY` in `src/lens/registry.ts`. The module loads on demand, in its own chunk.
