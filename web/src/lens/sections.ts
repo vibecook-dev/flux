@@ -80,10 +80,17 @@ export function matchesShow(item: ItemSummary, show: Show, now = Date.now()): bo
   }
 }
 
+// What search looks through, per title: built once per summary, then reused on every keystroke.
+const haystacks = new WeakMap<ItemSummary, string>();
+
 /** Search as you type: every word must appear in the title (accents and case ignored). */
 export function matchesText(item: ItemSummary, folded: string[]): boolean {
   if (folded.length === 0) return true;
-  const hay = foldForSearch(`${item.title} ${item.parent_title ?? ''} ${item.year ?? ''}`);
+  let hay = haystacks.get(item);
+  if (hay === undefined) {
+    hay = foldForSearch(`${item.title} ${item.parent_title ?? ''} ${item.year ?? ''}`);
+    haystacks.set(item, hay);
+  }
   return folded.every((w) => hay.includes(w));
 }
 
