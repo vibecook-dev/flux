@@ -274,12 +274,19 @@ mod tests {
         let pool = WorkerPool::new(1);
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let g = gate.clone();
+        let (held_tx, held) = std::sync::mpsc::channel();
         pool.submit(0, move || {
+            let _ = held_tx.send(());
             let mut open = g.0.lock().unwrap();
             while !*open {
                 open = g.1.wait(open).unwrap();
             }
         });
+        // Queue the rest only once the worker holds the gate: a worker that
+        // starts late would otherwise take whichever job ranks highest among
+        // those queued so far (CI saw "watch" run before "inter").
+        held.recv_timeout(Duration::from_secs(10))
+            .expect("the worker takes the gate");
         let order = Arc::new(Mutex::new(Vec::new()));
         for (p, tag) in [
             (0u8, "deep"),
