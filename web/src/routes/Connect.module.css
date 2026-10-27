@@ -108,6 +108,7 @@
   border-radius: var(--r-lg);
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 78%, transparent);
+  container-type: inline-size;
 }
 
 .panelBody {
@@ -367,6 +368,15 @@
   padding: 10px 0;
   border-top: 1px solid var(--line);
   font-size: 0.9rem;
+}
+
+/* Beside the steps the panel can be narrow (the sheet on a laptop): a QR code next
+   to the text there squeezes the text into a column a few words wide, so they stack. */
+@container (max-width: 620px) {
+  .signin,
+  .connected {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 899px) {

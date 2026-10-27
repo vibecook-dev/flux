@@ -83,6 +83,10 @@
 .head small {
   color: var(--text-3);
   font-size: 0.75rem;
+}
+
+/* "owner" → "Owner"; the server's name and version keep their own case. */
+.role {
   text-transform: capitalize;
 }
 
