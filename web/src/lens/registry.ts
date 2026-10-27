@@ -50,7 +50,7 @@ export const FIRST_PARTY: LensDef[] = [
     id: 'shelf',
     name: 'Shelf',
     icon: LENS_ICONS.shelf,
-    blurb: 'Tapes on a shelf, the way a video shop kept them. Point at one to pull it out.',
+    blurb: 'Tapes on a shelf, the way a video shop kept them. Rest on one and it turns to show its cover.',
     author: 'flux',
     load: () => import('./shelf/load').then((m) => m.loadShelf()),
   },

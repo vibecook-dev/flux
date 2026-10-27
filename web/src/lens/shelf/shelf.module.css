@@ -77,6 +77,8 @@
   cursor: pointer;
   outline: none;
   -webkit-tap-highlight-color: transparent;
+  /* Easing aside for a neighbour showing its cover (shelf.ts sets `translate`). */
+  transition: translate 0.42s var(--spring);
 }
 
 .tape {
@@ -84,7 +86,13 @@
   inset: 0;
   transform-style: preserve-3d;
   transform-origin: 50% 100% calc(var(--d) * -0.5);
-  transition: transform 0.62s var(--spring);
+  translate: 0 0 0;
+  rotate: y 0deg;
+  /* Back onto the shelf: round first, then in (no overshoot: it seats). */
+  transition:
+    transform 0.62s var(--spring),
+    rotate 0.36s var(--out),
+    translate 0.44s var(--out) 0.14s;
 }
 
 .slot:hover .tape,
@@ -92,14 +100,21 @@
   transform: translate3d(0, var(--hov-y), var(--pull)) rotateX(-5deg);
 }
 
-.out .tape {
-  transform: translate3d(0, var(--lift), var(--out)) rotateY(0deg);
-  transition: transform 0.36s cubic-bezier(0.3, 0.8, 0.3, 1);
-}
-
-.out.open .tape {
-  transform: translate3d(0, var(--lift), var(--out)) rotateY(-90deg) scale(1.05);
-  transition: transform 0.72s var(--spring);
+/*
+ * Showing its cover: out of the shelf, then round. `translate` and `rotate` run on
+ * their own springs, so the tape (deeper than it is wide) is clear of its neighbours
+ * before it turns; --peek-z is far enough out for any angle (peek.ts).
+ */
+.slot.peek .tape,
+.slot.peek:hover .tape,
+.kf.peek .tape {
+  transform: none;
+  translate: 0 var(--lift) var(--peek-z);
+  rotate: y -90deg;
+  transition:
+    transform 0.3s var(--out),
+    translate 0.42s var(--spring),
+    rotate 0.5s var(--spring) 0.16s;
 }
 
 .face {
@@ -170,11 +185,11 @@
   transition: opacity 0.6s var(--out) 0.2s;
 }
 
-.open .right::after {
+.slot.peek .right::after {
   opacity: 0;
 }
 
-.open .right::before {
+.slot.peek .right::before {
   opacity: 1;
 }
 
@@ -620,12 +635,27 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .slot,
   .tape,
+  .slot.peek .tape,
+  .slot.peek:hover .tape,
+  .kf.peek .tape,
   .board,
   .glow,
   .end,
   .tag {
     transition: none;
+  }
+
+  /* No turn: the cover is simply there, fading in. */
+  .slot.peek .right {
+    animation: cover-in 0.15s ease-out;
+  }
+}
+
+@keyframes cover-in {
+  from {
+    opacity: 0;
   }
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bezier, lerpRect, soft, spring, Tween } from './motion';
 import { classFor, CLASSES } from './posters';
 import { QUAD_FLOATS, QuadBatch } from './quads';
-import { corners, inside, project, QUAD3D_FLOATS, Quad3DBatch, SCENE3D_WGSL } from './scene3d';
+import { corners, inside, MAT3D, project, QUAD3D_FLOATS, Quad3DBatch, SCENE3D_WGSL } from './scene3d';
 import { QUAD_WGSL } from './shaders';
 import { Slots } from './slots';
 import { ellipsize, wrap } from './text';
@@ -171,5 +171,32 @@ describe('scene3d', () => {
     expect(d.slice(0, 11)).toEqual([1, 2, 3, 0, 4, 5, 7, 6, 0.1, 0.2, 0.3]);
     // texture none (ready-at -1), opacity 1, mirror flag 16 with its line and strength
     expect(d.slice(24, 31)).toEqual([0, 0, -1, 1, 16, 400, 0.5]);
+  });
+
+  it('carries a material in the quad’s spare floats, leaving everything else as it was', () => {
+    const b = new Quad3DBatch(1);
+    const o = b.add(1, 2, 3, 4, 5, 6, 7);
+    b.rotate(o, 0.1, 0.2, 0.3);
+    b.origin(o, 8, 9, 10);
+    const before = Array.from(b.data.slice(0, QUAD3D_FLOATS));
+    // No material: the spare floats are zero (Flow's and the Gallery's quads draw as before).
+    expect([before[3], before[11], before[15]]).toEqual([0, 0, 0]);
+    b.material(o, MAT3D.spine, 0.5, 0.25, 0.75);
+    const after = Array.from(b.data.slice(0, QUAD3D_FLOATS));
+    expect(after[3]).toBeCloseTo(MAT3D.spine + 0.5);
+    expect(after[11]).toBe(0.25);
+    expect(after[15]).toBe(0.75);
+    after.forEach((v, k) => {
+      if (k !== 3 && k !== 11 && k !== 15) expect(v).toBe(before[k]);
+    });
+    // Gloss stays below the next material's number.
+    b.material(o, MAT3D.print, 1);
+    expect(Math.floor(b.data[3])).toBe(MAT3D.print);
+    // The shader reads them where they are, and the camera's lights after its first 32 bytes.
+    expect(SCENE3D_WGSL).toMatch(/let mat = u32\(q\.pos\.w\)/);
+    expect(SCENE3D_WGSL).toMatch(/let seed = q\.rot\.w/);
+    expect(SCENE3D_WGSL).toMatch(/let shade = q\.origin\.w/);
+    const cam = /struct Cam \{([^}]*)\}/.exec(SCENE3D_WGSL)?.[1] ?? '';
+    expect(cam.match(/: vec4f/g)).toHaveLength(3);
   });
 });

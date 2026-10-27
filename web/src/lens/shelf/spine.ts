@@ -7,6 +7,10 @@
  * (board, lip, bookends, the light on the wall, the shade on a tape's sides).
  *
  * Painters draw in CSS pixels on a context scaled to device pixels.
+ *
+ * A spine's alpha is not coverage (the renderer rounds its corners itself) but how
+ * glossy it is, for the renderer's lighting (scene3d.ts, `MAT3D.spine`): 1 is the
+ * sleeve's card, less is shinier: a clamshell's plastic, a sticker.
  */
 import type { ItemSummary } from '../../api/types';
 import { rand01 } from '../dom';
@@ -121,6 +125,89 @@ function setFont(ctx: CanvasRenderingContext2D, family: string, size: number, we
 const centred = (y: number, size: number, mid = 0.34) => y + size * mid;
 /** The spine inherits the page's line-height (base.css). */
 const LINE = 1.55;
+
+/** Gloss, as alpha: a clamshell's plastic all over, a sticker's paper. */
+export const GLOSS_PLASTIC = 0.78;
+export const GLOSS_STICKER = 0.8;
+
+/** A tile of paper grain (mid-grey specks), made once; drawn over a spine with `overlay`. */
+let grainTile: OffscreenCanvas | HTMLCanvasElement | null = null;
+
+function grainPattern(ctx: CanvasRenderingContext2D, seed: number): CanvasPattern | null {
+  if (!grainTile) {
+    const N = 64;
+    const tile = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(N, N) : Object.assign(document.createElement('canvas'), { width: N, height: N });
+    const g = tile.getContext('2d');
+    if (!g) return null;
+    const img = g.createImageData(N, N);
+    let s = 0x9e3779b9;
+    for (let i = 0; i < N * N; i++) {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      const v = 128 + ((s >>> 0) % 61) - 30;
+      img.data[i * 4] = v;
+      img.data[i * 4 + 1] = v;
+      img.data[i * 4 + 2] = v;
+      img.data[i * 4 + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    grainTile = tile;
+  }
+  const p = ctx.createPattern(grainTile, 'repeat');
+  // Each tape's grain starts somewhere else in the tile.
+  p?.setTransform(new DOMMatrix([1, 0, 0, 1, Math.floor(seed * 64), Math.floor(((seed * 7.31) % 1) * 64)]));
+  return p;
+}
+
+/**
+ * Handling: the print on a card sleeve's edges and corners rubs through to the white
+ * card, here and there, on a few tapes much more than most (the same marks every time).
+ */
+function paintWear(ctx: CanvasRenderingContext2D, id: string | number, tw: number, H: number): void {
+  const wear = rand01(`${id}:worn`) ** 2;
+  if (wear < 0.06) return;
+  const r = (k: string) => rand01(`${id}:${k}`);
+  const n = Math.round(3 + wear * 22);
+  ctx.save();
+  ctx.fillStyle = 'rgb(232 228 220)';
+  for (let j = 0; j < n; j++) {
+    const kind = r(`wk${j}`);
+    const at = r(`wa${j}`);
+    const len = 1.5 + r(`wl${j}`) * (2.5 + wear * 12);
+    ctx.globalAlpha = (0.1 + 0.4 * wear) * (0.45 + 0.55 * r(`wo${j}`));
+    if (kind < 0.42) {
+      // Along a long edge: a thin rub.
+      const x = r(`ws${j}`) < 0.5 ? 0 : tw - 0.7;
+      ctx.fillRect(x, at * (H - len), 0.7, len);
+    } else if (kind < 0.7) {
+      // Along the top or the foot.
+      const y = r(`ws${j}`) < 0.55 ? 0 : H - 0.7;
+      ctx.fillRect(at * Math.max(0, tw - len), y, Math.min(len, tw), 0.7);
+    } else {
+      // A corner, rounded off.
+      const cx = r(`ws${j}`) < 0.5 ? 0 : tw;
+      const cy = at < 0.5 ? 0 : H;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 0.8 + r(`wl${j}`) * (1 + wear * 2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/** Make what is painted inside `path` glossy: its alpha × `a` (alpha 1 reads as card). */
+function glaze(ctx: CanvasRenderingContext2D, path: () => void, a: number): void {
+  ctx.save();
+  ctx.beginPath();
+  path();
+  ctx.clip();
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgb(0 0 0 / ${a})`;
+  ctx.fillRect(-1e4, -1e4, 2e4, 2e4);
+  ctx.restore();
+}
 
 /** Paint the spine into a `tw`×`H` (CSS pixels) area at the context's origin. */
 export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, look: SpineLook, s: SpineSpec, dpr: number, fonts: ShelfFonts): void {
@@ -316,9 +403,11 @@ export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, loo
   ctx.fillText('VIDEO', tw / 2, centred(footY + markH + 2 + lblH / 2, lblSize));
   ctx.globalAlpha = 1;
 
-  // The light on the plastic.
+  // The light down the box (the shelf's light is above it), as the DOM Shelf paints it;
+  // its highlights are the renderer's now (they move with the light), so the painted
+  // streak down the box is only a breath.
   const sheenV = ctx.createLinearGradient(0, 0, 0, H);
-  sheenV.addColorStop(0, 'rgb(255 255 255 / 0.11)');
+  sheenV.addColorStop(0, 'rgb(255 255 255 / 0.1)');
   sheenV.addColorStop(0.26, 'rgb(255 255 255 / 0)');
   sheenV.addColorStop(0.68, 'rgb(0 0 0 / 0)');
   sheenV.addColorStop(1, 'rgb(0 0 0 / 0.3)');
@@ -326,12 +415,25 @@ export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, loo
   ctx.fillRect(0, 0, tw, H);
   const sheenH = ctx.createLinearGradient(0, 0, tw, 0);
   sheenH.addColorStop(0.06, 'rgb(255 255 255 / 0)');
-  sheenH.addColorStop(0.2, 'rgb(255 255 255 / 0.08)');
+  sheenH.addColorStop(0.2, 'rgb(255 255 255 / 0.04)');
   sheenH.addColorStop(0.34, 'rgb(255 255 255 / 0)');
   sheenH.addColorStop(0.76, 'rgb(0 0 0 / 0)');
   sheenH.addColorStop(1, 'rgb(0 0 0 / 0.2)');
   ctx.fillStyle = sheenH;
   ctx.fillRect(0, 0, tw, H);
+
+  // The print's paper grain (under a clamshell's plastic, hardly any), and on a card
+  // sleeve, wear at its edges. (Before the stickers, which are smooth, glossy paper.)
+  const grain = grainPattern(ctx, rand01(`${item.id}:grain`));
+  if (grain) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = clam ? 0.08 : 0.2;
+    ctx.fillStyle = grain;
+    ctx.fillRect(0, 0, tw, H);
+    ctx.restore();
+  }
+  if (!clam) paintWear(ctx, item.id, tw, H);
 
   // Stickers: NEW on recent additions; now and then a price or a plea to rewind.
   const r = (k: string) => rand01(`${item.id}:${k}`);
@@ -355,8 +457,12 @@ export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, loo
     ctx.fillStyle = grayHex(o.fg, off);
     ctx.textAlign = 'center';
     const mid = o.family === mono ? 0.34 : 0.335;
+    ctx.save();
     ctx.scale(ssx, 1);
     o.lines.forEach((l, k) => ctx.fillText(l, 0, centred(-bh / 2 + o.padTop + o.size * o.lineH * (k + 0.5), o.size, mid)));
+    ctx.restore();
+    // A sticker is glossy paper (its shadow on the box is not); a clamshell is glossy anyway.
+    if (!clam) glaze(ctx, () => ctx.roundRect(-bw / 2, -bh / 2, bw, bh, o.radius), GLOSS_STICKER);
     ctx.restore();
   };
   if (isNew(item)) {
@@ -388,6 +494,9 @@ export function paintSpine(ctx: CanvasRenderingContext2D, item: ItemSummary, loo
     ctx.fill();
     ctx.restore();
   }
+
+  // A clamshell is glossy plastic all over (stickers on it no glossier).
+  if (clam) glaze(ctx, () => ctx.rect(0, 0, tw, H), GLOSS_PLASTIC);
 }
 
 /** The back cover's words: title, a line, and the year, kind and badges. */
