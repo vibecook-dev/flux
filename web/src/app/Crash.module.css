@@ -1,0 +1,67 @@
+/* A screen that failed to show (Crash.tsx): centred over whatever was there, the way the library's empty states are. */
+.crash {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) var(--gutter, 16px) calc(16px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Over the library, the library stays in sight behind a scrim. */
+.crash[data-place='overlay'] {
+  z-index: 40;
+  background: var(--scrim);
+}
+
+/* In the player: the black of a screen that was about to play. */
+.crash[data-place='player'] {
+  background: #000;
+  color: #f3f3f0;
+}
+
+.card {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  width: min(440px, 100%);
+  padding: 28px 24px 24px;
+  border-radius: 28px;
+  text-align: center;
+}
+
+.card p {
+  max-width: 40ch;
+  color: var(--text-2);
+}
+
+.crash[data-place='player'] .card p {
+  color: rgb(243 243 240 / 0.7);
+}
+
+.details {
+  max-width: 100%;
+  color: var(--text-3);
+  font-size: 0.8125rem;
+}
+
+.details summary {
+  cursor: pointer;
+}
+
+.details code {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 4px;
+}

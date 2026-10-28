@@ -559,6 +559,32 @@ bundled jellyfin-ffmpeg is GPL: its licence, the source links and a written
 offer are in `/usr/share/licenses/jellyfin-ffmpeg/`, and every release
 attaches the matching source tarball.
 
+## The app on your devices
+
+flux's web client installs as an app (a PWA), with its own window or Home
+Screen icon, on any device that can open flux on a secure page:
+
+- **Chrome and Edge** (desktop and Android): *Install flux* in flux's corner
+  menu, or the install button in the address bar.
+- **iPhone and iPad:** Share, then *Add to Home Screen* (flux's corner menu
+  says so too).
+- **Safari on a Mac** (Safari 17 and later): File, then *Add to Dock*.
+
+A secure page is flux on the machine it runs on (<http://127.0.0.1:8096>), or
+flux over the tailnet with HTTPS on ([README § HTTPS](../README.md#https)).
+Over plain HTTP from another machine (the `--lan` listener), browsers don't
+run flux's service worker and Chrome and Edge don't offer to install it;
+iPhone and iPad can still add it to the Home Screen, and it works as a web
+page everywhere.
+
+The installed app keeps flux's own files (the web client, about 2 MB), so it
+opens even when flux can't be reached, and says so. It never stores your
+library, artwork or video: those always come from the server.
+
+When flux is updated, pages that are already open say *flux was updated*,
+with a button to reload. A page that needs a screen whose code changed
+reloads onto the new version by itself, or says why it can't.
+
 ## Building from source
 
 You need:

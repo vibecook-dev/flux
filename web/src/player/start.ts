@@ -35,7 +35,8 @@ const pending = new Map<string, PendingPlay>();
 /** Warm everything Play needs (hover/focus on a Play button). */
 export function preloadPlayer(): void {
   void loadPlayer();
-  if (!isAppleWebKit(navigator.userAgent)) void import('hls.js');
+  // A warm-up: a failure here (flux updated under the page) shows when playback starts.
+  if (!isAppleWebKit(navigator.userAgent)) void import('hls.js').catch(() => undefined);
   void getClientCaps();
 }
 

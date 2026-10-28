@@ -139,6 +139,7 @@ Dependencies point strictly downward, with no cycles:
 
 - Clients browse from the catalog only, never from the filesystem.
 - Scan progress is pushed over SSE.
+- The web client's files are served as built: hashed `/assets/*` immutable, everything else (`index.html`, `sw.js`) revalidated. The build stamps `index.html` with its id, which `/api/v1/server` reports as `web_build`, so an open page knows when flux was updated under it. The client's service worker (`web/src/sw/`) caches only the client's own files, never `/api/` or `/media/`.
 - One router layer guards every listener: a `Host` that isn't one of the server's names gets 421 (DNS rebinding); an unsafe `/api/` call needs `X-Flux-Request: 1` and no foreign `Origin`, else 403 (CSRF).
 - A file is served only from inside its library, or when it is exactly the file the scan recorded behind a link that leaves it.
 - Everything a caller can create is bounded: plans (on disk, LRU), sessions, event streams.

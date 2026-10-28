@@ -8,6 +8,10 @@
 //!   serves on the tailnet, `connect-src` also names that `https://` origin,
 //!   so a page opened over plain HTTP can check it is reachable and move there.
 //! - Text assets are gzipped once on first request and kept in memory.
+//! - The build stamps `index.html` with its id (`<meta name="flux-build">`,
+//!   web/scripts/pwa-plugin.ts); [`WebUi::build`] reports it in
+//!   `ServerInfo.web_build`, so an open page can tell flux was updated under it.
+//!   `sw.js` (the service worker) is served like any other file: revalidated.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -33,6 +37,7 @@ pub struct WebUi {
     root: PathBuf,
     index: Bytes,
     csp: String,
+    build: Option<String>,
     gz: Mutex<HashMap<PathBuf, Option<Bytes>>>,
 }
 
@@ -43,12 +48,20 @@ impl WebUi {
         let index = std::fs::read(root.join("index.html")).ok()?;
         let html = String::from_utf8_lossy(&index);
         let csp = csp_for(&html);
+        let build = build_of(&html);
         Some(WebUi {
             root,
             index: Bytes::from(index),
             csp,
+            build,
             gz: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The client's build id, from its `index.html`; `None` for a build
+    /// without one (older than the id, or the dev server's page).
+    pub fn build(&self) -> Option<&str> {
+        self.build.as_deref()
     }
 
     pub fn root(&self) -> &Path {
@@ -74,6 +87,18 @@ impl WebUi {
         map.insert(path.to_path_buf(), gz.clone());
         gz
     }
+}
+
+/// The build id a page carries: `<meta name="flux-build" content="…">`, as
+/// web/scripts/pwa-plugin.ts writes it (1 to 64 lowercase letters and digits;
+/// anything else is no id).
+pub fn build_of(html: &str) -> Option<String> {
+    const TAG: &str = "<meta name=\"flux-build\" content=\"";
+    let start = html.find(TAG)? + TAG.len();
+    let len = html[start..].find('"')?;
+    let id = &html[start..start + len];
+    let ok = (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    ok.then(|| id.to_string())
 }
 
 /// Inline `<script>` bodies (no `src`) of an HTML document.
@@ -332,6 +357,41 @@ mod tests {
         // hls.js gives the <track> elements it creates `src = "data:,WEBVTT"`
         // (an empty cue list); blocked, Chrome logs a CSP error on playback.
         assert!(csp.contains("media-src 'self' blob: data:;"), "{csp}");
+    }
+
+    #[test]
+    fn the_build_id_comes_from_the_pages_meta_tag() {
+        let page = "<head><meta charset=\"UTF-8\" />\n  <meta name=\"flux-build\" content=\"30a0a9ba12da36ba\" />\n  </head>";
+        assert_eq!(build_of(page).as_deref(), Some("30a0a9ba12da36ba"));
+        // No tag (the dev server's page, a build older than the id), or one that isn't an id.
+        assert_eq!(build_of("<head><title>flux</title></head>"), None);
+        assert_eq!(build_of("<meta name=\"flux-build\" content=\"\">"), None);
+        assert_eq!(build_of("<meta name=\"flux-build\" content=\"ABC\">"), None);
+        assert_eq!(build_of("<meta name=\"flux-build\" content=\"a b\">"), None);
+        assert_eq!(build_of("<meta name=\"flux-build\" content=\"1234"), None);
+        assert_eq!(
+            build_of(&format!(
+                "<meta name=\"flux-build\" content=\"{}\">",
+                "a".repeat(65)
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn a_loaded_client_reports_its_build() {
+        let dir = std::env::temp_dir().join(format!("flux-web-build-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("index.html"),
+            "<head><meta name=\"flux-build\" content=\"0123abcd\" /></head>",
+        )
+        .unwrap();
+        let ui = WebUi::load(&dir).expect("loads");
+        assert_eq!(ui.build(), Some("0123abcd"));
+        std::fs::write(dir.join("index.html"), "<head></head>").unwrap();
+        assert_eq!(WebUi::load(&dir).expect("loads").build(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

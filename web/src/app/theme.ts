@@ -18,9 +18,13 @@ function read(): ThemeSetting {
 let setting: ThemeSetting = typeof window === 'undefined' ? 'system' : read();
 const media = typeof window === 'undefined' ? null : matchMedia('(prefers-color-scheme: light)');
 
+/** The browser's (or the installed app's) title bar, in the page's colour; index.html sets it before first paint. */
+const BAR = { dark: '#0b0b0e', light: '#ebeaee' } as const;
+
 function apply() {
   const dark = setting === 'dark' || (setting === 'system' && !media?.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  for (const m of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) m.content = BAR[dark ? 'dark' : 'light'];
   for (const l of listeners) l();
 }
 

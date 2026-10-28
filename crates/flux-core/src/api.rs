@@ -123,6 +123,13 @@ pub struct ServerInfo {
     /// some features (WebGPU) only to secure pages.
     #[serde(default)]
     pub https_url: Option<String>,
+    /// The web client this server serves: its build id, from the
+    /// `<meta name="flux-build">` the build stamps into its `index.html`. An
+    /// open page compares it with its own to know flux was updated under it
+    /// and offer a reload. `None` without a built client (or one too old to
+    /// carry the id).
+    #[serde(default)]
+    pub web_build: Option<String>,
 }
 
 /// [`ServerInfo::metadata`]: what the server can match titles against.

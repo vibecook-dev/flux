@@ -744,6 +744,7 @@ fn main() {
             tailnet_name: Some("flux.tail1234.ts.net".into()),
             metadata: MetadataInfo { source: MetadataSource::Tmdb },
             https_url: Some("https://flux.tail1234.ts.net:8096".into()),
+            web_build: Some("30a0a9ba12da36ba".into()),
         }),
         "CreateLibrary": v(&CreateLibrary { name: "Movies".into(), kind: LibraryKind::Movies, roots: vec!["/m".into()] }),
         "Library": v(&Library {

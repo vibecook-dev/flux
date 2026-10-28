@@ -53,6 +53,8 @@ export interface MockOptions {
   path?: string;
   /** What the server matches titles against (ServerInfo.metadata); default `tmdb`. */
   metadata?: MetadataSource;
+  /** The web client build the "server" serves (ServerInfo.web_build); default none. */
+  webBuild?: string | null;
   /** Prefix for handler paths; tests in Node use an absolute origin. */
   origin?: string;
 }
@@ -118,6 +120,7 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
     tailnet_name: tailnet.dns_name,
     metadata: { source: opts.metadata ?? 'tmdb' },
     https_url: tailnet.state === 'running' && tailnet.url?.startsWith('https://') ? tailnet.url : null,
+    web_build: opts.webBuild ?? null,
   });
 
   const tailnetChanged = () => broadcast({ type: 'tailnet', info: { ...tailnet } });

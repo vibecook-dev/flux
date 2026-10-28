@@ -13,12 +13,15 @@ type StateListener = (s: EventsState) => void;
 
 const listeners = new Set<Listener>();
 const stateListeners = new Set<StateListener>();
+/** State watchers that don't keep the stream open (watchEventsState). */
+const watchers = new Set<StateListener>();
 let source: EventSource | null = null;
 let state: EventsState = 'closed';
 
 function setState(s: EventsState) {
   state = s;
   for (const l of stateListeners) l(s);
+  for (const w of watchers) w(s);
 }
 
 /** Parse one SSE `data:` payload; `null` for anything that isn't a known event. */
@@ -85,6 +88,17 @@ export function subscribeEvents(onEvent: Listener): () => void {
   return () => {
     listeners.delete(onEvent);
     closeIfIdle();
+  };
+}
+
+/**
+ * Watch the connection state without keeping the stream open: it still opens
+ * and closes with its subscribers (the shell's, while the library is up).
+ */
+export function watchEventsState(onState: StateListener): () => void {
+  watchers.add(onState);
+  return () => {
+    watchers.delete(onState);
   };
 }
 
