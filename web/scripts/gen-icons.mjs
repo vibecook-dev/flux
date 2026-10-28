@@ -7,6 +7,9 @@
 //                                (Android crops it to its own shape)
 //   apple-touch-icon.png         180 px, full bleed (iOS rounds the corners itself)
 //
+// and the Windows installer's icon, scripts/package/windows/flux.ico: the
+// tile at 16 to 256 px, as PNG entries (which Windows reads since Vista).
+//
 //   node scripts/gen-icons.mjs
 //
 // The PNGs are committed; run this again only when the mark changes.
@@ -17,6 +20,7 @@ import { chromium } from 'playwright-core';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, '..', 'public', 'icons');
+const ico = join(here, '..', '..', 'scripts', 'package', 'windows', 'flux.ico');
 
 const TILE = '#0b0b0e';
 const INK = '#f3f1ec';
@@ -44,6 +48,27 @@ const ICONS = [
   { file: 'maskable-512.png', size: 512, mark: 0.46, radius: 0 },
   { file: 'apple-touch-icon.png', size: 180, mark: 0.5, radius: 0 },
 ];
+const WINDOWS_SIZES = [16, 24, 32, 48, 64, 256];
+
+/** An .ico of PNG images: a 6-byte header, a 16-byte entry per image, then the images. */
+function icoOf(pngs) {
+  const header = Buffer.alloc(6 + 16 * pngs.length);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2); // an icon
+  header.writeUInt16LE(pngs.length, 4);
+  let offset = header.length;
+  pngs.forEach(({ size, png }, i) => {
+    const e = 6 + 16 * i;
+    header.writeUInt8(size >= 256 ? 0 : size, e); // 0 is 256
+    header.writeUInt8(size >= 256 ? 0 : size, e + 1);
+    header.writeUInt16LE(1, e + 4); // colour planes
+    header.writeUInt16LE(32, e + 6); // bits per pixel
+    header.writeUInt32LE(png.length, e + 8);
+    header.writeUInt32LE(offset, e + 12);
+    offset += png.length;
+  });
+  return Buffer.concat([header, ...pngs.map((p) => p.png)]);
+}
 
 mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -56,6 +81,14 @@ try {
     writeFileSync(join(out, icon.file), png);
     console.log(`${icon.file}  ${icon.size}px  ${png.length} bytes`);
   }
+  const pngs = [];
+  for (const size of WINDOWS_SIZES) {
+    await page.setContent(`<!doctype html><style>html,body{margin:0;background:transparent}svg{display:block}</style>${svg(size, 0.565, (size * 14) / 64)}`);
+    pngs.push({ size, png: await page.locator('svg').screenshot({ omitBackground: true }) });
+  }
+  mkdirSync(dirname(ico), { recursive: true });
+  writeFileSync(ico, icoOf(pngs));
+  console.log(`flux.ico  ${WINDOWS_SIZES.join(', ')} px`);
 } finally {
   await browser.close();
 }

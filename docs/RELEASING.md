@@ -109,14 +109,22 @@ would remove this step.
      would, with Ctrl-C and then, after a restart, Ctrl-Break; each stop
      must log "flux stopped" and exit 0;
    - signs and notarizes the macOS binaries when the repository has the
-     Apple secrets ([Signing and the Homebrew tap](#signing-and-the-homebrew-tap)),
-     before packaging them; without the secrets, a warning;
+     Apple secrets, and signs the Windows programs with Azure Artifact
+     Signing when it is set up ([Signing and the Homebrew tap](#signing-and-the-homebrew-tap)),
+     before packaging them; without them, a warning;
    - makes a `.deb` and an `.rpm` of each Linux package with a pinned nFPM
      (`scripts/package/linux-packages.sh`), and installs, checks and
      removes them in Debian, Fedora and AlmaLinux containers
      (`scripts/package/linux-smoke-test.sh`);
-   - uploads the packages, `SHA256SUMS` and the jellyfin-ffmpeg source
-     tarball to the release, with a build-provenance attestation per package;
+   - makes the Windows installer from the zip and a pinned FFmpeg build
+     (`scripts/package/windows-msi.ps1`, WiX 7), signing the FFmpeg and
+     the `.msi` when signing is set up, and on the Windows runner installs
+     it, upgrades it from a second build of itself, and uninstalls it
+     (`scripts/package/windows-msi-smoke-test.ps1`); meanwhile an Ubuntu
+     job collects that FFmpeg's complete source
+     (`scripts/package/ffmpeg-windows-source.sh`);
+   - uploads the packages, `SHA256SUMS` and the two FFmpeg source archives
+     to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
      linux/arm64 from the Linux packages (`docker.yml`, through
      `.github/actions/flux-image`). Each platform is built and
@@ -143,8 +151,10 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 | `flux-<version>-<target>.tar.gz` | `bin/flux-server`, `share/flux/web/`, `share/flux/install-kind` (`archive`), `LICENSE`, `README.md`, `THIRD_PARTY_LICENSES`, and `bin/sidecar-slim` when a Truffle sidecar is pinned (below). |
 | `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `install-kind` (`archive`), `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
 | `flux-<version>-<amd64\|arm64>.deb`, `flux-<version>-<x86_64\|aarch64>.rpm` | The Linux packages as system packages (`linux-packages.sh`): `/usr/bin/flux-server`, `/usr/bin/flux`, `/usr/libexec/flux/sidecar-slim`, `/usr/share/flux/` (`install-kind`: `deb` or `rpm`), a system service run by a `flux` account (`/usr/lib/systemd/system/flux.service`, `/usr/lib/sysusers.d/flux.conf`), and `/etc/flux/flux.toml`. Named like the tarballs, not as `flux_0.1.0~alpha.1-1_amd64.deb`: GitHub renames a `~` in an asset's name. |
-| `SHA256SUMS` | SHA-256 of every package. |
+| `flux-<version>-x86_64-pc-windows-msvc.msi` | The Windows installer (`scripts/package/windows-msi.ps1`, `scripts/package/windows/flux.wxs`, WiX 7): the zip's files in `C:\Program Files\flux` (`install-kind`: `msi`), FFmpeg in `ffmpeg\` there (BtbN's GPL build, pinned with its SHA-256 in `scripts/package/ffmpeg-windows.env`), the `flux` service (LocalSystem), `C:\ProgramData\flux` for SYSTEM and Administrators only, with a `flux.toml` it never overwrites, a firewall rule for port 8097 (private networks) and a Start menu entry. |
+| `SHA256SUMS` | SHA-256 of every other asset. |
 | `jellyfin-ffmpeg-<version>-source.tar.gz` | Source of the GPL ffmpeg in the Docker image. |
+| `ffmpeg-<version>-windows-source.tar` | The complete source of the FFmpeg in the Windows installer (`scripts/package/ffmpeg-windows-source.sh`): FFmpeg and BtbN's build scripts at the commits the build is of, the build's Dockerfile as BtbN's `generate.sh` writes it, and the source of each library it compiles in, as BtbN's `download.sh` fetches it. GitHub takes assets under 2 GiB and those libraries come to more, so the rest go in `ffmpeg-<version>-windows-source-2.tar` (and on), with the same top folder: unpacked in one place, they make one `libraries/`. |
 
 Attestations are on the repository's Attestations page and verify with
 `gh attestation verify <file> --repo vibecook-dev/flux`
@@ -155,8 +165,8 @@ the workflow and the commit too ([INSTALL.md](INSTALL.md#release-packages)).
 `--source-ref refs/tags/v<version>` fails: release-please.yml calls the
 release from the push to `main`, so attestations record `refs/heads/main`.
 Only the image's multi-arch index is attested, so verify the tag or the
-index digest, not a per-platform digest. `SHA256SUMS` and the
-jellyfin-ffmpeg source tarball have no attestation. The attest steps set
+index digest, not a per-platform digest. `SHA256SUMS` and the two FFmpeg
+source archives have no attestation. The attest steps set
 `create-storage-record: false`: an artifact-metadata storage record only
 feeds the organization's Linked Artifacts page, needs the
 `artifact-metadata: write` permission, and plays no part in
@@ -187,7 +197,8 @@ so these are a contract with every installed flux, old ones included:
 - An install from the `.deb`, `.rpm` or Homebrew doesn't update itself: the
   Libraries screen shows the command, which names the assets above
   (`flux-<version>-<arch>.deb`, `flux-<version>-<arch>.rpm`) and the formula
-  `vibecook-dev/tap/flux`.
+  `vibecook-dev/tap/flux`. Neither does the Windows installer's yet: the
+  screen says to run the new installer.
 
 ## Release dry run
 
@@ -204,8 +215,9 @@ repository access:
 
 - `build.yml` for all five targets, with every package's smoke test
   (x86_64 macOS under Rosetta 2, Windows with its Ctrl-C and Ctrl-Break
-  stops) and the macOS `minos` check; the packages carry the version in
-  `Cargo.toml`;
+  stops), the macOS `minos` check, the `.deb` and `.rpm` and the Windows
+  installer, each installed and removed, and the source of the
+  installer's FFmpeg; the packages carry the version in `Cargo.toml`;
 - `scripts/package/release-assets.sh` (as `release.yml` does): the
   jellyfin-ffmpeg source tarball and `SHA256SUMS`;
 - the linux/amd64 + linux/arm64 image through `.github/actions/flux-image`
@@ -277,7 +289,8 @@ time.
 
 A release needs no secrets: everything runs on `GITHUB_TOKEN`, with
 least-privilege `permissions:` per job. Optional secrets sign the macOS
-binaries and keep the Homebrew tap up to date ([below](#signing-and-the-homebrew-tap)).
+and Windows programs and keep the Homebrew tap up to date
+([below](#signing-and-the-homebrew-tap)).
 These settings are needed once:
 
 - **Settings → Actions → General → Workflow permissions:** check *Allow
@@ -324,8 +337,8 @@ These settings are needed once:
 ### Signing and the Homebrew tap
 
 Each turns on when its secrets exist (Settings → Secrets and variables →
-Actions → Repository secrets); `release-please.yml` and the dry run pass
-them down with `secrets: inherit`.
+Actions → Repository secrets, and *Variables* for Windows); `release-please.yml`
+and the dry run pass them down with `secrets: inherit`.
 
 **macOS: Developer ID signing and notarization** (`scripts/package/macos-sign.sh`).
 Signed and notarized binaries run from a downloaded tarball without
@@ -343,6 +356,50 @@ external drive, a network volume) across updates.
 
 Run the [release dry run](#release-dry-run) once the secrets are in: its
 macOS jobs then sign and notarize, and fail if Apple refuses.
+
+**Windows: Azure Artifact Signing** ([azure/artifact-signing-action](https://github.com/Azure/artifact-signing-action)).
+It signs `flux-server.exe`, `flux.exe` and `sidecar-slim.exe` before they
+are packaged, the installer's FFmpeg, and the installer, with a
+certificate Microsoft issues to the verified organization, so SmartScreen
+and Smart App Control know who made them. It signs in to Azure with the
+run's GitHub OIDC token; there is no password to keep. To set it up:
+
+1. In an Azure subscription, create an Artifact Signing account, have the
+   organization's identity validated (*Public Trust*), and create a
+   *Public Trust* certificate profile.
+2. Register an application in Microsoft Entra ID and add a federated
+   credential to it: *GitHub Actions deploying Azure resources*,
+   organization `vibecook-dev`, repository `flux`, entity *Branch*, branch
+   `main` (subject `repo:vibecook-dev/flux:ref:refs/heads/main`). Releases
+   and the dry run from `main` run on that branch; runs from other
+   branches build unsigned, with a notice.
+3. Give the application the role *Artifact Signing Certificate Profile
+   Signer* on the certificate profile.
+4. Add these repository secrets and variables:
+
+| Secret | |
+|---|---|
+| `AZURE_CLIENT_ID` | The application's *Application (client) ID*. |
+| `AZURE_TENANT_ID` | The directory (tenant) ID. |
+| `AZURE_SUBSCRIPTION_ID` | The subscription with the signing account. |
+
+| Variable | |
+|---|---|
+| `ARTIFACT_SIGNING_ENDPOINT` | The account's regional endpoint, such as `https://eus.codesigning.azure.net/`. |
+| `ARTIFACT_SIGNING_ACCOUNT` | The signing account's name. |
+| `ARTIFACT_SIGNING_PROFILE` | The certificate profile's name. |
+
+Then run the [release dry run](#release-dry-run) from `main`: its Windows
+job signs, and fails if Azure refuses.
+
+**WiX 7's licence.** The installer is built with the WiX Toolset 7
+binaries from NuGet (`build.yml` installs `wix` 7.0.1), which come with
+the Open Source Maintenance Fee EULA (`OSMFEULA.txt` in the package), and
+`build.yml` accepts it (`wix eula accept wix7`). It asks a monthly fee of
+users who use WiX in revenue-generating activities and have an annual
+gross revenue of US$10,000 or more, so whether it applies depends on the
+organization's revenue. WiX's source stays under the Microsoft Reciprocal
+License, and WiX built from source isn't covered by the EULA.
 
 **Homebrew: the tap's token.** `HOMEBREW_TAP_TOKEN` is a fine-grained
 personal access token: resource owner `vibecook-dev`, *Only select
@@ -405,7 +462,22 @@ scripts/package/smoke-test.sh dist/flux-0.0.0-local-aarch64-apple-darwin.tar.gz 
 
 `smoke-test.sh` unpacks the archive, starts the server on 127.0.0.1 with an
 empty library and a scratch data dir, and checks `GET /` and
-`GET /api/v1/server`. For the Docker image from local Linux packages, see
+`GET /api/v1/server`.
+
+The Windows installer, on Windows, from that zip, with the
+[.NET SDK](https://dotnet.microsoft.com/download) and WiX as `build.yml`
+installs them (`dotnet tool install --global wix --version 7.0.1`, `wix eula
+accept wix7`, `wix extension add -g WixToolset.Util.wixext/7.0.1` and
+`WixToolset.Firewall.wixext/7.0.1`), in PowerShell:
+
+```powershell
+scripts/package/windows-msi.ps1 -Step prepare -Zip dist/flux-0.0.0-local-x86_64-pc-windows-msvc.zip -Version 0.0.0-local -Stage $env:TEMP\flux-msi
+scripts/package/windows-msi.ps1 -Step build -Version 0.0.0-local -Stage $env:TEMP\flux-msi -Out dist
+```
+
+`windows-msi-smoke-test.ps1` installs it for real (a service, the firewall
+rule, `C:\ProgramData\flux`): run it on a machine you can spare, such as a
+virtual machine. For the Docker image from local Linux packages, see
 [docker/README.md](../docker/README.md).
 
 ## The Truffle sidecar
@@ -461,5 +533,7 @@ release dry run and the release.
 | Caches | Only `ci.yml` uses caches (Rust and pnpm). `build.yml` and `.github/actions/flux-image` use none, because what they build is published (releases and `:edge`): a cache written by another run must not reach a release. Keep it that way. The image's arm64 layers pass from one job to the next within a run (artifact `image-layers-arm64`, kept 1 day); that is not a cache. |
 | cargo-deny, cargo-about, actionlint, hadolint | Versions (and checksums) in `ci.yml` and `build.yml`. |
 | Licence policy | `deny.toml` (CI gate) and `scripts/package/about.toml` (THIRD_PARTY_LICENSES); keep the allowed lists in step. npm licences: `scripts/package/web-licenses.mjs`. |
+| The Windows installer's FFmpeg | `scripts/package/ffmpeg-windows.env`: a monthly BtbN release (`autobuild-YYYY-MM-*`, kept for two years), the `win64-gpl-shared` zip of an FFmpeg release branch, its SHA-256 (from the release's `checksums.sha256`), the FFmpeg-Builds commit that tag is of, the build's arguments (`BTBN_BUILD`, the branch with them), and the FFmpeg version and commit in the zip's name. Run the [release dry run](#release-dry-run): it installs the new build and collects its source. |
+| WiX | `WIX_VERSION` in `build.yml` (the tool and both extensions); see *WiX 7's licence* above before a major version. |
 | jellyfin-ffmpeg | `JELLYFIN_FFMPEG_VERSION` and both `.deb` checksums in the `Dockerfile` ([docker/README.md](../docker/README.md#jellyfin-ffmpeg)), and the same version with its portable win64 zip's checksum in `ci.yml`'s Windows job (`JELLYFIN_FFMPEG_VERSION`, `JELLYFIN_FFMPEG_WIN64_SHA256`) and in INSTALL.md's [Windows install steps](INSTALL.md#install) (the jellyfin-ffmpeg snippet's version and hash). |
 | Base image | The `debian:trixie-slim` digest in both `FROM` lines of the `Dockerfile`. Dependabot updates them (`docker` in `.github/dependabot.yml`); it doesn't read image references kept in an `ARG`. |

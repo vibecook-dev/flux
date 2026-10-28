@@ -1,0 +1,24 @@
+# flux's settings, for the flux service the Windows installer set up. Each
+# key is a flux-server flag with `_` in place of `-` (`flux-server --help`).
+# Only administrators can change this file, or read anything in this folder:
+# the service runs as LocalSystem. After a change, restart the service in a
+# terminal opened as administrator: `Restart-Service flux`.
+# https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md#the-windows-installer
+
+# Other devices on the network reach flux at this address (the installer let
+# port 8097 through Windows Firewall on private networks). Without it, only
+# this computer does: http://localhost:8096.
+# lan = "0.0.0.0:8097"
+
+# If other people log in to this computer, don't take their browsers for
+# flux's owner (set flux up with an owner link: `flux-server owner-link`, as
+# administrator).
+# localhost_role = "none"
+
+# Libraries can be added in the browser (Set up flux), or here. A service
+# doesn't see drive letters mapped in your session: use \\server\share paths.
+# In 'single quotes' a backslash is just a backslash.
+# [[library]]
+# name = "Films"
+# kind = "movies"            # movies | shows | mixed | videos
+# path = 'D:\Media\Films'

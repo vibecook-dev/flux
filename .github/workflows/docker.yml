@@ -52,6 +52,7 @@ jobs:
     if: ${{ !inputs.version }}
     permissions:
       contents: read
+      id-token: write # Windows signing (build.yml)
     uses: ./.github/workflows/build.yml
     with:
       targets: linux

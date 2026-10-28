@@ -62,6 +62,7 @@ jobs:
     needs: prepare
     permissions:
       contents: read
+      id-token: write # Windows signing (build.yml)
     uses: ./.github/workflows/build.yml
     # So a dry run signs and notarizes too, once the secrets exist.
     secrets: inherit

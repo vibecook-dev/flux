@@ -8,6 +8,8 @@ install flux brings them (see [ffmpeg](#ffmpeg)). The ways to install it:
   vibecook-dev/tap/flux`, ffmpeg included;
 - [a .deb or .rpm](#debian-ubuntu-fedora-and-rhel) for Debian and Ubuntu,
   or Fedora and RHEL, which runs flux as a system service;
+- [the Windows installer](#the-windows-installer), an `.msi` that runs flux
+  as a Windows service, FFmpeg included;
 - [a release package](#release-packages) (a tarball) for macOS or Linux, or
   a zip for [Windows](#windows);
 - [the Docker image](#docker), which brings its own ffmpeg;
@@ -35,14 +37,16 @@ posters and probe fallbacks. It never links FFmpeg's libraries, so any
 ffmpeg build works, including GPL builds, and flux stays MIT-licensed.
 Direct play and remuxing (most playback) don't use ffmpeg at all.
 
-flux looks for them on `PATH`, then in `/usr/lib/jellyfin-ffmpeg`,
-`/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`; it doesn't look next
-to `flux-server`. On Windows it looks only on `PATH`. (When `PATH` has none,
-Windows' own program search also finds an `ffmpeg.exe` and `ffprobe.exe`
-placed next to `flux-server.exe`, but `--check` then shows them without a
-folder; prefer `PATH` or `--ffmpeg`.) `--ffmpeg PATH` (or `FLUX_FFMPEG`)
-picks another, and `ffprobe` defaults to the one next to `ffmpeg`
-(`--ffprobe`, `FLUX_FFPROBE`).
+flux looks for them first in an `ffmpeg` folder next to `flux-server`
+(where the [Windows installer](#the-windows-installer) puts its own), then
+on `PATH`, then in `/usr/lib/jellyfin-ffmpeg`, `/opt/homebrew/bin`,
+`/usr/local/bin` and `/usr/bin`. On Windows it looks only in that `ffmpeg`
+folder and on `PATH`. (When neither has them, Windows' own program search
+also finds an `ffmpeg.exe` and `ffprobe.exe` placed right next to
+`flux-server.exe`, but `--check` then shows them without a folder; prefer
+the `ffmpeg` folder, `PATH` or `--ffmpeg`.) `--ffmpeg PATH` (or
+`FLUX_FFMPEG`) picks another, and `ffprobe` defaults to the one next to
+`ffmpeg` (`--ffprobe`, `FLUX_FFPROBE`).
 
 At startup flux asks ffmpeg which H.264 encoders it has and picks the best
 one for video transcodes:
@@ -66,10 +70,11 @@ Where to get ffmpeg:
   and pass `--ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg`.
 - **Fedora:** the `ffmpeg` package from RPM Fusion (Fedora's own
   `ffmpeg-free` has no libx264).
-- **Windows:** Jellyfin's portable build,
+- **Windows:** the [installer](#the-windows-installer) brings its own. For
+  the zip, Jellyfin's portable build,
   `jellyfin-ffmpeg_<version>_portable_win64-clang-gpl.zip` from
   [jellyfin-ffmpeg's releases](https://github.com/jellyfin/jellyfin-ffmpeg/releases)
-  (has NVENC, Quick Sync, libx264 and `tonemapx`); see [Windows](#windows).
+  (has NVENC, Quick Sync, libx264 and `tonemapx`); see [Install](#install).
 - **Docker:** the image includes jellyfin-ffmpeg.
 
 To check what flux found and what it will use:
@@ -374,9 +379,85 @@ until the next upgrade.
 
 ## Windows
 
-flux runs on 64-bit Windows 10 or 11 and Windows Server 2016 or later. The
-first release with a Windows package is the one after v0.1.0-alpha.2. Each
-release has `flux-<version>-x86_64-pc-windows-msvc.zip`, one folder:
+flux runs on 64-bit Windows 10 or 11 and Windows Server 2016 or later. Each
+release has two ways to install it:
+
+- **The installer**, `flux-<version>-x86_64-pc-windows-msvc.msi`: flux as a
+  Windows service, FFmpeg included, set up in a few clicks
+  ([below](#the-windows-installer)). The first release with it is the one
+  after v0.1.0-alpha.4.
+- **The zip**, `flux-<version>-x86_64-pc-windows-msvc.zip`: one folder to
+  keep anywhere and run in a terminal, or as a service you install
+  ([from Download and check on](#download-and-check)). The first release
+  with it is the one after v0.1.0-alpha.2.
+
+### The Windows installer
+
+<!-- x-release-please-start-version -->
+Download
+[`flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi`](https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi)
+and open it, or in PowerShell:
+
+```powershell
+curl.exe -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi
+msiexec /i flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi
+```
+<!-- x-release-please-end -->
+
+It asks for an administrator, then:
+
+- installs flux in `C:\Program Files\flux`, with FFmpeg in `ffmpeg\` there,
+  and puts the folder on the system `PATH`;
+- runs flux as the Windows service `flux` ("flux media server" in
+  Services), as LocalSystem: it starts right away and with Windows, and
+  again if it stops on its own;
+- keeps flux's data in `C:\ProgramData\flux`, with its log (`flux.log`)
+  and its settings (`flux.toml`). Only administrators can open that folder:
+  the log has [owner links](#the-owner-link) in it;
+- lets port 8097 through Windows Firewall on private networks, for when
+  you switch on access from other devices (below);
+- adds *flux* to the Start menu, which opens <http://localhost:8096>.
+
+Open <http://localhost:8096> and follow [*Set up flux*](#setting-flux-up).
+
+- **Other devices.** Out of the box flux answers this computer only. Open
+  `C:\ProgramData\flux\flux.toml` in Notepad run as administrator, remove
+  the `#` before `lan = "0.0.0.0:8097"`, and restart flux in a terminal
+  opened as administrator: `Restart-Service flux`. Phones and TVs at home
+  then open flux on port 8097 of this computer's address (*Set up flux*
+  lists it, with a QR code). To set flux up from another device, make an
+  [owner link](#the-owner-link) in a terminal opened as administrator:
+  `flux-server owner-link`.
+- **Your media.** LocalSystem reads your user folders and local drives.
+  Drive letters mapped in your session (`Z:`) don't exist for a service:
+  use `\\server\share` paths; for a share LocalSystem can't read, see
+  *Network drives* under [As a Windows service](#as-a-windows-service).
+- **Settings.** Each key in `flux.toml` is a `flux-server` flag with `_`
+  for `-` (`flux-server --help`); restart flux after a change. In a
+  terminal opened as administrator, `flux-server` commands (`--check`,
+  `owner-link`) find this flux's data and settings by themselves.
+- **FFmpeg.** The installer's is BtbN's GPL build of FFmpeg
+  ([FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)), with its
+  licence and `SOURCE.txt` in `ffmpeg\`; each release attaches its complete
+  source, `ffmpeg-<version>-windows-source.tar`. flux uses it before any
+  other ffmpeg on the machine: set `ffmpeg = '…'` in `flux.toml` for
+  another. `flux-server --check` shows what it can do here. It has no
+  `tonemapx`, so it can't tone-map Dolby Vision profile 5 videos: a
+  transcode of one looks purple and green. For those, set `ffmpeg` to
+  Jellyfin's portable build ([Install](#install) has the download).
+- **Updating.** Install the new release's installer the same way: it
+  replaces the old version in place and keeps the data and settings. The
+  Libraries screen says when a new flux is out.
+- **Removing.** *Settings → Apps → flux → Uninstall* removes the program,
+  the service, the firewall rule and the Start menu entry.
+  `C:\ProgramData\flux` stays; delete it to remove flux's data and
+  settings too.
+- **From the zip's service.** If you installed the service from the zip
+  (`flux-server service install`), run `flux-server service uninstall`
+  first. The installer's flux uses the same data dir,
+  `C:\ProgramData\flux`, unless you gave the service another one.
+
+The rest of this section is about the zip, one folder:
 
 ```
 flux-<version>-x86_64-pc-windows-msvc\
@@ -411,13 +492,18 @@ gh attestation verify $zip --repo vibecook-dev/flux `
 The attestation check needs the [GitHub CLI](https://cli.github.com/); see
 [Release packages](#release-packages) for what it proves.
 
-**SmartScreen.** The binaries aren't code-signed yet. Files downloaded
+The same checks work for the installer: put its name in `$zip`.
+
+**SmartScreen.** A release's Windows programs and installer are
+code-signed once the project's signing is set up; until then they aren't
+(*Properties → Digital Signatures* lists no signature). Files downloaded
 with `curl.exe` aren't marked as coming from the internet, but a zip
 downloaded with a browser is, and so is everything unpacked from it:
-SmartScreen may then stop `flux-server.exe` with "Windows protected your
-PC". Check the zip as above, then clear the mark before unpacking it with
-`Unblock-File $zip` (or choose *More info → Run anyway*). On Windows 11 with
-Smart App Control turned on, unsigned programs can be blocked outright.
+SmartScreen may then stop an unsigned `flux-server.exe` with "Windows
+protected your PC". Check the zip as above, then clear the mark before
+unpacking it with `Unblock-File $zip` (or choose *More info → Run
+anyway*). On Windows 11 with Smart App Control turned on, unsigned programs
+can be blocked outright.
 
 ### Install
 
@@ -714,7 +800,8 @@ make another link:
 - `flux-server owner-link`, as the account flux runs as (it reads a key
   in the data dir), with the server's `--config` or `--data-dir` if it has
   them. As another user, `sudo -u flux flux-server owner-link --config
-  /etc/flux.toml` and the like;
+  /etc/flux.toml` and the like; with the Windows installer, in a terminal
+  opened as administrator, with no flags;
 - `docker exec flux flux-server owner-link` for the container;
 - *Add a device* under *Owner devices* on the Libraries screen, with a QR
   code for a phone.
@@ -750,6 +837,8 @@ How flux updates depends on how it was installed:
   restart vibecook-dev/tap/flux`.
 - **The .deb or .rpm:** install the new release's package; the service
   restarts as the new version (the Libraries screen shows the command).
+- **The Windows installer:** install the new release's installer; it
+  replaces the old version and the service starts again as the new one.
 
 - **A release package** (unpacked by hand, as above): *Update now* on the
   Libraries screen, or `flux-server update` in a terminal. flux downloads

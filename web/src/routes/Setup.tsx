@@ -19,7 +19,7 @@ import { Icon } from '../components/Icon';
 import { QrCode } from '../components/QrCode';
 import styles from './Setup.module.css';
 import { Command, OwnerLinkHelp } from './OwnerLinkHelp';
-import { crumbs, encoderLine, ffmpegFix, KIND_CHOICES, nameFor, summaryLine, videosLabel } from './setup-state';
+import { crumbs, encoderLine, ffmpegFix, KIND_CHOICES, lanSwitch, nameFor, summaryLine, videosLabel } from './setup-state';
 
 type Step = 'media' | 'playback' | 'devices';
 const STEPS: [Step, string][] = [
@@ -350,6 +350,7 @@ function DevicesStep() {
   const tailnet = useTailnet();
   const update = useUpdateInfo();
   const docker = update.data?.install.kind === 'docker';
+  const settings = lanSwitch(update.data?.install.kind);
   const lan = addresses.data?.lan ?? [];
   const remote = tailnet.data?.state === 'running';
   const way = installWay();
@@ -376,6 +377,11 @@ function DevicesStep() {
               </div>
               {docker && <p className={styles.hint}>In Docker, use the address of the machine Docker runs on, with the port it publishes.</p>}
             </>
+          ) : settings ? (
+            <p>
+              flux answers only this computer now. To watch on the TV or a phone at home, remove the <code className="mono">#</code> before <code className="mono">lan = "0.0.0.0:8097"</code> in <code className="mono">{settings.file}</code>
+              {settings.who ? ` (${settings.who})` : ''}, then restart flux: <code className="mono">{settings.restart}</code>.
+            </p>
           ) : (
             <p>
               flux answers only this computer now. To watch on the TV or a phone at home, start it with <code className="mono">--lan 0.0.0.0:8097</code> (or <code className="mono">lan = "0.0.0.0:8097"</code> in its config).
