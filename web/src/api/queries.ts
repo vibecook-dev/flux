@@ -3,6 +3,7 @@
  * lets a detail page render its header instantly from the card that was
  * clicked (optimistic navigation) while the full ItemDetail loads.
  */
+import { noteServer } from '../app/update';
 import { manifest, op, type AgentItemDetail, type ChangesListOutput, type Collections, type Lenses } from './agent';
 import { api } from './client';
 import { prefetchQuery, useQuery } from './query';
@@ -28,7 +29,9 @@ export const keys = {
   manifest: 'agent-manifest',
 } as const;
 
-export const useServer = () => useQuery(keys.server, api.server, { staleMs: 60_000 });
+// Every answer also tells the page whether flux was updated under it (app/update.ts).
+const serverInfo = () => api.server().then((info) => noteServer(info));
+export const useServer = () => useQuery(keys.server, serverInfo, { staleMs: 60_000 });
 export const useLibraries = () => useQuery(keys.libraries, api.libraries, { staleMs: 10_000 });
 export const useHome = () => useQuery(keys.home, api.home, { staleMs: 15_000 });
 export const useItem = (id: Id) => useQuery(keys.item(id), () => api.item(id));

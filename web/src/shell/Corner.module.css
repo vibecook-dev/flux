@@ -133,6 +133,21 @@
   color: var(--convert);
 }
 
+/* How to install by hand (Safari): under its menu item. */
+.hint {
+  margin: -4px 12px 8px 42px;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.hint svg {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  vertical-align: -3px;
+}
+
 .sep {
   height: 1px;
   background: var(--line);

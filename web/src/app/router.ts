@@ -107,7 +107,14 @@ export function routeLoaded(href: string): boolean {
 /** Start downloading a route's code (hover/focus intent); resolves once it is in. */
 export function preloadRoute(href: string): Promise<void> {
   const m = matchRoute(new URL(href, location.origin).pathname);
-  return m ? m.route.load().then(() => undefined) : Promise.resolve();
+  // A preload that fails (its code gone after an update) is only an intent: opening the
+  // route shows why (app/Crash.tsx) and reloads onto the new version.
+  return m
+    ? m.route.load().then(
+        () => undefined,
+        () => undefined,
+      )
+    : Promise.resolve();
 }
 
 // ── location store ──

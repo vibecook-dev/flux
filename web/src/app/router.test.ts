@@ -54,3 +54,17 @@ describe('route components', () => {
     expect(pushed).toEqual(['/library/3', '/library/4']);
   });
 });
+
+describe('preloadRoute', () => {
+  it('settles when the code can’t be fetched (flux updated under the page): only an intent', async () => {
+    defineRoutes([
+      {
+        name: 'connect',
+        path: '/connect',
+        load: () => Promise.reject(new TypeError('Failed to fetch dynamically imported module: http://flux.test/assets/Connect-old.js')),
+      },
+    ]);
+    await expect(preloadRoute('/connect')).resolves.toBeUndefined();
+    expect(routeLoaded('/connect')).toBe(false);
+  });
+});

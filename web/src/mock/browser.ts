@@ -8,6 +8,8 @@
  *   ?mock_latency=0          simulated JSON latency in ms (default 25)
  *   ?mock_demo=1             the product site's live demo: every drive answers,
  *                            and made-up descriptions carry no note to developers
+ *   ?mock_web_build=<id>     the client build the "server" serves (ServerInfo.web_build):
+ *                            another id than the page's shows "flux was updated"
  *
  * Framed by another page (the product site), it also starts the demo bridge
  * (demo-bridge.ts) that lets that page switch lenses and follow along.
@@ -46,6 +48,7 @@ export async function startMock(): Promise<void> {
       tailnet: scenario('mock_tailnet') === 'running' ? 'running' : 'off',
       path: scenario('mock_path') ?? 'localhost',
       metadata: METADATA_SOURCES.find((s) => s === metadata) ?? 'tmdb',
+      webBuild: scenario('mock_web_build'),
     }),
   );
   await worker.start({

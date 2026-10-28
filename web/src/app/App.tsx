@@ -1,7 +1,8 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Shell } from '../shell/Shell';
 import styles from './App.module.css';
-import { consumeScrollRestore, type Location, matchRoute, useLocation } from './router';
+import { CrashBoundary } from './Crash';
+import { back, consumeScrollRestore, type Location, matchRoute, useLocation } from './router';
 import './routes';
 import { ScreenLeavingContext } from './screen';
 
@@ -61,9 +62,11 @@ function Bare({ loc, leaving }: { loc: Location; leaving: boolean }) {
   return (
     <div ref={box} className={styles.bare} data-leaving={leaving || undefined} inert={leaving}>
       <ScreenLeavingContext.Provider value={leaving}>
-        <Suspense fallback={<div className={styles.bareFallback} />}>
-          <Component params={m.params} query={new URLSearchParams(loc.search)} />
-        </Suspense>
+        <CrashBoundary place="player" onBack={() => back()}>
+          <Suspense fallback={<div className={styles.bareFallback} />}>
+            <Component params={m.params} query={new URLSearchParams(loc.search)} />
+          </Suspense>
+        </CrashBoundary>
       </ScreenLeavingContext.Provider>
     </div>
   );

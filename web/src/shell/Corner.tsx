@@ -3,8 +3,10 @@
  * the server's own screens. The menu grows out of the button that opened it.
  */
 import { useEffect, useRef, useState } from 'react';
+import { install, useInstallWay } from '../app/install';
 import { Link } from '../app/Link';
 import { setTheme, useTheme, type ThemeSetting } from '../app/theme';
+import { reloadNow, useUpdate } from '../app/update';
 import { useChanges, useServer, useTailnet } from '../api/queries';
 import { Icon, type IconName } from '../components/Icon';
 import { MOCK } from '../config';
@@ -21,6 +23,9 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
   const admin = server.data?.you?.role === 'owner' || server.data?.you?.role === 'admin';
   const changes = useChanges(admin);
   const { setting } = useTheme();
+  const installWay = useInstallWay();
+  const [installHint, setInstallHint] = useState(false);
+  const update = useUpdate();
   const you = server.data?.you ?? null;
   const name = you?.display_name || you?.login_name || 'This device';
   const initial = (you?.display_name || you?.login_name || '').trim().charAt(0).toUpperCase();
@@ -117,6 +122,45 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
           <span>Lenses</span>
           <span className={styles.meta}>\</span>
         </button>
+        {update.ready && (
+          <button type="button" role="menuitem" className={styles.item} onClick={() => reloadNow()}>
+            <Icon name="refresh" />
+            <span>Reload for the new version</span>
+          </button>
+        )}
+        {installWay === 'prompt' && (
+          <button
+            type="button"
+            role="menuitem"
+            className={styles.item}
+            onClick={() => {
+              setOpen(false);
+              void install();
+            }}
+          >
+            <Icon name="install" />
+            <span>Install flux</span>
+          </button>
+        )}
+        {(installWay === 'ios' || installWay === 'mac-safari') && (
+          <>
+            <button type="button" role="menuitem" className={styles.item} aria-expanded={installHint} onClick={() => setInstallHint((h) => !h)}>
+              <Icon name="install" />
+              <span>{installWay === 'ios' ? 'Add to Home Screen' : 'Add to Dock'}</span>
+            </button>
+            {installHint && (
+              <p className={styles.hint}>
+                {installWay === 'ios' ? (
+                  <>
+                    Tap <Icon name="share" /> Share, then Add to Home Screen.
+                  </>
+                ) : (
+                  'In the menu bar, choose File, then Add to Dock.'
+                )}
+              </p>
+            )}
+          </>
+        )}
         <div className={styles.sep} />
         <div className={styles.theme} role="radiogroup" aria-label="Theme">
           {themes.map(([value, icon, label]) => (

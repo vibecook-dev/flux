@@ -8,11 +8,15 @@
  */
 import { lazy, type ReactNode, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { registerAmbientElement, setAmbientFromHash } from '../app/ambient';
+import { CrashBoundary } from '../app/Crash';
+import { isStaleCode } from '../app/update';
+import { recoverFromStaleCode } from '../app/update-checks';
 import { Link } from '../app/Link';
 import { back, matchRoute, navigateWhenLoaded, preloadRoute, type Location } from '../app/router';
 import { useScreenLeaving } from '../app/screen';
 import { useTheme } from '../app/theme';
 import { guardRefusal } from '../api/client';
+import { watchEventsState } from '../api/events';
 import { holdPaging } from '../api/library-list';
 import { prefetchItem, useCollections, useLibraries, useServer, useServerLenses } from '../api/queries';
 import { collectionOf, useSpaceList } from '../api/space-list';
@@ -38,6 +42,7 @@ import { type OverlayExit, OverlayExitContext } from './overlay-exit';
 import { Sheet } from './Sheet';
 import styles from './Shell.module.css';
 import { goToSpace, setSpaceQuery, spaceFor, spaceKey } from './space';
+import { UpdateNote } from './UpdateNote';
 import { useInsets, usePhone } from './viewport';
 
 const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access', changes: 'Agents & changes' };
@@ -98,12 +103,35 @@ export function Shell({ loc }: { loc: Location }) {
   useEventsBridge();
   useEffect(() => startGlassLight(), []);
   useEffect(() => {
-    const t = setTimeout(() => void loadLensGallery(), 2500);
+    // A warm-up: if the code is gone (flux updated), opening the gallery says so.
+    const t = setTimeout(() => void loadLensGallery().catch(() => undefined), 2500);
     return () => clearTimeout(t);
   }, []);
 
   // ── results ──
   const list = useSpaceList(space.id, serverSort(space.sort), libs.data);
+  // The server's libraries didn't arrive (flux down when the page opened, from the installed
+  // app's kept copy): "All" can't start without them, so the empty state says why.
+  const libsFailed = libs.status === 'error' && libs.data === undefined ? libs.error : null;
+  const retry = useCallback(() => {
+    if (libs.status === 'error') void libs.refetch().catch(() => undefined);
+    list.reload();
+  }, [libs, list]);
+  // flux back (the event stream opens again): fetch what failed while it was away.
+  const retryLatest = useRef(retry);
+  const failedNow = libsFailed !== null || list.error !== null;
+  const failedLatest = useRef(failedNow);
+  useEffect(() => {
+    retryLatest.current = retry;
+    failedLatest.current = failedNow;
+  });
+  useEffect(
+    () =>
+      watchEventsState((s) => {
+        if (s === 'open' && failedLatest.current) retryLatest.current();
+      }),
+    [],
+  );
   const text = useDeferredValue(space.text);
   const visible = useMemo(
     () => visibleItems(list.items, { show: space.show, text, sort: space.sort }),
@@ -268,6 +296,8 @@ export function Shell({ loc }: { loc: Location }) {
   const onError = useCallback((d: LensDef, err: unknown) => {
     console.error(`lens ${d.id} failed`, err);
     setFailure({ id: d.id, name: d.name });
+    // Its code is gone: flux was updated under this page (the other lenses' code went too).
+    if (isStaleCode(err)) void recoverFromStaleCode();
   }, []);
   const failed = failure?.id === def.id ? failure.name : null;
 
@@ -469,7 +499,7 @@ export function Shell({ loc }: { loc: Location }) {
             sectionOf={sectionFor}
             onError={onError}
           />
-          <Empty list={list} visible={visible.length} filtering={filtering} hasLibraries={libs.data ? libs.data.length > 0 : true} failed={failed} />
+          <Empty list={list} visible={visible.length} filtering={filtering} hasLibraries={libs.data ? libs.data.length > 0 : true} failed={failed} unreachable={libsFailed} onRetry={retry} />
         </main>
       )}
       {def.edges && !overlay && (
@@ -582,7 +612,10 @@ export function Shell({ loc }: { loc: Location }) {
         />
       ))}
       {!m && <NotFound />}
-      <Coach />
+      <div className={styles.notices}>
+        <UpdateNote />
+        <Coach />
+      </div>
     </div>
   );
 }
@@ -610,15 +643,17 @@ function OverlayFrame({ entry, leaving, toLibrary, restored, onClose, onDone }: 
   return (
     <div className={styles.overlay} data-kind={route.name} data-leaving={leaving || undefined} data-to={leaving ? (toLibrary ? 'library' : 'page') : undefined} inert={leaving}>
       <OverlayExitContext.Provider value={exit}>
-        <Suspense fallback={<div className={styles.overlayFallback} aria-busy="true" aria-label="Loading" />}>
-          {label ? (
-            <Sheet label={label} onClose={onClose}>
+        <CrashBoundary place="overlay" onClose={onClose}>
+          <Suspense fallback={<div className={styles.overlayFallback} aria-busy="true" aria-label="Loading" />}>
+            {label ? (
+              <Sheet label={label} onClose={onClose}>
+                <Component params={params} query={query} />
+              </Sheet>
+            ) : (
               <Component params={params} query={query} />
-            </Sheet>
-          ) : (
-            <Component params={params} query={query} />
-          )}
-        </Suspense>
+            )}
+          </Suspense>
+        </CrashBoundary>
       </OverlayExitContext.Provider>
     </div>
   );
@@ -628,9 +663,38 @@ function registerRoom(node: HTMLDivElement | null) {
   registerAmbientElement(node);
 }
 
-function Empty({ list, visible, filtering, hasLibraries, failed }: { list: ReturnType<typeof useSpaceList>; visible: number; filtering: boolean; hasLibraries: boolean; failed: string | null }) {
+function Empty({
+  list,
+  visible,
+  filtering,
+  hasLibraries,
+  failed,
+  unreachable,
+  onRetry,
+}: {
+  list: ReturnType<typeof useSpaceList>;
+  visible: number;
+  filtering: boolean;
+  hasLibraries: boolean;
+  failed: string | null;
+  /** Why the server's libraries didn't arrive, when they didn't. */
+  unreachable: unknown;
+  onRetry: () => void;
+}) {
   let body: ReactNode = null;
+  // Only over an empty window: titles already showing stay, whatever failed beside them.
+  const error = list.items.length === 0 ? (unreachable ?? list.error) : null;
   if (failed) body = <p>The {failed} lens couldn’t start. Pick another lens below.</p>;
+  else if (error !== null && error !== undefined)
+    body = (
+      <>
+        <h1 className="display-l">{guardRefusal(error) ? 'flux refused this page' : 'Can’t reach the server'}</h1>
+        <p>{guardRefusal(error) ?? 'flux didn’t answer. Check that it is running, then try again.'}</p>
+        <button type="button" className="btn" onClick={onRetry}>
+          Try again
+        </button>
+      </>
+    );
   else if (!hasLibraries)
     body = (
       <>
@@ -639,16 +703,6 @@ function Empty({ list, visible, filtering, hasLibraries, failed }: { list: Retur
         <Link to="/admin" className="btn btn-primary">
           Add a library
         </Link>
-      </>
-    );
-  else if (list.error !== null && list.items.length === 0)
-    body = (
-      <>
-        <h1 className="display-l">{guardRefusal(list.error) ? 'flux refused this page' : 'Can’t reach the server'}</h1>
-        <p>{guardRefusal(list.error) ?? 'flux didn’t answer. Check that it is running, then try again.'}</p>
-        <button type="button" className="btn" onClick={list.reload}>
-          Try again
-        </button>
       </>
     );
   else if (visible === 0 && filtering && (list.done || list.items.length > 0))

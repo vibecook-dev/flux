@@ -199,13 +199,35 @@
   color: var(--text-2);
 }
 
-/* ── first-run hint ── */
-.coach {
+/* ── notes over the library: "flux was updated", the first-run hint ── */
+.notices {
   position: fixed;
   z-index: 32;
   right: max(16px, env(safe-area-inset-right, 0px));
   bottom: calc(84px + env(safe-area-inset-bottom, 0px));
-  width: min(310px, calc(100vw - 32px));
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+  transition: opacity 0.3s var(--out);
+}
+
+.notices > * {
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+:root[data-overlay]:not([data-overlay='']) .notices,
+:root[data-overlay]:not([data-overlay='']) .notices > * {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.coach {
+  position: relative;
+  width: min(310px, 100%);
   border-radius: 24px;
   padding: 16px 16px 14px 18px;
   font-size: 0.8125rem;
@@ -213,11 +235,6 @@
   transition:
     transform 0.6s var(--spring),
     opacity 0.3s var(--out);
-}
-
-:root[data-overlay]:not([data-overlay='']) .coach {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .coach b {
@@ -285,9 +302,13 @@
 }
 
 @media (max-width: 640px) {
-  .coach {
+  .notices {
     left: 16px;
     right: 16px;
+    width: auto;
+    align-items: stretch;
+  }
+  .coach {
     width: auto;
   }
 }

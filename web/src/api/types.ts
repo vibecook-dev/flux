@@ -358,6 +358,12 @@ export interface ServerInfo {
    * opened over plain HTTP on the tailnet moves there (`app/secure.ts`).
    */
   https_url: string | null;
+  /**
+   * The web client this server serves: its build id (index.html's
+   * `<meta name="flux-build">`). An open page compares it with its own to know
+   * flux was updated under it (`app/update.ts`); `null` without a built client.
+   */
+  web_build: string | null;
 }
 
 export const METADATA_SOURCES = ['none', 'tmdb', 'exports'] as const;

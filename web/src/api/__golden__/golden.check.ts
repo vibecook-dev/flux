@@ -12,6 +12,7 @@ export const goldenServerInfo = {
   "path": "tailnet-direct",
   "tailnet_name": "flux.tail1234.ts.net",
   "version": "0.1.0",
+  "web_build": "30a0a9ba12da36ba",
   "you": {
     "display_name": "James",
     "login_name": "james@example.com",

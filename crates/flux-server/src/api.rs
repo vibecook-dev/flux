@@ -83,6 +83,7 @@ async fn server_info(State(st): State<Arc<AppState>>, caller: Caller) -> Json<Se
             .or_else(|| st.tailnet.info().dns_name),
         metadata: crate::metadata::info(&st.cfg.tmdb_exports),
         https_url: st.tailnet.https_url(),
+        web_build: st.web.as_ref().and_then(|w| w.build()).map(str::to_string),
     })
 }
 

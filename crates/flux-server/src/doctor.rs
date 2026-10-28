@@ -264,7 +264,15 @@ pub fn config_text(cfg: &Config) -> String {
         );
     }
     let _ = match &cfg.web_dir {
-        Some(d) if d.join("index.html").is_file() => writeln!(s, "web      {}  (found)", d.display()),
+        Some(d) if d.join("index.html").is_file() => {
+            let build = std::fs::read_to_string(d.join("index.html"))
+                .ok()
+                .and_then(|html| crate::web::build_of(&html));
+            match build {
+                Some(b) => writeln!(s, "web      {}  (found, build {b})", d.display()),
+                None => writeln!(s, "web      {}  (found)", d.display()),
+            }
+        }
         Some(d) => writeln!(s, "web      {}  (NO index.html)", d.display()),
         None => writeln!(s, "web      none: API only (--web-dir)"),
     };
