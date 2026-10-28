@@ -10,6 +10,7 @@ import { lazy, type ReactNode, Suspense, useCallback, useDeferredValue, useEffec
 import { registerAmbientElement, setAmbientFromHash } from '../app/ambient';
 import { Link } from '../app/Link';
 import { back, matchRoute, navigateWhenLoaded, preloadRoute, type Location } from '../app/router';
+import { useScreenLeaving } from '../app/screen';
 import { useTheme } from '../app/theme';
 import { guardRefusal } from '../api/client';
 import { holdPaging } from '../api/library-list';
@@ -20,11 +21,12 @@ import { MOCK } from '../config';
 import { LensHost } from '../lens/LensHost';
 import { activeLens, lensFocus, setLensFocus } from '../lens/bridge';
 import { prefs } from '../lens/dom';
-import { rememberOrigin } from '../lens/flight';
+import { spotIn, spotOfElement, takeoff, warm } from '../lens/flight';
 import { allLenses, DEFAULT_PINS, FOLDERS_LENS, lensById, setServerLenses, suits } from '../lens/registry';
 import { sectionOf, serverSort, visibleItems } from '../lens/sections';
 import type { Dir, LensDef } from '../lens/types';
 import { preloadPlayer, startPlay } from '../player/start';
+import { detailPosterSrc } from '../routes/item-poster';
 import { Corner } from './Corner';
 import { reportShell, setShellPicker } from './embed';
 import { useEventsBridge } from './events-bridge';
@@ -32,6 +34,7 @@ import { startGlassLight } from './glass-light';
 import { Island } from './Island';
 import { LensBar } from './LensBar';
 import { postActivity } from './live';
+import { type OverlayExit, OverlayExitContext } from './overlay-exit';
 import { Sheet } from './Sheet';
 import styles from './Shell.module.css';
 import { goToSpace, setSpaceQuery, spaceFor, spaceKey } from './space';
@@ -41,13 +44,41 @@ const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect:
 
 const toldOffline = new Set<string>();
 
-// Loaded when needed: folders only for videos libraries, the gallery when you open it.
+// Loaded when needed: folders only for videos libraries, the gallery soon after the
+// shell is up (so its cards come in with the library stepping back, not after it).
 const VideoFolders = lazy(() => import('../routes/VideoFolders').then((m) => ({ default: m.VideoFolders })));
-const LensGallery = lazy(() => import('./LensGallery').then((m) => ({ default: m.LensGallery })));
+const loadLensGallery = () => import('./LensGallery').then((m) => ({ default: m.LensGallery }));
+const LensGallery = lazy(loadLensGallery);
+
+type RouteMatch = NonNullable<ReturnType<typeof matchRoute>>;
+
+/** A page open over the library: its route, and the address it opened at (its key: one per page). */
+interface OverlayEntry {
+  key: string;
+  match: RouteMatch;
+  search: string;
+  /** The history entry it opened in. */
+  visit: string;
+}
+
+/** The lens bar comes back this long after the lens stops scrolling. */
+const BAR_BACK_MS = 480;
 
 export function Shell({ loc }: { loc: Location }) {
   const m = matchRoute(loc.pathname);
   const overlay = m && m.route.layer === 'overlay' ? m : null;
+  const active: OverlayEntry | null = overlay ? { key: loc.pathname, match: overlay, search: loc.search, visit: loc.key } : null;
+  // A page whose address has gone stays (leaving) until it has animated out (overlay-exit.ts).
+  const [shown, setShown] = useState<OverlayEntry | null>(active);
+  const [exits, setExits] = useState<OverlayEntry[]>([]);
+  // The page there when the shell came up (a link, back from the player) shows at once;
+  // the same page opened again later comes in as usual.
+  const [firstVisit] = useState(() => (active ? loc.key : null));
+  if ((shown?.key ?? null) !== (active?.key ?? null) || (shown && active && shown.search !== active.search)) {
+    setShown(active);
+    if (shown && shown.key !== active?.key) setExits((x) => [...x.filter((e) => e.key !== shown.key && e.key !== active?.key), shown]);
+    else if (active && exits.some((e) => e.key === active.key)) setExits((x) => x.filter((e) => e.key !== active.key));
+  }
   const space = spaceFor(loc.pathname, loc.search);
   const libs = useLibraries();
   const collections = useCollections();
@@ -66,6 +97,10 @@ export function Shell({ loc }: { loc: Location }) {
   }, [overlay, space.id, libName]);
   useEventsBridge();
   useEffect(() => startGlassLight(), []);
+  useEffect(() => {
+    const t = setTimeout(() => void loadLensGallery(), 2500);
+    return () => clearTimeout(t);
+  }, []);
 
   // ── results ──
   const list = useSpaceList(space.id, serverSort(space.sort), libs.data);
@@ -131,19 +166,33 @@ export function Shell({ loc }: { loc: Location }) {
   // ── chrome state ──
   const [islandOpen, setIslandOpen] = useState(false);
   const [seed, setSeed] = useState<string | null>(null);
-  // The lens bar shrinks while you scroll down (a new lens starts with it full: LensHost says so).
+  // The lens bar tucks away while a lens scrolls (onScrolled below; a new lens starts with it full).
   const [mini, setMini] = useState(false);
   const [accessory, setAccessory] = useState<HTMLElement | null>(null);
-  const [gallery, setGallery] = useState(false);
+  // The lens gallery: open, or closing (it animates away; the library steps forward meanwhile).
+  const [galleryState, setGallery] = useState<'open' | 'closing' | null>(null);
+  const gallery = galleryState === 'open';
+  // A new one each time it opens (one closing never comes back half-gone).
+  const [galleryKey, setGalleryKey] = useState(0);
+  const openGallery = useCallback(() => {
+    setGalleryKey((k) => k + 1);
+    setGallery('open');
+  }, []);
+  const closeGallery = useCallback(() => setGallery((g) => (g ? 'closing' : null)), []);
+  const galleryGone = useCallback(() => setGallery(null), []);
   const [failure, setFailure] = useState<{ id: string; name: string } | null>(null);
-  const covered = Boolean(overlay) || gallery;
+  // Covered until a page leaving has gone (its poster lands in the lens first, still paused).
+  const covered = Boolean(overlay) || gallery || exits.length > 0;
 
-  useEffect(() => {
-    document.documentElement.dataset.overlay = overlay ? overlay.route.name : gallery ? 'gallery' : '';
+  // Before the first paint: a page there when the shell comes up (back from the player)
+  // hides the lens bar from the first frame, not one frame later.
+  const overlayName = overlay?.route.name ?? null;
+  useLayoutEffect(() => {
+    document.documentElement.dataset.overlay = overlayName ?? (gallery ? 'gallery' : '');
     return () => {
       document.documentElement.dataset.overlay = '';
     };
-  }, [overlay, gallery]);
+  }, [overlayName, gallery]);
 
   // While a page covers the library (or the player replaces the shell), its remaining pages wait.
   const hidden = Boolean(overlay);
@@ -166,16 +215,55 @@ export function Shell({ loc }: { loc: Location }) {
     },
     [visible],
   );
+  const visibleNow = useRef(visible);
+  useEffect(() => {
+    visibleNow.current = visible;
+  });
   const onOpen = useCallback((id: Id, art: Element | null) => {
-    rememberOrigin(id, art?.getBoundingClientRect() ?? activeLens()?.view.rectOf(id));
+    // Where its poster is now: the detail page flies it from there.
+    const view = activeLens()?.view ?? null;
+    const item = visibleNow.current.find((i) => i.id === id);
+    if (item) {
+      // Its page paints from the summary at once, with the poster the flight lands on.
+      prefetchItem(item);
+      takeoff(item, spotIn(view, id) ?? (art ? spotOfElement(art) : null), view);
+    }
     setIslandOpen(false);
     navigateWhenLoaded(`/item/${id}`);
   }, []);
   const onIntent = useCallback((item: ItemSummary) => {
     prefetchItem(item);
     void preloadRoute('/item/0');
+    // The detail page's poster, decoded before you click (it lands sharp).
+    void warm(detailPosterSrc(item));
   }, []);
-  const onScrolled = useCallback((dir: 'down' | 'up' | 'top') => setMini(dir === 'down'), []);
+  // The lens bar tucks away while the lens scrolls and comes back once it stops (or at
+  // the top); never while you are on it (pointer or keyboard), so you can always switch.
+  const barT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const barHot = useRef(false);
+  const showBar = useCallback(() => {
+    if (barT.current) clearTimeout(barT.current);
+    barT.current = null;
+    setMini(false);
+  }, []);
+  const onScrolled = useCallback(
+    (dir: 'down' | 'up' | 'top') => {
+      if (dir === 'top' || barHot.current) return showBar();
+      if (barT.current) clearTimeout(barT.current);
+      setMini(true);
+      barT.current = setTimeout(() => {
+        barT.current = null;
+        setMini(false);
+      }, BAR_BACK_MS);
+    },
+    [showBar],
+  );
+  useEffect(
+    () => () => {
+      if (barT.current) clearTimeout(barT.current);
+    },
+    [],
+  );
   const sectionFor = useCallback((item: ItemSummary) => sectionOf(item, space.sort), [space.sort]);
   const onError = useCallback((d: LensDef, err: unknown) => {
     console.error(`lens ${d.id} failed`, err);
@@ -191,7 +279,7 @@ export function Shell({ loc }: { loc: Location }) {
     if (!MOCK) return;
     setShellPicker((id) => {
       if (overlayOpen) closeOverlay();
-      setGallery(false);
+      setGallery(null);
       setIslandOpen(false);
       pickLens(id);
     });
@@ -202,15 +290,20 @@ export function Shell({ loc }: { loc: Location }) {
   }, [def.id, visible.length]);
 
   // ── keyboard: type anywhere to search, arrows move in the lens, Esc steps back ──
-  const keyState = useRef({ overlay, islandOpen, gallery, text: space.text });
+  // No keys while the shell is on its way out (under the player fading in), and none
+  // for the lens while a page or the lens gallery is still leaving (the lens is inert).
+  const held = useScreenLeaving();
+  const settling = exits.length > 0 || galleryState === 'closing';
+  const keyState = useRef({ overlay, islandOpen, gallery, text: space.text, held, settling });
   const stepRef = useRef(stepLens);
   useEffect(() => {
-    keyState.current = { overlay, islandOpen, gallery, text: space.text };
+    keyState.current = { overlay, islandOpen, gallery, text: space.text, held, settling };
     stepRef.current = stepLens;
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = keyState.current;
+      if (s.held) return;
       const t = e.target as HTMLElement | null;
       const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -220,7 +313,7 @@ export function Shell({ loc }: { loc: Location }) {
       }
       if (e.key === 'Escape') {
         if (e.defaultPrevented) return;
-        if (s.gallery) return setGallery(false);
+        if (s.gallery) return closeGallery();
         if (s.overlay) {
           // Dialogs inside overlays (selects, menus) handle their own Escape first.
           if (t?.closest('dialog, [role="menu"]')) return;
@@ -240,7 +333,7 @@ export function Shell({ loc }: { loc: Location }) {
         }
         return;
       }
-      if (typing || s.overlay || s.gallery || s.islandOpen || e.altKey) return;
+      if (typing || s.overlay || s.gallery || s.settling || s.islandOpen || e.altKey) return;
       if (e.key === '/') {
         e.preventDefault();
         openIsland();
@@ -251,7 +344,7 @@ export function Shell({ loc }: { loc: Location }) {
         return;
       }
       if (e.key === '\\') {
-        setGallery(true);
+        openGallery();
         return;
       }
       const dir: Dir | undefined = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' } as const)[e.key as 'ArrowLeft'];
@@ -277,7 +370,7 @@ export function Shell({ loc }: { loc: Location }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [closeOverlay, onOpen]);
+  }, [closeOverlay, onOpen, openGallery, closeGallery]);
 
   // ── focus: an overlay takes it (and the library behind goes inert); closing gives it back ──
   const lastFocus = useRef<HTMLElement | null>(null);
@@ -343,7 +436,8 @@ export function Shell({ loc }: { loc: Location }) {
   }, [libs.data, lib, space.id]);
 
   const safe = useMemo(() => ({ top: 68 + insets.top, bottom: 84 + insets.bottom, left: 16, right: 16 }), [insets]);
-  const OverlayComponent = overlay?.route.Component;
+  // The lens gallery grows the lens you choose into the window itself: the switch behind it just happens.
+  const quietSwitch = useRef(false);
   const spaceName = space.id === 'all' ? 'All' : collectionId !== null ? (collection?.name ?? 'Collection') : (lib?.name ?? 'Library');
 
   return (
@@ -365,6 +459,7 @@ export function Shell({ loc }: { loc: Location }) {
             safe={safe}
             phone={phone}
             theme={theme}
+            quietNext={quietSwitch}
             onFocus={onFocus}
             onOpen={onOpen}
             onPlay={startPlay}
@@ -421,16 +516,36 @@ export function Shell({ loc }: { loc: Location }) {
             startPlay(it.id);
           }}
         />
-        <Corner onLenses={() => setGallery(true)} />
+        <Corner onLenses={openGallery} />
       </header>
 
-      <nav className={styles.bottom} aria-label="Lenses" data-mini={mini || undefined} inert={covered}>
-        <LensBar lenses={barLenses} current={def.id} mini={mini} accessory={def.id === 'folders' ? null : accessory} onPick={pickLens} onMore={() => setGallery(true)} />
+      <nav
+        className={styles.bottom}
+        aria-label="Lenses"
+        data-mini={mini || undefined}
+        inert={covered}
+        onPointerEnter={() => {
+          barHot.current = true;
+          showBar();
+        }}
+        onPointerLeave={() => {
+          barHot.current = false;
+        }}
+        onFocus={() => {
+          barHot.current = true;
+          showBar();
+        }}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) barHot.current = false;
+        }}
+      >
+        <LensBar lenses={barLenses} current={def.id} mini={mini} accessory={def.id === 'folders' ? null : accessory} onPick={pickLens} onMore={openGallery} />
       </nav>
 
-      {gallery && (
+      {galleryState && (
         <Suspense fallback={null}>
         <LensGallery
+          key={galleryKey}
           lenses={lenses}
           current={def.id}
           pins={pins}
@@ -438,33 +553,73 @@ export function Shell({ loc }: { loc: Location }) {
           total={total}
           theme={theme}
           phone={phone}
+          safe={safe}
           sectionOf={sectionFor}
           onChoose={(id) => {
+            // It grows the lens into the window as the library behind switches to it and steps forward.
+            quietSwitch.current = id !== def.id;
             pickLens(id);
-            setGallery(false);
+            setGallery('closing');
           }}
           onPin={pin}
           onLensesChanged={() => setLensVersion((v) => v + 1)}
-          onClose={() => setGallery(false)}
+          onClose={closeGallery}
+          closing={galleryState === 'closing'}
+          onGone={galleryGone}
         />
         </Suspense>
       )}
 
-      {overlay && OverlayComponent && (
-        <div className={styles.overlay} data-kind={overlay.route.name}>
-          <Suspense fallback={<div className={styles.overlayFallback} aria-busy="true" aria-label="Loading" />}>
-            {SHEETS[overlay.route.name] ? (
-              <Sheet label={SHEETS[overlay.route.name]} onClose={closeOverlay}>
-                <OverlayComponent params={overlay.params} query={new URLSearchParams(loc.search)} />
-              </Sheet>
-            ) : (
-              <OverlayComponent params={overlay.params} query={new URLSearchParams(loc.search)} />
-            )}
-          </Suspense>
-        </div>
-      )}
+      {[...exits, ...(active ? [active] : [])].map((e) => (
+        <OverlayFrame
+          key={e.key}
+          entry={e}
+          leaving={e.key !== active?.key}
+          toLibrary={!active}
+          restored={e.visit === firstVisit}
+          onClose={closeOverlay}
+          onDone={() => setExits((x) => x.filter((y) => y.key !== e.key))}
+        />
+      ))}
       {!m && <NotFound />}
       <Coach />
+    </div>
+  );
+}
+
+/** A page open over the library, or leaving it (it says when it has gone; at worst it goes anyway). */
+function OverlayFrame({ entry, leaving, toLibrary, restored, onClose, onDone }: { entry: OverlayEntry; leaving: boolean; toLibrary: boolean; restored: boolean; onClose: () => void; onDone: () => void }) {
+  const { route, params } = entry.match;
+  // The component it started with, for good: the router hands out the loaded component
+  // once its code is in, and a different component type would rebuild the page (its
+  // entrance would play again under the next page coming in).
+  const [Component] = useState(() => route.Component);
+  const query = useMemo(() => new URLSearchParams(entry.search), [entry.search]);
+  const last = useRef(onDone);
+  useEffect(() => {
+    last.current = onDone;
+  });
+  const done = useCallback(() => last.current(), []);
+  const exit = useMemo<OverlayExit>(() => ({ leaving, toLibrary, restored, done }), [leaving, toLibrary, restored, done]);
+  useEffect(() => {
+    if (!leaving) return;
+    const t = setTimeout(done, 1600);
+    return () => clearTimeout(t);
+  }, [leaving, done]);
+  const label = SHEETS[route.name];
+  return (
+    <div className={styles.overlay} data-kind={route.name} data-leaving={leaving || undefined} data-to={leaving ? (toLibrary ? 'library' : 'page') : undefined} inert={leaving}>
+      <OverlayExitContext.Provider value={exit}>
+        <Suspense fallback={<div className={styles.overlayFallback} aria-busy="true" aria-label="Loading" />}>
+          {label ? (
+            <Sheet label={label} onClose={onClose}>
+              <Component params={params} query={query} />
+            </Sheet>
+          ) : (
+            <Component params={params} query={query} />
+          )}
+        </Suspense>
+      </OverlayExitContext.Provider>
     </div>
   );
 }

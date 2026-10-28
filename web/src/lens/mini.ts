@@ -4,8 +4,9 @@
  * size inside a scaled container so it looks exactly as it will.
  */
 import type { ItemSummary } from '../api/types';
+import { lensFocus } from './bridge';
 import { reducedMotion } from './dom';
-import type { LensContext, LensDef, LensView } from './types';
+import type { Insets, LensContext, LensDef, LensView } from './types';
 
 export interface MiniOptions {
   items: readonly ItemSummary[];
@@ -13,6 +14,8 @@ export interface MiniOptions {
   theme: 'dark' | 'light';
   phone: boolean;
   sectionOf: (item: ItemSummary) => string;
+  /** Where the shell's glass will sit: the preview keeps clear of it as the lens will (default: small margins). */
+  safe?: Insets;
 }
 
 export interface MiniLens {
@@ -29,8 +32,9 @@ export async function mountMini(def: LensDef, container: HTMLElement, o: MiniOpt
   const ctx: LensContext = {
     items: o.items,
     total: o.total,
-    focus: null,
-    safe: { top: 24, bottom: 24, left: 16, right: 16 },
+    // At the title you're on, as the lens itself would open (choosing it grows the preview into it).
+    focus: lensFocus(),
+    safe: o.safe ?? { top: 24, bottom: 24, left: 16, right: 16 },
     env: { mini: true, reducedMotion: reducedMotion(), theme: o.theme, phone: o.phone },
     setFocus: () => undefined,
     open: () => undefined,

@@ -395,38 +395,6 @@
   transition: opacity 0.6s ease;
 }
 
-/* The accessory: a tour that walks from work to work on its own. */
-.tour {
-  height: 44px;
-  padding: 0 16px 0 13px;
-  border: 0;
-  border-radius: var(--pill);
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.tour:hover {
-  color: var(--text);
-  background: var(--glass-clear);
-}
-
-.tour[aria-pressed='true'] {
-  color: var(--text);
-}
-
-.tour svg {
-  width: 18px;
-  height: 18px;
-  flex: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .spot,
   .fog {

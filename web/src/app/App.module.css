@@ -1,3 +1,28 @@
+/* The player's layer (App.tsx): it fades in over the page you played from, like the lights going down, and away over the page you go back to. */
+.bare {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  animation: bare-in 0.28s var(--out);
+}
+
+.bare[data-leaving] {
+  pointer-events: none;
+  animation: bare-out 0.28s var(--out) forwards;
+}
+
+@keyframes bare-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes bare-out {
+  to {
+    opacity: 0;
+  }
+}
+
 /* The player's fallback while its code arrives: the black of a screen about to play. */
 .bareFallback {
   position: fixed;

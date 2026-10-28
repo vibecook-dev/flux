@@ -4,7 +4,7 @@
  * `frame` (picked from the video, no AI) and `generated` (AI) — the UI must
  * never pass either off as official art (research/01 §8.2.6, api.rs ArtSource).
  */
-import { memo, useState } from 'react';
+import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { artSrcSet, artUrl, artWidthBucket } from '../api/client';
 import type { ArtRef } from '../api/types';
 import { sourceLabel } from './art-label';
@@ -30,6 +30,14 @@ export interface ArtProps {
 export const Art = memo(function Art({ art, width, aspect, title, priority, deferImage, showSourceLabel = true, className }: ArtProps) {
   // Track which URL finished loading, so a reused instance never shows a stale image.
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  // An image the browser already has shows at once (no fade from the placeholder): back
+  // from the player, a poster that just flew in, art seen a moment ago.
+  const img = useRef<HTMLImageElement>(null);
+  const url = art?.url ?? null;
+  useLayoutEffect(() => {
+    const i = img.current;
+    if (url && i && i.complete && i.naturalWidth > 0) setLoadedUrl(url);
+  }, [url]);
   const placeholder = art?.blurhash ? blurhashDataUrl(art.blurhash, aspect === 'poster' ? 8 : 16, aspect === 'poster' ? 12 : 9) : null;
   const label = showSourceLabel ? sourceLabel(art) : null;
   const cls = [styles.art, aspect === 'poster' ? styles.poster : styles.wide, className].filter(Boolean).join(' ');
@@ -49,6 +57,7 @@ export const Art = memo(function Art({ art, width, aspect, title, priority, defe
     <div className={cls} style={placeholder ? { backgroundImage: `url(${placeholder})` } : undefined}>
       {!deferImage && (
         <img
+          ref={img}
           key={art.url}
           src={artUrl(art, artWidthBucket(width, 1))}
           srcSet={artSrcSet(art, width)}

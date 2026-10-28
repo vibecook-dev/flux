@@ -16,7 +16,7 @@ import { invalidateQueries } from '../api/query';
 import { keepLens, removeLens } from '../lens/kit/store';
 import { mountMini, type MiniLens } from '../lens/mini';
 import { LENS_ICONS } from '../lens/registry';
-import type { LensDef } from '../lens/types';
+import type { Insets, LensDef } from '../lens/types';
 import styles from './LensGallery.module.css';
 
 export interface LensGalleryProps {
@@ -28,12 +28,17 @@ export interface LensGalleryProps {
   total: number;
   theme: 'dark' | 'light';
   phone: boolean;
+  /** Where the shell's glass sits: previews keep clear of it, as the lenses do. */
+  safe: Insets;
   sectionOf: (item: ItemSummary) => string;
   onChoose: (id: string) => void;
   onPin: (id: string, on: boolean) => void;
   /** A lens was added or removed on this device (the list should be read again). */
   onLensesChanged: () => void;
   onClose: () => void;
+  /** Closing (closed, or a lens chosen): it animates away, then says it has gone. */
+  closing: boolean;
+  onGone: () => void;
 }
 
 const AUTHOR: Record<LensDef['author'], string> = { flux: 'flux', kit: 'Lens kit', you: 'Yours', server: 'On the server' };
@@ -49,17 +54,31 @@ interface PreviewOptions {
   total: number;
   theme: 'dark' | 'light';
   phone: boolean;
+  safe: Insets;
   sectionOf: (item: ItemSummary) => string;
 }
 
 export function LensGallery(props: LensGalleryProps) {
-  const { lenses, current, pins, items, total, theme, phone, sectionOf, onChoose, onPin, onLensesChanged, onClose } = props;
+  const { lenses, current, pins, items, total, theme, phone, safe, sectionOf, onChoose, onPin, onLensesChanged, onClose, closing, onGone } = props;
+  const wrap = useRef<HTMLDivElement>(null);
+  const chosen = useRef(false);
+  // Gone (a new gallery opened while this one was closing): its animations ending must not close that one.
+  const gone = useRef(false);
+  useEffect(
+    () => () => {
+      gone.current = true;
+    },
+    [],
+  );
+  const left = useCallback(() => {
+    if (!gone.current) onGone();
+  }, [onGone]);
   const track = useRef<HTMLDivElement>(null);
   const cards = useRef<(HTMLElement | null)[]>([]);
   const minis = useRef(new Map<string, Slot>());
-  const opts = useRef<PreviewOptions>({ items, total, theme, phone, sectionOf });
+  const opts = useRef<PreviewOptions>({ items, total, theme, phone, safe, sectionOf });
   useEffect(() => {
-    opts.current = { items, total, theme, phone, sectionOf };
+    opts.current = { items, total, theme, phone, safe, sectionOf };
   });
   const startIndex = Math.max(0, lenses.findIndex((l) => l.id === current));
   const [centred, setCentred] = useState(startIndex);
@@ -191,35 +210,62 @@ export function LensGallery(props: LensGalleryProps) {
   }, []);
 
   // ── choosing: the preview grows back into the window ──
+  // The library behind switches to the lens at once and steps forward as the preview
+  // grows (both full size together); then the preview fades into the lens itself.
   const choose = useCallback(
     (id: string) => {
+      if (chosen.current) return;
       const i = lenses.findIndex((l) => l.id === id);
       const view = cards.current[i]?.querySelector<HTMLElement>('[data-view]');
+      chosen.current = true;
       if (!view || reducedMotion()) {
         onChoose(id);
+        left();
         return;
       }
       setLeaving(true);
       const r = view.getBoundingClientRect();
       view.style.transformOrigin = '0 0';
-      view.animate(
+      const grow = view.animate(
         [
           { transform: 'none', borderRadius: '26px' },
           { transform: `translate(${-r.left}px, ${-r.top}px) scale(${window.innerWidth / r.width}, ${window.innerHeight / r.height})`, borderRadius: '0px' },
         ],
-        { duration: 520, easing: SOFT, fill: 'forwards' },
+        { duration: 560, easing: SOFT, fill: 'forwards' },
       );
       cards.current.forEach((c, k) => {
         if (k !== i) c?.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, fill: 'forwards' });
       });
-      setTimeout(() => onChoose(id), 470);
+      onChoose(id);
+      // It hands over to the lens while it still moves (a preview is drawn small: the two
+      // differ a little), and is gone as it reaches the window's size.
+      wrap.current?.animate([{ opacity: 1 }, { opacity: 1, offset: 0.42 }, { opacity: 0 }], { duration: 560, easing: 'linear', fill: 'forwards' });
+      void grow.finished.then(left, left);
     },
-    [lenses, onChoose],
+    [lenses, onChoose, left],
   );
+
+  // Closed without choosing (Esc, ×, a click beside the cards): the cards drop away as
+  // the library steps forward again.
+  useEffect(() => {
+    if (!closing || chosen.current) return;
+    const w = wrap.current;
+    if (!w || reducedMotion()) return left();
+    setLeaving(true);
+    w.animate(
+      [
+        { opacity: 1, transform: 'none' },
+        { opacity: 0, transform: 'translateY(28px) scale(.98)' },
+      ],
+      { duration: 280, easing: 'cubic-bezier(.4,0,.7,.2)', fill: 'forwards' },
+    ).finished.then(left, () => undefined);
+  }, [closing, left]);
 
   // ── keys: ← → browse, Enter chooses (Escape belongs to the shell) ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Closing (or a lens chosen): the keys are the library's again.
+      if (closing || chosen.current) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
@@ -235,10 +281,10 @@ export function LensGallery(props: LensGalleryProps) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [centred, count, lenses, center, choose]);
+  }, [centred, count, lenses, center, choose, closing]);
 
   return (
-    <div className={styles.wrap} role="dialog" aria-modal="true" aria-label="All lenses" data-leaving={leaving || undefined}>
+    <div ref={wrap} className={styles.wrap} role="dialog" aria-modal="true" aria-label="All lenses" data-leaving={leaving || undefined} inert={closing}>
       <div className={styles.back} onClick={onClose} aria-hidden="true" />
       <header className={styles.head}>
         <h2 className="display-l">Lenses</h2>

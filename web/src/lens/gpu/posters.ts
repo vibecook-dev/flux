@@ -230,6 +230,18 @@ export class PosterCache {
     return null;
   }
 
+  /**
+   * The URL of the sharpest size of `art` on the GPU now, or null. The browser
+   * has it (art is cached as immutable), so a flight's ghost shows it at once.
+   */
+  readyUrl(art: ArtRef): string | null {
+    for (let c = CLASSES.length - 1; c >= 0; c--) {
+      const e = this.entries.get(`${c}|${art.url}`);
+      if (e?.state === 'ready') return e.url;
+    }
+    return null;
+  }
+
   /** Ask for a poster without drawing it (the rows just off screen). */
   want(art: ArtRef, cls: number, prio: number): void {
     this.count(cls, art.url);

@@ -18,12 +18,14 @@ import type { Id, ItemSummary } from '../../api/types';
 import { artElement, artLabel, loadArt } from '../art';
 import { activeLens } from '../bridge';
 import { clamp, el, rand01, reducedMotion } from '../dom';
+import { rectQuad } from '../flight';
 import { paletteOf } from '../palette';
 import { isNew, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
-import { planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan } from './geometry';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
+import { bandHeight, bandLabel, collectorNo, planShelf, shelfMetrics, spineLook, spineTitleParts, type Metrics, type ShelfPlan, type SpineStyle } from './geometry';
 import { asideFalloff, peekDepth, peekWait } from './peek';
 import styles from './shelf.module.css';
+import { paintSpine } from './spine';
 
 export { planShelf, spineLook, spineTitleParts } from './geometry';
 export type { ShelfPlan, ShelfPlanInput, SpineLook, SpineStyle } from './geometry';
@@ -33,6 +35,15 @@ const MINI_COUNT = 14;
 const MARK =
   '<svg viewBox="0 0 35 28" aria-hidden="true"><path d="M2 26 L20 2 L27 2 L9 26 Z" fill="currentColor"/><path d="M16 26 L28 10 L33 10 L21 26 Z" fill="currentColor" fill-opacity=".45"/></svg>';
 const CONDENSED = '800 20px "Archivo Variable"';
+/** The band across a cover, in its spine's treatment (a studio spine's is the band's own). */
+const COVER: Record<SpineStyle, string> = {
+  studio: '',
+  box: styles.coverBox,
+  number: styles.coverNumber,
+  band: styles.coverBand,
+  clamw: styles.coverClamw,
+  clamb: styles.coverClamb,
+};
 /** The turn takes this long to show the cover (shelf.module.css `.peek`): an opened tape hands over to the detail then. */
 const TURN_MS = 560;
 /** A pointer's cover goes back this long after the pointer leaves the tapes. */
@@ -99,6 +110,8 @@ class ShelfView implements LensView {
   private timers: ReturnType<typeof setTimeout>[] = [];
   private suppressClick = false;
   private dead = false;
+  /** The tape whose poster is flying (hidden meanwhile). */
+  private hiddenId: Id | null = null;
   private ro: ResizeObserver;
   private cleanup: (() => void)[] = [];
 
@@ -132,8 +145,14 @@ class ShelfView implements LensView {
         () => undefined,
       );
     }
-    // Arriving from another lens (or back from detail): keep your place on the shelf.
-    if (!this.mini && ctx.focus !== null && this.index.has(ctx.focus)) this.reveal(ctx.focus);
+    // Arriving from another lens (or back from detail): keep your place on the shelf, its
+    // tape already lifted (as the GPU Shelf has it: a poster flying here lands where it ends up).
+    if (!this.mini && ctx.focus !== null && this.index.has(ctx.focus)) {
+      root.classList.add(styles.settle);
+      this.reveal(ctx.focus);
+      void root.offsetWidth;
+      requestAnimationFrame(() => root.classList.remove(styles.settle));
+    }
   }
 
   private setItems(items: readonly ItemSummary[]): void {
@@ -157,6 +176,7 @@ class ShelfView implements LensView {
     s.setProperty('--h', `${H}px`);
     s.setProperty('--w', `${W}px`);
     s.setProperty('--d', `${D}px`);
+    s.setProperty('--band', `${bandHeight(D, H)}px`);
     s.setProperty('--bh', `${bh}px`);
     s.setProperty('--lip', `${m.lip}px`);
     s.setProperty('--bd', `${m.bd}px`);
@@ -294,6 +314,10 @@ class ShelfView implements LensView {
           tape = this.makeTape(item);
           tape.slot.style.transform = t;
           tape.t = t;
+          if (item.id === this.hiddenId) {
+            tape.sleeve.style.visibility = 'hidden';
+            tape.spine.style.visibility = 'hidden';
+          }
           fresh.push(tape);
           frag.append(tape.slot);
           continue;
@@ -433,7 +457,7 @@ class ShelfView implements LensView {
       cap.classList.add(styles.capOff);
       cap.textContent = 'OFFLINE';
     }
-    else if (look.style === 'number') cap.append(el('span', styles.num, null, '№'), String((Math.floor(rand01(`${item.id}:no`) * 880) + 101).toString()));
+    else if (look.style === 'number') cap.append(el('span', styles.num, null, '№'), String(collectorNo(item.id)));
     else cap.textContent = item.year ? String(item.year) : '—';
     const tbox = el('div', styles.title);
     const parts = spineTitleParts(item.kind === 'episode' && item.parent_title ? item.parent_title : item.title);
@@ -455,9 +479,12 @@ class ShelfView implements LensView {
     // The top of the box; the sleeve (front cover) on its right side, the back cover on its left.
     const topFace = el('div', `${styles.face} ${styles.top}`);
     const right = el('div', `${styles.face} ${styles.right}`);
+    // The band across the cover's top, printed like the spine (its year is the element's
+    // text; the mark and VIDEO are CSS), and the poster whole below it.
+    const band = el('div', `${styles.cover} ${COVER[look.style]}`, null, bandLabel(item, look) || null);
     // The poster only loads when the tape comes off the shelf; until then the blurhash paints it.
     const sleeve = artElement(item, { width: this.m.D, defer: true, className: styles.sleeve });
-    right.append(sleeve);
+    right.append(band, sleeve);
     const left = el('div', `${styles.face} ${styles.left}`);
     const meta = [item.year ? String(item.year) : '', item.kind === 'show' ? 'SERIES' : item.kind === 'movie' ? 'FEATURE' : '', ...item.badges.slice(0, 3)].filter(Boolean).join(' · ');
     left.append(el('div', styles.back, null, el('b', null, null, item.title), el('p', null, null, item.parent_title && item.kind !== 'show' ? item.parent_title : 'flux video'), el('span', null, null, meta)));
@@ -886,6 +913,46 @@ class ShelfView implements LensView {
     return this.openId === id || this.peekId === id ? tape.sleeve : tape.spine;
   }
 
+  /**
+   * The tape as you see it, for flights: its cover when turned towards you, else its
+   * spine, with a painting of the spine (spine.ts paints what the CSS draws), as the
+   * GPU Shelf does: a poster turns from or into it on the way.
+   */
+  spotOf(id: Id): Spot | null {
+    const tape = this.tapes.get(id);
+    const i = this.index.get(id);
+    if (!tape || i === undefined) return null;
+    const turned = this.openId === id || this.peekId === id;
+    const r = (turned ? tape.sleeve : tape.spine).getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const img = tape.sleeve.querySelector('img');
+    const src = img && img.complete && img.naturalWidth > 0 ? img.currentSrc || img.src : null;
+    if (turned) return { quad: rectQuad(r), radius: 1.5, src, lift: 0.55 };
+    return { quad: rectQuad(r), radius: 1.5, src, lift: 0.3, face: this.spineFace(i) };
+  }
+
+  private spineFace(i: number): HTMLCanvasElement | null {
+    const item = this.items[i];
+    const tw = this.widths[i];
+    const k = Math.min(3, window.devicePixelRatio || 1);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.ceil(tw * k));
+    c.height = Math.max(1, Math.ceil(this.m.H * k));
+    // In the page while it paints, for the page's font smoothing.
+    c.style.display = 'none';
+    this.root.append(c);
+    const ctx = c.getContext('2d');
+    if (ctx) {
+      const cs = getComputedStyle(this.root);
+      const v = (name: string, d: string) => cs.getPropertyValue(name).trim() || d;
+      const fonts = { mono: v('--font-mono', 'ui-monospace, monospace'), cond: v('--font-cond', '"Archivo Variable", sans-serif'), body: v('--font-body', 'system-ui, sans-serif') };
+      paintSpine(ctx, item, spineLook(item, paletteOf(item)), { tw, H: this.m.H, W: this.m.W }, k, fonts);
+    }
+    c.remove();
+    c.style.display = '';
+    return ctx ? c : null;
+  }
+
   reveal(id: Id): void {
     const i = this.index.get(id);
     if (i === undefined) return;
@@ -893,6 +960,22 @@ class ShelfView implements LensView {
     this.focusId = id;
     this.draw(false);
     this.markFocus(id);
+  }
+
+  /** Its poster is flying (to the detail page, or between lenses): its cover and spine wait, hidden. */
+  hide(id: Id | null): void {
+    const was = this.hiddenId;
+    if (was === id) return;
+    if (was !== null) this.showArt(was, true);
+    this.hiddenId = id;
+    if (id !== null) this.showArt(id, false);
+  }
+
+  private showArt(id: Id, on: boolean): void {
+    const tape = this.tapes.get(id);
+    if (!tape) return;
+    tape.sleeve.style.visibility = on ? '' : 'hidden';
+    tape.spine.style.visibility = on ? '' : 'hidden';
   }
 
   /** Covered by the detail view or the player; when it lifts, the tape goes back on the shelf. */

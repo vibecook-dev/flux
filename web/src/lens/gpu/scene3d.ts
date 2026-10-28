@@ -30,7 +30,12 @@ const CAM_FLOATS = 20;
 const NONE = [0, 0, 0, 0] as const;
 
 export const KIND3D = { solid: 0, poster: 1, text: 2, ring: 3, shadow: 4, sprite: 6 } as const;
-export const FLAG3D = { gray: 1, hairline: 2, gradient: 8, mirror: 16 } as const;
+/**
+ * `openTop`, `openBottom`: the face goes on past the quad's top (bottom) edge, in
+ * another quad printed on the same card (a cover's band above its poster), so that
+ * edge is no edge of the box: square, and not bevelled, worn or hairlined.
+ */
+export const FLAG3D = { gray: 1, hairline: 2, openTop: 4, gradient: 8, mirror: 16, openBottom: 32 } as const;
 /**
  * What a quad is made of (`Quad3DBatch.material`). `print`: printed card, satin, with
  * a paper grain and edges that wear white. `spine`: a spine sprite, card or plastic
@@ -87,8 +92,12 @@ const K_SPRITE: u32 = 6u;
 
 const F_GRAY: u32 = 1u;
 const F_HAIRLINE: u32 = 2u;
+const F_OPEN_TOP: u32 = 4u;
 const F_GRADIENT: u32 = 8u;
 const F_MIRROR: u32 = 16u;
+const F_OPEN_BOTTOM: u32 = 32u;
+// How far the face goes on past an open edge, for the quad's edges: past where any edge effect reaches.
+const OPEN: f32 = 64.0;
 
 const M_PRINT: u32 = 1u;
 const M_SPINE: u32 = 2u;
@@ -206,6 +215,11 @@ fn material(q: Q, in: VOut, base: vec3f, glossIn: f32, d0: f32, dx: vec2f, dy: v
   let shade = q.origin.w;
   let p = in.local;
   let half = in.half;
+  // Its edges (an open top or bottom is no edge: see fs).
+  let openT = select(0.0, OPEN, (u32(q.fx.x) & F_OPEN_TOP) != 0u);
+  let openB = select(0.0, OPEN, (u32(q.fx.x) & F_OPEN_BOTTOM) != 0u);
+  let pe = p + vec2f(0.0, openT - openB);
+  let he = half + vec2f(0.0, openT + openB);
   var col = base;
   var gloss = glossIn;
   var occ = 1.0;
@@ -243,7 +257,7 @@ fn material(q: Q, in: VOut, base: vec3f, glossIn: f32, d0: f32, dx: vec2f, dy: v
       // Worn card whitens here and there along its edges and at its corners, a few
       // tapes much more than most.
       let edge = 1.0 - smoothstep(0.0, 1.0, -d0);
-      let k = max(abs(p) - half + vec2f(5.0), vec2f(0.0)) / 5.0;
+      let k = max(abs(pe) - he + vec2f(5.0), vec2f(0.0)) / 5.0;
       let corner = min(1.0, k.x * k.y * 1.8);
       if (edge > 0.0 || corner > 0.0) {
         let worn = fract(seed * 7.31);
@@ -276,12 +290,12 @@ fn material(q: Q, in: VOut, base: vec3f, glossIn: f32, d0: f32, dx: vec2f, dy: v
   let rim = select(0.0, 1.0 - smoothstep(0.0, bevel, -d0), bevel > 0.0);
   if (rim > 0.001) {
     let r = min(q.size.z, min(half.x, half.y));
-    let e = abs(p) - half + vec2f(r);
+    let e = abs(pe) - he + vec2f(r);
     var g = select(vec2f(0.0, 1.0), vec2f(1.0, 0.0), e.x > e.y);
     if (e.x > 0.0 && e.y > 0.0) {
       g = normalize(e);
     }
-    g = g * sign(p);
+    g = g * sign(pe);
     let outward = in.ax * g.x + in.ay * g.y;
     n = normalize(n + outward * rim * 1.25);
     edgeLight = rim * (0.2 * max(0.0, -outward.y) - 0.12 * max(0.0, outward.y) + 0.05 * max(0.0, outward.x));
@@ -329,17 +343,24 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // would smear them across the steep axis. The face's rate of change per device
   // pixel (gx, gy) drives anisotropic texture filtering.
   let q = quads[in.idx];
-  let d0 = roundRect(in.local, in.half, min(q.size.z, min(in.half.x, in.half.y)));
-  let aa = max(fwidth(d0), 0.0001);
+  let flags = u32(q.fx.x);
+  let radius = min(q.size.z, min(in.half.x, in.half.y));
+  // Distance to the quad's edges (its hairline and material), and to its outline. An
+  // open top or bottom is no edge, the face going on past it, but still where the quad ends.
+  let openT = select(0.0, OPEN, (flags & F_OPEN_TOP) != 0u);
+  let openB = select(0.0, OPEN, (flags & F_OPEN_BOTTOM) != 0u);
+  let d0 = roundRect(in.local + vec2f(0.0, openT - openB), in.half + vec2f(0.0, openT + openB), radius);
+  let cutT = select(-1e9, -in.local.y - in.half.y, openT > 0.0);
+  let cutB = select(-1e9, in.local.y - in.half.y, openB > 0.0);
+  let shape = max(d0, max(cutT, cutB));
+  let aa = max(fwidth(shape), 0.0001);
   let dlx = dpdx(in.local);
   let dly = dpdy(in.local);
   let gx = dlx / (2.0 * in.half);
   let gy = dly / (2.0 * in.half);
   let kind = u32(q.size.w);
-  let flags = u32(q.fx.x);
   let mat = u32(q.pos.w);
   var gloss = fract(q.pos.w);
-  let radius = min(q.size.z, min(in.half.x, in.half.y));
   let f = clamp(in.local / (2.0 * in.half) + 0.5, vec2f(0.0), vec2f(1.0));
   var c = q.color;
   var cover = 1.0;
@@ -350,7 +371,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
     let d = roundRect(in.local, max(in.half - vec2f(blur), vec2f(0.5)), radius);
     cover = 1.0 - smoothstep(-blur * 0.5, blur * 0.5, d);
   } else {
-    let d = d0;
+    let d = shape;
     cover = clamp(0.5 - d / aa, 0.0, 1.0);
     if (kind == K_RING) {
       cover = cover - clamp(0.5 - (d + q.tex.y) / aa, 0.0, 1.0);
@@ -382,7 +403,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
         c = mix(c, vec4f(s.rgb, 1.0), fade);
       }
       if ((flags & F_HAIRLINE) != 0u) {
-        let edge = smoothstep(-1.0 - aa, -1.0, d);
+        let edge = smoothstep(-1.0 - aa, -1.0, d0);
         c = vec4f(mix(c.rgb, vec3f(1.0), 0.07 * edge), c.a);
       }
     }

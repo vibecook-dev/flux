@@ -29,6 +29,7 @@ import { sourceLabel } from '../../components/art-label';
 import { artLabel } from '../art';
 import { activeLens } from '../bridge';
 import { clamp, el, rand01, reducedMotion } from '../dom';
+import { projectedQuad } from '../flight';
 import type { Gpu } from '../gpu/device';
 import { bezier, lerp, soft } from '../gpu/motion';
 import { classFor, posterCache, type PosterCache } from '../gpu/posters';
@@ -38,11 +39,11 @@ import { SpriteSheet, type Sprite } from '../gpu/sprites';
 import { textAtlas, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { paletteOf } from '../palette';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
-import type { Dir, LensContext, LensModule, LensView } from '../types';
-import { planShelf, shelfLayout, shelfMetrics, spineLook, type Metrics, type ShelfLayout, type ShelfPlan, type SpineLook } from './geometry';
+import type { Dir, LensContext, LensModule, LensView, Spot } from '../types';
+import { bandHeight, bandLabel, planShelf, shelfLayout, shelfMetrics, spineLook, type Metrics, type ShelfLayout, type ShelfPlan, type SpineLook } from './geometry';
 import { asideFalloff, BACK_C, BACK_K, LIFT_C, LIFT_K, PEEK_C, PEEK_K, peekPath, peekWait, spring0, stepSpring, tapePose, type PoseDims, type Spring } from './peek';
 import styles from './shelf.module.css';
-import { backKey, grayHex, mixBlackOklab, paintBack, paintEdge, paintGlow, paintRamp, paintSpine, spineKey, type ShelfFonts } from './spine';
+import { backKey, bandColors, grayHex, mixBlackOklab, paintBack, paintEdge, paintGlow, paintRamp, paintSpine, spineKey, type ShelfFonts } from './spine';
 import { boxCorners, facing, I3, place, REST, rotX, rotY, splitAtDepth, tapeFaces, type M3, type Placed, type TapeFaces, type TapeMove } from './transform';
 import { cssColor, dcColor, hexColor } from '../gpu/colors';
 
@@ -153,6 +154,11 @@ interface TapeLook {
   /** The sleeve until its poster is in: the art's average colour, or the title's two colours. */
   paper: RGBA;
   paper2: RGBA | null;
+  /** The band across the top of the cover: the spine's colours carried round, and what it says on the right. */
+  band: RGBA;
+  bandInk: RGBA;
+  bandRule: RGBA | null;
+  bandText: string;
   /** How far back it sits on the shelf (a little uneven). */
   z: number;
   key: string;
@@ -242,20 +248,18 @@ const edgeCache = new Map<string, [RGBA, RGBA] | null>();
  * The sleeve before its poster loads shows the blurred poster (art.ts); what shows
  * of it on the shelf is its front edge: that column's colours, top and bottom.
  */
-function edgeColors(hash: string, crop0: number): [RGBA, RGBA] | null {
-  const key = `${hash}|${crop0.toFixed(2)}`;
-  let c = edgeCache.get(key);
+function edgeColors(hash: string): [RGBA, RGBA] | null {
+  let c = edgeCache.get(hash);
   if (c !== undefined) return c;
   try {
-    // A coarse decode is enough for one edge (its first column sits about where the sleeve's front edge does).
+    // A coarse decode is enough for one edge (its first column).
     const W = 4;
     const H = 6;
     const px = decode(hash, W, H);
-    const col = Math.min(W - 1, Math.max(0, Math.floor(crop0 * W)));
     const avg = (r0: number, r1: number): RGBA => {
       const t = [0, 0, 0];
       for (let y = r0; y < r1; y++) {
-        const o = (y * W + col) * 4;
+        const o = y * W * 4;
         t[0] += px[o];
         t[1] += px[o + 1];
         t[2] += px[o + 2];
@@ -268,7 +272,7 @@ function edgeColors(hash: string, crop0: number): [RGBA, RGBA] | null {
     c = null;
   }
   if (edgeCache.size > 20000) edgeCache.clear();
-  edgeCache.set(key, c);
+  edgeCache.set(hash, c);
   return c;
 }
 
@@ -339,11 +343,10 @@ export class GpuShelfView implements LensView {
   private drawn: number[] = [];
   private act: Active[] = [];
   private actById = new Map<Id, Active>();
-  private crop0 = 0;
-  private crop = 1;
-  /** Poster size for a sleeve on the shelf; `coverCls` for the cover that's out and turned to you (sharp, crop and all). */
+  /** The height of the band across the top of a cover; the poster fills the rest. */
+  private band = 0;
+  /** Poster size for a sleeve, sharp when its cover turns to you (out in front of the shelf, a little larger). */
   private posterCls = 1;
-  private coverCls = 1;
 
   private viewW = 0;
   private viewH = 0;
@@ -628,13 +631,9 @@ export class GpuShelfView implements LensView {
     this.p = p;
     this.position();
     if (prevH !== m.H) this.faces.clear();
-    // The sleeve is a 2:3 poster cut to the box's proportions (object-fit: cover).
-    this.crop = Math.min(1, (m.D / m.H) * 1.5);
-    this.crop0 = (1 - this.crop) / 2;
-    // Sharp when the cover turns to you (out in front of the shelf, a little larger):
-    // only the cropped middle of the poster spans the cover, so that one asks for more.
+    // The sleeve: the whole poster at the box's width, under a band printed like the spine.
+    this.band = bandHeight(m.D, m.H);
     this.posterCls = classFor(m.D * 1.15 * this.dpr);
-    this.coverCls = classFor((m.D * 1.15 * this.dpr) / this.crop);
     this.ensureSheet();
     if (this.focusId !== null && !this.index.has(this.focusId)) {
       this.focusId = null;
@@ -710,7 +709,7 @@ export class GpuShelfView implements LensView {
   private facesFor(tw: number): TapeFaces {
     let f = this.faces.get(tw);
     if (!f) {
-      f = tapeFaces(tw, this.m.H, this.m.D);
+      f = tapeFaces(tw, this.m.H, this.m.D, this.band);
       this.faces.set(tw, f);
     }
     return f;
@@ -756,8 +755,9 @@ export class GpuShelfView implements LensView {
     const look = spineLook(item, pal);
     const off = !item.available;
     const hash = item.poster?.blurhash;
-    const edge = hash ? edgeColors(hash, this.crop0) : null;
+    const edge = hash ? edgeColors(hash) : null;
     const dc = hash && !edge ? dcColor(hash) : null;
+    const band = bandColors(look, off);
     l = {
       item,
       look,
@@ -771,6 +771,10 @@ export class GpuShelfView implements LensView {
       topBack: hexColor(mixBlackOklab(look.top, 0.8)),
       paper: edge ? edge[0] : (dc ?? hexColor(pal.c1)),
       paper2: edge ? edge[1] : dc ? null : hexColor(pal.c2),
+      band: hexColor(band.fill),
+      bandInk: hexColor(band.ink),
+      bandRule: band.rule ? hexColor(band.rule) : null,
+      bandText: bandLabel(item, look),
       z: -rand01(`${item.id}:z`) * 3,
       key: '',
       keyFor: '',
@@ -1336,7 +1340,7 @@ export class GpuShelfView implements LensView {
     if (i === undefined) return;
     for (let j = Math.max(0, i - 2); j <= Math.min(this.items.length - 1, i + 2); j++) {
       const art = this.items[j].poster;
-      if (art) this.posters.want(art, this.coverCls, j === i ? 1 : 200 + Math.abs(j - i));
+      if (art) this.posters.want(art, this.posterCls, j === i ? 1 : 200 + Math.abs(j - i));
     }
   }
 
@@ -1402,6 +1406,8 @@ export class GpuShelfView implements LensView {
     if (t.top) this.top(t.l, t.top, t.tw, t.a);
     const hidden = this.hiddenId === t.id && this.openId !== t.id;
     if (t.spine && !hidden) this.spine(t.l, t.spine, t.tw, t.a, off ? lerp(0.62, 0.8, t.lit) : lerp(1, 1.08, t.lit), t.ring, t.foot);
+    // Its poster is flying here (or away): the focus ring stays, where it lands.
+    else if (t.spine && t.ring) this.ring(t.l, t.spine, t.tw, t.a);
   }
 
   // ── faces ──
@@ -1468,12 +1474,15 @@ export class GpuShelfView implements LensView {
       b.uv(o, l.bg2[0] * tint, l.bg2[1] * tint, l.bg2[2] * tint, 1);
       b.flags(o, FLAG3D.gradient);
     }
-    if (ring) {
-      // outline: 2px solid (focus at 60%), outline-offset: 2px
-      const r = this.on(f, 0, 0, tw + 8, H + 8, KIND3D.ring, radius + 4, 0.75);
-      b.color(r, this.theme.focus, 0.6 * a);
-      b.extra(r, 2);
-    }
+    if (ring) this.ring(l, f, tw, a);
+  }
+
+  /** The focus ring round a spine: outline: 2px solid (focus at 60%), outline-offset: 2px. */
+  private ring(l: TapeLook, f: Placed, tw: number, a: number): void {
+    const b = this.batch;
+    const r = this.on(f, 0, 0, tw + 8, this.m.H + 8, KIND3D.ring, (l.clam ? 2.5 : 1.5) + 4, 0.75);
+    b.color(r, this.theme.focus, 0.6 * a);
+    b.extra(r, 2);
   }
 
   private top(l: TapeLook, f: Placed, tw: number, a: number): void {
@@ -1488,12 +1497,14 @@ export class GpuShelfView implements LensView {
   }
 
   /**
-   * The sleeve (the tape's right side): its poster once wanted, and its marks where it
-   * shows whole. `shade`: how deep in shade it is beside its neighbour (0–1).
+   * The sleeve (the tape's right side): the band across its top, printed like the
+   * spine, and the poster below it once wanted, with their marks where it shows whole.
+   * `shade`: how deep in shade it is beside its neighbour (0–1).
    */
   private sleeve(l: TapeLook, f: Placed, span: Span, a: number, shade: number, full: boolean): void {
     const b = this.batch;
     const { D, H } = this.m;
+    const Hb = this.band;
     const [ua, ub] = span;
     const whole = ua <= -D / 2 + 0.01 && ub >= D / 2 - 0.01;
     // The two parts of a split face overlap a pixel, so no seam shows between them.
@@ -1505,30 +1516,93 @@ export class GpuShelfView implements LensView {
     const t1 = clamp((fb + D / 2) / D, 0, 1);
     const item = l.item;
     const id = item.id;
-    const o = this.on(f, uc, 0, sw, H, KIND3D.poster, whole ? 1.5 : 0);
+    const radius = whole ? 1.5 : 0;
+    const hairline = whole ? FLAG3D.hairline : 0;
+    // The band and the poster below it, printed on one card: where they meet is no
+    // edge. The band runs a pixel under the poster, so no seam shows between them.
+    const o = this.on(f, uc, (Hb + 1 - H) / 2, sw, Hb + 1, KIND3D.poster, radius);
     b.opacity(o, a);
     this.box(o, l, shade);
-    const hidden = this.hiddenId === id && this.openId === id;
-    let flags = whole && !hidden ? FLAG3D.hairline : 0;
-    if (hidden) {
-      // Its poster is flying to the detail page: the bare box.
-      b.color(o, l.fbg2);
-    } else {
-      const art = item.poster;
-      const near = id === this.eagerId || id === this.peekId || id === this.hoverId || id === this.focusId;
-      const hit = art && this.wanted.has(id) ? this.posters.get(art, near ? this.coverCls : this.posterCls, id === this.eagerId ? -1e6 : near ? 0 : 1000, true) : null;
-      b.color(o, l.paper);
-      if (hit) {
-        b.uv(o, this.crop0 + t0 * this.crop, 0, this.crop0 + t1 * this.crop, 1);
-        b.texture(o, hit.code, hit.texWidth, hit.readyAt);
-        if (!item.available) flags |= FLAG3D.gray;
-      } else if (l.paper2) {
-        b.uv(o, l.paper2[0], l.paper2[1], l.paper2[2], 1);
-        flags |= FLAG3D.gradient;
+    b.color(o, l.band);
+    b.flags(o, FLAG3D.openBottom | hairline);
+    const p = this.on(f, uc, Hb / 2, sw, H - Hb, KIND3D.poster, radius);
+    b.opacity(p, a);
+    this.box(p, l, shade);
+    if (this.hiddenId === id) {
+      // Its poster is flying (to the detail page, or between lenses): the bare box where it was.
+      b.color(p, l.fbg2);
+      b.flags(p, FLAG3D.openTop);
+      if (full) this.bandMarks(l, f, ua, ub, a);
+      return;
+    }
+    let flags = FLAG3D.openTop | hairline;
+    const art = item.poster;
+    const near = id === this.eagerId || id === this.peekId || id === this.hoverId || id === this.focusId;
+    const hit = art && this.wanted.has(id) ? this.posters.get(art, this.posterCls, id === this.eagerId ? -1e6 : near ? 0 : 1000, true) : null;
+    b.color(p, l.paper);
+    if (hit) {
+      b.uv(p, t0, 0, t1, 1);
+      b.texture(p, hit.code, hit.texWidth, hit.readyAt);
+      if (!item.available) flags |= FLAG3D.gray;
+    } else if (l.paper2) {
+      b.uv(p, l.paper2[0], l.paper2[1], l.paper2[2], 1);
+      flags |= FLAG3D.gradient;
+    }
+    b.flags(p, flags);
+    if (full) {
+      this.bandMarks(l, f, ua, ub, a);
+      this.marks(item, f, ua, ub, a);
+    }
+  }
+
+  /**
+   * What the band says (shelf.module.css `.cover`): the flux VIDEO mark on the left,
+   * the year (a collector's №) on the right, and the spine's rules at its foot.
+   */
+  private bandMarks(l: TapeLook, f: Placed, ua: number, ub: number, a: number): void {
+    const b = this.batch;
+    const D = this.m.D;
+    const Hb = this.band;
+    const look = l.look;
+    // At the size a turned cover is drawn (out in front, a little larger).
+    const dpr = this.dpr * 1.15;
+    const mono = this.theme.fonts.mono;
+    const here = (x: number) => x - D / 2 >= ua && x - D / 2 < ub;
+    const rule = l.bandRule;
+    if (rule) {
+      // Studio 2 px, a box set's 2 and 1, a collector's 1: the part of them on this part of the face.
+      const x0 = Math.max(0, ua + D / 2);
+      const x1 = Math.min(D, ub + D / 2);
+      const rules: [number, number][] = look.style === 'number' ? [[Hb - 1, 1]] : look.style === 'box' ? [[Hb - 2, 2], [Hb - 6, 1]] : [[Hb - 2, 2]];
+      if (x1 > x0) {
+        for (const [y, h] of rules) b.color(this.boxOn(f, x0, y, x1 - x0, h, KIND3D.solid, 0), rule, a);
       }
     }
-    b.flags(o, flags);
-    if (full && !hidden) this.marks(item, f, ua, ub, a);
+    const ink = l.bandInk;
+    const padX = D * 0.075;
+    // Centred above the rule.
+    const mid = (Hb - (rule ? 2 : 0)) / 2;
+    if (l.bandText) {
+      const size = Hb * 0.25;
+      const g = this.text.get(l.bandText, { family: mono, size, weight: 500, spacing: 0.04 }, D / 2, dpr);
+      if (g) {
+        const w = g.w - g.pad * 2;
+        const x = D - padX - w;
+        // A collector's № in its accent, as on the spine.
+        if (here(x + w / 2)) this.glyphOn(f, g, x - g.pad, mid + size * 0.34 - g.baseline, look.style === 'number' && rule ? rule : ink, a);
+      }
+    }
+    // The flux mark beside VIDEO, as on the spine's foot.
+    const ms = Hb * 0.46;
+    let x = padX;
+    const icon = this.text.icon('flux', ms, dpr);
+    if (icon) {
+      if (here(x + ms / 2)) this.glyphOn(f, icon, x - icon.pad, mid - icon.h / 2, ink, 0.85 * a);
+      x += ms + Hb * 0.12;
+    }
+    const size = Hb * 0.22;
+    const g = this.text.get('VIDEO', { family: mono, size, weight: 500, spacing: 0.18 }, D - padX - x, dpr);
+    if (g && here(x + (g.w - g.pad * 2) / 2)) this.glyphOn(f, g, x - g.pad, mid + size * 0.34 - g.baseline, ink, 0.72 * a);
   }
 
   /** The back cover (the tape's left side): its colours and, where it shows, the words on it. */
@@ -1590,8 +1664,9 @@ export class GpuShelfView implements LensView {
       const icon = ai ? this.text.icon('spark', 9, dpr) : null;
       if (g) {
         const w = 12 + g.w - g.pad * 2 + (icon ? 13 : 0);
+        // On the poster, below the band.
         const x = 6;
-        const y = 6;
+        const y = this.band + 6;
         if (here(x + w / 2)) {
           const p = this.boxOn(f, x, y, w, pillH, KIND3D.solid, 4);
           b.color(p, PILL, (ai ? 0.86 : 0.72) * a);
@@ -1623,7 +1698,7 @@ export class GpuShelfView implements LensView {
       }
     } else if (isWatchedItem(item)) {
       const x = D - 26;
-      const y = 6;
+      const y = this.band + 6;
       if (here(x + 10)) {
         const c = this.boxOn(f, x, y, 20, 20, KIND3D.solid, 10);
         b.color(c, PILL, 0.6 * a);
@@ -1632,7 +1707,7 @@ export class GpuShelfView implements LensView {
       }
     } else if (isNew(item)) {
       const x = D - 16;
-      const y = 8;
+      const y = this.band + 8;
       if (here(x + 4)) {
         const glow = this.boxOn(f, x - 12, y - 12, 32, 32, KIND3D.shadow, 4);
         b.color(glow, WHITE, 0.8 * a);
@@ -2082,6 +2157,9 @@ export class GpuShelfView implements LensView {
       a.lift.v = 0;
       a.peek.x = peek;
       a.peek.v = 0;
+      // Posed now, not at the next frame: where it is can be asked at once (a flight lands on it).
+      const i = this.index.get(id);
+      if (i !== undefined) tapePose(this.rm ? 0 : lift, this.rm ? 0 : peek, this.dims(i), a.pose);
     }
     a.fade.set(peek, clock(), instant ? 0 : FADE_S);
     this.invalidate();
@@ -2477,7 +2555,24 @@ export class GpuShelfView implements LensView {
     return false;
   }
 
-  /** The sleeve when the tape is turned towards you, else the spine, as projected on screen (client coordinates). */
+  /** The face of tape `i` you see: its poster when it is turned towards you, else its spine (corners as projected, view px). */
+  private faceCorners(i: number): { c: ({ x: number; y: number } | null)[]; turned: boolean } | null {
+    const { m } = this;
+    const id = this.items[i].id;
+    const tw = this.widths[i];
+    const now = clock();
+    const a = this.anims.get(id);
+    const l = this.lookOf(this.items[i]);
+    this.placeTape(i, l, now);
+    const F = this.facesFor(tw);
+    const fade = a ? a.fade.value(now) : 0;
+    const pose = !a ? REST : this.rm || this.mini ? (fade > 0.5 ? tapePose(0, 1, this.dims(i)) : REST) : a.pose;
+    const turned = pose.ry < -Math.PI / 4;
+    const f = place(turned ? F.poster : F.spine, [this.dx[i], this.dy[i], this.dz[i]], pose, F.origin);
+    return { c: corners(f, { persp: m.persp, originX: this.ox, originY: this.oy }), turned };
+  }
+
+  /** The poster on the sleeve when the tape is turned towards you, else the spine, as projected on screen (client coordinates). */
   rectOf(id: Id): DOMRect | null {
     if (this.dom) return this.dom.rectOf(id);
     const i = this.index.get(id);
@@ -2487,23 +2582,58 @@ export class GpuShelfView implements LensView {
     const tw = this.widths[i];
     const sx = this.X[i] - this.scrollX;
     if (sx + tw < -m.D || sx > this.viewW + m.D) return new DOMRect(r.left + sx, r.top + this.Y[i], tw, m.H);
-    const now = clock();
-    const a = this.anims.get(id);
-    const l = this.lookOf(this.items[i]);
-    this.placeTape(i, l, now);
-    const F = this.facesFor(tw);
-    const fade = a ? a.fade.value(now) : 0;
-    const pose = !a ? REST : this.rm || this.mini ? (fade > 0.5 ? tapePose(0, 1, this.dims(i)) : REST) : a.pose;
-    const turned = pose.ry < -Math.PI / 4;
-    const f = place(turned ? F.right : F.spine, [this.dx[i], this.dy[i], this.dz[i]], pose, F.origin);
-    const c = corners(f, { persp: m.persp, originX: this.ox, originY: this.oy });
-    if (c.some((q) => !q)) return null;
-    const pts = c as { x: number; y: number }[];
+    const fc = this.faceCorners(i);
+    if (!fc || fc.c.some((q) => !q)) return null;
+    const pts = fc.c as { x: number; y: number }[];
     const xs = pts.map((q) => q.x);
     const ys = pts.map((q) => q.y);
     const x0 = Math.min(...xs);
     const y0 = Math.min(...ys);
     return new DOMRect(r.left + x0, r.top + y0, Math.max(...xs) - x0, Math.max(...ys) - y0);
+  }
+
+  /**
+   * The tape as you see it, for flights: its cover when turned towards you, else
+   * its spine, with a painting of the spine (a poster flying from it turns from
+   * the spine into the poster; one landing on it turns into the spine).
+   */
+  spotOf(id: Id): Spot | null {
+    if (this.dom) return this.dom.spotOf?.(id) ?? null;
+    const i = this.index.get(id);
+    if (i === undefined) return null;
+    const tw = this.widths[i];
+    const sx = this.X[i] - this.scrollX;
+    if (sx + tw < 0 || sx > this.viewW) return null;
+    const fc = this.faceCorners(i);
+    const r = this.root.getBoundingClientRect();
+    const quad = fc ? projectedQuad(fc.c, r.left, r.top) : null;
+    if (!fc || !quad) return null;
+    const art = this.items[i].poster;
+    const src = art ? this.posters.readyUrl(art) : null;
+    if (fc.turned) return { quad, radius: 1.5, src, lift: 0.55 };
+    return { quad, radius: 1.5, src, lift: 0.3, face: this.spineFace(i) };
+  }
+
+  /** Tape `i`'s spine painted on a canvas of its own (as the sprite sheet paints it, without the lamp). */
+  private spineFace(i: number): HTMLCanvasElement | null {
+    const l = this.lookOf(this.items[i]);
+    const tw = this.widths[i];
+    const k = Math.min(3, this.dpr);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.ceil(tw * k));
+    c.height = Math.max(1, Math.ceil(this.m.H * k));
+    // In the page while it paints, for the page's font smoothing (adopt says why).
+    c.style.display = 'none';
+    this.root.append(c);
+    const ctx = c.getContext('2d');
+    if (!ctx) {
+      c.remove();
+      return null;
+    }
+    paintSpine(ctx, l.item, l.look, { tw, H: this.m.H, W: this.m.W }, k, this.theme.fonts);
+    c.remove();
+    c.style.display = '';
+    return c;
   }
 
   /** The focus element, moved onto the tape (the shell gives it keyboard focus back after an overlay). */

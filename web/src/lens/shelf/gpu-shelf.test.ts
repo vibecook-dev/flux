@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { ItemSummary } from '../../api/types';
 import { corners } from '../gpu/scene3d';
 import { fallbackPalette } from '../palette';
-import { planShelf, shelfLayout, shelfMetrics, spineLook } from './geometry';
+import { bandHeight, bandLabel, collectorNo, planShelf, shelfLayout, shelfMetrics, spineLook, type SpineLook } from './geometry';
 import { asideFalloff, DWELL, FAST, intrusion, LIFT_C, LIFT_K, PEEK_C, PEEK_K, peekDepth, peekPath, peekWait, spring0, stepSpring, tapePose, TURN_FROM } from './peek';
-import { backKey, backLines, grayHex, mixBlackOklab, spineKey } from './spine';
+import { backKey, backLines, bandColors, grayHex, mixBlackOklab, offlineHex, spineKey } from './spine';
 import { apply, boxCorners, euler, facing, mul, place, REST, rotX, rotY, rotZ, splitAtDepth, tapeFaces, type M3, type TapeMove, type V3 } from './transform';
 
 // ── a CSS 3D reference: 4×4 matrices composed the way the DOM Shelf's CSS composes them ──
@@ -30,7 +30,7 @@ function cssTape(move: TapeMove, tw: number, H: number, D: number): M4 {
 }
 
 /** Each face element's box and transform (shelf.module.css), in the tape's space: corners TL, TR, BL, BR. */
-function cssFace(face: 'spine' | 'top' | 'right' | 'left', tw: number, H: number, D: number): V3[] {
+function cssFace(face: 'spine' | 'top' | 'right' | 'left' | 'poster', tw: number, H: number, D: number, band = 0): V3[] {
   let left = 0;
   let top = 0;
   let w = tw;
@@ -48,6 +48,13 @@ function cssFace(face: 'spine' | 'top' | 'right' | 'left', tw: number, H: number
     left = -D;
     w = D;
     m = about([0, H / 2, 0], from3(rotY(-Math.PI / 2)));
+  } else if (face === 'poster') {
+    // The sleeve in the right face, below the band (`.right .sleeve { inset: var(--band) 0 0 }`).
+    left = tw;
+    top = band;
+    w = D;
+    h = H - band;
+    m = about([tw, H / 2, 0], from3(rotY(Math.PI / 2)));
   }
   return [
     [left, top, 0],
@@ -88,7 +95,8 @@ describe('transform: place', () => {
   const tw = 39;
   const H = 294;
   const D = 162;
-  const F = tapeFaces(tw, H, D);
+  const band = bandHeight(D, H);
+  const F = tapeFaces(tw, H, D, band);
   const slot: V3 = [120, 80, -1.5];
   const moves: Record<string, TapeMove> = {
     rest: REST,
@@ -101,8 +109,8 @@ describe('transform: place', () => {
   for (const [name, move] of Object.entries(moves)) {
     it(`puts every face where the DOM Shelf's CSS puts it (${name})`, () => {
       const tape = mul4(tr(slot[0], slot[1], slot[2]), cssTape(move, tw, H, D));
-      for (const face of ['spine', 'top', 'right', 'left'] as const) {
-        const want = cssFace(face, tw, H, D).map((p) => at(tape, p));
+      for (const face of ['spine', 'top', 'right', 'left', 'poster'] as const) {
+        const want = cssFace(face, tw, H, D, band).map((p) => at(tape, p));
         const p = place(F[face], slot, move, F.origin);
         // The renderer's own corner maths (scene3d.ts `corners`, X then Y then Z), with no perspective.
         const got = corners(p, { persp: 0, originX: 0, originY: 0 });
@@ -355,6 +363,24 @@ describe('geometry: shelfMetrics and shelfLayout', () => {
     expect(mini.persp).toBe(760);
   });
 
+  it("leaves every cover a band above the whole poster, which spans the box's width", () => {
+    for (const [vw, vh, mini] of [
+      [1440, 900, false],
+      [390, 844, false],
+      [2560, 1440, false],
+      [1440, 900, true],
+    ] as const) {
+      for (const scale of [0.8, 1]) {
+        const m = shelfMetrics({ vw, vh, safeTop: 60, safeBottom: 90, mini, scale });
+        const band = bandHeight(m.D, m.H);
+        // A 2:3 poster D wide fills the rest exactly; the band is about a sixth of the box.
+        expect(m.H - band).toBe(m.D * 1.5);
+        expect(band / m.H).toBeGreaterThan(0.15);
+        expect(band / m.H).toBeLessThan(0.2);
+      }
+    }
+  });
+
   it('centres a short shelf and scrolls a long one from the left padding', () => {
     const m = shelfMetrics({ vw: 1440, vh: 900, safeTop: 76, safeBottom: 88, mini: false });
     const plan = (n: number) => planShelf({ widths: new Array<number>(n).fill(m.W), groups: new Array<string>(n).fill(''), rows: m.rows, fullW: m.fullW, bayW: m.bayW, W: m.W, gap: m.gap, secGap: m.secGap });
@@ -411,11 +437,28 @@ describe('spine painting keys', () => {
     expect(backKey(item(), look, 120, 220, 2)).not.toBe(backKey(item({ year: 1927 }), look, 120, 220, 2));
   });
 
+  it("prints a cover's band in its spine's colours, and says the year or a collector's №", () => {
+    const studio: SpineLook = { style: 'studio', bg: '#203040', bg2: '#101820', ink: '#f0e8d8', acc: '#c08040', top: '#405060' };
+    expect(bandColors(studio, false)).toEqual({ fill: '#203040', ink: '#f0e8d8', rule: '#c08040' });
+    expect(bandColors({ ...studio, style: 'band' }, false)).toEqual({ fill: '#c08040', ink: '#111113', rule: null });
+    expect(bandColors({ ...studio, style: 'clamw' }, false)).toEqual({ fill: '#faf8f2', ink: '#151518', rule: null });
+    // Offline, as its spine is filtered.
+    expect(bandColors(studio, true)).toEqual({ fill: offlineHex('#203040'), ink: offlineHex('#f0e8d8'), rule: offlineHex('#c08040') });
+    expect(bandLabel({ id: 42, year: 1926 }, { style: 'studio' })).toBe('1926');
+    expect(bandLabel({ id: 42, year: null }, { style: 'band' })).toBe('');
+    expect(bandLabel({ id: 42, year: 1926 }, { style: 'number' })).toBe(`№ ${collectorNo(42)}`);
+    expect(collectorNo(42)).toBe(collectorNo(42));
+    expect(collectorNo(42)).toBeGreaterThanOrEqual(101);
+    expect(collectorNo(42)).toBeLessThanOrEqual(980);
+  });
+
   it('greys and darkens colours the way the CSS filters and color-mix do', () => {
     expect(grayHex('#ff0000', false)).toBe('#ff0000');
     // grayscale(0.9): the filter's matrix, e.g. R' = 0.29134 R + 0.64368 G + 0.06498 B.
     expect(grayHex('#ff0000')).toBe('#4a3131');
     expect(grayHex('#808080')).toBe('#808080');
+    // grayscale(0.9) brightness(0.62): an offline tape's print.
+    expect(offlineHex('#ff0000')).toBe('#2e1e1e');
     // color-mix(in oklab, c 55%, #000): linear light × 0.55³; black and white stay put at the ends.
     expect(mixBlackOklab('#000000', 0.55)).toBe('#000000');
     expect(mixBlackOklab('#ffffff', 1)).toBe('#ffffff');

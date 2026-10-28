@@ -17,13 +17,14 @@
  *   that follows their projected size (in √2 steps, with hysteresis), so they stay
  *   crisp up close and don't shimmer far away, where they fade out.
  *
- * The DOM keeps the haze and vignette (core.ts), the Tour button, and invisible
- * buttons over the works in view (screen readers, keyboard focus, the item-page flight).
+ * The DOM keeps the haze and vignette (core.ts) and invisible buttons over the
+ * works in view (screen readers, keyboard focus, the item-page flight).
  */
 import type { Id, ItemSummary } from '../../api/types';
 import { sourceLabel } from '../../components/art-label';
 import { artLabel } from '../art';
 import { clamp, el } from '../dom';
+import { projectedQuad } from '../flight';
 import { cssColor, dcColor, hexColor, mixColor, paperOf } from '../gpu/colors';
 import type { Gpu } from '../gpu/device';
 import { classFor, posterCache, type PosterCache, type PosterHit } from '../gpu/posters';
@@ -33,7 +34,7 @@ import { inside, Quad3DBatch } from '../gpu/scene3d';
 import { textAtlas, wrap, type Glyph, type TextAtlas, type TextStyle } from '../gpu/text';
 import { paletteOf } from '../palette';
 import { isNew, isWatchedItem, progressFraction } from '../sections';
-import type { LensContext, LensModule, LensView } from '../types';
+import type { LensContext, LensModule, LensView, Spot } from '../types';
 import { AHEAD, BEHIND, CEIL, DEPTH, FLOOR, FRAME, FRAME_SHIFT, GalleryCore, H, JAMB, LINTEL, MAT, PH, PORTAL_AT, PW, PY, W, pieceLayout, plural, slotRange, wallLines, type EndSlot, type PieceLayout, type RoomSlot, type WorkSlot } from './core';
 import styles from './gallery.module.css';
 
@@ -48,6 +49,9 @@ export const FARTHEST = AHEAD + 2 * W;
  * layers are also drawn in this order; against the wall it is the depth test
  * that keeps them in front, at any distance in view.
  */
+/** A frame's backing board, seen while its print is away (flying). */
+const BACKING: RGBA = [0.13, 0.125, 0.12, 1];
+
 export const OFF = {
   spot: 1,
   shadow: 1.5,
@@ -748,6 +752,13 @@ class GpuGalleryView extends GalleryCore {
     b.color(o, t.bevel);
     b.sheen(o, lift);
     if (it.id !== this.hidden) this.print(w, L, al, at, mirror, lift);
+    else {
+      // Its print is flying (to the detail page, or to another lens): the frame's backing
+      // board shows where it was, dark (the bare bevel would be a bright white sheet).
+      o = this.onPiece(w, al, at, L.pw, L.ph, OFF.art, KINDR.solid, 0, mirror);
+      b.color(o, BACKING);
+      b.sheen(o, lift);
+    }
     o = this.onPiece(w, fl, ft, fw, fh, OFF.glaze, KINDR.linear, 1, mirror);
     b.color(o, WHITE);
     b.uv(o, 116 * DEG, 0, 0, 0);
@@ -1198,6 +1209,18 @@ class GpuGalleryView extends GalleryCore {
   rectOf(id: Id): DOMRect | null {
     if (this.dom) return this.dom.rectOf(id);
     return this.artRect(id);
+  }
+
+  /** A work's art on its wall as you see it (in perspective), for flights. */
+  spotOf(id: Id): Spot | null {
+    if (this.dom) return this.dom.spotOf?.(id) ?? null;
+    const w = this.works.find((x) => x.item.id === id);
+    if (!w) return null;
+    const L = this.layoutOf(w);
+    const rr = this.root.getBoundingClientRect();
+    const quad = projectedQuad(this.corners(w, L.fl + FRAME + MAT, L.ft + FRAME + MAT, L.pw, L.ph, OFF.art), rr.left, rr.top);
+    if (!quad) return null;
+    return { quad, radius: 0, src: w.item.poster ? this.posters.readyUrl(w.item.poster) : null, lift: 0.15, aspect: L.pw / L.ph };
   }
 
   artOf(id: Id): HTMLElement | null {

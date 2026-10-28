@@ -16,7 +16,12 @@
   min-height: 100dvh;
 }
 
-/* A page that scrolls the window (a videos library's folders). */
+/* A page that scrolls the window (a videos library's folders): the window scrolls again while it shows (base.css). */
+:global(html):has(.flow) {
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
 .flow {
   position: relative;
   z-index: 1;
@@ -133,6 +138,21 @@
 .overlay {
   position: relative;
   z-index: 20;
+}
+
+/* A page leaving (overlay-exit.ts): it takes no input; a title's page fades as its poster flies back. */
+.overlay[data-leaving] {
+  pointer-events: none;
+}
+
+.overlay[data-kind='item'][data-to='library'] {
+  animation: overlay-out 0.34s var(--out) forwards;
+}
+
+@keyframes overlay-out {
+  to {
+    opacity: 0;
+  }
 }
 
 .overlayFallback {

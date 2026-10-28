@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { back, navigate, type RouteProps } from '../app/router';
+import { useScreenLeaving } from '../app/screen';
 import { useTitle } from '../app/useTitle';
 import { api, FluxApiError } from '../api/client';
 import { resolveUrl } from '../config';
@@ -564,9 +565,15 @@ export default function Player({ params, query }: RouteProps) {
 
   const leave = useCallback(() => back(`/item/${itemId}`), [itemId]);
 
+  // Fading away (you went back): the keys belong to the page coming in.
+  const leavingScreen = useScreenLeaving();
+  const leavingNow = useRef(leavingScreen);
+  useEffect(() => {
+    leavingNow.current = leavingScreen;
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (leavingNow.current || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement;
       const onControl = t.tagName === 'BUTTON' || t.getAttribute('role') === 'menuitemradio';
       poke();

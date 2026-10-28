@@ -68,6 +68,42 @@
   }
 }
 
+/* Closing: it sinks away and the room comes back (overlay-exit.ts). */
+.wrap[data-leaving] .sheet {
+  animation: sink 0.32s cubic-bezier(0.4, 0, 0.7, 0.2) forwards;
+}
+
+.wrap[data-leaving] .back {
+  animation: unfade 0.32s cubic-bezier(0.4, 0, 0.7, 0.2) forwards;
+}
+
+@keyframes sink {
+  to {
+    transform: translateY(70px);
+    opacity: 0;
+  }
+}
+
+@keyframes unfade {
+  to {
+    opacity: 0;
+  }
+}
+
+/* There already when the page came up: no entrance. */
+.wrap[data-restored] .sheet,
+.wrap[data-restored] .back {
+  animation: none;
+}
+
+.wrap[data-restored][data-leaving] .sheet {
+  animation: sink 0.32s cubic-bezier(0.4, 0, 0.7, 0.2) forwards;
+}
+
+.wrap[data-restored][data-leaving] .back {
+  animation: unfade 0.32s cubic-bezier(0.4, 0, 0.7, 0.2) forwards;
+}
+
 @media (max-width: 640px) {
   .sheet {
     width: calc(100vw - 16px);

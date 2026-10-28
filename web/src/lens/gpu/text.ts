@@ -2,7 +2,7 @@
  * Text for GPU lenses. Each string is drawn once with Canvas 2D (so it uses the
  * page's own fonts and kerning), packed into one glyph texture, and drawn as a
  * quad tinted in the shader, on whole device pixels so it stays crisp. Icons
- * (the watched check, the AI spark) live in the same atlas.
+ * (the watched check, the AI spark, the flux mark) live in the same atlas.
  *
  * When the atlas fills up it starts over (`gen` bumps); a lens rebuilds its frame
  * if that happened while it was building one.
@@ -34,7 +34,7 @@ export interface Glyph {
   pad: number;
 }
 
-export type IconName = 'check' | 'spark';
+export type IconName = 'check' | 'spark' | 'flux';
 
 const SIZE = 2048;
 const PAD = 2;
@@ -100,6 +100,7 @@ export class TextAtlas {
     // outside the page gets the platform default (heavier on macOS than the page's
     // antialiased text): keep it in the page, hidden.
     this.canvas.hidden = true;
+    this.canvas.style.display = 'none';
     this.canvas.setAttribute('aria-hidden', 'true');
     document.body.append(this.canvas);
     const ctx = this.canvas.getContext('2d');
@@ -179,6 +180,13 @@ export class TextAtlas {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.stroke(new Path2D('M3.5 8.5l3 3 6-7'));
+    } else if (name === 'flux') {
+      // The flux mark (spine.ts), centred: its second stroke at 45%, as the spine paints it.
+      ctx.scale(px / 35, px / 35);
+      ctx.translate(0, 3.5);
+      ctx.fill(new Path2D('M2 26 L20 2 L27 2 L9 26 Z'));
+      ctx.globalAlpha = 0.45;
+      ctx.fill(new Path2D('M16 26 L28 10 L33 10 L21 26 Z'));
     } else {
       ctx.scale(px / 12, px / 12);
       ctx.fill(new Path2D('M6 1l1.1 3.4L10.5 5.5 7.1 6.6 6 10 4.9 6.6 1.5 5.5l3.4-1.1z'));
