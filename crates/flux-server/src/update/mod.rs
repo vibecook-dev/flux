@@ -287,16 +287,28 @@ impl Updater {
                 )),
                 Some("docker compose pull && docker compose up -d".to_string()),
             ),
-            InstallKind::Homebrew => none(InstallKind::Homebrew, None, Some("brew upgrade flux".to_string())),
-            InstallKind::Deb => none(
-                InstallKind::Deb,
-                Some("Install the new .deb from the release page with apt.".to_string()),
+            InstallKind::Homebrew => none(
+                InstallKind::Homebrew,
                 None,
+                Some("brew upgrade vibecook-dev/tap/flux".to_string()),
             ),
+            InstallKind::Deb => {
+                let deb = format!("flux-{to}-{}.deb", if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" });
+                none(
+                    InstallKind::Deb,
+                    Some("Install the new .deb with apt; the service restarts as the new version.".to_string()),
+                    Some(format!(
+                        "curl -fLO https://github.com/vibecook-dev/flux/releases/download/v{to}/{deb} && sudo apt install ./{deb}"
+                    )),
+                )
+            }
             InstallKind::Rpm => none(
                 InstallKind::Rpm,
-                Some("Install the new .rpm from the release page with dnf.".to_string()),
-                None,
+                Some("Install the new .rpm with dnf; the service restarts as the new version.".to_string()),
+                Some(format!(
+                    "sudo dnf install https://github.com/vibecook-dev/flux/releases/download/v{to}/flux-{to}-{}.rpm",
+                    std::env::consts::ARCH
+                )),
             ),
             InstallKind::Msi => none(
                 InstallKind::Msi,
@@ -660,4 +672,54 @@ pub fn put_in_place(install: &Install, top: &Path, replaced: &str) -> anyhow::Re
         let _ = std::fs::remove_dir_all(staging);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn updater(kind: InstallKind) -> Updater {
+        let d = std::env::temp_dir();
+        let mut s = Settings::for_server(&d, Some(false), None);
+        s.install = Install {
+            kind,
+            root: None,
+            layout: install::Layout::native(),
+        };
+        Updater::new(s, None)
+    }
+
+    /// The .deb, .rpm and Homebrew are told the command for the new version,
+    /// with the asset named as the release has it (release-assets.sh).
+    #[test]
+    fn packages_are_told_what_to_run() {
+        let deb = updater(InstallKind::Deb).install_info(Some("1.2.0-beta.1"));
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        assert_eq!(
+            deb.command.as_deref(),
+            Some(
+                format!(
+                    "curl -fLO https://github.com/vibecook-dev/flux/releases/download/v1.2.0-beta.1/flux-1.2.0-beta.1-{arch}.deb && sudo apt install ./flux-1.2.0-beta.1-{arch}.deb"
+                )
+                .as_str()
+            )
+        );
+        assert!(!deb.can_apply);
+        let rpm = updater(InstallKind::Rpm).install_info(Some("1.2.0"));
+        assert!(
+            rpm.command
+                .as_deref()
+                .is_some_and(|c| c.ends_with(&format!("/v1.2.0/flux-1.2.0-{}.rpm", std::env::consts::ARCH))),
+            "{rpm:?}"
+        );
+        let brew = updater(InstallKind::Homebrew).install_info(None);
+        assert_eq!(
+            brew.command.as_deref(),
+            Some("brew upgrade vibecook-dev/tap/flux")
+        );
+    }
 }

@@ -196,6 +196,25 @@ jobs:
           fi
       - name: Build flux-server and the flux command line
         run: cargo build --locked --release -p flux-server -p flux-cli --target "$TARGET"
+      # Developer ID signing and Apple's notarization, when the repository has
+      # the Apple secrets (docs/RELEASING.md, Signing); a warning until then.
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_API_KEY" ]; then
+            echo "::warning title=macOS binaries not signed::Add the Apple secrets to sign and notarize them (docs/RELEASING.md, Signing)."
+            exit 0
+          fi
+          files=("$CARGO_TARGET_DIR/$TARGET/release/flux-server" "$CARGO_TARGET_DIR/$TARGET/release/flux")
+          if [ -f sidecar/sidecar-slim ]; then files+=(sidecar/sidecar-slim); fi
+          scripts/package/macos-sign.sh "${files[@]}"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -233,6 +252,28 @@ jobs:
       - name: Smoke test${{ matrix.rosetta && ' (Rosetta 2)' || '' }}
         if: matrix.native || matrix.rosetta
         run: scripts/package/smoke-test.sh "dist/$PACKAGE" --port 18097
+      # The .deb and .rpm, made from the tarball by a pinned nFPM
+      # (scripts/package/linux-packages.sh; none for a "dev" build).
+      - name: Linux packages (.deb, .rpm)
+        if: contains(matrix.target, '-linux-')
+        env:
+          NFPM_VERSION: "2.48.0"
+        run: |
+          case "$(uname -m)" in
+            x86_64) asset="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" sha=6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750 ;;
+            aarch64) asset="nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz" sha=a9a75213763783b7669719e505474c748c5ad7dc66591a195619deb50f85c2f4 ;;
+            *) echo "::error::no nFPM for $(uname -m)"; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 --proto '=https' -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$asset"
+          (cd "$RUNNER_TEMP" && echo "$sha  $asset" | sha256sum -c - && tar -xzf "$asset" nfpm)
+          scripts/package/linux-packages.sh --tarball "dist/$PACKAGE" --out dist --nfpm "$RUNNER_TEMP/nfpm"
+      # Installed in Debian, Fedora and AlmaLinux containers, then removed.
+      - name: Smoke test the .deb and .rpm
+        if: contains(matrix.target, '-linux-')
+        run: |
+          if ! ls dist/*.deb > /dev/null 2>&1; then echo "No .deb or .rpm (a dev build)."; exit 0; fi
+          scripts/package/linux-smoke-test.sh --dist dist --version "$VERSION"
       - name: Summary
         run: |
           {
@@ -249,7 +290,10 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-${{ matrix.target }}
-          path: dist/${{ env.PACKAGE }}
+          path: |
+            dist/${{ env.PACKAGE }}
+            dist/*.deb
+            dist/*.rpm
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

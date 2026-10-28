@@ -99,6 +99,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/build.yml
+    # The signing secrets (Apple's; Azure's for Windows).
+    secrets: inherit
     with:
       ref: ${{ needs.prepare.outputs.ref }}
       version: ${{ needs.prepare.outputs.version }}
@@ -142,6 +144,8 @@ jobs:
           subject-path: |
             dist/flux-*.tar.gz
             dist/flux-*.zip
+            dist/flux-*.deb
+            dist/flux-*.rpm
           create-storage-record: false
       # --clobber replaces the assets an earlier, failed run of this draft
       # uploaded. Check again that it is still a draft: it may have been
@@ -191,3 +195,54 @@ jobs:
             --draft=false --prerelease="$PRERELEASE" --latest="$latest"
           url=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)
           echo "Published $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # The Homebrew formula (vibecook-dev/homebrew-tap, Formula/flux.rb), once
+  # the release is public: its downloads are what the formula points at.
+  # Needs the HOMEBREW_TAP_TOKEN secret (docs/RELEASING.md, Homebrew). A
+  # pre-release doesn't replace a stable version there.
+  homebrew:
+    name: Homebrew tap
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Without a tap token
+        if: env.TAP_TOKEN == ''
+        run: echo "::notice title=Homebrew tap not updated::Add a HOMEBREW_TAP_TOKEN secret to update vibecook-dev/homebrew-tap at each release (docs/RELEASING.md, Homebrew)."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.TAP_TOKEN != ''
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+      - name: Update Formula/flux.rb
+        if: env.TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p SHA256SUMS -D "$RUNNER_TEMP"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/vibecook-dev/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          current=$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/flux.rb 2> /dev/null || true)
+          case "$current" in
+            *-* | "") ;;
+            *)
+              case "$VERSION" in
+                *-*) echo "The tap has flux $current; $VERSION is a pre-release, so it stays."; exit 0 ;;
+              esac
+              ;;
+          esac
+          mkdir -p Formula
+          "$GITHUB_WORKSPACE/scripts/package/homebrew-formula.sh" --version "$VERSION" --sums "$RUNNER_TEMP/SHA256SUMS" > Formula/flux.rb
+          if git diff --quiet; then echo "Formula/flux.rb has flux $VERSION already."; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/flux.rb
+          git commit -m "flux $VERSION"
+          git push origin HEAD
+          echo "Homebrew: vibecook-dev/tap/flux is $VERSION" >> "$GITHUB_STEP_SUMMARY"

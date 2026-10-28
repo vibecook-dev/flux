@@ -1,0 +1,28 @@
+# flux as a system service, from the .deb or .rpm (scripts/package/linux-packages.sh):
+# run as the `flux` account (/usr/lib/sysusers.d/flux.conf), with its
+# settings in /etc/flux/flux.toml and its data in /var/lib/flux. Start it now and at
+# every boot: `sudo systemctl enable --now flux`; its log: `journalctl -u flux`.
+[Unit]
+Description=flux media server
+Documentation=https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=flux
+Group=flux
+ExecStart=/usr/bin/flux-server --config /etc/flux/flux.toml
+Environment=NO_COLOR=1
+StateDirectory=flux
+StateDirectoryMode=0750
+# A clean stop is the end; an error (or exit 75, flux asking to be started
+# again) brings it back.
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

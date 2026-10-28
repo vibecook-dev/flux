@@ -84,24 +84,34 @@ pub fn sidecar_file_name() -> String {
     format!("sidecar-slim{}", std::env::consts::EXE_SUFFIX)
 }
 
+/// Where a package puts the sidecar, from flux-server's folder `exe_dir`:
+/// beside it, or in `../libexec/flux/`.
+pub fn sidecar_places(exe_dir: &Path) -> [PathBuf; 2] {
+    [
+        exe_dir.join(sidecar_file_name()),
+        exe_dir.join("../libexec/flux").join(sidecar_file_name()),
+    ]
+}
+
 /// Find the Truffle Go sidecar: `explicit`, then `TRUFFLE_SIDECAR_PATH`,
 /// then [`sidecar_file_name`] next to the running executable (how a release
-/// package ships it). `scripts/package/fetch-sidecar.sh` downloads the one
-/// that matches truffle-core (docs/RELEASING.md, "The Truffle sidecar").
+/// archive ships it), then in `../libexec/flux/` from it (the .deb, the
+/// .rpm and Homebrew: `/usr/libexec/flux/sidecar-slim`, kept out of the
+/// `bin` folder on PATH). `scripts/package/fetch-sidecar.sh` downloads the
+/// one that matches truffle-core (docs/RELEASING.md, "The Truffle sidecar").
 pub fn resolve_sidecar(explicit: Option<&Path>) -> Result<PathBuf, NetError> {
     let mut tried = Vec::new();
+    // The real binary's directory, also when it was started through a
+    // symlink (macOS reports the symlink's path).
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .map(|exe| exe.canonicalize().unwrap_or(exe))
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let candidates = explicit
         .map(Path::to_path_buf)
         .into_iter()
         .chain(std::env::var_os("TRUFFLE_SIDECAR_PATH").map(PathBuf::from))
-        .chain(
-            // The real binary's directory, also when it was started through
-            // a symlink (macOS reports the symlink's path).
-            std::env::current_exe()
-                .ok()
-                .map(|exe| exe.canonicalize().unwrap_or(exe))
-                .and_then(|exe| exe.parent().map(|dir| dir.join(sidecar_file_name()))),
-        );
+        .chain(exe_dir.iter().flat_map(|dir| sidecar_places(dir)));
     for candidate in candidates {
         if candidate.is_file() {
             return Ok(candidate);
@@ -608,6 +618,23 @@ mod tests {
         );
         let exe = std::env::current_exe().unwrap();
         assert_eq!(resolve_sidecar(Some(&exe)).unwrap(), exe);
+    }
+
+    /// The .deb, .rpm and Homebrew keep the sidecar out of the folder on PATH.
+    #[test]
+    fn packages_keep_the_sidecar_in_libexec() {
+        let d = std::env::temp_dir().join(format!("flux-sidecar-places-{}", std::process::id()));
+        let bin = d.join("bin");
+        let libexec = d.join("libexec/flux");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&libexec).unwrap();
+        std::fs::write(libexec.join(sidecar_file_name()), b"").unwrap();
+        let found = sidecar_places(&bin).into_iter().find(|p| p.is_file()).unwrap();
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            libexec.join(sidecar_file_name()).canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Windows looked for `sidecar-slim` without `.exe`, so a sidecar
