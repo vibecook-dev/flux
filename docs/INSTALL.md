@@ -147,12 +147,18 @@ attestation.
 ### Running it
 
 ```sh
+flux-server
+```
+
+Open <http://127.0.0.1:8096> and follow *Set up flux* ([Setting flux
+up](#setting-flux-up)). Or name the libraries when you start flux, and it
+creates them on first run:
+
+```sh
 flux-server --library Movies:movies:/path/to/Movies --library TV:shows:/path/to/TV
 ```
 
-Open <http://127.0.0.1:8096>. Libraries named on the command line are created
-on first run; you can also add them on the Admin screen. The catalog,
-artwork and caches live in `~/Library/Application Support/flux` (macOS) or
+The catalog, artwork and caches live in `~/Library/Application Support/flux` (macOS) or
 `~/.local/share/flux` (Linux) unless you pass `--data-dir`; the first log
 line and `flux-server --check` name the folder. While flux is stopped, the
 folder can be moved or copied as a whole (point `--data-dir` at the new
@@ -205,8 +211,8 @@ The `flux` user needs read access to the library folders.
 A folder can be in only one library. When a `--library` flag or
 `[[library]]` entry creates a library whose folder another library already
 has, or one inside or around it (`/media` beside `/media/kids`), flux-server
-stops with exit status 1 and says which library has it. The Admin screen
-refuses such a folder too. Earlier alphas allowed overlapping libraries;
+stops with exit status 1 and says which library has it. Setting up and the
+Libraries screen refuse such a folder too. Earlier alphas allowed overlapping libraries;
 libraries that already exist in a catalog are left as they are.
 
 ```ini
@@ -240,9 +246,11 @@ plain text. `NO_COLOR=1` turns colour off everywhere; v0.1.0-alpha.1 needs it
 to keep colour codes out of the journal.
 
 With the default `localhost_role`, the Owner is whoever connects on the
-server's own 127.0.0.1. To use the Admin screen from another machine,
-forward the port over SSH (`ssh -L 8096:127.0.0.1:8096 <server>`) and open
-<http://127.0.0.1:8096>.
+server's own 127.0.0.1. To set flux up from another machine, open the
+[owner link](#the-owner-link) from the journal (`journalctl -u flux | grep
+own#`), or make a new one with `sudo -u flux flux-server owner-link --config
+/etc/flux.toml`. Forwarding the port over SSH (`ssh -L
+8096:127.0.0.1:8096 <server>`, then <http://127.0.0.1:8096>) works too.
 
 For hardware transcoding through VAAPI or Quick Sync, add the `flux` user to
 the `render` (and `video`) group.
@@ -351,12 +359,14 @@ with libx264.
 ```powershell
 cd "$env:LOCALAPPDATA\Programs\flux"
 .\flux-server.exe --check
-.\flux-server.exe --library "Movies:movies:D:\Media\Movies" --library "TV:shows:D:\Media\TV"
+.\flux-server.exe
 ```
 
 `--check` shows the ffmpeg, the encoder, the data dir and the web client
-flux found. Then open <http://127.0.0.1:8096>; you can also add libraries
-on the Admin screen. The catalog, artwork and caches live in
+flux found. Then open <http://127.0.0.1:8096> and follow *Set up flux*
+([Setting flux up](#setting-flux-up)), or name the libraries when you start
+flux (`--library "Movies:movies:D:\Media\Movies"`, repeatable) and it creates
+them on first run. The catalog, artwork and caches live in
 `%LOCALAPPDATA%\flux` unless you pass `--data-dir` (or set
 `FLUX_DATA_DIR`); the first log line names the folder. Builds up to
 0.1.0-alpha.2 used `%HOME%\.local\share\flux`, or `flux-data` in the
@@ -521,11 +531,13 @@ where a connection comes from, not by the listener:
   can browse and play, but cannot add libraries, start scans or change
   remote access.
 
-So name the libraries up front with `FLUX_LIBRARIES` (or a TOML file passed
+So to set flux up from a browser, even on the Docker host, open the
+[owner link](#the-owner-link) in the container's log (`docker logs flux`),
+or make a new one with `docker exec flux flux-server owner-link`. Setting up
+picks folders inside the container: mount your media under `/media` first.
+Or name the libraries up front with `FLUX_LIBRARIES` (or a TOML file passed
 with `FLUX_CONFIG`, kept in `/config`). New files are picked up by the folder
-watcher; with `FLUX_NO_WATCH=1`, restart the container to rescan. To act as
-the Owner from the host, run the container with `--network host` and use
-<http://localhost:8096>, or reach it over your tailnet.
+watcher; with `FLUX_NO_WATCH=1`, restart the container to rescan.
 
 ### Host names
 
@@ -560,6 +572,69 @@ flux is MIT (`/opt/flux/LICENSE`, `/opt/flux/THIRD_PARTY_LICENSES`). The
 bundled jellyfin-ffmpeg is GPL: its licence, the source links and a written
 offer are in `/usr/share/licenses/jellyfin-ffmpeg/`, and every release
 attaches the matching source tarball.
+
+## Setting flux up
+
+The first time flux runs it has no libraries, and its page offers *Set up
+flux*: three steps, which you can come back to from the Libraries screen.
+
+1. **Your films and shows.** Pick folders on the computer flux runs on: its
+   home folder, drives and mounted shares come first, or type a path. flux
+   counts the videos in a folder (by their names; it opens no files), says
+   whether they look like films, TV shows or both, and suggests the
+   library's name and kind.
+2. **Playback.** Whether flux found ffmpeg, and which encoder converts video.
+   Without ffmpeg flux plays only what a device can play as it is; this step
+   says how to install it on this system.
+3. **Other devices.** This machine's addresses on the network, with QR codes,
+   and remote access over Tailscale.
+
+Setting up needs the Owner. flux knows its owner by where a call comes from:
+the computer flux runs on (unless `--localhost-role none`), or the owner's
+Tailscale login on the tailnet. A browser elsewhere on the network, or on
+the host of a Docker container (which reaches flux through Docker's
+network), can browse and play but not add libraries until an owner link
+makes it an owner.
+
+### The owner link
+
+While flux has no libraries and another device needs a link (one on the
+network, or the Docker host), its log has one that works once, within a
+day:
+
+```text
+flux has no libraries yet: set it up at http://localhost:8096/setup, or open http://192.168.1.20:8097/own#Xr3… on another device on this network: that makes the browser an owner …
+```
+
+Open it in the browser that should be an owner and confirm. In Docker the
+link says `localhost`, which is right on the Docker host; from another
+machine, put the host's address in its place. That browser becomes an
+**owner device**: flux gives it a key, which the page keeps in the
+browser's storage for flux's address and sends with every request, and
+treats it as the Owner. A link made by an admin makes admins instead. To
+make another link:
+
+- `flux-server owner-link`, as the account flux runs as (it reads a key
+  in the data dir), with the server's `--config` or `--data-dir` if it has
+  them. As another user, `sudo -u flux flux-server owner-link --config
+  /etc/flux.toml` and the like;
+- `docker exec flux flux-server owner-link` for the container;
+- *Add a device* under *Owner devices* on the Libraries screen, with a QR
+  code for a phone.
+
+When this machine's browsers aren't flux's owner (`--localhost-role none`
+on a machine other people log in to), the log has no link, since anyone
+who can read the log could open it: use `flux-server owner-link`.
+
+The Libraries screen lists owner devices, with who added each; *Remove*
+signs one out at once, and one that hasn't been seen for 180 days stops
+working. The data dir keeps only a hash of each device's key
+(`devices.json`, readable by flux's account only). Over plain HTTP (the
+`--lan` listener, or Docker's published port), someone who can watch your
+network's traffic could copy a key, so remove devices you no longer use;
+the tailnet encrypts it. Clearing the browser's site data signs it out
+too (Safari clears a site's data by itself when it goes unopened for seven
+days of browsing): make another link.
 
 ## Updating
 

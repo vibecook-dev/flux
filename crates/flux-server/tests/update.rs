@@ -297,7 +297,9 @@ async fn gone(port: u16) {
 }
 
 async fn update_info(http: &reqwest::Client, server: &Running) -> Option<UpdateInfo> {
+    // Admin reads carry the cross-site guard's header, like every change.
     http.get(server.url("/api/v1/admin/update"))
+        .header(flux_core::api::REQUEST_HEADER, "1")
         .send()
         .await
         .ok()?

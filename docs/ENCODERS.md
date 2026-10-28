@@ -193,7 +193,8 @@ tone mapping. With `FLUX_VIDEO_ENCODER=libx264` the same machine reports
 encoder. `--check` probes every candidate, not just up to the first that
 passes, and exits 1 when ffmpeg or ffprobe cannot run (2 for a bad flag).
 `--doctor` is an alias. Owners and admins get the same report as JSON from
-`GET /api/v1/admin/media-tools`, from the server's cached detection.
+`GET /api/v1/admin/media-tools` (with the header `X-Flux-Request: 1`, like
+every admin request), from the server's cached detection.
 
 ## Platforms
 

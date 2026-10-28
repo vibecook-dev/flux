@@ -16,6 +16,7 @@ import { LIBRARY_KINDS, type Library, type LibraryKind, type ScanStatus } from '
 import { Link } from '../app/Link';
 import { Icon } from '../components/Icon';
 import styles from './Admin.module.css';
+import { OwnerDevices } from './OwnerDevices';
 import { UpdatePanel } from './UpdatePanel';
 import { STATE_LABEL, applyScanProgress, lastScanLine, metadataNote, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
 
@@ -67,7 +68,20 @@ function ScanReadout({ lib, rate }: { lib: Library; rate: Rate | undefined }) {
   return <p className={styles.lastScan}>{line ?? 'Not scanned yet.'}</p>;
 }
 
-function LibraryCard({ lib, rate, offlineRoots, onScan, scanError }: { lib: Library; rate: Rate | undefined; offlineRoots: Set<string>; onScan: () => void; scanError: string | null }) {
+function LibraryCard({
+  lib,
+  rate,
+  offlineRoots,
+  onScan,
+  scanError,
+}: {
+  lib: Library;
+  rate: Rate | undefined;
+  offlineRoots: Set<string>;
+  /** Only the owner and admins scan. */
+  onScan: (() => void) | null;
+  scanError: string | null;
+}) {
   const scanning = lib.scan.state === 'scanning';
   return (
     <article className={styles.lib} data-state={lib.scan.state}>
@@ -80,10 +94,12 @@ function LibraryCard({ lib, rate, offlineRoots, onScan, scanError }: { lib: Libr
             {KIND_LABEL[lib.kind]} · {formatCount(lib.item_count)} items · <span className={styles.state}>{stateLabel(lib, offlineRoots)}</span>
           </p>
         </div>
-        <button type="button" className="btn btn-sm" onClick={onScan} disabled={scanning}>
-          <Icon name="refresh" />
-          {scanning ? 'Scanning…' : 'Scan now'}
-        </button>
+        {onScan && (
+          <button type="button" className="btn btn-sm" onClick={onScan} disabled={scanning}>
+            <Icon name="refresh" />
+            {scanning ? 'Scanning…' : 'Scan now'}
+          </button>
+        )}
       </header>
       <ul className={styles.roots}>
         {lib.roots.map((root) => {
@@ -309,10 +325,19 @@ export default function Admin() {
             <span aria-hidden="true" /> {events === 'open' ? 'Live' : events === 'reconnecting' ? 'Reconnecting…' : events === 'connecting' ? 'Connecting…' : 'Offline'}
           </p>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
-          <Icon name="plus" /> Add library
-        </button>
+        {admin && (
+          <div className={styles.headActions}>
+            <Link to="/setup" className="btn">
+              <Icon name="folder" /> Browse folders
+            </Link>
+            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+              <Icon name="plus" /> Add library
+            </button>
+          </div>
+        )}
       </header>
+
+      {s && !admin && <p className={styles.metadataNote}>flux’s owner adds libraries and starts scans: on the computer flux runs on, or from a browser an owner link made an owner.</p>}
 
       <p className="visually-hidden" aria-live="polite">
         {announce}
@@ -363,14 +388,16 @@ export default function Admin() {
       )}
 
       <div className={styles.libs}>
-        {libs.data?.map((l) => <LibraryCard key={l.id} lib={l} rate={rates[l.id]} offlineRoots={offline} onScan={() => scan(l)} scanError={scanErrors[l.id] ?? null} />)}
+        {libs.data?.map((l) => <LibraryCard key={l.id} lib={l} rate={rates[l.id]} offlineRoots={offline} onScan={admin ? () => scan(l) : null} scanError={scanErrors[l.id] ?? null} />)}
         {!libs.data && [0, 1, 2].map((i) => <div key={i} className={`skeleton ${styles.libSkeleton}`} />)}
         {libs.data?.length === 0 && (
           <div className={styles.empty}>
-            <p>No libraries yet. Add a folder of films or shows to get started.</p>
+            <p>No libraries yet. {admin ? 'Browse the server’s folders to add your films and shows.' : 'flux’s owner adds them.'}</p>
           </div>
         )}
       </div>
+
+      {admin && <OwnerDevices />}
 
       <AddLibraryDialog open={adding} onClose={() => setAdding(false)} />
     </div>

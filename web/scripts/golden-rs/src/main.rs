@@ -566,6 +566,18 @@ fn agent_item_detail(guess: &NameGuess) -> AgentItemDetail {
     }
 }
 
+fn device_info() -> DeviceInfo {
+    DeviceInfo {
+        id: "3f9a2c1e7b04".into(),
+        name: "Safari on iPad".into(),
+        role: Role::Owner,
+        added_by: "this computer".into(),
+        created_at: 1_793_059_384_000,
+        last_seen_at: 1_793_062_984_000,
+        this_device: true,
+    }
+}
+
 fn update_info() -> UpdateInfo {
     UpdateInfo {
         current: "0.1.0-alpha.4".into(),
@@ -616,6 +628,7 @@ fn main() {
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
         "MetadataSource": variants!(MetadataSource: None, Tmdb, Exports),
         "InstallKind": variants!(InstallKind: Archive, Docker, Homebrew, Deb, Rpm, Msi, Source),
+        "PlaceKind": variants!(PlaceKind: Network, ThisMachine, DockerHost),
         "UpdatePhase": variants!(UpdatePhase: Idle, Checking, Downloading, Verifying, Installing, Restarting, Failed),
         // The agent contract (flux_core::agent; web/src/api/agent.ts).
         "Gap": variants!(Gap: Identity, Year, Overview, Poster, Backdrop, EpisodeTitles, Offline),
@@ -863,6 +876,28 @@ fn main() {
         ],
         "UpdateInfo": v(&update_info()),
         "UpdateSettings": v(&UpdateSettings { check: false }),
+        "OwnerLink": v(&OwnerLink {
+            path: "/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4".into(),
+            expires_at: 1_793_145_784_000,
+            places: vec![
+                LinkPlace { url: "http://192.168.1.20:8097/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4".into(), place: PlaceKind::Network },
+                LinkPlace { url: "http://localhost:8096/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4".into(), place: PlaceKind::ThisMachine },
+                LinkPlace { url: "http://localhost:8096/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4".into(), place: PlaceKind::DockerHost },
+            ],
+        }),
+        "ClaimOwner": v(&ClaimOwner { token: "8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4".into(), name: "Safari on iPad".into() }),
+        "DeviceInfo": v(&device_info()),
+        "ClaimedOwner": v(&ClaimedOwner { device: device_info(), key: "Qm3vT8kZp2Lw9xNc4RbY7hD1sF6gJ0aE5uI8oK2tV3y".into() }),
+        "BrowseResult": v(&BrowseResult {
+            path: Some("/Volumes/Media".into()),
+            parent: Some("/Volumes".into()),
+            folders: vec![
+                BrowseFolder { name: "Films".into(), path: "/Volumes/Media/Films".into(), videos: Some(412) },
+                BrowseFolder { name: "Archive".into(), path: "/Volumes/Media/Archive".into(), videos: None },
+            ],
+            here: Some(FolderSummary { videos: 600, more: true, films: 410, episodes: 120, kind: Some(LibraryKind::Mixed), taken_by: None }),
+        }),
+        "Addresses": v(&Addresses { local: "http://localhost:8096".into(), lan: vec!["http://192.168.1.20:8097".into()] }),
         "AgentItemDetail": v(&agent_item_detail(&name_guess)),
         "ChangesListOutput": v(&ChangesListOutput { changesets: vec![changeset_summary()], next: None, proposed: 1 }),
         "Changeset": v(&changeset()),

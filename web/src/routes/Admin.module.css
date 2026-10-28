@@ -334,3 +334,9 @@
     flex-direction: column;
   }
 }
+
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

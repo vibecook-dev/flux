@@ -33,6 +33,13 @@ import type {
   TailnetInfo,
   UpdateInfo,
   UpdateSettings,
+  BrowseResult,
+  ClaimedOwner,
+  ClaimOwner,
+  DeviceInfo,
+  MediaTools,
+  LibraryKind,
+  OwnerLink,
 } from '../api/types';
 import { FOLDER_SORTS, ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
 import { channelLayout, codecShort, planLabel } from '../api/explain';
@@ -59,6 +66,10 @@ export interface MockOptions {
   webBuild?: string | null;
   /** flux's own updates: a newer release out (this install updates itself, or is the Docker image), or none. */
   update?: 'available' | 'docker' | 'none';
+  /** A fresh server: no libraries until the setup screen adds one. */
+  empty?: boolean;
+  /** ffmpeg isn't installed on the "server". */
+  noFfmpeg?: boolean;
   /** Prefix for handler paths; tests in Node use an absolute origin. */
   origin?: string;
 }
@@ -163,6 +174,71 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
     previous: null,
   };
   const updateChanged = () => broadcast({ type: 'update', info: structuredClone(update) });
+
+  // A fresh server (?mock_empty=1): the seeded libraries stay out of sight.
+  const hidden = new Set(opts.empty ? db.libraries.map((l) => l.id) : []);
+  const visibleLibraries = () => db.libraries.filter((l) => !hidden.has(l.id));
+
+  // The setup screen's folder browser, over a made-up disk.
+  const FOLDERS: Record<string, [string, number | null][]> = {
+    '/': [['Users', 0], ['Volumes', 1000]],
+    '/Users': [['james', 12]],
+    '/Users/james': [['Desktop', 0], ['Downloads', 9], ['Movies', 3]],
+    '/Volumes': [['Media', 1000], ['Backup', null]],
+    '/Volumes/Media': [['Films', 412], ['TV', 1000], ['Home Videos', 238]],
+    '/Volumes/Media/Films': [['Heat (1995)', 1], ['Alien (1979)', 1], ['Arrival (2016)', 1]],
+    '/Volumes/Media/TV': [['Severance', 19], ['The Bear', 28], ['Slow Horses', 30]],
+  };
+  const KINDS: Record<string, { films: number; episodes: number; kind: LibraryKind | null }> = {
+    '/Volumes/Media': { films: 380, episodes: 220, kind: 'mixed' },
+    '/Volumes/Media/Films': { films: 412, episodes: 0, kind: 'movies' },
+    '/Volumes/Media/TV': { films: 0, episodes: 600, kind: 'shows' },
+    '/Volumes/Media/Home Videos': { films: 4, episodes: 0, kind: 'videos' },
+  };
+  const browse = (path: string | null): BrowseResult => {
+    if (!path) {
+      return {
+        path: null,
+        parent: null,
+        folders: [
+          { name: 'Home', path: '/Users/james', videos: null },
+          { name: 'Media', path: '/Volumes/Media', videos: null },
+          { name: 'This computer', path: '/', videos: null },
+        ],
+        here: null,
+      };
+    }
+    const clean = path.length > 1 ? path.replace(/\/+$/, '') : path;
+    const kids = FOLDERS[clean] ?? [];
+    const k = KINDS[clean] ?? { films: 0, episodes: 0, kind: null };
+    const videos = kids.reduce((n, [, v]) => n + (v ?? 0), 0);
+    const taken = db.libraries.find((l) => !hidden.has(l.id) && l.roots.some((r) => r.path === clean || clean.startsWith(`${r.path}/`) || r.path.startsWith(`${clean}/`)));
+    return {
+      path: clean,
+      parent: clean === '/' ? null : clean.slice(0, clean.lastIndexOf('/')) || '/',
+      folders: kids.map(([name, v]) => ({ name, path: `${clean === '/' ? '' : clean}/${name}`, videos: v })),
+      here: { videos: Math.min(videos, 600), more: videos > 600, films: k.films, episodes: k.episodes, kind: videos ? (k.kind ?? 'movies') : null, taken_by: taken?.name ?? null },
+    };
+  };
+  const tools: MediaTools = {
+    platform: 'macos aarch64',
+    ffmpeg: opts.noFfmpeg
+      ? { path: 'ffmpeg', version: null, error: 'not found on PATH or in /opt/homebrew/bin' }
+      : { path: '/opt/homebrew/bin/ffmpeg', version: 'ffmpeg version 9.0.2', error: null },
+    ffprobe: opts.noFfmpeg ? { path: 'ffprobe', version: null, error: 'not found' } : { path: '/opt/homebrew/bin/ffprobe', version: 'ffprobe version 9.0.2', error: null },
+    video: [{ codec: 'h264', encoder: opts.noFfmpeg ? null : 'video_toolbox', hardware: !opts.noFfmpeg, tonemap: opts.noFfmpeg ? null : 'gpu' }],
+    aac_encoder: !opts.noFfmpeg,
+    missing: opts.noFfmpeg
+      ? [
+          'ffprobe: not found: AVI and some MPEG-TS files cannot be indexed, and the scan’s fallback probe is off (install ffmpeg, or pass --ffprobe)',
+          'ffmpeg: not found on PATH or in /opt/homebrew/bin: no audio or video transcodes and no frame posters (install ffmpeg, or pass --ffmpeg)',
+        ]
+      : [],
+    ok: !opts.noFfmpeg,
+  };
+  // Owner links and owner devices.
+  const links = new Set<string>();
+  const devices: DeviceInfo[] = [];
   /** The steps of an update, as the real server reports them; then "restarted" as the new version. */
   const runUpdate = async () => {
     const total = 25_185_736;
@@ -309,7 +385,61 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
 
     http.get(u('/api/v1/libraries'), async () => {
       await wait();
-      return HttpResponse.json(db.libraries);
+      return HttpResponse.json(visibleLibraries());
+    }),
+
+    http.get(u('/api/v1/admin/browse'), async ({ request }) => {
+      await wait();
+      const path = new URL(request.url).searchParams.get('path');
+      if (path && !path.startsWith('/')) return new HttpResponse(`"${path}" is not an absolute path`, { status: 400 });
+      return HttpResponse.json(browse(path));
+    }),
+
+    http.get(u('/api/v1/admin/media-tools'), async () => {
+      await wait();
+      return HttpResponse.json(tools);
+    }),
+
+    http.get(u('/api/v1/admin/addresses'), async () => {
+      await wait();
+      return HttpResponse.json({ local: 'http://localhost:8096', lan: ['http://192.168.1.20:8097'] });
+    }),
+
+    http.post(u('/api/v1/admin/owner-links'), async () => {
+      await wait();
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join('');
+      links.add(token);
+      const path = `/own#${token}`;
+      const link: OwnerLink = { path, expires_at: Date.now() + 86_400_000, places: [{ url: `http://192.168.1.20:8097${path}`, place: 'network' }] };
+      return HttpResponse.json(link);
+    }),
+
+    // Like the server: a used link is 410; "demo" always works (?mock_* scenarios).
+    http.post(u('/api/v1/owner/claim'), async ({ request }) => {
+      await wait();
+      const body = (await request.json()) as ClaimOwner;
+      if (!links.delete(body.token) && body.token !== 'demo') {
+        return new HttpResponse('This owner link doesn’t work any more: a link works once, within a day. Make a new one on the server with `flux-server owner-link`.', { status: 410 });
+      }
+      const id = (hash32(body.token) >>> 0).toString(16).padStart(12, '0');
+      const device: DeviceInfo = { id, name: body.name, role: 'owner', added_by: 'this computer', created_at: Date.now(), last_seen_at: Date.now(), this_device: true };
+      devices.forEach((d) => (d.this_device = false));
+      devices.push(device);
+      const claimed: ClaimedOwner = { device, key: `mock-key-${id}` };
+      return HttpResponse.json(claimed);
+    }),
+
+    http.get(u('/api/v1/admin/devices'), async () => {
+      await wait();
+      return HttpResponse.json(devices);
+    }),
+
+    http.delete(u('/api/v1/admin/devices/:id'), async ({ params }) => {
+      await wait();
+      const at = devices.findIndex((d) => d.id === params.id);
+      if (at < 0) return new HttpResponse('No such device', { status: 404 });
+      devices.splice(at, 1);
+      return new HttpResponse(null, { status: 204 });
     }),
 
     http.post(u('/api/v1/libraries'), async ({ request }) => {

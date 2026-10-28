@@ -281,6 +281,11 @@
     "NamingScheme": [
       "standard"
     ],
+    "PlaceKind": [
+      "network",
+      "this_machine",
+      "docker_host"
+    ],
     "Role": [
       "owner",
       "admin",
@@ -651,6 +656,12 @@
     ]
   ],
   "samples": {
+    "Addresses": {
+      "lan": [
+        "http://192.168.1.20:8097"
+      ],
+      "local": "http://localhost:8096"
+    },
     "AgentItemDetail": {
       "art": [
         {
@@ -837,6 +848,30 @@
       },
       "year": 1979
     },
+    "BrowseResult": {
+      "folders": [
+        {
+          "name": "Films",
+          "path": "/Volumes/Media/Films",
+          "videos": 412
+        },
+        {
+          "name": "Archive",
+          "path": "/Volumes/Media/Archive",
+          "videos": null
+        }
+      ],
+      "here": {
+        "episodes": 120,
+        "films": 410,
+        "kind": "mixed",
+        "more": true,
+        "taken_by": null,
+        "videos": 600
+      },
+      "parent": "/Volumes",
+      "path": "/Volumes/Media"
+    },
     "ChangesListOutput": {
       "changesets": [
         {
@@ -906,6 +941,22 @@
       "reverted_by": null,
       "state": "applied",
       "summary": "Identified Stalker (1979) from its Russian container title"
+    },
+    "ClaimOwner": {
+      "name": "Safari on iPad",
+      "token": "8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4"
+    },
+    "ClaimedOwner": {
+      "device": {
+        "added_by": "this computer",
+        "created_at": 1793059384000,
+        "id": "3f9a2c1e7b04",
+        "last_seen_at": 1793062984000,
+        "name": "Safari on iPad",
+        "role": "owner",
+        "this_device": true
+      },
+      "key": "Qm3vT8kZp2Lw9xNc4RbY7hD1sF6gJ0aE5uI8oK2tV3y"
     },
     "CollectionItems": {
       "collection": {
@@ -1037,6 +1088,15 @@
           "reason": "it changed again since"
         }
       ]
+    },
+    "DeviceInfo": {
+      "added_by": "this computer",
+      "created_at": 1793059384000,
+      "id": "3f9a2c1e7b04",
+      "last_seen_at": 1793062984000,
+      "name": "Safari on iPad",
+      "role": "owner",
+      "this_device": true
     },
     "ErrorBody": {
       "error": {
@@ -1682,6 +1742,24 @@
       "title": "Breaking Bad",
       "video_codec": "x264",
       "year": 2008
+    },
+    "OwnerLink": {
+      "expires_at": 1793145784000,
+      "path": "/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4",
+      "places": [
+        {
+          "place": "network",
+          "url": "http://192.168.1.20:8097/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4"
+        },
+        {
+          "place": "this_machine",
+          "url": "http://localhost:8096/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4"
+        },
+        {
+          "place": "docker_host",
+          "url": "http://localhost:8096/own#8wXq1fJ0kM4w7dT5gD2bY3nV9cR6aP1sL0eH8uZ2iQ4"
+        }
+      ]
     },
     "PageItemSummary": {
       "items": [

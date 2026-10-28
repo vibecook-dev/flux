@@ -770,6 +770,135 @@ pub struct UpdateSettings {
     pub check: bool,
 }
 
+/// `POST /api/v1/admin/owner-links` (Owner or Admin): a one-time link that
+/// makes the browser opening it an owner device, for setting flux up from a
+/// machine flux can't identify (the LAN, a Docker host). The devices it
+/// makes have the role of whoever made it (an admin's link makes admins).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerLink {
+    /// The path to open on this server, token included: `/own#<token>`.
+    pub path: String,
+    /// When it stops working (Unix epoch milliseconds). It works once.
+    pub expires_at: i64,
+    /// Where a browser that needs the link opens it, as far as flux knows:
+    /// this machine's addresses on the network, `localhost` on a Docker
+    /// host, or this machine when its browsers are anonymous. Empty when
+    /// nothing but this machine reaches flux and its browsers are its owner.
+    pub places: Vec<LinkPlace>,
+}
+
+/// One address an owner link opens at ([`OwnerLink::places`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkPlace {
+    /// The whole link, token included.
+    pub url: String,
+    pub place: PlaceKind,
+}
+
+/// Where a [`LinkPlace`] works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceKind {
+    /// Another device on this network, by one of this machine's addresses.
+    Network,
+    /// A browser on the machine flux runs on.
+    ThisMachine,
+    /// The Docker host, through the port the container publishes.
+    DockerHost,
+}
+
+/// `POST /api/v1/owner/claim`: the token from an owner link, and a name
+/// for the device (shown in the device list).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimOwner {
+    pub token: String,
+    pub name: String,
+}
+
+/// What `POST /api/v1/owner/claim` answers: the new owner device, and the
+/// key it sends as `X-Flux-Device` from now on. The web client keeps the key
+/// in its own storage, which (unlike a cookie) no other server on the same
+/// host gets; flux keeps only the key's SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimedOwner {
+    pub device: DeviceInfo,
+    pub key: String,
+}
+
+/// `GET /api/v1/admin/browse?path=` (Owner or Admin): the setup screen's
+/// folder browser.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowseParams {
+    /// An absolute folder; none: where browsing starts.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// What the folder browser shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowseResult {
+    /// The folder listed; `None`: the starting places (home, volumes,
+    /// drives, mount points, the whole machine).
+    pub path: Option<String>,
+    /// The folder above, if any.
+    pub parent: Option<String>,
+    pub folders: Vec<BrowseFolder>,
+    /// What the listed folder holds, as a library; `None` at the start.
+    pub here: Option<FolderSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowseFolder {
+    pub name: String,
+    pub path: String,
+    /// Video files in it and two levels below, up to 1,000; `None` when
+    /// counting ran out of time.
+    pub videos: Option<u32>,
+}
+
+/// A folder's videos, read by name (no file is opened).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderSummary {
+    pub videos: u32,
+    /// There are more than were looked at.
+    pub more: bool,
+    /// Of those, the ones that read as films, and as episodes.
+    pub films: u32,
+    pub episodes: u32,
+    /// The library kind that fits, if there are videos.
+    pub kind: Option<LibraryKind>,
+    /// The library that already has this folder, or one inside or around it.
+    pub taken_by: Option<String>,
+}
+
+/// `GET /api/v1/admin/addresses` (Owner or Admin): where flux answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Addresses {
+    /// On the machine flux runs on.
+    pub local: String,
+    /// From other devices on the network: the LAN listener's (`--lan`), or
+    /// the local one's when it listens on every interface. Empty: none.
+    pub lan: Vec<String>,
+}
+
+/// An owner device (`GET /api/v1/admin/devices`): a browser an owner link
+/// made an owner (or an admin, when an admin made the link), known by the
+/// key it sends ([`ClaimedOwner`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub role: Role,
+    /// Who made the link it came from: a person's name, "this computer",
+    /// "flux's log" or "flux-server owner-link".
+    pub added_by: String,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    /// The device asking.
+    pub this_device: bool,
+}
+
 /// How flux reaches the tailnet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

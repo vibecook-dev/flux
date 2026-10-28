@@ -16,4 +16,6 @@ defineRoutes([
   { name: 'connect', path: '/connect', layer: 'overlay', load: () => import('../routes/Connect') },
   { name: 'admin', path: '/admin', layer: 'overlay', load: () => import('../routes/Admin') },
   { name: 'changes', path: '/changes', layer: 'overlay', load: () => import('../routes/Changes') },
+  { name: 'setup', path: '/setup', layer: 'overlay', load: () => import('../routes/Setup') },
+  { name: 'own', path: '/own', layer: 'overlay', load: () => import('../routes/Own') },
 ]);

@@ -159,12 +159,12 @@ impl LocalRole {
 )]
 pub struct Cli {
     /// TOML config file.
-    #[arg(long, env = "FLUX_CONFIG", value_name = "FILE")]
+    #[arg(long, env = "FLUX_CONFIG", value_name = "FILE", global = true)]
     pub config: Option<PathBuf>,
     /// Where flux keeps its catalog, caches and artwork [default:
     /// ~/Library/Application Support/flux on macOS, %LOCALAPPDATA%\flux on
     /// Windows, $XDG_DATA_HOME/flux or ~/.local/share/flux elsewhere].
-    #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR")]
+    #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR", global = true)]
     pub data_dir: Option<PathBuf>,
     /// A library to create on first run (repeatable; ';'-separated in the
     /// variable). KIND is movies, shows, mixed or videos (home videos and
@@ -177,11 +177,11 @@ pub struct Cli {
     )]
     pub libraries: Vec<LibrarySpec>,
     /// Local port [default: 8096].
-    #[arg(long, env = "FLUX_PORT")]
+    #[arg(long, env = "FLUX_PORT", global = true)]
     pub port: Option<u16>,
     /// Local listener address [default: 127.0.0.1]. Callers on it are the
     /// Owner; use --lan for other machines.
-    #[arg(long, env = "FLUX_BIND", value_name = "IP")]
+    #[arg(long, env = "FLUX_BIND", value_name = "IP", global = true)]
     pub bind: Option<IpAddr>,
     /// Also listen on the LAN, e.g. 0.0.0.0:8097. LAN callers are anonymous.
     #[arg(long, env = "FLUX_LAN", value_name = "ADDR:PORT")]
@@ -295,6 +295,11 @@ pub enum Command {
     /// update. Exit status: 0 done (or up to date), 10 with --check when a
     /// newer version is out, 1 failed, 2 can't update this install.
     Update(crate::update::cli::UpdateArgs),
+    /// Print a one-time owner link: opened in a browser, it makes that
+    /// browser an owner of this flux (for setting it up from another machine
+    /// or a Docker host). Asks the flux running on this machine, with the key
+    /// in its data dir: run it as the account flux runs as.
+    OwnerLink,
 }
 
 /// The TOML file.
@@ -1073,6 +1078,40 @@ path = '{}'
         assert!(toml::from_str::<FileConfig>("video_encoder = \"x265\"").is_err());
         assert!(Cli::try_parse_from(["flux-server", "--check"]).unwrap().check);
         assert!(Cli::try_parse_from(["flux-server", "--doctor"]).unwrap().check);
+    }
+
+    /// `flux-server owner-link --data-dir X` was refused: the flags that find
+    /// the running server go before or after a command.
+    #[test]
+    fn commands_take_the_flags_that_find_the_server() {
+        for args in [
+            &[
+                "flux-server",
+                "owner-link",
+                "--data-dir",
+                "/srv/flux",
+                "--port",
+                "9000",
+            ][..],
+            &[
+                "flux-server",
+                "--data-dir",
+                "/srv/flux",
+                "owner-link",
+                "--port",
+                "9000",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.command, Some(Command::OwnerLink)));
+            assert_eq!(cli.data_dir.as_deref(), Some(Path::new("/srv/flux")));
+            assert_eq!(cli.port, Some(9000));
+        }
+        let cli =
+            Cli::try_parse_from(["flux-server", "update", "--check", "--config", "/etc/flux.toml"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Update(ref a)) if a.check));
+        assert!(!cli.check, "the update's --check, not the server's");
+        assert_eq!(cli.config.as_deref(), Some(Path::new("/etc/flux.toml")));
     }
 
     /// `--tailnet off` still ran `tailscale status` at every start.

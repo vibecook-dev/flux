@@ -272,6 +272,25 @@ pub async fn call_raw(
     headers: &[(&str, &str)],
     body: Option<serde_json::Value>,
 ) -> Resp {
+    // A caller with an identity is this machine's; without, the LAN's.
+    let path = if who.is_some() {
+        NetPath::Localhost
+    } else {
+        NetPath::Lan
+    };
+    call_via(router, method, uri, who, path, headers, body).await
+}
+
+/// [`call_raw`] arriving by `path` (a tailnet caller, say).
+pub async fn call_via(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    who: Option<Identity>,
+    path: NetPath,
+    headers: &[(&str, &str)],
+    body: Option<serde_json::Value>,
+) -> Resp {
     let mut req = Request::builder().method(method).uri(uri);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -284,11 +303,6 @@ pub async fn call_raw(
         None => Body::empty(),
     };
     let mut req = req.body(body).expect("request");
-    let path = if who.is_some() {
-        NetPath::Localhost
-    } else {
-        NetPath::Lan
-    };
     req.extensions_mut().insert(who);
     req.extensions_mut().insert(ConnInfo {
         path,

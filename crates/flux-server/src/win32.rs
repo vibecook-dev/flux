@@ -28,6 +28,71 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
 
+/// Leaves `path` readable and writable by its owner (the account flux runs
+/// as), SYSTEM and Administrators only, and by nobody through inheritance:
+/// a data dir under `C:\ProgramData` otherwise lets every local user read
+/// its files. For the files that hold keys (`devices`).
+#[allow(unsafe_code)]
+pub fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW, SDDL_REVISION_1,
+        SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+    // Protected (no inherited entries): full control for the owner, SYSTEM
+    // and the Administrators group.
+    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)\0"
+        .encode_utf16()
+        .collect();
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated string; `sd` receives a LocalAlloc'd descriptor (freed below).
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut present, mut defaulted) = (0, 0);
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: `sd` is the descriptor made above; the DACL points into it.
+    let got = unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) };
+    let result = if got == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: a NUL-terminated path, and the DACL from `sd`, alive until LocalFree.
+        let err = unsafe {
+            SetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null(),
+            )
+        };
+        if err == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(err as i32))
+        }
+    };
+    // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+    unsafe { LocalFree(sd) };
+    result
+}
+
 /// A job object that ends every process in it when its last handle closes.
 pub struct KillOnCloseJob(HANDLE);
 

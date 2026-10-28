@@ -12,6 +12,9 @@ import type { Id, ItemDetail, ItemSummary } from './types';
 export const keys = {
   server: 'server',
   update: 'update',
+  devices: 'devices',
+  mediaTools: 'media-tools',
+  addresses: 'addresses',
   libraries: 'libraries',
   home: 'home',
   item: (id: Id) => `item:${id}`,
@@ -35,6 +38,12 @@ const serverInfo = () => api.server().then((info) => noteServer(info));
 export const useServer = () => useQuery(keys.server, serverInfo, { staleMs: 60_000 });
 /** flux's own updates (Owners and Admins); `update` events keep it current. */
 export const useUpdateInfo = (enabled = true) => useQuery(keys.update, api.updateInfo, { staleMs: 60_000, enabled });
+/** Owner devices (Owners and Admins). */
+export const useDevices = (enabled = true) => useQuery(keys.devices, api.devices, { staleMs: 10_000, enabled });
+/** What ffmpeg can do on the server (Owners and Admins). */
+export const useMediaTools = (enabled = true) => useQuery(keys.mediaTools, api.mediaTools, { staleMs: 30_000, enabled });
+/** Where other devices reach flux (Owners and Admins). */
+export const useAddresses = (enabled = true) => useQuery(keys.addresses, api.addresses, { staleMs: 30_000, enabled });
 export const useLibraries = () => useQuery(keys.libraries, api.libraries, { staleMs: 10_000 });
 export const useHome = () => useQuery(keys.home, api.home, { staleMs: 15_000 });
 export const useItem = (id: Id) => useQuery(keys.item(id), () => api.item(id));

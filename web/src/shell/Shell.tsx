@@ -45,7 +45,7 @@ import { goToSpace, setSpaceQuery, spaceFor, spaceKey } from './space';
 import { ReleaseNote, UpdateNote } from './UpdateNote';
 import { useInsets, usePhone } from './viewport';
 
-const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access', changes: 'Agents & changes' };
+const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access', changes: 'Agents & changes', setup: 'Set up flux', own: 'Owner link' };
 
 const toldOffline = new Set<string>();
 
@@ -149,6 +149,8 @@ export function Shell({ loc }: { loc: Location }) {
   const [lensVersion, setLensVersion] = useState(0);
   // Lenses kept on the server (an agent's `lens.add`): every device has them.
   const server = useServer();
+  // The owner's and admins' screens (setting up, adding libraries); everyone else is told who does.
+  const admin = server.data?.you?.role === 'owner' || server.data?.you?.role === 'admin';
   const serverLensList = useServerLenses(Boolean(server.data?.you)).data?.lenses;
   const lenses = useMemo(
     () => {
@@ -499,7 +501,7 @@ export function Shell({ loc }: { loc: Location }) {
             sectionOf={sectionFor}
             onError={onError}
           />
-          <Empty list={list} visible={visible.length} filtering={filtering} hasLibraries={libs.data ? libs.data.length > 0 : true} failed={failed} unreachable={libsFailed} onRetry={retry} />
+          <Empty list={list} visible={visible.length} filtering={filtering} hasLibraries={libs.data ? libs.data.length > 0 : true} failed={failed} unreachable={libsFailed} onRetry={retry} admin={admin} />
         </main>
       )}
       {def.edges && !overlay && (
@@ -672,6 +674,7 @@ function Empty({
   failed,
   unreachable,
   onRetry,
+  admin,
 }: {
   list: ReturnType<typeof useSpaceList>;
   visible: number;
@@ -681,6 +684,8 @@ function Empty({
   /** Why the server's libraries didn't arrive, when they didn't. */
   unreachable: unknown;
   onRetry: () => void;
+  /** The owner or an admin: the one who sets flux up. */
+  admin: boolean;
 }) {
   let body: ReactNode = null;
   // Only over an empty window: titles already showing stay, whatever failed beside them.
@@ -697,12 +702,20 @@ function Empty({
       </>
     );
   else if (!hasLibraries)
-    body = (
+    body = admin ? (
       <>
-        <h1 className="display-l">Your library is empty</h1>
-        <p>Add a folder of films or shows and flux will have it browsable in seconds.</p>
-        <Link to="/admin" className="btn btn-primary">
-          Add a library
+        <h1 className="display-l">Welcome to flux</h1>
+        <p>Pick the folders that hold your films and shows, and flux has them browsable in seconds.</p>
+        <Link to="/setup" className="btn btn-primary">
+          Set up flux
+        </Link>
+      </>
+    ) : (
+      <>
+        <h1 className="display-l">Nothing here yet</h1>
+        <p>flux’s owner adds the films and shows: on the computer flux runs on, or from this browser with an owner link.</p>
+        <Link to="/setup" className="btn">
+          How to set flux up
         </Link>
       </>
     );

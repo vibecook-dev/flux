@@ -103,6 +103,7 @@ pub async fn build_state(
         activity: Activity::default(),
         mcp: Default::default(),
         updater,
+        devices: crate::devices::Devices::load(&cfg.data_dir),
         started: t0,
         shutdown: CancellationToken::new(),
         cfg,
@@ -151,6 +152,7 @@ pub async fn start_with(
     );
     crate::metadata::log_startup(&cfg.tmdb_exports);
     write_server_file(&cfg.data_dir, net.local_addr);
+    owner_link_for_setup(&state, net.local_addr, net.lan_addr).await;
 
     // Background work, after the API is up.
     {
@@ -280,6 +282,28 @@ impl Server {
         }
         tracing::info!("flux stopped");
     }
+}
+
+/// A fresh server (no library yet) prints an owner link: the way to set it
+/// up from a browser flux can't identify (another machine on the LAN, a
+/// Docker host). On this machine, the local address needs none.
+async fn owner_link_for_setup(st: &AppState, local: std::net::SocketAddr, lan: Option<std::net::SocketAddr>) {
+    let empty = st
+        .catalog
+        .read(read::list_libraries)
+        .await
+        .map(|l| l.is_empty())
+        .unwrap_or(false);
+    if !empty {
+        return;
+    }
+    let docker = st.updater.install_kind() == flux_core::api::InstallKind::Docker;
+    let lan = crate::api::network_urls(docker, lan, local);
+    let who = crate::devices::Local::of(st.cfg.localhost_role);
+    let line = crate::devices::setup_line(&crate::api::local_url(local), &lan, docker, who, || {
+        st.devices.new_link(flux_core::api::Role::Owner, "flux's log").0
+    });
+    tracing::info!("{line}");
 }
 
 /// The file in the data dir that tells the `flux` command line where this

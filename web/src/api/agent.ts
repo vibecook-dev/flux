@@ -9,6 +9,7 @@
  */
 import { API_BASE } from '../config';
 import { FLUX_REQUEST_HEADER, FluxApiError, whenReady } from './client';
+import { deviceHeaders } from './device-key';
 import type { ArtSource, ExtraKind, Id, ItemKind, LibraryKind, NameGuess } from './types';
 
 export const GAPS = ['identity', 'year', 'overview', 'poster', 'backdrop', 'episode_titles', 'offline'] as const;
@@ -459,7 +460,7 @@ export async function op<T>(name: string, input: unknown = {}): Promise<T> {
   const path = `/api/v1/ops/${name}`;
   const res = await fetch(API_BASE.replace(/\/+$/, '') + path, {
     method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', [FLUX_REQUEST_HEADER]: '1' },
+    headers: { accept: 'application/json', 'content-type': 'application/json', [FLUX_REQUEST_HEADER]: '1', ...deviceHeaders() },
     body: JSON.stringify(input ?? {}),
   });
   const text = await res.text();
@@ -483,7 +484,7 @@ export async function op<T>(name: string, input: unknown = {}): Promise<T> {
 /** `GET /api/v1/agent`. */
 export async function manifest(): Promise<Manifest> {
   await whenReady();
-  const res = await fetch(`${API_BASE.replace(/\/+$/, '')}/api/v1/agent`, { headers: { [FLUX_REQUEST_HEADER]: '1' } });
+  const res = await fetch(`${API_BASE.replace(/\/+$/, '')}/api/v1/agent`, { headers: { [FLUX_REQUEST_HEADER]: '1', ...deviceHeaders() } });
   if (!res.ok) throw new FluxApiError(res.status, '/api/v1/agent', `HTTP ${res.status}`);
   return (await res.json()) as Manifest;
 }
