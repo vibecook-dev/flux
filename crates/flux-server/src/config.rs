@@ -283,6 +283,16 @@ pub struct Cli {
     /// Where the updater lists releases (GitHub's API; for tests).
     #[arg(long, env = "FLUX_UPDATE_SOURCE", value_name = "URL", hide = true)]
     pub update_source: Option<String>,
+    /// The service's name, for `flux-server service` (default `flux`; tests
+    /// pick another so they don't touch a real install's).
+    #[arg(
+        long,
+        env = "FLUX_SERVICE_NAME",
+        value_name = "NAME",
+        hide = true,
+        global = true
+    )]
+    pub service_name: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -300,6 +310,13 @@ pub enum Command {
     /// or a Docker host). Asks the flux running on this machine, with the key
     /// in its data dir: run it as the account flux runs as.
     OwnerLink,
+    /// Run flux as a service of this machine, so it starts by itself: install,
+    /// uninstall, start, stop, status (a LaunchAgent on macOS, a systemd user
+    /// unit on Linux, a Windows service).
+    Service {
+        #[command(subcommand)]
+        action: crate::service::ServiceCommand,
+    },
 }
 
 /// The TOML file.

@@ -193,7 +193,7 @@ Open <http://127.0.0.1:8096> and follow *Set up flux*. Libraries named on the co
 | `--update-check[=BOOL]` | `FLUX_UPDATE_CHECK` | On. Check GitHub for a new flux once a day (GitHub sees the address and flux's version). Without this flag the Libraries screen can switch it off. See [docs/INSTALL.md § Updating](docs/INSTALL.md#updating). |
 | `--config FILE` | `FLUX_CONFIG` | A TOML config file |
 
-Two commands act on a running flux: `flux-server update` ([docs/INSTALL.md § Updating](docs/INSTALL.md#updating)) and `flux-server owner-link` ([§ The owner link](docs/INSTALL.md#the-owner-link)). Give them the server's `--config`, `--data-dir` or `--port`, if it has them, so they find it.
+`flux-server service install` makes flux start by itself, as a LaunchAgent on macOS, a systemd user unit on Linux or a Windows service, with the `--config`, `--data-dir`, `--port` and `--bind` you give it ([docs/INSTALL.md § Starting with your Mac or PC](docs/INSTALL.md#starting-with-your-mac-or-pc), [§ As a Windows service](docs/INSTALL.md#as-a-windows-service)); `service status`, `stop`, `start` and `uninstall` go with it. Two commands act on a running flux: `flux-server update` ([§ Updating](docs/INSTALL.md#updating)) and `flux-server owner-link` ([§ The owner link](docs/INSTALL.md#the-owner-link)). Give them the server's `--config`, `--data-dir` or `--port`, if it has them, so they find it.
 
 In the TOML file, keys are the long flag names with `_`. `--no-scan`, `--no-jobs` and `--no-watch` become `scan = false`, `jobs = false` and `watch = false`, and each library is a `[[library]]` table:
 

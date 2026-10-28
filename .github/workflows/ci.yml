@@ -57,6 +57,10 @@ jobs:
       # an encoder they need. Here that would hide a broken runner, so
       # crates/flux-test-media/tests/required_tools.rs fails instead.
       FLUX_TEST_REQUIRE_FFMPEG: "1"
+      # crates/flux-server/tests/service.rs installs flux as a service of the
+      # runner (a LaunchAgent, a systemd user unit), which only a throwaway
+      # machine should get.
+      FLUX_TEST_SERVICES: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +89,19 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
           HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
         run: brew install ffmpeg
+      # The runner's user has no systemd user manager until it lingers, and
+      # `flux-server service` installs a user unit (tests/service.rs).
+      - name: systemd user manager (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          for _ in $(seq 1 30); do
+            XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user show-environment > /dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "::error::the systemd user manager didn't start"
+          exit 1
       - name: Record toolchain and ffmpeg
         run: |
           {
@@ -142,6 +159,9 @@ jobs:
       # skipping the synthetic-clip tests. The runner has no GPU, so flux
       # picks libx264 after the NVENC and Quick Sync test encodes fail.
       FLUX_TEST_REQUIRE_FFMPEG: "1"
+      # tests/service.rs installs flux as a Windows service (the runner is an
+      # administrator, and thrown away after the run).
+      FLUX_TEST_SERVICES: "1"
       # The C runtime linked in, as build.yml builds the release exe (which
       # then needs no Visual C++ Redistributable), so lints, tests and the
       # release build below use the same CRT as the package.
