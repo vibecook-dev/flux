@@ -8,11 +8,14 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use flux_server::config::Command;
+use flux_server::service::{ServiceArgs, ServiceCommand};
 use flux_server::update::Restart;
 use flux_server::{Cli, Config};
 use tracing_subscriber::EnvFilter;
 
 mod alloc;
+#[cfg(windows)]
+mod winservice;
 
 fn main() -> ExitCode {
     // First: SQLite's allocator can only be set before its first use.
@@ -24,6 +27,8 @@ fn main() -> ExitCode {
     let mut cli = Cli::parse();
     let check = cli.check;
     let command = cli.command.take();
+    // Before resolving: the flags as given, for a service to run with.
+    let service_args = ServiceArgs::of(&cli);
     let cfg = match Config::resolve(cli) {
         Ok(c) => c,
         Err(e) => {
@@ -34,6 +39,18 @@ fn main() -> ExitCode {
     match &command {
         Some(Command::Update(args)) => return flux_server::update::cli::run(&cfg, args),
         Some(Command::OwnerLink) => return flux_server::devices::cli(&cfg),
+        Some(Command::Service {
+            action: ServiceCommand::Run,
+        }) => {
+            #[cfg(windows)]
+            return winservice::run(service_args.name, cfg, t0, windows);
+            #[cfg(not(windows))]
+            {
+                eprintln!("flux-server: `service run` is what the Windows service manager starts; run flux-server itself");
+                return ExitCode::from(2);
+            }
+        }
+        Some(Command::Service { action }) => return flux_server::service::cli(*action, &service_args, &cfg),
         None => {}
     }
     if check {
@@ -52,16 +69,40 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    let filter =
-        EnvFilter::try_new(log_filter(&cfg.log)).unwrap_or_else(|_| EnvFilter::new(log_filter("info")));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(log_colours(
-            std::io::stderr().is_terminal(),
-            std::env::var_os("NO_COLOR"),
-        ))
-        .init();
+    init_log(&cfg.log, None);
+    log_start(&cfg);
+    #[cfg(windows)]
+    windows.log();
+    let (code, restart) = serve(cfg, t0, wait_for_signal());
+    match restart {
+        Some(r) => start_again(&r),
+        None => code,
+    }
+}
+
+/// The log: to stderr (coloured on a terminal), or to `file` (a Windows
+/// service has no stderr).
+fn init_log(level: &str, file: Option<std::fs::File>) {
+    let filter = EnvFilter::try_new(log_filter(level)).unwrap_or_else(|_| EnvFilter::new(log_filter("info")));
+    match file {
+        None => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(log_colours(
+                std::io::stderr().is_terminal(),
+                std::env::var_os("NO_COLOR"),
+            ))
+            .init(),
+        Some(file) => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init(),
+    }
+}
+
+/// The first lines of the log: the version and the data dir.
+fn log_start(cfg: &Config) {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         data_dir = %cfg.data_dir.display(),
@@ -78,16 +119,23 @@ fn main() -> ExitCode {
             older.display()
         );
     }
+}
 
+/// Serves until `stop` (a signal, or the Windows service manager), or until
+/// flux asks itself to restart (after an update), then stops within that
+/// stop's limits: the exit status, and the restart that was asked for.
+fn serve(
+    cfg: Config,
+    t0: Instant,
+    stop: impl std::future::Future<Output = Stop>,
+) -> (ExitCode, Option<Restart>) {
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("flux-server: cannot start the runtime: {e}");
-            return ExitCode::FAILURE;
+            tracing::error!("cannot start the runtime: {e}");
+            return (ExitCode::FAILURE, None);
         }
     };
-    #[cfg(windows)]
-    windows.log();
     let (code, runtime_grace, restart) = rt.block_on(async move {
         let server = match flux_server::start_at(cfg, t0).await {
             Ok(s) => s,
@@ -96,9 +144,8 @@ fn main() -> ExitCode {
                 return (ExitCode::FAILURE, Duration::from_secs(2), None);
             }
         };
-        // A signal, or flux asking itself to restart (after an update).
         let (stop, restart) = tokio::select! {
-            stop = wait_for_signal() => (stop, None),
+            stop = stop => (stop, None),
             restart = server.state.updater.restart_asked() => (Stop::Asked("restart"), Some(restart)),
         };
         tracing::info!(signal = stop.name(), "shutting down");
@@ -119,10 +166,7 @@ fn main() -> ExitCode {
     // in a read (a stalled NAS, an ffprobe that ignores its kill) would keep
     // the process alive after "flux stopped" (review ROB-1).
     rt.shutdown_timeout(runtime_grace);
-    match restart {
-        Some(r) => start_again(&r),
-        None => code,
-    }
+    (code, restart)
 }
 
 /// The exit status that asks a service manager to start flux again: what a

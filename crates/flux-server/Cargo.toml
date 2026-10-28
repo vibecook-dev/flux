@@ -82,6 +82,8 @@ tikv-jemalloc-sys = { workspace = true, optional = true }
 # flux, thread priority, adapter addresses, %LOCALAPPDATA%, owner-only files. 0.61 is the
 # version tokio already brings in.
 [target.'cfg(windows)'.dependencies]
+# `flux-server service`: install, run and stop flux as a Windows service.
+windows-service = "0.8"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
