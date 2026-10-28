@@ -182,7 +182,16 @@ finally {
     Stop-Process -Id $web.Id -Force -ErrorAction SilentlyContinue
 }
 Wait-Answers 'after updating itself' | Out-Null
+# The new flux starts before Windows Installer is done: wait for its last word.
 $msiLog = Join-Path $data "updates\msi-$Version.log"
+$deadline = (Get-Date).AddMinutes(2)
+while (-not (Select-String -Path $msiLog -SimpleMatch 'Installation success or error status:' -Quiet)) {
+    if ((Get-Date) -gt $deadline) {
+        Get-Content $msiLog -Tail 80 | Write-Host
+        throw "Windows Installer didn't finish within 2 minutes: $msiLog"
+    }
+    Start-Sleep -Seconds 1
+}
 if (-not (Select-String -Path $msiLog -SimpleMatch 'Installation success or error status: 0' -Quiet)) {
     Get-Content $msiLog -Tail 80 | Write-Host
     throw "Windows Installer didn't finish cleanly: $msiLog"
