@@ -7,11 +7,13 @@ flux service runs as LocalSystem and answers on port 8096 as the version
 expected, from C:\Program Files\flux, marked "msi", with the bundled FFmpeg;
 its data and settings are in C:\ProgramData\flux, which only administrators
 and the service can read, and which commands run in a terminal find by
-themselves; port 8097 is let through the firewall. -Msi then installs over
-it, as a newer flux would: flux runs again, the settings stay as they were,
-and Windows lists one flux. Uninstalling removes the program, the service
-and the firewall rule, and keeps the data and settings. Needs an
-administrator.
+themselves; port 8097 is let through the firewall. Then flux updates itself
+to -Msi, as to a newer version: it finds it in a stand-in for GitHub's
+releases (with SHA256SUMS), downloads it and hands it to Windows Installer,
+which replaces the earlier one without a restart of Windows; flux runs again
+from a new service, the settings stay as they were, and Windows lists one
+flux. Uninstalling removes the program, the service and the firewall rule,
+and keeps the data and settings. Needs an administrator.
 
 .EXAMPLE
 scripts/package/windows-msi-smoke-test.ps1 -Msi dist/flux-0.1.0-x86_64-pc-windows-msvc.msi -Earlier $env:RUNNER_TEMP/msi-earlier/flux-0.1.0-x86_64-pc-windows-msvc.msi -Version 0.1.0
@@ -35,7 +37,8 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 function Msiexec([string] $what, [string[]] $arguments) {
     $log = Join-Path $logs "$what.log"
     $p = Start-Process -FilePath msiexec.exe -ArgumentList ($arguments + @('/qn', '/norestart', '/l*v', "`"$log`"")) -Wait -PassThru
-    if ($p.ExitCode -notin 0, 3010) {
+    # 3010 would be a file in use: Windows would finish at its next restart.
+    if ($p.ExitCode -ne 0) {
         Get-Content $log -Tail 80 | Write-Host
         throw "msiexec ($what) exited $($p.ExitCode)"
     }
@@ -55,6 +58,14 @@ function Wait-Answers([string] $what, [int] $seconds = 60) {
     $log = Join-Path $data 'flux.log'
     if (Test-Path $log) { Get-Content $log -Tail 60 | Write-Host }
     throw "$what`: flux $Version didn't answer on 8096 within $seconds s"
+}
+
+# The flux products Windows lists (their product codes). Call it as
+# @(Get-Installed): PowerShell hands back a lone code as a string.
+function Get-Installed {
+    @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq 'flux' } |
+        ForEach-Object { $_.PSChildName })
 }
 
 # `flux-server --check` in a terminal, with no flags: what it prints.
@@ -113,14 +124,87 @@ foreach ($want in "$program\ffmpeg\ffmpeg.exe", "data     $data", "library  Smok
     if (-not ($report -match [regex]::Escape($want))) { throw "flux-server --check doesn't say: $want" }
 }
 
-Write-Host "== upgrade (the installer under test, over the earlier one)"
-Msiexec 'upgrade' @('/i', "`"$Msi`"")
-Wait-Answers 'after the upgrade' | Out-Null
-Write-Host 'flux answers again'
-if (-not (Select-String -Path $settings -SimpleMatch 'name = "Smoke"' -Quiet)) { throw "the upgrade replaced $settings" }
-$listed = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
-    Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq 'flux' })
-if ($listed.Count -ne 1) { throw "Windows lists $($listed.Count) flux installs after the upgrade" }
+Write-Host "== flux updates itself to the installer under test"
+$before = @(Get-Installed)
+if ($before.Count -ne 1) { throw "Windows lists $($before.Count) flux installs" }
+# The release, as GitHub's API lists it, its installer and SHA256SUMS.
+$site = Join-Path ([IO.Path]::GetTempPath()) 'flux-msi-release'
+New-Item -ItemType Directory -Force -Path $site | Out-Null
+$name = Split-Path $Msi -Leaf
+Copy-Item $Msi (Join-Path $site $name)
+$sums = Join-Path $site 'SHA256SUMS'
+[IO.File]::WriteAllText($sums, "$((Get-FileHash -Algorithm SHA256 $Msi).Hash.ToLowerInvariant())  $name`n")
+$base = 'http://127.0.0.1:18099'
+$release = @(@{
+        tag_name     = "v$Version"
+        draft        = $false
+        prerelease   = $true
+        html_url     = "$base/release"
+        published_at = '2026-01-01T00:00:00Z'
+        body         = '* the smoke test''s release'
+        assets       = @(
+            @{ name = $name; browser_download_url = "$base/$name"; size = (Get-Item $Msi).Length },
+            @{ name = 'SHA256SUMS'; browser_download_url = "$base/SHA256SUMS"; size = (Get-Item $sums).Length }
+        )
+    })
+[IO.File]::WriteAllText((Join-Path $site 'releases.json'), (ConvertTo-Json -InputObject $release -Depth 5))
+$web = Start-Process -FilePath python -ArgumentList '-m', 'http.server', '18099', '--bind', '127.0.0.1', '--directory', "`"$site`"" -PassThru -WindowStyle Hidden
+try {
+    $deadline = (Get-Date).AddSeconds(30)
+    while ($true) {
+        try { Invoke-WebRequest -Uri "$base/releases.json" -TimeoutSec 3 | Out-Null; break }
+        catch { if ((Get-Date) -gt $deadline) { throw 'the stand-in for GitHub never answered' } }
+        Start-Sleep -Milliseconds 500
+    }
+    # The service reads it there, and takes itself for an older flux.
+    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\flux'
+    New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Force -Value @(
+        "FLUX_UPDATE_SOURCE=$base/releases.json", 'FLUX_UPDATE_CURRENT=0.0.1-alpha.1') | Out-Null
+    Restart-Service flux
+    Wait-Answers 'before updating' | Out-Null
+    $request = @{ 'X-Flux-Request' = '1' }
+    $u = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8096/api/v1/admin/update/apply' -Headers $request
+    Write-Host "update: $($u.phase), from $($u.current)"
+    $deadline = (Get-Date).AddMinutes(10)
+    do {
+        Start-Sleep -Seconds 3
+        $now = @(Get-Installed)
+        if ((Get-Date) -gt $deadline) {
+            $msiLog = Join-Path $data "updates\msi-$Version.log"
+            if (Test-Path $msiLog) { Get-Content $msiLog -Tail 80 | Write-Host }
+            Get-Content (Join-Path $data 'flux.log') -Tail 60 | Write-Host
+            throw 'flux did not update itself within 10 minutes'
+        }
+    } until ($now.Count -eq 1 -and $now[0] -ne $before[0])
+    Write-Host "installed: $($now[0]), was $($before[0])"
+}
+finally {
+    Stop-Process -Id $web.Id -Force -ErrorAction SilentlyContinue
+}
+Wait-Answers 'after updating itself' | Out-Null
+# The new flux starts before Windows Installer is done: wait for its last word.
+$msiLog = Join-Path $data "updates\msi-$Version.log"
+$deadline = (Get-Date).AddMinutes(2)
+while (-not (Select-String -Path $msiLog -SimpleMatch 'Installation success or error status:' -Quiet)) {
+    if ((Get-Date) -gt $deadline) {
+        Get-Content $msiLog -Tail 80 | Write-Host
+        throw "Windows Installer didn't finish within 2 minutes: $msiLog"
+    }
+    Start-Sleep -Seconds 1
+}
+if (-not (Select-String -Path $msiLog -SimpleMatch 'Installation success or error status: 0' -Quiet)) {
+    Get-Content $msiLog -Tail 80 | Write-Host
+    throw "Windows Installer didn't finish cleanly: $msiLog"
+}
+$deadline = (Get-Date).AddSeconds(30)
+do {
+    Start-Sleep -Seconds 1
+    $u = Invoke-RestMethod -Uri 'http://127.0.0.1:8096/api/v1/admin/update' -Headers $request
+} until ($u.phase -eq 'idle' -or (Get-Date) -gt $deadline)
+Write-Host "flux $($u.current) answers, $($u.phase)"
+# A new service: no stand-in, no pretending.
+if ($u.current -ne $Version -or $u.phase -ne 'idle' -or $u.error) { throw "after the update: $($u.current), $($u.phase), $($u.error)" }
+if (-not (Select-String -Path $settings -SimpleMatch 'name = "Smoke"' -Quiet)) { throw "the update replaced $settings" }
 
 Write-Host "== uninstall"
 Msiexec 'uninstall' @('/x', "`"$Msi`"")
@@ -129,4 +213,4 @@ if (Test-Path $server) { throw "$server is still there" }
 if (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue) { throw "the firewall rule '$rule' is still there" }
 if (-not (Test-Path (Join-Path $data 'catalog.db'))) { throw "the data in $data didn't stay" }
 if (-not (Select-String -Path $settings -SimpleMatch 'name = "Smoke"' -Quiet)) { throw "uninstalling removed $settings" }
-Write-Host "The installer installs, upgrades and uninstalls flux $Version."
+Write-Host "The installer installs flux $Version, flux updates itself with it, and it uninstalls."

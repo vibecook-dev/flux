@@ -324,8 +324,9 @@ jobs:
           scripts/package/linux-packages.sh --tarball "dist/$PACKAGE" --out dist --nfpm "$RUNNER_TEMP/nfpm"
       # The Windows installer (scripts/package/windows-msi.ps1, WiX 7): its
       # files, from the zip and the pinned FFmpeg; the FFmpeg signed when
-      # signing is set up; the .msi built and signed; then installed, upgraded
-      # and uninstalled on this runner.
+      # signing is set up; the .msi built and signed; then, on this runner,
+      # a second build of it installed, flux updating itself to the real one,
+      # and that uninstalled.
       - name: WiX
         if: env.MSI == 'true'
         shell: pwsh
@@ -367,8 +368,8 @@ jobs:
           files-folder: ${{ runner.temp }}\msi\ffmpeg
           files-folder-filter: exe,dll
       # A second, unpublished build of the same installer, which Windows takes
-      # for another one: the smoke test installs it first, then the real one
-      # over it, as a newer flux would be.
+      # for another one: the smoke test installs it first, then has that flux
+      # update itself to the real one, as to a newer version.
       - name: Build the installer (Windows)
         if: env.MSI == 'true'
         shell: pwsh

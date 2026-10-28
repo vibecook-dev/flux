@@ -8,10 +8,12 @@
 //!
 //! For an install the server can't write to (`sudo flux-server update`), and
 //! for people who'd rather type. Pass the same `--config` / `--data-dir` as
-//! the server, so the restart reaches the right one.
+//! the server, so the restart reaches the right one. The Windows installer's
+//! flux hands the new installer to Windows Installer (`msi.rs`), which
+//! restarts the service.
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
@@ -33,6 +35,16 @@ pub struct UpdateArgs {
     /// Don't ask before changing anything.
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Run this Windows installer of an update: what the copy of flux that
+    /// an update hands it to does (`msi.rs`).
+    #[arg(long, value_name = "MSI", hide = true, conflicts_with_all = ["check", "rollback"])]
+    pub install_msi: Option<PathBuf>,
+    /// The version that installer is of.
+    #[arg(long, value_name = "VERSION", hide = true, requires = "install_msi")]
+    pub to: Option<String>,
+    /// A process to wait for before running the installer.
+    #[arg(long, value_name = "PID", hide = true, requires = "install_msi")]
+    pub after: Option<u32>,
 }
 
 /// Up to date, or done.
@@ -44,6 +56,14 @@ const NOT_HERE: u8 = 2;
 const AVAILABLE: u8 = 10;
 
 pub fn run(cfg: &Config, args: &UpdateArgs) -> ExitCode {
+    if let Some(msi) = &args.install_msi {
+        return ExitCode::from(run_installer(
+            cfg,
+            msi,
+            args.to.as_deref().unwrap_or_default(),
+            args.after,
+        ));
+    }
     let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -126,6 +146,9 @@ async fn run_async(cfg: &Config, args: &UpdateArgs) -> u8 {
             shown.set(pct);
         }
     };
+    if s.install.kind == InstallKind::Msi {
+        return installer(cfg, &updater, &release, progress, tty).await;
+    }
     let prepared = updater
         .prepare(&release, &dir, progress, || {
             if tty {
@@ -154,6 +177,58 @@ async fn run_async(cfg: &Config, args: &UpdateArgs) -> u8 {
         release.version, s.current
     );
     restart_running(cfg, &s.current, &release.version).await
+}
+
+/// The Windows installer's flux: downloads the new installer, checks it, and
+/// hands it to a copy of flux, which runs Windows Installer once this
+/// process (which runs from the folder it replaces) has ended.
+async fn installer(
+    cfg: &Config,
+    updater: &Updater,
+    release: &super::release::Release,
+    progress: impl FnMut(u64, u64),
+    tty: bool,
+) -> u8 {
+    let dir = cfg.data_dir.join(super::DOWNLOADS_DIR);
+    let msi = match updater.download_installer(release, &dir, progress).await {
+        Ok(msi) => msi,
+        Err(e) => {
+            if tty {
+                println!();
+            }
+            eprintln!("flux-server: the update failed, nothing changed: {e:#}");
+            return FAILED;
+        }
+    };
+    if tty {
+        println!();
+    }
+    if let Err(e) = updater.hand_over(&msi, &release.version, Some(std::process::id())) {
+        eprintln!("flux-server: couldn't start Windows Installer, nothing changed: {e:#}");
+        return FAILED;
+    }
+    println!(
+        "Windows Installer is installing flux {}: the flux service stops, and starts again as {} in a \
+         minute or two. Its log: {}",
+        release.version,
+        release.version,
+        dir.join(format!("msi-{}.log", release.version)).display()
+    );
+    OK
+}
+
+/// The copy of flux an update handed the Windows installer to (`msi.rs`).
+fn run_installer(cfg: &Config, msi: &Path, to: &str, after: Option<u32>) -> u8 {
+    #[cfg(windows)]
+    {
+        super::msi::run_installer(&cfg.data_dir, msi, to, crate::service::NAME, after)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cfg, msi, to, after);
+        eprintln!("flux-server: Windows Installer runs on Windows only.");
+        NOT_HERE
+    }
 }
 
 /// Asks a running flux (this data dir's, or one answering on its port as the
