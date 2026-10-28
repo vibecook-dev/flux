@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "flux-catalog"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "flume",
  "flux-core",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "flux-cli"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "flux-core"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "schemars",
  "serde",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "flux-hls"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "flux-meta"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "flux-names"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "flux-core",
  "flux-test-media",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "flux-net"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "flux-probe"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "flux-core",
  "flux-test-media",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "flux-scan"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "crossbeam-channel",
  "flux-catalog",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "flux-server"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "flux-test-media"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 
 [[package]]
 name = "fnv"
