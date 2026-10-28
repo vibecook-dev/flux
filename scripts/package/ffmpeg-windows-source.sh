@@ -56,7 +56,9 @@ git -C "$work/FFmpeg-Builds" archive --format=tar --prefix=FFmpeg-Builds/ HEAD |
   xz -T0 > "$work/$name/FFmpeg-Builds-$BTBN_COMMIT.tar.xz"
 
 echo "The libraries (BtbN's download.sh)"
-(cd "$work/FFmpeg-Builds" && ./download.sh)
+# It runs in BtbN's base image, which it names after GITHUB_REPOSITORY when
+# that is set (as in any GitHub workflow): name BtbN's.
+(cd "$work/FFmpeg-Builds" && GITHUB_REPOSITORY=btbn/ffmpeg-builds ./download.sh)
 # download.sh keeps <step>_<hash>.tar.xz, linked from <step>.tar.xz.
 found=0
 for f in "$work/FFmpeg-Builds/.cache/downloads/"*.tar.xz; do
