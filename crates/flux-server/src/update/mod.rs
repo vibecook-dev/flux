@@ -10,13 +10,16 @@
 //!   archive install) updates in place ([`package`]): download, check
 //!   against `SHA256SUMS`, unpack beside the install, try the new binary,
 //!   swap it in entry by entry (keeping the old one in `.flux-previous`),
-//!   then restart as the new version (`main.rs`). Docker, Homebrew and the
-//!   system packages update their own way, which flux names.
+//!   then restart as the new version (`main.rs`). The Windows installer's
+//!   flux hands the next installer to Windows Installer ([`msi`]). Docker,
+//!   Homebrew and the Linux packages update their own way, which flux
+//!   names.
 //! - `flux-server update` does the same from a terminal ([`cli`]), for an
 //!   install the server can't write to (`/opt/flux` owned by root).
 
 pub mod cli;
 pub mod install;
+pub mod msi;
 pub mod package;
 pub mod release;
 pub mod unzip;
@@ -140,7 +143,7 @@ pub struct Updater {
     exe: Option<PathBuf>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -310,10 +313,20 @@ impl Updater {
                     std::env::consts::ARCH
                 )),
             ),
+            InstallKind::Msi if is_admin() => InstallInfo {
+                kind: InstallKind::Msi,
+                can_apply: true,
+                why_not: None,
+                command: Some("flux-server update".to_string()),
+            },
             InstallKind::Msi => none(
                 InstallKind::Msi,
-                Some("Run the new installer from the release page.".to_string()),
-                None,
+                Some(
+                    "Windows Installer needs an administrator: run the command in a terminal opened as \
+                     administrator, or the new installer from the release page."
+                        .to_string(),
+                ),
+                Some("flux-server update".to_string()),
             ),
             InstallKind::Source => none(
                 InstallKind::Source,
@@ -520,10 +533,12 @@ impl Updater {
         tokio::spawn(async move {
             let _one_at_a_time = guard;
             match me.update().await {
-                Ok(restart) => {
+                Ok(Some(restart)) => {
                     me.set_phase(UpdatePhase::Restarting);
                     me.ask_restart(restart);
                 }
+                // Windows Installer stops flux and starts the new version.
+                Ok(None) => me.set_phase(UpdatePhase::Restarting),
                 Err(e) => {
                     let why = format!("{e:#}");
                     tracing::warn!(error = %why, "update failed; flux carries on as it was");
@@ -535,11 +550,22 @@ impl Updater {
         Ok(self.info())
     }
 
-    /// Download, check, unpack, try, swap in.
-    async fn update(&self) -> anyhow::Result<Restart> {
+    /// Download, check, unpack, try, swap in: the restart that follows. For
+    /// the Windows installer's flux, download, check and hand the installer
+    /// over (`None`: Windows Installer restarts flux).
+    async fn update(&self) -> anyhow::Result<Option<Restart>> {
         let releases = self.releases().await?;
         let release = self.pick(&releases).cloned().context("flux is up to date")?;
         let dir = self.s.data_dir.join(DOWNLOADS_DIR);
+        if self.s.install.kind == InstallKind::Msi {
+            let msi = self
+                .download_installer(&release, &dir, |done, total| self.progress(done, total))
+                .await?;
+            self.set_phase(UpdatePhase::Installing);
+            self.hand_over(&msi, &release.version, None)?;
+            tracing::info!(from = %self.s.current, to = %release.version, "Windows Installer is installing the new version");
+            return Ok(None);
+        }
         let top = self
             .prepare(
                 &release,
@@ -554,10 +580,121 @@ impl Updater {
         tokio::task::spawn_blocking(move || put_in_place(&install, &top, &current)).await??;
         let _ = std::fs::remove_dir_all(&dir);
         tracing::info!(from = %self.s.current, to = %release.version, "updated; restarting as the new version");
-        Ok(Restart {
+        Ok(Some(Restart {
             exe: self.s.install.exe().context("no package to restart")?,
             why: "update",
+        }))
+    }
+
+    /// `release`'s `SHA256SUMS`.
+    async fn sums(&self, release: &Release) -> anyhow::Result<String> {
+        let asset = release
+            .asset(release::SUMS)
+            .context("the release has no SHA256SUMS")?;
+        Ok(self
+            .client
+            .get(&asset.url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .context("downloading SHA256SUMS")?
+            .text()
+            .await?)
+    }
+
+    /// Downloads `release`'s Windows installer into `dir`, a folder for
+    /// SYSTEM and Administrators only (emptied first), and checks it against
+    /// `SHA256SUMS`: returns its path.
+    pub async fn download_installer(
+        &self,
+        release: &Release,
+        dir: &Path,
+        mut progress: impl FnMut(u64, u64),
+    ) -> anyhow::Result<PathBuf> {
+        let name = release::installer_name(&release.version, &self.s.target);
+        let asset = release
+            .asset(&name)
+            .with_context(|| format!("release {} has no Windows installer ({name})", release.version))?
+            .clone();
+        let sums = self.sums(release).await?;
+        let sha = release::sum_of(&sums, &name).with_context(|| format!("SHA256SUMS lists no {name}"))?;
+        private_dir(dir)?;
+        let file = dir.join(&name);
+        let total = asset.size;
+        package::download(&self.client, &asset.url, &file, total, &sha, |done| {
+            progress(done, total)
         })
+        .await?;
+        Ok(file)
+    }
+
+    /// Hands installer `msi` of `version` to a copy of flux that runs
+    /// Windows Installer on it ([`msi`]), once process `after` (if any) ends.
+    pub fn hand_over(&self, msi: &Path, version: &Version, after: Option<u32>) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        {
+            msi::hand_over(msi, &version.to_string(), &self.s.data_dir, after)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (msi, after);
+            anyhow::bail!("flux {version}'s Windows installer runs on Windows only")
+        }
+    }
+
+    /// The server, as it starts: what Windows Installer did with the last
+    /// update this flux handed over, waiting for it while it may still run
+    /// (this flux is then the old version, back after a failed install).
+    /// The update panel says why it failed.
+    pub fn follow_installer(self: &Arc<Self>, shutdown: CancellationToken) {
+        if self.s.install.kind != InstallKind::Msi {
+            return;
+        }
+        let dir = self.s.data_dir.join(DOWNLOADS_DIR);
+        if self.take_installer_outcome(&dir) {
+            return;
+        }
+        let Some(pending) = msi::pending(&dir) else {
+            return;
+        };
+        if now_ms() - pending.started_at > INSTALLER_WAIT.as_millis() as i64 {
+            let _ = std::fs::remove_file(dir.join(msi::PENDING));
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let deadline = Instant::now() + INSTALLER_WAIT;
+            while Instant::now() < deadline {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                }
+                if me.take_installer_outcome(&dir) {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Takes Windows Installer's outcome from `dir`, if it is in (true), and
+    /// says why the update failed, if it did.
+    fn take_installer_outcome(&self, dir: &Path) -> bool {
+        let Some(outcome) = msi::take_outcome(dir) else {
+            return false;
+        };
+        msi::tidy(dir);
+        match msi::failure(&outcome, &self.s.current.to_string()) {
+            Some(why) => {
+                tracing::warn!(error = %why, "the update failed; flux carries on as it was");
+                self.status().error = Some(why);
+                self.set_phase(UpdatePhase::Failed);
+            }
+            None => {
+                tracing::info!(version = %outcome.version, code = outcome.code, "Windows Installer installed flux")
+            }
+        }
+        true
     }
 
     /// Downloads `release`'s package for this target into `dir`, checks it,
@@ -580,19 +717,7 @@ impl Updater {
                 )
             })?
             .clone();
-        let sums_asset = release
-            .asset(release::SUMS)
-            .context("the release has no SHA256SUMS")?;
-        let sums = self
-            .client
-            .get(&sums_asset.url)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-            .context("downloading SHA256SUMS")?
-            .text()
-            .await?;
+        let sums = self.sums(release).await?;
         let sha = release::sum_of(&sums, &name).with_context(|| format!("SHA256SUMS lists no {name}"))?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let file = dir.join(&name);
@@ -640,6 +765,44 @@ impl Updater {
             self.restart_asked.notified().await;
         }
     }
+}
+
+/// How long flux waits for Windows Installer to finish an update it
+/// handed over.
+const INSTALLER_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// Whether this flux can run Windows Installer (an administrator).
+fn is_admin() -> bool {
+    #[cfg(windows)]
+    {
+        crate::win32::is_admin()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Makes `dir` empty, and on Windows open to SYSTEM and Administrators
+/// only: what is downloaded there runs as an administrator.
+fn private_dir(dir: &Path) -> anyhow::Result<()> {
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(windows)]
+    crate::win32::restrict_to_admins(dir).with_context(|| format!("restricting {}", dir.display()))?;
+    // Whatever another user could add before that goes too.
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let p = entry.path();
+        let gone = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+        gone.with_context(|| format!("clearing {}", p.display()))?;
+    }
+    Ok(())
 }
 
 /// The check's setting as last switched in the app.
@@ -721,5 +884,22 @@ mod tests {
             brew.command.as_deref(),
             Some("brew upgrade vibecook-dev/tap/flux")
         );
+    }
+
+    /// The Windows installer's flux updates itself as an administrator (the
+    /// service is one); otherwise it says what to run, and where.
+    #[test]
+    fn the_installer_updates_as_an_administrator() {
+        let msi = updater(InstallKind::Msi).install_info(Some("1.2.0"));
+        assert_eq!(msi.command.as_deref(), Some("flux-server update"));
+        assert_eq!(msi.can_apply, is_admin());
+        if !msi.can_apply {
+            assert!(
+                msi.why_not
+                    .as_deref()
+                    .is_some_and(|w| w.contains("administrator")),
+                "{msi:?}"
+            );
+        }
     }
 }

@@ -2,7 +2,8 @@
 //! update to.
 //!
 //! A release is `v<version>` with one package per target,
-//! `flux-<version>-<target>.tar.gz` (`.zip` for Windows), and `SHA256SUMS`
+//! `flux-<version>-<target>.tar.gz` (`.zip` for Windows), the Windows
+//! installer `flux-<version>-x86_64-pc-windows-msvc.msi`, and `SHA256SUMS`
 //! (docs/RELEASING.md). Those names are what the updater looks for, so they
 //! are part of the release contract.
 
@@ -105,6 +106,12 @@ pub fn package_name(version: &Version, target: &str) -> String {
         "tar.gz"
     };
     format!("flux-{version}-{target}.{ext}")
+}
+
+/// The Windows installer of `version` for `target`
+/// (`flux-<version>-x86_64-pc-windows-msvc.msi`).
+pub fn installer_name(version: &Version, target: &str) -> String {
+    format!("flux-{version}-{target}.msi")
 }
 
 /// The checksum asset's name.
@@ -306,6 +313,10 @@ mod tests {
         assert_eq!(
             package_name(&ver, "x86_64-pc-windows-msvc"),
             "flux-0.1.0-alpha.5-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            installer_name(&ver, "x86_64-pc-windows-msvc"),
+            "flux-0.1.0-alpha.5-x86_64-pc-windows-msvc.msi"
         );
     }
 

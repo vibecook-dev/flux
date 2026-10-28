@@ -119,7 +119,8 @@ would remove this step.
    - makes the Windows installer from the zip and a pinned FFmpeg build
      (`scripts/package/windows-msi.ps1`, WiX 7), signing the FFmpeg and
      the `.msi` when signing is set up, and on the Windows runner installs
-     it, upgrades it from a second build of itself, and uninstalls it
+     a second build of it, has that flux update itself to the real one
+     (from a stand-in for GitHub's releases), and uninstalls it
      (`scripts/package/windows-msi-smoke-test.ps1`); meanwhile an Ubuntu
      job collects that FFmpeg's complete source
      (`scripts/package/ffmpeg-windows-source.sh`);
@@ -187,8 +188,12 @@ so these are a contract with every installed flux, old ones included:
   `install-kind` marker (`package.sh` writes `archive`; the smoke test fails
   a package without it). `PACKAGED_TARGETS` in `update/mod.rs` lists the
   targets that have one, as `build.yml` does.
-- `SHA256SUMS` lists each package as `sha256sum` writes it. A package that
-  doesn't match is refused, and immutable releases keep both from changing
+- The Windows installer is `flux-<version>-x86_64-pc-windows-msvc.msi`, with
+  the same `UpgradeCode` (`scripts/package/windows/flux.wxs`): the installer's
+  flux downloads it and has Windows Installer install it over itself
+  (`update/msi.rs`).
+- `SHA256SUMS` lists each package and installer as `sha256sum` writes it. A
+  package that doesn't match is refused, and immutable releases keep both from changing
   after publication.
 - The new `flux-server --version` prints `flux-server <version>`: the
   updater runs it before putting anything in place.
@@ -197,8 +202,7 @@ so these are a contract with every installed flux, old ones included:
 - An install from the `.deb`, `.rpm` or Homebrew doesn't update itself: the
   Libraries screen shows the command, which names the assets above
   (`flux-<version>-<arch>.deb`, `flux-<version>-<arch>.rpm`) and the formula
-  `vibecook-dev/tap/flux`. Neither does the Windows installer's yet: the
-  screen says to run the new installer.
+  `vibecook-dev/tap/flux`.
 
 ## Release dry run
 

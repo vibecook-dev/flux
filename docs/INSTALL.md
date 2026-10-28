@@ -442,9 +442,12 @@ Open <http://localhost:8096> and follow [*Set up flux*](#setting-flux-up).
   source, `ffmpeg-<version>-windows-source.tar`. flux uses it before any
   other ffmpeg on the machine: set `ffmpeg = '…'` in `flux.toml` for
   another. `flux-server --check` shows what it can do here.
-- **Updating.** Install the new release's installer the same way: it
-  replaces the old version in place and keeps the data and settings. The
-  Libraries screen says when a new flux is out.
+- **Updating.** When a new flux is out, the Libraries screen says so:
+  *Update now* there (or `flux-server update` in a terminal opened as
+  administrator) downloads the new installer, checks it, and has Windows
+  Installer put it in place; flux is back as the new version a minute
+  later. Running the new installer yourself does the same. Either way the
+  data and settings stay.
 - **Removing.** *Settings → Apps → flux → Uninstall* removes the program,
   the service, the firewall rule and the Start menu entry.
   `C:\ProgramData\flux` stays; delete it to remove flux's data and
@@ -834,8 +837,15 @@ How flux updates depends on how it was installed:
   restart vibecook-dev/tap/flux`.
 - **The .deb or .rpm:** install the new release's package; the service
   restarts as the new version (the Libraries screen shows the command).
-- **The Windows installer:** install the new release's installer; it
-  replaces the old version and the service starts again as the new one.
+- **The Windows installer:** *Update now* on the Libraries screen, or
+  `flux-server update` in a terminal opened as administrator. flux
+  downloads the release's installer into `C:\ProgramData\flux\updates`
+  (where only administrators can change it), checks it against
+  `SHA256SUMS`, and hands it to Windows Installer, which stops the
+  service, replaces the old version and starts the new one. If it fails,
+  Windows Installer puts the old version back, and the Libraries screen
+  says why, with the installer's log (`msi-<version>.log` in that
+  folder). Running the new release's installer yourself works too.
 
 - **A release package** (unpacked by hand, as above): *Update now* on the
   Libraries screen, or `flux-server update` in a terminal. flux downloads
@@ -864,7 +874,8 @@ How flux updates depends on how it was installed:
   same process), so a terminal, systemd or launchd carries on with it.
 - **Windows:** run in a terminal, flux starts the new version in the same
   window. As a service (`flux-server service install`) it exits with status
-  75, and the service manager starts the new version. Under a service
+  75, and the service manager starts the new version. The installer's
+  service is restarted by Windows Installer. Under a service
   wrapper (NSSM, WinSW, Servy) the same exit asks the wrapper to start it
   again: NSSM does by default; with WinSW, add `<onfailure
   action="restart"/>`. `FLUX_RESTART=exit` or `spawn` makes the choice

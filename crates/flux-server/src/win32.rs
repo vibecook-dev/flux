@@ -32,8 +32,24 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath}
 /// as), SYSTEM and Administrators only, and by nobody through inheritance:
 /// a data dir under `C:\ProgramData` otherwise lets every local user read
 /// its files. For the files that hold keys (`devices`).
-#[allow(unsafe_code)]
 pub fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
+    // Protected (no inherited entries): full control for the owner, SYSTEM
+    // and the Administrators group.
+    set_protected_dacl(path, "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)")
+}
+
+/// Leaves the folder `dir`, and what is made in it from now on, to SYSTEM
+/// and the Administrators group: for what flux downloads and runs as an
+/// administrator (the Windows installer of an update). Other users can't
+/// add or change anything in it.
+pub fn restrict_to_admins(dir: &std::path::Path) -> io::Result<()> {
+    set_protected_dacl(dir, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+}
+
+/// Sets `path`'s access list from `sddl` (its `D:` part), protected from
+/// inheriting its parent's.
+#[allow(unsafe_code)]
+fn set_protected_dacl(path: &std::path::Path, sddl: &str) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
     use windows_sys::Win32::Security::Authorization::{
@@ -44,11 +60,7 @@ pub fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
         GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
         PSECURITY_DESCRIPTOR,
     };
-    // Protected (no inherited entries): full control for the owner, SYSTEM
-    // and the Administrators group.
-    let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)\0"
-        .encode_utf16()
-        .collect();
+    let sddl: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
     let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: a NUL-terminated string; `sd` receives a LocalAlloc'd descriptor (freed below).
@@ -191,6 +203,84 @@ pub fn let_children_outlive_this_process() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Lets the processes flux starts from now on leave its job
+/// (`CREATE_BREAKAWAY_FROM_JOB`), keeping kill-on-close for the rest: for
+/// the runner of a Windows Installer update, which must outlive the service
+/// it has stopped, while ffmpeg must not.
+#[allow(unsafe_code)]
+pub fn let_children_break_away() -> io::Result<()> {
+    use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    let Some(&job) = HELPERS_JOB.get() else {
+        return Ok(());
+    };
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    // SAFETY: the job handle stays open until the process ends; `info` is
+    // the struct this information class takes, with its size.
+    let ok = unsafe {
+        SetInformationJobObject(
+            job as HANDLE,
+            JobObjectExtendedLimitInformation,
+            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether this process acts as an administrator: elevated, or a service
+/// account such as LocalSystem (Windows Installer needs one).
+#[allow(unsafe_code)]
+pub fn is_admin() -> bool {
+    use windows_sys::Win32::Security::{
+        CheckTokenMembership, CreateWellKnownSid, WinBuiltinAdministratorsSid, SECURITY_MAX_SID_SIZE,
+    };
+    let mut sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut size = SECURITY_MAX_SID_SIZE;
+    // SAFETY: `sid` is a buffer of `size` bytes, the most a SID takes.
+    let made = unsafe {
+        CreateWellKnownSid(
+            WinBuiltinAdministratorsSid,
+            std::ptr::null_mut(),
+            sid.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if made == 0 {
+        return false;
+    }
+    let mut member = 0;
+    // SAFETY: no token (this thread's or process's), the SID made above,
+    // and a valid out pointer.
+    let ok = unsafe { CheckTokenMembership(std::ptr::null_mut(), sid.as_mut_ptr().cast(), &mut member) };
+    ok != 0 && member != 0
+}
+
+/// Waits up to `timeout` for process `pid` to end. True when it has (or
+/// can't be opened: it's gone, or was never there).
+#[allow(unsafe_code)]
+pub fn wait_for_exit(pid: u32, timeout: std::time::Duration) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // SAFETY: a plain call; a null handle means it couldn't be opened.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return true;
+    }
+    let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: the handle opened above, closed right after.
+    let ended = unsafe { WaitForSingleObject(handle, ms) } == WAIT_OBJECT_0;
+    // SAFETY: we own the handle and close it once.
+    unsafe {
+        CloseHandle(handle);
+    }
+    ended
 }
 
 /// This process runs in session 0, where services run (and service wrappers
