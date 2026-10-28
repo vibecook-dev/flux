@@ -614,7 +614,8 @@ The service is called `flux` ("flux media server" in Services). It starts
 with Windows, a little after boot, and the service manager starts it again
 if it stops on its own, after an update too. LocalSystem can read your user
 folders and local drives. Unless you give `--config` or `--data-dir`, its
-data dir is `C:\ProgramData\flux`, and its log is `flux.log` there.
+data dir is `C:\ProgramData\flux`, which `service install` leaves to SYSTEM
+and Administrators (its log, `flux.log` there, has owner links).
 `service stop`, `service start` and `service uninstall` (which leaves the
 data) work the same way, as administrator; so do Services and `sc stop
 flux`. `service install` refuses a program or config file in your user

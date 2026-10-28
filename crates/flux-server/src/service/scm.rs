@@ -196,9 +196,16 @@ fn install(name: &str, args: &ServiceArgs) -> Result<String, String> {
         ));
     }
     let mut args = args.clone();
-    // A data dir LocalSystem and its owner both find, unless one was given.
+    // A data dir LocalSystem and its owner both find, unless one was given:
+    // C:\ProgramData\flux, for SYSTEM and Administrators only, as the Windows
+    // installer leaves it. ProgramData lets every user read and add files,
+    // and the log has owner links.
     if args.config.is_none() && args.data_dir.is_none() {
-        args.data_dir = Some(default_data_dir());
+        let dir = default_data_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+        crate::win32::restrict_to_admins(&dir)
+            .map_err(|e| format!("leaving {} to administrators: {e}", dir.display()))?;
+        args.data_dir = Some(dir);
     }
     let mut launch: Vec<OsString> = vec!["service".into(), "run".into()];
     launch.extend(args.args());
