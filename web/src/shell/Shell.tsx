@@ -42,7 +42,7 @@ import { type OverlayExit, OverlayExitContext } from './overlay-exit';
 import { Sheet } from './Sheet';
 import styles from './Shell.module.css';
 import { goToSpace, setSpaceQuery, spaceFor, spaceKey } from './space';
-import { UpdateNote } from './UpdateNote';
+import { ReleaseNote, UpdateNote } from './UpdateNote';
 import { useInsets, usePhone } from './viewport';
 
 const SHEETS: Record<string, string> = { admin: 'Libraries & scanning', connect: 'Remote access', changes: 'Agents & changes' };
@@ -614,6 +614,7 @@ export function Shell({ loc }: { loc: Location }) {
       {!m && <NotFound />}
       <div className={styles.notices}>
         <UpdateNote />
+        <ReleaseNote />
         <Coach />
       </div>
     </div>

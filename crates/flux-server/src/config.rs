@@ -268,6 +268,33 @@ pub struct Cli {
     /// Log filter (tracing `EnvFilter` syntax) [default: info, or RUST_LOG].
     #[arg(long, env = "FLUX_LOG")]
     pub log: Option<String>,
+    /// Check GitHub for new versions of flux once a day: GitHub sees this
+    /// machine's address and flux's version, nothing else [default: on, or
+    /// as last switched on the Libraries screen].
+    #[arg(
+        long,
+        env = "FLUX_UPDATE_CHECK",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = BoolishValueParser::new()
+    )]
+    pub update_check: Option<bool>,
+    /// Where the updater lists releases (GitHub's API; for tests).
+    #[arg(long, env = "FLUX_UPDATE_SOURCE", value_name = "URL", hide = true)]
+    pub update_source: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// What `flux-server` does besides serving.
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Update flux to its newest release, then restart the running server.
+    /// For a release package unpacked by hand; other installs say how they
+    /// update. Exit status: 0 done (or up to date), 10 with --check when a
+    /// newer version is out, 1 failed, 2 can't update this install.
+    Update(crate::update::cli::UpdateArgs),
 }
 
 /// The TOML file.
@@ -298,6 +325,7 @@ struct FileConfig {
     max_video_transcodes: Option<usize>,
     tmdb_exports: Option<PathBuf>,
     log: Option<String>,
+    update_check: Option<bool>,
 }
 
 impl FileConfig {
@@ -420,6 +448,12 @@ pub struct Config {
     /// Playback idle this long (no media request): the playback caches are
     /// dropped and their memory returned ([`crate::play::trim_when_idle`]).
     pub cache_idle: Duration,
+    /// The daily update check as the command line, environment or config
+    /// file set it; `None` leaves it to the app (on unless switched off
+    /// there). See [`crate::update`].
+    pub update_check: Option<bool>,
+    /// Where the updater lists releases; `None`: GitHub's API.
+    pub update_source: Option<String>,
 }
 
 impl Config {
@@ -535,6 +569,8 @@ impl Config {
             jobs_delay: Duration::from_secs(10),
             probe_system_tailscale: !(tailnet_explicit && tailnet == TailnetChoice::Off),
             cache_idle: crate::play::CACHE_IDLE,
+            update_check: cli.update_check.or(file.update_check),
+            update_source: cli.update_source.filter(|s| !s.trim().is_empty()),
             data_dir,
             older_data_dir,
         })
@@ -571,6 +607,9 @@ impl Config {
             jobs_delay: Duration::ZERO,
             probe_system_tailscale: false,
             cache_idle: crate::play::CACHE_IDLE,
+            // Tests never ask GitHub.
+            update_check: Some(false),
+            update_source: None,
             data_dir,
             older_data_dir: None,
         }

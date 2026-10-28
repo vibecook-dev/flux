@@ -32,6 +32,7 @@ pub mod roots;
 pub mod scan;
 pub mod server;
 pub mod state;
+pub mod update;
 pub mod web;
 #[cfg(windows)]
 pub mod win32;

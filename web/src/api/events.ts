@@ -36,7 +36,8 @@ export function parseEvent(data: string): FluxEvent | null {
         v.type === 'tailnet' ||
         v.type === 'changes' ||
         v.type === 'lenses' ||
-        v.type === 'collections')
+        v.type === 'collections' ||
+        v.type === 'update')
     ) {
       return v as FluxEvent;
     }

@@ -7,6 +7,8 @@
 #     bin/sidecar-slim            (with --sidecar: Truffle's Tailscale sidecar)
 #     share/flux/web/             (the web client; flux-server finds it at
 #                                  <exe dir>/../share/flux/web)
+#     share/flux/install-kind     ("archive": how flux updates itself; see
+#                                  crates/flux-server/src/update/install.rs)
 #     LICENSE  README.md  THIRD_PARTY_LICENSES
 #
 # or, for a Windows target, as flux-<version>-<target>.zip, with everything
@@ -17,6 +19,7 @@
 #     flux.exe                    (with --cli)
 #     sidecar-slim.exe            (with --sidecar)
 #     web/                        (flux-server finds it at <exe dir>/web)
+#     install-kind                ("archive")
 #     LICENSE.txt  README.txt  THIRD_PARTY_LICENSES.txt
 #
 # Usage:
@@ -59,11 +62,11 @@ done
 # Where each file goes: a Unix tree, or one Windows folder.
 case "$target" in
   *-windows-*)
-    windows=true exe=.exe txt=.txt bindir="" webdir=web readme_as=README.txt
+    windows=true exe=.exe txt=.txt bindir="" webdir=web readme_as=README.txt marker=install-kind
     [ -n "$readme" ] || readme="$here/README-windows.txt"
     ;;
   *)
-    windows=false exe="" txt="" bindir=bin/ webdir=share/flux/web readme_as=README.md
+    windows=false exe="" txt="" bindir=bin/ webdir=share/flux/web readme_as=README.md marker=share/flux/install-kind
     [ -n "$readme" ] || readme="$root/README.md"
     ;;
 esac
@@ -120,6 +123,9 @@ if [ -n "$sidecar" ]; then
   chmod 0755 "$stage/${bindir}sidecar-slim$exe"
 fi
 cp -R "$web" "$stage/$webdir"
+# How this install updates: a package unpacked by hand updates itself
+# (`flux-server update`). Packages made from this one write their own word.
+printf 'archive\n' > "$stage/$marker"
 cp "$license" "$stage/LICENSE$txt"
 cp "$readme" "$stage/$readme_as"
 cp "$third_party" "$stage/THIRD_PARTY_LICENSES$txt"

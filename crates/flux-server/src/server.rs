@@ -84,19 +84,25 @@ pub async fn build_state(
         (None, _) => tracing::info!("no web client configured (--web-dir); serving the API only"),
         _ => {}
     }
+    let events = EventBus::default();
+    let updater = Arc::new(crate::update::Updater::new(
+        crate::update::Settings::for_server(&cfg.data_dir, cfg.update_check, cfg.update_source.clone()),
+        Some(events.clone()),
+    ));
     let state = Arc::new(AppState {
         play: PlayState::new(&cfg.data_dir, engine.config().asset_cache_bytes),
         art: Arc::new(ArtStore::new(&cfg.data_dir)),
         catalog,
         scanner,
         engine,
-        events: EventBus::default(),
+        events,
         web,
         users: Users::default(),
         tailnet: TailnetView::default(),
         hosts: HostAllowlist::new(&crate::config::host_name(), &cfg.allow_hosts),
         activity: Activity::default(),
         mcp: Default::default(),
+        updater,
         started: t0,
         shutdown: CancellationToken::new(),
         cfg,
@@ -232,6 +238,8 @@ pub async fn start_with(
     if cfg.probe_system_tailscale {
         net::probe_system_tailscale(state.clone());
     }
+    // The daily update check (it sleeps while switched off).
+    tasks.push(state.updater.spawn(state.shutdown.clone()));
     Ok(Server {
         local_addr: net.local_addr,
         lan_addr: net.lan_addr,

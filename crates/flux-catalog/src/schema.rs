@@ -23,6 +23,8 @@
 //! stored as the bit pattern of the `u64` in an `i64` column (SQLite integers
 //! are signed); see [`crate::model::u64_to_sql`].
 
+use std::path::{Path, PathBuf};
+
 use rusqlite::Connection;
 
 use crate::error::{CatalogError, Result};
@@ -667,6 +669,9 @@ ALTER TABLE item_field_v9 RENAME TO item_field;
 /// table that others reference, and dropping it must not cascade), and
 /// checked afterwards. Idempotent: a database already at the current
 /// version is left untouched (no writes).
+///
+/// A catalog an older flux made is copied first (`backup_before_migrating`):
+/// migrating is the one step of an upgrade that the older flux can't undo.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -677,6 +682,9 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     }
     if found == SCHEMA_VERSION {
         return Ok(());
+    }
+    if found > 0 {
+        backup_before_migrating(conn, found)?;
     }
     // `foreign_keys` can only change outside a transaction.
     let fk: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
@@ -691,6 +699,64 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     let broken: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
     if broken > 0 {
         tracing::warn!(rows = broken, "catalog rows refer to rows that don't exist");
+    }
+    Ok(())
+}
+
+/// Backups of catalogs made before a migration that are kept: the newest two.
+pub const KEPT_BACKUPS: usize = 2;
+
+/// The copy of a catalog at schema `version`, kept before migrating it:
+/// `catalog.db.v8.bak` beside `catalog.db`. The flux that made it can open it
+/// again (`flux-server update --rollback` puts it back).
+pub fn backup_path(db: &Path, version: i64) -> PathBuf {
+    let mut name = db
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "catalog.db".into());
+    name.push(format!(".v{version}.bak"));
+    db.with_file_name(name)
+}
+
+/// The backups `backup_before_migrating` made beside `db`, oldest schema
+/// first: `(version, path)`.
+pub fn backups(db: &Path) -> Vec<(i64, PathBuf)> {
+    let Some(stem) = db.file_name().and_then(|n| n.to_str()).map(|n| format!("{n}.v")) else {
+        return Vec::new();
+    };
+    let dir = db
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut found: Vec<(i64, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let version = name.strip_prefix(&stem)?.strip_suffix(".bak")?.parse().ok()?;
+            Some((version, e.path()))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Copies the catalog, as it is at schema `version`, beside itself
+/// ([`backup_path`]) with `VACUUM INTO`: one consistent file, WAL included.
+/// Keeps the newest [`KEPT_BACKUPS`].
+fn backup_before_migrating(conn: &Connection, version: i64) -> Result<()> {
+    let Some(db) = conn.path().filter(|p| !p.is_empty()).map(PathBuf::from) else {
+        return Ok(()); // in memory: nothing to keep
+    };
+    let to = backup_path(&db, version);
+    // VACUUM INTO refuses to write over a file.
+    let _ = std::fs::remove_file(&to);
+    conn.execute("VACUUM INTO ?1", [to.to_string_lossy()])?;
+    tracing::info!(from = version, to = SCHEMA_VERSION, backup = %to.display(), "catalog copied before migrating");
+    let all = backups(&db);
+    for (_, old) in all.iter().take(all.len().saturating_sub(KEPT_BACKUPS)) {
+        let _ = std::fs::remove_file(old);
     }
     Ok(())
 }
@@ -834,6 +900,61 @@ mod tests {
             })
             .unwrap();
         assert_eq!((n, attribution), (1, None), "rows kept, new columns empty");
+    }
+
+    #[test]
+    fn an_older_catalog_is_copied_before_it_is_migrated() {
+        let (d, mut c) = open_tmp();
+        let db = d.path().join("t.db");
+        for sql in &MIGRATIONS[..5] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute_batch(
+            "PRAGMA user_version = 5;
+             INSERT INTO library(id, name, kind, created_at) VALUES (1, 'Films', 'movies', 0);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        // The copy is the catalog as the v5 flux left it: that flux opens it again.
+        let copy = backup_path(&db, 5);
+        assert_eq!(copy, d.path().join("t.db.v5.bak"));
+        let old = Connection::open(&copy).unwrap();
+        let v: i64 = old.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let name: String = old
+            .query_row("SELECT name FROM library", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((v, name.as_str()), (5, "Films"));
+        assert_eq!(backups(&db), vec![(5, copy)]);
+        // Migrating again (already current) copies nothing.
+        migrate(&mut c).unwrap();
+        assert_eq!(backups(&db).len(), 1);
+    }
+
+    #[test]
+    fn a_new_catalog_needs_no_copy_and_only_the_newest_two_are_kept() {
+        let (d, mut c) = open_tmp();
+        let db = d.path().join("t.db");
+        migrate(&mut c).unwrap();
+        assert!(backups(&db).is_empty(), "a fresh catalog has nothing to keep");
+        drop(c);
+        // Three older copies, and files that aren't copies of this catalog.
+        for v in [2, 3, 4] {
+            std::fs::write(backup_path(&db, v), b"").unwrap();
+        }
+        std::fs::write(d.path().join("t.db.vx.bak"), b"").unwrap();
+        std::fs::write(d.path().join("other.db.v1.bak"), b"").unwrap();
+        // Then a v5 catalog migrates.
+        std::fs::remove_file(&db).unwrap();
+        let mut c = Connection::open(&db).unwrap();
+        for sql in &MIGRATIONS[..5] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute_batch("PRAGMA user_version = 5").unwrap();
+        migrate(&mut c).unwrap();
+        let kept: Vec<i64> = backups(&db).into_iter().map(|(v, _)| v).collect();
+        assert_eq!(kept, vec![4, 5]);
+        assert!(d.path().join("t.db.vx.bak").exists());
+        assert!(d.path().join("other.db.v1.bak").exists());
     }
 
     /// Catalogs up to v5 stored flux's own images by the absolute path of

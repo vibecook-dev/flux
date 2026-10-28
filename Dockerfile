@@ -103,7 +103,10 @@ RUN groupadd --gid 1000 flux \
 # everyone else, the host included, is an anonymous LAN caller. Browsers
 # must reach flux by a name it allows: localhost, the container's own name
 # and addresses, or one listed in FLUX_ALLOW_HOSTS. See docs/INSTALL.md.
+# FLUX_INSTALL_KIND: the image updates by pulling a new one, not in place
+# (the package inside says "archive"; crates/flux-server/src/update).
 ENV FLUX_DATA_DIR=/config \
+    FLUX_INSTALL_KIND=docker \
     FLUX_BIND=0.0.0.0 \
     FLUX_PORT=8096 \
     FLUX_WEB_DIR=/opt/flux/share/flux/web \

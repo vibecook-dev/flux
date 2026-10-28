@@ -664,6 +664,110 @@ pub enum Event {
     /// The collections kept on the server changed (`collection.put`,
     /// `collection.remove`).
     Collections,
+    /// flux's own updates: a check found a new version, or an update moved
+    /// on (downloading, installing, restarting, failed).
+    Update {
+        info: UpdateInfo,
+    },
+}
+
+/// `GET /api/v1/admin/update` (Owner or Admin): flux's own version, the
+/// newest one it may update to, and how this install updates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    /// The running version.
+    pub current: String,
+    /// flux checks GitHub for new versions (once a day).
+    pub check: bool,
+    /// [`check`](Self::check) comes from the server's command line,
+    /// environment or config file, which the app can't change.
+    pub check_fixed: bool,
+    /// When flux last asked (Unix epoch milliseconds).
+    pub checked_at: Option<i64>,
+    /// The newest release this server may update to, when it is newer than
+    /// [`current`](Self::current): pre-releases only for a pre-release.
+    pub available: Option<ReleaseInfo>,
+    pub install: InstallInfo,
+    pub phase: UpdatePhase,
+    /// Bytes downloaded of the package, while [`UpdatePhase::Downloading`].
+    pub progress: Option<UpdateProgress>,
+    /// Why the last check or update failed, for a person.
+    pub error: Option<String>,
+    /// The version the last update replaced, kept for
+    /// `flux-server update --rollback`.
+    pub previous: Option<String>,
+}
+
+/// A release flux may update to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub version: String,
+    /// When it was published (Unix epoch milliseconds).
+    pub published_at: Option<i64>,
+    /// Its release page, with the full notes.
+    pub url: String,
+    /// The first lines of its notes, as plain text.
+    pub highlights: Vec<String>,
+}
+
+/// How this flux was installed, and so how it updates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallInfo {
+    pub kind: InstallKind,
+    /// flux can update itself in place ("Update now").
+    pub can_apply: bool,
+    /// Why it can't, for a person, when it is an install that otherwise could.
+    pub why_not: Option<String>,
+    /// What to run instead (or as well), e.g. `sudo flux-server update`.
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallKind {
+    /// A release package (`.tar.gz`, `.zip`) unpacked by hand.
+    Archive,
+    /// The Docker image.
+    Docker,
+    /// Homebrew.
+    Homebrew,
+    /// A Debian package.
+    Deb,
+    /// An RPM package.
+    Rpm,
+    /// The Windows installer.
+    Msi,
+    /// Built from source (no package marker).
+    Source,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePhase {
+    Idle,
+    Checking,
+    Downloading,
+    /// Checking the download and trying the new version.
+    Verifying,
+    /// Putting the new version in place.
+    Installing,
+    /// Stopping, to start again as the new version.
+    Restarting,
+    /// The last check or update failed ([`UpdateInfo::error`]).
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
+/// `PUT /api/v1/admin/update/settings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    /// Check GitHub for new versions once a day.
+    pub check: bool,
 }
 
 /// How flux reaches the tailnet.

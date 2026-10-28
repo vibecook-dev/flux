@@ -11,6 +11,7 @@ import type { Id, ItemDetail, ItemSummary } from './types';
 
 export const keys = {
   server: 'server',
+  update: 'update',
   libraries: 'libraries',
   home: 'home',
   item: (id: Id) => `item:${id}`,
@@ -32,6 +33,8 @@ export const keys = {
 // Every answer also tells the page whether flux was updated under it (app/update.ts).
 const serverInfo = () => api.server().then((info) => noteServer(info));
 export const useServer = () => useQuery(keys.server, serverInfo, { staleMs: 60_000 });
+/** flux's own updates (Owners and Admins); `update` events keep it current. */
+export const useUpdateInfo = (enabled = true) => useQuery(keys.update, api.updateInfo, { staleMs: 60_000, enabled });
 export const useLibraries = () => useQuery(keys.libraries, api.libraries, { staleMs: 10_000 });
 export const useHome = () => useQuery(keys.home, api.home, { staleMs: 15_000 });
 export const useItem = (id: Id) => useQuery(keys.item(id), () => api.item(id));

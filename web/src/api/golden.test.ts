@@ -16,6 +16,7 @@ import {
   FOLDER_SORTS,
   GUESS_KINDS,
   HDR_FORMATS,
+  INSTALL_KINDS,
   ITEM_FILTERS,
   ITEM_KINDS,
   LIBRARY_KINDS,
@@ -26,6 +27,7 @@ import {
   TAILNET_MODES,
   TAILNET_STATES,
   TRACK_KINDS,
+  UPDATE_PHASES,
 } from './types';
 import {
   ART_KINDS,
@@ -65,6 +67,8 @@ describe('enum strings match serde', () => {
     ['TailnetMode', TAILNET_MODES],
     ['TailnetState', TAILNET_STATES],
     ['MetadataSource', METADATA_SOURCES],
+    ['InstallKind', INSTALL_KINDS],
+    ['UpdatePhase', UPDATE_PHASES],
     ['Gap', GAPS],
     ['MatchState', MATCH_STATES],
     ['Source', SOURCES],

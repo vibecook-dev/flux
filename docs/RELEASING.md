@@ -128,8 +128,8 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 
 | Asset | |
 |---|---|
-| `flux-<version>-<target>.tar.gz` | `bin/flux-server`, `share/flux/web/`, `LICENSE`, `README.md`, `THIRD_PARTY_LICENSES`, and `bin/sidecar-slim` when a Truffle sidecar is pinned (below). |
-| `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
+| `flux-<version>-<target>.tar.gz` | `bin/flux-server`, `share/flux/web/`, `share/flux/install-kind` (`archive`), `LICENSE`, `README.md`, `THIRD_PARTY_LICENSES`, and `bin/sidecar-slim` when a Truffle sidecar is pinned (below). |
+| `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `install-kind` (`archive`), `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
 | `SHA256SUMS` | SHA-256 of every package. |
 | `jellyfin-ffmpeg-<version>-source.tar.gz` | Source of the GPL ffmpeg in the Docker image. |
 
@@ -148,6 +148,29 @@ jellyfin-ffmpeg source tarball have no attestation. The attest steps set
 feeds the organization's Linked Artifacts page, needs the
 `artifact-metadata: write` permission, and plays no part in
 `gh attestation verify`.
+
+### What the updater relies on
+
+Running servers update from the published releases
+(`crates/flux-server/src/update`, [INSTALL.md § Updating](INSTALL.md#updating)),
+so these are a contract with every installed flux, old ones included:
+
+- Releases are listed by GitHub's API (`/repos/vibecook-dev/flux/releases`),
+  published (drafts are skipped), tagged `v<semver>`. The version alone says
+  whether it is a pre-release: an install of a pre-release follows
+  pre-releases, a stable install only stable releases.
+- Each target's package is named `flux-<version>-<target>.tar.gz` (`.zip` for
+  Windows), with one top-level folder in the layout above and the
+  `install-kind` marker (`package.sh` writes `archive`; the smoke test fails
+  a package without it). `PACKAGED_TARGETS` in `update/mod.rs` lists the
+  targets that have one, as `build.yml` does.
+- `SHA256SUMS` lists each package as `sha256sum` writes it. A package that
+  doesn't match is refused, and immutable releases keep both from changing
+  after publication.
+- The new `flux-server --version` prints `flux-server <version>`: the
+  updater runs it before putting anything in place.
+- The notes' first bullet points (Release Please's `* **scope:** …` lines)
+  are what the Libraries screen shows of a release.
 
 ## Release dry run
 
