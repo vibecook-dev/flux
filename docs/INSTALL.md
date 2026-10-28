@@ -441,7 +441,10 @@ Open <http://localhost:8096> and follow [*Set up flux*](#setting-flux-up).
   licence and `SOURCE.txt` in `ffmpeg\`; each release attaches its complete
   source, `ffmpeg-<version>-windows-source.tar`. flux uses it before any
   other ffmpeg on the machine: set `ffmpeg = '…'` in `flux.toml` for
-  another. `flux-server --check` shows what it can do here.
+  another. `flux-server --check` shows what it can do here. It has no
+  `tonemapx`, so it can't tone-map Dolby Vision profile 5 videos: a
+  transcode of one looks purple and green. For those, set `ffmpeg` to
+  Jellyfin's portable build ([Install](#install) has the download).
 - **Updating.** Install the new release's installer the same way: it
   replaces the old version in place and keeps the data and settings. The
   Libraries screen says when a new flux is out.
