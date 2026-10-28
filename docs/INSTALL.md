@@ -116,10 +116,10 @@ an `.rpm` (Fedora, RHEL and AlmaLinux 10), for x86_64 and arm64, from the
 <!-- x-release-please-start-version -->
 ```sh
 # Debian, Ubuntu
-curl -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-amd64.deb
-sudo apt install ./flux-0.1.0-alpha.4-amd64.deb
+curl -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.5/flux-0.1.0-alpha.4-amd64.deb
+sudo apt install ./flux-0.1.0-alpha.5-amd64.deb
 # Fedora, RHEL
-sudo dnf install https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64.rpm
+sudo dnf install https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.5/flux-0.1.0-alpha.4-x86_64.rpm
 sudo systemctl enable --now flux
 ```
 <!-- x-release-please-end -->
@@ -182,7 +182,7 @@ To install a release under `/opt/flux` (to upgrade an existing install, see
 
 <!-- x-release-please-start-version -->
 ```sh
-version=0.1.0-alpha.4
+version=0.1.0-alpha.5
 target=aarch64-apple-darwin      # or x86_64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 base=https://github.com/vibecook-dev/flux/releases/download/v$version
 curl -fLO "$base/flux-$version-$target.tar.gz"
@@ -395,12 +395,12 @@ release has two ways to install it:
 
 <!-- x-release-please-start-version -->
 Download
-[`flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi`](https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi)
+[`flux-0.1.0-alpha.5-x86_64-pc-windows-msvc.msi`](https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi)
 and open it, or in PowerShell:
 
 ```powershell
-curl.exe -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi
-msiexec /i flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi
+curl.exe -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.5/flux-0.1.0-alpha.4-x86_64-pc-windows-msvc.msi
+msiexec /i flux-0.1.0-alpha.5-x86_64-pc-windows-msvc.msi
 ```
 <!-- x-release-please-end -->
 
@@ -479,7 +479,7 @@ Visual C++ Redistributable. The commands below are for PowerShell.
 
 <!-- x-release-please-start-version -->
 ```powershell
-$version = '0.1.0-alpha.4'
+$version = '0.1.0-alpha.5'
 $zip = "flux-$version-x86_64-pc-windows-msvc.zip"
 $base = "https://github.com/vibecook-dev/flux/releases/download/v$version"
 curl.exe -fLO "$base/$zip"
@@ -690,7 +690,7 @@ docker run -d --name flux \
   -v /path/to/tv:/media/tv:ro \
   -e FLUX_LIBRARIES="Movies:movies:/media/movies;TV:shows:/media/tv" \
   -e FLUX_ALLOW_HOSTS="nas.local,media.example.com" \
-  ghcr.io/vibecook-dev/flux:0.1.0-alpha.4
+  ghcr.io/vibecook-dev/flux:0.1.0-alpha.5
 ```
 <!-- x-release-please-end -->
 
