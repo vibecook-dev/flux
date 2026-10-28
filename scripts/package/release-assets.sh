@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Completes a release's asset directory, as release.yml uploads it and as the
 # release dry run keeps it: checks that every target's package is there (a
-# .tar.gz, or a .zip for Windows), adds the source tarball of the
-# jellyfin-ffmpeg the Docker image ships (GPL), and writes SHA256SUMS over all
-# of it. Run it from the repository root.
+# .tar.gz, or a .zip for Windows, and a .deb and .rpm for each Linux
+# target), adds the source tarball of the jellyfin-ffmpeg the Docker image
+# ships (GPL), and writes SHA256SUMS over all of it. Run it from the
+# repository root.
 #
 # Usage: scripts/package/release-assets.sh --version <version> <dist-dir>
 set -euo pipefail
@@ -26,6 +27,9 @@ for t in $targets; do
   case "$t" in *-windows-*) package="flux-$version-$t.zip" ;; *) package="flux-$version-$t.tar.gz" ;; esac
   [ -s "$dist/$package" ] || die "missing $package in $dist"
 done
+for p in "flux-$version-amd64.deb" "flux-$version-arm64.deb" "flux-$version-x86_64.rpm" "flux-$version-aarch64.rpm"; do
+  [ -s "$dist/$p" ] || die "missing $p in $dist"
+done
 
 jf=$(sed -n 's/^ARG JELLYFIN_FFMPEG_VERSION=//p' Dockerfile)
 [ -n "$jf" ] || die "no JELLYFIN_FFMPEG_VERSION in Dockerfile"
@@ -36,9 +40,9 @@ curl -fsSL --retry 3 --proto '=https' -o "$dist/jellyfin-ffmpeg-$jf-source.tar.g
   cd "$dist"
   rm -f SHA256SUMS
   if command -v sha256sum > /dev/null; then
-    sha256sum -- *.tar.gz *.zip > SHA256SUMS
+    sha256sum -- *.tar.gz *.zip *.deb *.rpm > SHA256SUMS
   else
-    shasum -a 256 -- *.tar.gz *.zip > SHA256SUMS
+    shasum -a 256 -- *.tar.gz *.zip *.deb *.rpm > SHA256SUMS
   fi
   cat SHA256SUMS
 )

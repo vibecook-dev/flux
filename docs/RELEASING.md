@@ -108,6 +108,13 @@ would remove this step.
      (`scripts/package/windows-console.ps1`) and stops it as NSSM or WinSW
      would, with Ctrl-C and then, after a restart, Ctrl-Break; each stop
      must log "flux stopped" and exit 0;
+   - signs and notarizes the macOS binaries when the repository has the
+     Apple secrets ([Signing and the Homebrew tap](#signing-and-the-homebrew-tap)),
+     before packaging them; without the secrets, a warning;
+   - makes a `.deb` and an `.rpm` of each Linux package with a pinned nFPM
+     (`scripts/package/linux-packages.sh`), and installs, checks and
+     removes them in Debian, Fedora and AlmaLinux containers
+     (`scripts/package/linux-smoke-test.sh`);
    - uploads the packages, `SHA256SUMS` and the jellyfin-ffmpeg source
      tarball to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
@@ -120,7 +127,12 @@ would remove this step.
      untested rebuild. It is pushed and attested; `:latest` too for a
      stable release;
    - publishes the draft: a pre-release for `-alpha`/`-beta`/`-rc` versions,
-     otherwise the repository's Latest release.
+     otherwise the repository's Latest release;
+   - then updates the Homebrew formula in
+     [vibecook-dev/homebrew-tap](https://github.com/vibecook-dev/homebrew-tap)
+     (`scripts/package/homebrew-formula.sh`), when the repository has the
+     `HOMEBREW_TAP_TOKEN` secret. A pre-release doesn't replace a stable
+     version there.
 
 Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 
@@ -130,6 +142,7 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 |---|---|
 | `flux-<version>-<target>.tar.gz` | `bin/flux-server`, `share/flux/web/`, `share/flux/install-kind` (`archive`), `LICENSE`, `README.md`, `THIRD_PARTY_LICENSES`, and `bin/sidecar-slim` when a Truffle sidecar is pinned (below). |
 | `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `install-kind` (`archive`), `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
+| `flux-<version>-<amd64\|arm64>.deb`, `flux-<version>-<x86_64\|aarch64>.rpm` | The Linux packages as system packages (`linux-packages.sh`): `/usr/bin/flux-server`, `/usr/bin/flux`, `/usr/libexec/flux/sidecar-slim`, `/usr/share/flux/` (`install-kind`: `deb` or `rpm`), a system service run by a `flux` account (`/usr/lib/systemd/system/flux.service`, `/usr/lib/sysusers.d/flux.conf`), and `/etc/flux/flux.toml`. Named like the tarballs, not as `flux_0.1.0~alpha.1-1_amd64.deb`: GitHub renames a `~` in an asset's name. |
 | `SHA256SUMS` | SHA-256 of every package. |
 | `jellyfin-ffmpeg-<version>-source.tar.gz` | Source of the GPL ffmpeg in the Docker image. |
 
@@ -171,6 +184,10 @@ so these are a contract with every installed flux, old ones included:
   updater runs it before putting anything in place.
 - The notes' first bullet points (Release Please's `* **scope:** …` lines)
   are what the Libraries screen shows of a release.
+- An install from the `.deb`, `.rpm` or Homebrew doesn't update itself: the
+  Libraries screen shows the command, which names the assets above
+  (`flux-<version>-<arch>.deb`, `flux-<version>-<arch>.rpm`) and the formula
+  `vibecook-dev/tap/flux`.
 
 ## Release dry run
 
@@ -258,8 +275,10 @@ time.
 
 ## Repository setup (once)
 
-No secrets are needed: everything runs on `GITHUB_TOKEN`, with
-least-privilege `permissions:` per job. These settings are needed once:
+A release needs no secrets: everything runs on `GITHUB_TOKEN`, with
+least-privilege `permissions:` per job. Optional secrets sign the macOS
+binaries and keep the Homebrew tap up to date ([below](#signing-and-the-homebrew-tap)).
+These settings are needed once:
 
 - **Settings → Actions → General → Workflow permissions:** check *Allow
   GitHub Actions to create and approve pull requests* (Release Please opens
@@ -301,6 +320,36 @@ least-privilege `permissions:` per job. These settings are needed once:
   <https://github.com/orgs/vibecook-dev/packages/container/flux/settings>
   and set the visibility to *Public* (new packages start private). The image
   label `org.opencontainers.image.source` links it to the repository.
+
+### Signing and the Homebrew tap
+
+Each turns on when its secrets exist (Settings → Secrets and variables →
+Actions → Repository secrets); `release-please.yml` and the dry run pass
+them down with `secrets: inherit`.
+
+**macOS: Developer ID signing and notarization** (`scripts/package/macos-sign.sh`).
+Signed and notarized binaries run from a downloaded tarball without
+Gatekeeper's warning, and keep the permissions a person gave flux (an
+external drive, a network volume) across updates.
+
+| Secret | |
+|---|---|
+| `APPLE_CERTIFICATE` | A *Developer ID Application* certificate with its private key, exported from Keychain Access as a `.p12`, in base64 (`base64 -i cert.p12 \| pbcopy`). |
+| `APPLE_CERTIFICATE_PASSWORD` | The `.p12`'s password. |
+| `APPLE_SIGNING_IDENTITY` | The certificate's name: `Developer ID Application: <Name> (<TEAMID>)`. |
+| `APPLE_API_KEY` | An App Store Connect API key (Users and Access → Integrations → Team Keys; the Developer role is enough), the `.p8` in base64. |
+| `APPLE_API_KEY_ID` | That key's ID. |
+| `APPLE_API_ISSUER` | The Issuer ID on the same page. |
+
+Run the [release dry run](#release-dry-run) once the secrets are in: its
+macOS jobs then sign and notarize, and fail if Apple refuses.
+
+**Homebrew: the tap's token.** `HOMEBREW_TAP_TOKEN` is a fine-grained
+personal access token: resource owner `vibecook-dev`, *Only select
+repositories* → `homebrew-tap`, permission *Contents: Read and write*.
+Fine-grained tokens expire (a year at most); when it does, the release's
+Homebrew job fails after the release is published, and `brew` keeps the
+previous version until the token is renewed and the job re-run.
 
 ## When something fails
 

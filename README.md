@@ -107,6 +107,8 @@ Every change is a changeset with the pages it came from, and you can undo any of
 
 Releases are pre-releases (`0.1.0-alpha.N`) until the first stable one. The [website](https://vibecook-dev.github.io/flux/#download) offers the build for your system, and [docs/INSTALL.md](docs/INSTALL.md) has the steps for each way to install flux:
 
+- **Homebrew** (macOS and Linux): `brew install vibecook-dev/tap/flux`, then `brew services start vibecook-dev/tap/flux`. ffmpeg comes with it. See [INSTALL.md § Homebrew](docs/INSTALL.md#homebrew-macos-and-linux).
+- **A .deb or .rpm** (Debian and Ubuntu, Fedora and RHEL; x86_64 and arm64) that runs flux as a system service under an account of its own. See [INSTALL.md § Debian, Ubuntu, Fedora and RHEL](docs/INSTALL.md#debian-ubuntu-fedora-and-rhel).
 - **Release packages** on [GitHub Releases](https://github.com/vibecook-dev/flux/releases), for macOS (Apple Silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64, a `.zip`), with `SHA256SUMS` and a build-provenance attestation per package. They don't bundle FFmpeg: install `ffmpeg` and `ffprobe` yourself (on `PATH`, or pass `--ffmpeg` / `--ffprobe`). See [INSTALL.md § Release packages](docs/INSTALL.md#release-packages).
 - **Docker**: `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and linux/arm64, and `edge` for the tip of `main`. It bundles [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg), which is GPL; the image carries its licence and a link to its source, and each release attaches the matching source tarball. See [INSTALL.md § Docker](docs/INSTALL.md#docker).
 - **Build from source**: see [Quickstart](#quickstart-build-from-source) below.

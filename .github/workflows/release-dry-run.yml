@@ -63,6 +63,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/build.yml
+    # So a dry run signs and notarizes too, once the secrets exist.
+    secrets: inherit
     with:
       ref: ${{ needs.prepare.outputs.ref }}
       version: ${{ needs.prepare.outputs.version }}

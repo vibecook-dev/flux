@@ -120,5 +120,7 @@ jobs:
       id-token: write # artifact attestations (Sigstore)
       attestations: write
     uses: ./.github/workflows/release.yml
+    # Signing (Apple, Azure) and the Homebrew tap's token.
+    secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}

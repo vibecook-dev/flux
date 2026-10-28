@@ -1,11 +1,15 @@
 # Installing flux
 
 flux is one program, `flux-server`, that serves its own web client. It runs
-`ffmpeg` and `ffprobe`, which you install separately (the Docker image
-brings its own; see [ffmpeg](#ffmpeg)). There are three ways to install it:
+`ffmpeg` and `ffprobe`, which you install separately unless the way you
+install flux brings them (see [ffmpeg](#ffmpeg)). The ways to install it:
 
-- [a release package](#release-packages) for macOS or Linux, or a zip for
-  [Windows](#windows);
+- [Homebrew](#homebrew-macos-and-linux), on macOS or Linux: `brew install
+  vibecook-dev/tap/flux`, ffmpeg included;
+- [a .deb or .rpm](#debian-ubuntu-fedora-and-rhel) for Debian and Ubuntu,
+  or Fedora and RHEL, which runs flux as a system service;
+- [a release package](#release-packages) (a tarball) for macOS or Linux, or
+  a zip for [Windows](#windows);
 - [the Docker image](#docker), which brings its own ffmpeg;
 - [building from source](#building-from-source).
 
@@ -76,6 +80,70 @@ flux-server --check
 
 It prints the ffmpeg and ffprobe it resolved, their versions and the
 encoders it detected, and exits non-zero if something required is missing.
+
+## Homebrew (macOS and Linux)
+
+```sh
+brew install vibecook-dev/tap/flux
+brew services start vibecook-dev/tap/flux     # now, and at every login
+```
+
+Then open <http://localhost:8096> and follow *Set up flux*. Homebrew
+installs ffmpeg with it, and `brew services` runs flux as your account, so
+it reads your folders and drives; its log is `$(brew --prefix)/var/log/flux.log`.
+Update with `brew upgrade vibecook-dev/tap/flux` (the Libraries screen says
+so when a new flux is out); `brew services restart vibecook-dev/tap/flux`
+then runs the new version.
+
+Use the full name, `vibecook-dev/tap/flux`: Homebrew's own `flux` is
+another program (InfluxData's), as is fluxcd's, and neither can be
+installed beside this one, since each installs a `flux` command. Homebrew's
+ffmpeg is a slim build without libass, so flux can't burn ASS subtitles
+into a transcode with it; `brew install ffmpeg-full` and `--ffmpeg
+"$(brew --prefix ffmpeg-full)/bin/ffmpeg"` can.
+
+## Debian, Ubuntu, Fedora and RHEL
+
+Each release has a `.deb` (Debian 12 and newer, Ubuntu 22.04 and newer) and
+an `.rpm` (Fedora, RHEL and AlmaLinux 10), for x86_64 and arm64, from the
+[releases page](https://github.com/vibecook-dev/flux/releases):
+
+<!-- x-release-please-start-version -->
+```sh
+# Debian, Ubuntu
+curl -fLO https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-amd64.deb
+sudo apt install ./flux-0.1.0-alpha.4-amd64.deb
+# Fedora, RHEL
+sudo dnf install https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-x86_64.rpm
+sudo systemctl enable --now flux
+```
+<!-- x-release-please-end -->
+
+(`arm64.deb` and `aarch64.rpm` on arm64.) flux then runs as a system
+service, as an account of its own, `flux`: its settings are in
+`/etc/flux/flux.toml`, its data in `/var/lib/flux`, and its log in
+`journalctl -u flux`. Debian and Ubuntu start it right away; Fedora and
+RHEL leave a new service off until it is enabled, as above.
+
+- **Other devices.** Out of the box flux listens on this machine only.
+  Uncomment `lan = "0.0.0.0:8097"` in `/etc/flux/flux.toml` and `sudo
+  systemctl restart flux`, then open the [owner link](#the-owner-link) from
+  the log (`journalctl -u flux | grep own#`) on the device you set flux up
+  from, or make one with `sudo -u flux flux-server owner-link --config
+  /etc/flux/flux.toml`.
+- **Your media.** The `flux` account needs to read the library folders:
+  `sudo setfacl -R -m u:flux:rX /srv/media` (or group permissions). The
+  package adds it to the `render` and `video` groups for hardware
+  transcoding.
+- **ffmpeg.** The package recommends `ffmpeg`, which Debian and Ubuntu
+  install with it. Fedora's own `ffmpeg-free` can't decode H.264 or HEVC;
+  install RPM Fusion's ffmpeg instead (`sudo dnf swap ffmpeg-free ffmpeg
+  --allowerasing`, with [RPM Fusion](https://rpmfusion.org) enabled).
+- **Updating.** Install the new release's package the same way; the
+  service restarts as the new version. The Libraries screen shows the
+  command when a new flux is out.
+- **Removing.** `sudo apt remove flux` (or `sudo dnf remove flux`) keeps
+  `/etc/flux` and `/var/lib/flux`; `sudo apt purge flux` removes them too.
 
 ## Release packages
 
@@ -677,6 +745,11 @@ there, or with `--update-check false` (`FLUX_UPDATE_CHECK=false`,
 change.
 
 How flux updates depends on how it was installed:
+
+- **Homebrew:** `brew upgrade vibecook-dev/tap/flux`, then `brew services
+  restart vibecook-dev/tap/flux`.
+- **The .deb or .rpm:** install the new release's package; the service
+  restarts as the new version (the Libraries screen shows the command).
 
 - **A release package** (unpacked by hand, as above): *Update now* on the
   Libraries screen, or `flux-server update` in a terminal. flux downloads
