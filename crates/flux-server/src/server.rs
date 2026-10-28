@@ -242,6 +242,7 @@ pub async fn start_with(
     }
     // The daily update check (it sleeps while switched off).
     tasks.push(state.updater.spawn(state.shutdown.clone()));
+    state.updater.follow_installer(state.shutdown.clone());
     Ok(Server {
         local_addr: net.local_addr,
         lan_addr: net.lan_addr,
