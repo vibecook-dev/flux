@@ -158,12 +158,14 @@ impl LocalRole {
     after_help = "Examples:\n  flux-server --library Movies:movies:/srv/media/Movies --library TV:shows:/srv/media/TV\n  flux-server --config /etc/flux.toml\n  flux-server --check\n\nTOML keys are the long flags with '_' plus [[library]] tables {name, kind, path}.\nOn Windows, write paths in 'single quotes' or with forward slashes."
 )]
 pub struct Cli {
-    /// TOML config file.
+    /// TOML config file [default: none; with the Windows installer,
+    /// C:\ProgramData\flux\flux.toml].
     #[arg(long, env = "FLUX_CONFIG", value_name = "FILE", global = true)]
     pub config: Option<PathBuf>,
     /// Where flux keeps its catalog, caches and artwork [default:
     /// ~/Library/Application Support/flux on macOS, %LOCALAPPDATA%\flux on
-    /// Windows, $XDG_DATA_HOME/flux or ~/.local/share/flux elsewhere].
+    /// Windows (C:\ProgramData\flux with the Windows installer),
+    /// $XDG_DATA_HOME/flux or ~/.local/share/flux elsewhere].
     #[arg(long, env = "FLUX_DATA_DIR", value_name = "DIR", global = true)]
     pub data_dir: Option<PathBuf>,
     /// A library to create on first run (repeatable; ';'-separated in the
@@ -237,7 +239,8 @@ pub struct Cli {
     /// owns its tailnet node, learned when the tailnet starts].
     #[arg(long, env = "FLUX_OWNER_LOGIN", value_name = "LOGIN")]
     pub owner_login: Option<String>,
-    /// ffmpeg binary [default: from PATH or Homebrew].
+    /// ffmpeg binary [default: in ffmpeg/ next to flux-server (the Windows
+    /// installer's), else from PATH or Homebrew].
     #[arg(long, env = "FLUX_FFMPEG", value_name = "PATH")]
     pub ffmpeg: Option<PathBuf>,
     /// ffprobe binary [default: next to ffmpeg].
@@ -481,7 +484,8 @@ pub struct Config {
 impl Config {
     /// Merge flags/env (already in `cli`) with the TOML file and defaults.
     pub fn resolve(cli: Cli) -> anyhow::Result<Config> {
-        let file: FileConfig = match &cli.config {
+        let config = cli.config.clone().or_else(default_config);
+        let file: FileConfig = match &config {
             Some(path) => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("reading config {}", path.display()))?;
@@ -653,11 +657,32 @@ fn expand_home(p: PathBuf) -> PathBuf {
     }
 }
 
+/// The config file read when none is given: on Windows, the installer's
+/// `C:\ProgramData\flux\flux.toml`, when it is there, for its service and for
+/// commands run in a terminal (`owner-link`, `--check`). None elsewhere.
+fn default_config() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if crate::update::install::Install::detect().kind == flux_core::api::InstallKind::Msi {
+        let p = crate::service::scm::default_data_dir().join("flux.toml");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// `~/Library/Application Support/flux` (macOS), `%LOCALAPPDATA%\flux`
-/// (Windows), `$XDG_DATA_HOME/flux` or `~/.local/share/flux` (elsewhere).
+/// (Windows; `C:\ProgramData\flux` for the installer's service),
+/// `$XDG_DATA_HOME/flux` or `~/.local/share/flux` (elsewhere).
 pub fn default_data_dir() -> anyhow::Result<PathBuf> {
     #[cfg(windows)]
     {
+        // The Windows installer's flux is a service, with its data in
+        // C:\ProgramData\flux: commands run in a terminal (`owner-link`,
+        // `--check`) find it there too.
+        if crate::update::install::Install::detect().kind == flux_core::api::InstallKind::Msi {
+            return Ok(crate::service::scm::default_data_dir());
+        }
         // The known folder, not HOME: OpenSSH and Git shells set HOME to the
         // profile folder, where a Unix-style `.local/share` doesn't belong.
         crate::win32::local_app_data()

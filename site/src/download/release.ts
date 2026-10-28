@@ -27,7 +27,8 @@ interface Build {
   name: string;
   detail: string;
   target?: string;
-  ext?: string;
+  /** Its packages, best first: the first one the release has is offered. */
+  exts?: string[];
   icon: string;
 }
 
@@ -43,17 +44,23 @@ const ICONS = {
 };
 
 const BUILDS: Build[] = [
-  { id: 'mac-arm', name: 'macOS', detail: 'Apple Silicon', target: 'aarch64-apple-darwin', ext: 'tar.gz', icon: ICONS.laptop },
-  { id: 'mac-intel', name: 'macOS', detail: 'Intel', target: 'x86_64-apple-darwin', ext: 'tar.gz', icon: ICONS.laptop },
-  { id: 'windows', name: 'Windows', detail: 'x64', target: 'x86_64-pc-windows-msvc', ext: 'zip', icon: ICONS.window },
-  { id: 'linux-x64', name: 'Linux', detail: 'x86_64', target: 'x86_64-unknown-linux-gnu', ext: 'tar.gz', icon: ICONS.terminal },
-  { id: 'linux-arm', name: 'Linux', detail: 'ARM64', target: 'aarch64-unknown-linux-gnu', ext: 'tar.gz', icon: ICONS.terminal },
+  { id: 'mac-arm', name: 'macOS', detail: 'Apple Silicon', target: 'aarch64-apple-darwin', exts: ['tar.gz'], icon: ICONS.laptop },
+  { id: 'mac-intel', name: 'macOS', detail: 'Intel', target: 'x86_64-apple-darwin', exts: ['tar.gz'], icon: ICONS.laptop },
+  // The installer (a service, FFmpeg included); releases before it, the zip.
+  { id: 'windows', name: 'Windows', detail: 'x64', target: 'x86_64-pc-windows-msvc', exts: ['msi', 'zip'], icon: ICONS.window },
+  { id: 'linux-x64', name: 'Linux', detail: 'x86_64', target: 'x86_64-unknown-linux-gnu', exts: ['tar.gz'], icon: ICONS.terminal },
+  { id: 'linux-arm', name: 'Linux', detail: 'ARM64', target: 'aarch64-unknown-linux-gnu', exts: ['tar.gz'], icon: ICONS.terminal },
   { id: 'docker', name: 'Docker', detail: 'amd64 and arm64, with ffmpeg', icon: ICONS.box },
 ];
 
 const version = (r: Release) => r.tag.replace(/^v/, '');
-const fileOf = (r: Release, b: Build) => (b.target ? `flux-${version(r)}-${b.target}.${b.ext}` : null);
-const assetOf = (r: Release, b: Build) => r.assets.find((a) => a.name === fileOf(r, b)) ?? null;
+const filesOf = (r: Release, b: Build) => (b.target ? (b.exts ?? []).map((e) => `flux-${version(r)}-${b.target}.${e}`) : []);
+const assetOf = (r: Release, b: Build) =>
+  filesOf(r, b)
+    .map((f) => r.assets.find((a) => a.name === f))
+    .find((a) => a !== undefined) ?? null;
+const fileOf = (r: Release, b: Build) => assetOf(r, b)?.name ?? filesOf(r, b)[0] ?? null;
+const extOf = (file: string) => (file.endsWith('.tar.gz') ? 'tar.gz' : file.slice(file.lastIndexOf('.') + 1));
 const mb = (n: number) => `${(n / 1_000_000).toFixed(1)} MB`;
 
 /** A best guess at the visitor's system; Macs default to Apple Silicon, which Safari can't tell from Intel. */
@@ -93,6 +100,14 @@ function install(r: Release, sys: System | null, tab: 'shell' | 'docker'): strin
   }
   if (sys === 'windows') {
     const zip = `flux-${v}-x86_64-pc-windows-msvc`;
+    if (r.assets.some((a) => a.name === `${zip}.msi`)) {
+      return [
+        c('PowerShell: download and install; flux then runs as a service, FFmpeg included'),
+        `<span class="p">&gt; </span>curl.exe -fLO https://github.com/${REPO}/releases/download/v${v}/${zip}.msi`,
+        `<span class="p">&gt; </span>msiexec /i ${zip}.msi`,
+        c('Then open http://localhost:8096 and set flux up'),
+      ].join('\n');
+    }
     return [
       c('PowerShell: download, unpack and point flux at your films'),
       `<span class="p">&gt; </span>curl.exe -fLO https://github.com/${REPO}/releases/download/v${v}/${zip}.zip`,
@@ -139,7 +154,7 @@ export async function startDownload(): Promise<void> {
     const label = root.querySelector('[data-get-primary-label]')!;
     if (mine && asset) {
       title.textContent = `flux for ${mine.name}`;
-      sub.textContent = `${mine.detail} · ${mb(asset.size)} · .${mine.ext}${mine.id === 'mac-arm' ? ' · on an Intel Mac, pick Intel below' : ''}`;
+      sub.textContent = `${mine.detail} · ${mb(asset.size)} · .${extOf(asset.name)}${mine.id === 'mac-arm' ? ' · on an Intel Mac, pick Intel below' : ''}`;
       primary.href = asset.url;
       label.textContent = `Download for ${mine.name}`;
     } else {

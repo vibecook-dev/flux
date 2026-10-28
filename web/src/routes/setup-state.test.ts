@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnerLink } from '../api/types';
-import { crumbs, deviceName, encoderLine, ffmpegFix, isLoopback, isTailnet, linkUrl, nameFor, summaryLine, videosLabel } from './setup-state';
+import { crumbs, deviceName, encoderLine, ffmpegFix, isLoopback, isTailnet, lanSwitch, linkUrl, nameFor, summaryLine, videosLabel } from './setup-state';
 
 describe('deviceName', () => {
   it('names the browser and the system it runs on', () => {
@@ -104,5 +104,16 @@ describe('playback', () => {
     const win = ffmpegFix('windows x86_64');
     expect(win.command).toBeNull();
     expect(win.text).toMatch(/Jellyfin/);
+  });
+});
+
+describe('other devices', () => {
+  it('names the settings file of a packaged install', () => {
+    expect(lanSwitch('msi')).toEqual({ file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux' });
+    expect(lanSwitch('deb')?.file).toBe('/etc/flux/flux.toml');
+    expect(lanSwitch('rpm')?.restart).toBe('sudo systemctl restart flux');
+    expect(lanSwitch('archive')).toBeNull();
+    expect(lanSwitch('homebrew')).toBeNull();
+    expect(lanSwitch(undefined)).toBeNull();
   });
 });

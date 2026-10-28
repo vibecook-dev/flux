@@ -150,7 +150,12 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      # Windows signing (Azure Artifact Signing) signs in with GitHub's OIDC
+      # token, no password (docs/RELEASING.md, Signing).
+      id-token: write
     # Git Bash on Windows, so every target runs the same scripts.
     defaults:
       run:
@@ -158,6 +163,15 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       TARGET: ${{ matrix.target }}
+      # Azure Artifact Signing for the Windows programs and installer
+      # (docs/RELEASING.md, Signing): set up, and signing in this run. Azure
+      # trusts GitHub's token from main only, so other branches build
+      # unsigned.
+      AZURE_SIGNING_SET_UP: ${{ secrets.AZURE_CLIENT_ID != '' && vars.ARTIFACT_SIGNING_ACCOUNT != '' }}
+      AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' && vars.ARTIFACT_SIGNING_ACCOUNT != '' && github.ref == 'refs/heads/main' }}
+      # The Windows installer, for a versioned build (none for "dev", as for
+      # the .deb and .rpm).
+      MSI: ${{ contains(matrix.target, '-windows-') && needs.plan.outputs.version != 'dev' }}
       # File names on Windows: flux-server.exe, sidecar-slim.exe, a .zip.
       EXE: ${{ contains(matrix.target, '-windows-') && '.exe' || '' }}
       PACKAGE: flux-${{ needs.plan.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, '-windows-') && 'zip' || 'tar.gz' }}
@@ -215,6 +229,46 @@ jobs:
           files=("$CARGO_TARGET_DIR/$TARGET/release/flux-server" "$CARGO_TARGET_DIR/$TARGET/release/flux")
           if [ -f sidecar/sidecar-slim ]; then files+=(sidecar/sidecar-slim); fi
           scripts/package/macos-sign.sh "${files[@]}"
+      # Windows: Azure Artifact Signing, when set up; a warning until then.
+      - name: Windows programs to sign
+        id: windows-sign
+        if: contains(matrix.target, '-windows-')
+        run: |
+          if [ "$AZURE_SIGNING_SET_UP" != true ]; then
+            echo "::warning title=Windows programs not signed::Set up Azure Artifact Signing to sign them (docs/RELEASING.md, Signing)."
+            exit 0
+          elif [ "$AZURE_SIGNING" != true ]; then
+            echo "::notice title=Windows programs not signed::Signing runs on main only ($GITHUB_REF here)."
+            exit 0
+          fi
+          {
+            echo "files<<EOF"
+            cygpath -w "$CARGO_TARGET_DIR/$TARGET/release/flux-server.exe"
+            cygpath -w "$CARGO_TARGET_DIR/$TARGET/release/flux.exe"
+            if [ -f sidecar/sidecar-slim.exe ]; then cygpath -w "$PWD/sidecar/sidecar-slim.exe"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      # Signed in again before each signing step: the sign-in uses GitHub's
+      # OIDC token, which lasts minutes, and these steps are further apart.
+      - name: Azure sign-in (programs)
+        if: contains(matrix.target, '-windows-') && env.AZURE_SIGNING == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign flux's programs (Windows)
+        if: contains(matrix.target, '-windows-') && env.AZURE_SIGNING == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          # No caches in a published build (see the top of this file).
+          cache-dependencies: false
+          files: ${{ steps.windows-sign.outputs.files }}
+          description: flux
+          description-url: https://github.com/vibecook-dev/flux
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -268,6 +322,85 @@ jobs:
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$asset"
           (cd "$RUNNER_TEMP" && echo "$sha  $asset" | sha256sum -c - && tar -xzf "$asset" nfpm)
           scripts/package/linux-packages.sh --tarball "dist/$PACKAGE" --out dist --nfpm "$RUNNER_TEMP/nfpm"
+      # The Windows installer (scripts/package/windows-msi.ps1, WiX 7): its
+      # files, from the zip and the pinned FFmpeg; the FFmpeg signed when
+      # signing is set up; the .msi built and signed; then installed, upgraded
+      # and uninstalled on this runner.
+      - name: WiX
+        if: env.MSI == 'true'
+        shell: pwsh
+        env:
+          WIX_VERSION: "7.0.1"
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install wix failed" }
+          $tools = Join-Path $env:USERPROFILE '.dotnet\tools'
+          $tools | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          # WiX 7's licence (the Open Source Maintenance Fee EULA): accepted
+          # for vibecook (docs/RELEASING.md, Signing and the installers).
+          & "$tools\wix.exe" eula accept wix7
+          if ($LASTEXITCODE -ne 0) { throw "wix eula accept failed" }
+          foreach ($ext in 'Util', 'Firewall') {
+            & "$tools\wix.exe" extension add -g "WixToolset.$ext.wixext/$env:WIX_VERSION"
+            if ($LASTEXITCODE -ne 0) { throw "wix extension add $ext failed" }
+          }
+      - name: Installer files (Windows)
+        if: env.MSI == 'true'
+        shell: pwsh
+        run: scripts/package/windows-msi.ps1 -Step prepare -Zip "dist/$env:PACKAGE" -Version $env:VERSION -Stage "$env:RUNNER_TEMP\msi"
+      - name: Azure sign-in (FFmpeg)
+        if: env.MSI == 'true' && env.AZURE_SIGNING == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign the bundled FFmpeg (Windows)
+        if: env.MSI == 'true' && env.AZURE_SIGNING == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          # No caches in a published build (see the top of this file).
+          cache-dependencies: false
+          files-folder: ${{ runner.temp }}\msi\ffmpeg
+          files-folder-filter: exe,dll
+      # A second, unpublished build of the same installer, which Windows takes
+      # for another one: the smoke test installs it first, then the real one
+      # over it, as a newer flux would be.
+      - name: Build the installer (Windows)
+        if: env.MSI == 'true'
+        shell: pwsh
+        run: |
+          scripts/package/windows-msi.ps1 -Step build -Version $env:VERSION -Stage "$env:RUNNER_TEMP\msi" -Out dist
+          scripts/package/windows-msi.ps1 -Step build -Version $env:VERSION -Stage "$env:RUNNER_TEMP\msi" -Out "$env:RUNNER_TEMP\msi-earlier"
+      - name: Azure sign-in (installer)
+        if: env.MSI == 'true' && env.AZURE_SIGNING == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign the installer (Windows)
+        if: env.MSI == 'true' && env.AZURE_SIGNING == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          # No caches in a published build (see the top of this file).
+          cache-dependencies: false
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: msi
+          description: flux
+          description-url: https://github.com/vibecook-dev/flux
+      - name: Smoke test the installer (Windows)
+        if: env.MSI == 'true'
+        shell: pwsh
+        run: |
+          $msi = "flux-$env:VERSION-x86_64-pc-windows-msvc.msi"
+          scripts/package/windows-msi-smoke-test.ps1 -Msi "dist/$msi" -Earlier "$env:RUNNER_TEMP\msi-earlier\$msi" -Version $env:VERSION
       # Installed in Debian, Fedora and AlmaLinux containers, then removed.
       - name: Smoke test the .deb and .rpm
         if: contains(matrix.target, '-linux-')
@@ -294,6 +427,31 @@ jobs:
             dist/${{ env.PACKAGE }}
             dist/*.deb
             dist/*.rpm
+            dist/*.msi
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  # The complete source of the FFmpeg in the Windows installer
+  # (scripts/package/ffmpeg-windows-source.sh), which each release attaches:
+  # the GPL asks it of whoever passes the binary on.
+  ffmpeg-source:
+    name: FFmpeg source (Windows installer)
+    if: inputs.targets == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Collect the source
+        run: scripts/package/ffmpeg-windows-source.sh --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # package-*, so the release's assets take it with the packages.
+          name: package-ffmpeg-windows-source
+          path: dist/*.tar
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

@@ -1,11 +1,11 @@
 /**
  * What the setup screen (Setup.tsx) and the owner link (Own.tsx) say, kept
  * apart so it can be tested: device names, the folder browser's words, the
- * encoder flux transcodes with, how to get ffmpeg on each system, and the
- * address to show an owner link at.
+ * encoder flux transcodes with, how to get ffmpeg on each system, how to let
+ * other devices in, and the address to show an owner link at.
  */
 import { formatCount } from '../api/format';
-import type { CodecChoice, FolderSummary, LibraryKind, OwnerLink } from '../api/types';
+import type { CodecChoice, FolderSummary, InstallKind, LibraryKind, OwnerLink } from '../api/types';
 
 /** A name for this browser in the owner device list: "Safari on iPhone". */
 export function deviceName(ua: string, touchPoints = 0): string {
@@ -141,6 +141,30 @@ export function ffmpegFix(platform: string): FfmpegFix {
     text: 'On Debian, Ubuntu or Raspberry Pi OS, install it with apt (Fedora: RPM Fusion’s ffmpeg), then restart flux.',
     link: `${INSTALL}#ffmpeg`,
   };
+}
+
+/** Where an install keeps its settings, so other devices can be let in. */
+export interface LanSwitch {
+  /** The settings file with `lan = "0.0.0.0:8097"` to uncomment. */
+  file: string;
+  /** Who may change it. */
+  who: string | null;
+  /** The command that restarts flux afterwards. */
+  restart: string;
+}
+
+/** The settings file of a packaged install (the Windows installer, the .deb
+ * and .rpm), which comes with `lan` commented out; null for the others. */
+export function lanSwitch(kind: InstallKind | undefined): LanSwitch | null {
+  switch (kind) {
+    case 'msi':
+      return { file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux' };
+    case 'deb':
+    case 'rpm':
+      return { file: '/etc/flux/flux.toml', who: null, restart: 'sudo systemctl restart flux' };
+    default:
+      return null;
+  }
 }
 
 /** This machine's own address (`localhost`, 127.x, `[::1]`). */

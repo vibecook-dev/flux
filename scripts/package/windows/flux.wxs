@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  flux's Windows installer, built with WiX 7 by scripts/package/windows-msi.ps1
+  from the release zip and the FFmpeg that ffmpeg-windows.env pins:
+
+  - a machine-wide install in C:\Program Files\flux, where only administrators
+    can change it (the service runs it as LocalSystem), with FFmpeg in
+    ffmpeg\, where flux looks first;
+  - flux as a Windows service, "flux": it starts with Windows (a little after
+    boot), and the service manager starts it again 5 s after it stops on its
+    own, a crash or an update (flux sets "also after an exit with an error"
+    itself when it starts: util:ServiceConfig can't);
+  - its data and settings in C:\ProgramData\flux, which flux finds by itself
+    when installed this way (crates/flux-server/src/config.rs): only
+    administrators and the service can read it (the log has owner links), and
+    flux.toml, all comments to begin with, is never overwritten;
+  - port 8097, flux's LAN port when `lan` is switched on, let through Windows
+    Firewall on private networks, from the local subnet;
+  - flux's folder on the system PATH, for `flux-server owner-link` and `flux`
+    in an administrator terminal;
+  - a Start menu link that opens flux in the browser.
+
+  A newer installer replaces an older one in place (the service stops, the files
+  change, it starts again); uninstalling keeps the data and settings. The
+  UpgradeCode never changes: it is how Windows knows this is flux.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="flux" Manufacturer="vibecook" Version="$(ProductVersion)"
+           UpgradeCode="E7728D88-F7E6-425F-9BC1-694F52BF7CF7" Scope="perMachine" Compressed="yes">
+    <SummaryInformation Description="flux media server $(FluxVersion)" />
+    <!-- The old version is removed first, in the same transaction, so a failed upgrade
+         puts it back. Same version too: pre-releases (0.1.0-alpha.N) differ only past
+         the three fields Windows Installer compares. -->
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer flux is installed already." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="flux.ico" SourceFile="!(bindpath.pkg)\flux.ico" />
+    <Property Id="ARPPRODUCTICON" Value="flux.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/vibecook-dev/flux" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md#the-windows-installer" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="flux">
+        <!-- SYSTEM and Administrators only, inherited by all that flux writes here
+             (catalog, log, keys): ProgramData lets every user read, and add files. -->
+        <Component Id="DataFolder" Permanent="yes">
+          <CreateFolder>
+            <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+          </CreateFolder>
+        </Component>
+        <Component Id="Settings" Permanent="yes" NeverOverwrite="yes">
+          <File Id="Settings" Source="!(bindpath.pkg)\flux.toml" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="flux">
+        <Component Id="Server">
+          <File Id="FluxServer" Source="!(bindpath.pkg)\flux-server.exe" KeyPath="yes">
+            <fw:FirewallException Id="Lan" Name="flux (LAN)" Description="flux media server: other devices on this network (lan = &quot;0.0.0.0:8097&quot; in C:\ProgramData\flux\flux.toml)."
+                                  Port="8097" Protocol="tcp" Profile="private" Scope="localSubnet" />
+          </File>
+          <ServiceInstall Id="Service" Name="flux" DisplayName="flux media server"
+                          Description="flux: browse, play and stream your films and shows (https://github.com/vibecook-dev/flux)."
+                          Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem"
+                          Arguments="service run">
+            <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+            <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                                ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5"
+                                ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <ServiceControl Id="ServiceControl" Name="flux" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+          <util:InternetShortcut Id="Open" Directory="ProgramMenuFolder" Name="flux" Type="url"
+                                 Target="http://localhost:8096/" IconFile="[INSTALLFOLDER]flux.ico" IconIndex="0" />
+        </Component>
+        <Component Id="Cli">
+          <File Source="!(bindpath.pkg)\flux.exe" />
+        </Component>
+<?if $(HasSidecar) = "1" ?>
+        <Component Id="Sidecar">
+          <File Source="!(bindpath.pkg)\sidecar-slim.exe" />
+        </Component>
+<?endif?>
+        <!-- "msi": how this flux updates (crates/flux-server/src/update/install.rs). -->
+        <Component Id="Marker">
+          <File Source="!(bindpath.pkg)\install-kind" />
+        </Component>
+        <Component Id="IconFile">
+          <File Source="!(bindpath.pkg)\flux.ico" />
+        </Component>
+        <Component Id="Licence">
+          <File Source="!(bindpath.pkg)\LICENSE.txt" />
+        </Component>
+        <Component Id="Readme">
+          <File Source="!(bindpath.pkg)\README.txt" />
+        </Component>
+        <Component Id="ThirdParty">
+          <File Source="!(bindpath.pkg)\THIRD_PARTY_LICENSES.txt" />
+        </Component>
+        <Directory Id="WebFolder" Name="web">
+          <Files Include="!(bindpath.pkg)\web\**" />
+        </Directory>
+        <Directory Id="FfmpegFolder" Name="ffmpeg">
+          <Files Include="!(bindpath.pkg)\ffmpeg\**" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

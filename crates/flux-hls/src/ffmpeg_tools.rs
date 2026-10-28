@@ -12,10 +12,15 @@ fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// `name` on `PATH`, else in jellyfin-ffmpeg's `/usr/lib/jellyfin-ffmpeg`
-/// (the Docker image's), `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`.
+/// `name` in `ffmpeg/` next to this program (the Windows installer bundles
+/// its own there), else on `PATH`, else in jellyfin-ffmpeg's
+/// `/usr/lib/jellyfin-ffmpeg` (the Docker image's), `/opt/homebrew/bin`,
+/// `/usr/local/bin` or `/usr/bin`.
 pub fn find(name: &str) -> Option<PathBuf> {
     let file = exe(name);
+    if let Some(p) = bundled(&file) {
+        return Some(p);
+    }
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             let p = dir.join(&file);
@@ -33,6 +38,13 @@ pub fn find(name: &str) -> Option<PathBuf> {
     .iter()
     .map(|d| Path::new(d).join(&file))
     .find(|p| p.is_file())
+}
+
+/// `file` in `ffmpeg/` next to the running program.
+fn bundled(file: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let p = exe.parent()?.join("ffmpeg").join(file);
+    p.is_file().then_some(p)
 }
 
 /// [`find`], else the bare name (so the error names the missing tool).
