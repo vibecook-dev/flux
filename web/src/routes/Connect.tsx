@@ -350,6 +350,8 @@ export default function Connect() {
   const invites = useInvites();
   const server = useServer();
   const t = tailnet.data;
+  // Only the owner and admins change remote access (the server refuses others).
+  const admin = server.data?.you?.role === 'owner' || server.data?.you?.role === 'admin';
   // Switching HTTPS restarts the tailnet listener, which reports `starting`
   // for a moment: keep showing the server as it was connected meanwhile.
   const [held, setHeld] = useState<TailnetInfo | null>(null);
@@ -377,14 +379,25 @@ export default function Connect() {
           )}
         </aside>
         <div className={styles.content}>
-          {!t ? (
+          {server.data && !admin ? (
+            <section className={styles.panel} aria-label="Server connection">
+              <div className={styles.panelBody}>
+                <h2 className="display-m">{t?.state === 'running' ? 'Remote access is on' : 'Remote access is off'}</h2>
+                <p className={styles.hint}>
+                  {t?.state === 'running'
+                    ? `Devices signed in to the tailnet reach flux at ${t.url ?? t.dns_name ?? 'its tailnet address'}.`
+                    : 'flux’s owner turns it on, here, from the computer flux runs on or a browser an owner link made an owner.'}
+                </p>
+              </div>
+            </section>
+          ) : !t ? (
             <div className={`skeleton ${styles.panelSkeleton}`} />
           ) : (
             <section className={styles.panel} aria-label="Server connection">
               {connected ? <ConnectedPanel t={connected} onChange={onChange} onRestart={setHeld} /> : <ConnectPanel t={t} onChange={onChange} />}
             </section>
           )}
-          {connected && <InvitePanel invites={invites.data ?? []} />}
+          {connected && admin && <InvitePanel invites={invites.data ?? []} />}
         </div>
       </div>
     </div>

@@ -44,6 +44,8 @@ pub struct AppState {
     pub mcp: crate::agent::mcp::Sessions,
     /// flux's own updates (`update`).
     pub updater: Arc<Updater>,
+    /// Browsers made owners with an owner link (`devices`).
+    pub devices: crate::devices::Devices,
     pub started: Instant,
     /// Cancelled on shutdown: ends SSE streams and background loops.
     pub shutdown: CancellationToken,

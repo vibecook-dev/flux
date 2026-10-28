@@ -75,6 +75,8 @@
 :root[data-overlay='admin'] .bottom,
 :root[data-overlay='changes'] .bottom,
 :root[data-overlay='connect'] .bottom,
+:root[data-overlay='setup'] .bottom,
+:root[data-overlay='own'] .bottom,
 :root[data-overlay='gallery'] .bottom {
   transform: translateY(140%);
   opacity: 0;
@@ -84,7 +86,9 @@
 :root[data-overlay='gallery'] .top,
 :root[data-overlay='admin'] .top,
 :root[data-overlay='changes'] .top,
-:root[data-overlay='connect'] .top {
+:root[data-overlay='connect'] .top,
+:root[data-overlay='setup'] .top,
+:root[data-overlay='own'] .top {
   opacity: 0;
   pointer-events: none;
 }

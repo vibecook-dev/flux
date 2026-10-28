@@ -31,8 +31,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Some(Command::Update(args)) = &command {
-        return flux_server::update::cli::run(&cfg, args);
+    match &command {
+        Some(Command::Update(args)) => return flux_server::update::cli::run(&cfg, args),
+        Some(Command::OwnerLink) => return flux_server::devices::cli(&cfg),
+        None => {}
     }
     if check {
         // `--check`: the paths flux would use, what ffmpeg/ffprobe can do

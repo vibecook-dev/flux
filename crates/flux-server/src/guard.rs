@@ -18,12 +18,17 @@
 //!    with itself, but its requests still say `Host: attacker.example`. So
 //!    the localhost Owner identity only reaches handlers through requests
 //!    that passed this check.
-//! 2. **Unsafe methods** (`POST`, `PUT`, `PATCH`, `DELETE`) under `/api/`
-//!    need the header `X-Flux-Request: 1` (else 403). An `Origin` header, if
-//!    present, must name an allowed host as `scheme://host[:port]` (else
-//!    403). flux never sends `Access-Control-Allow-*`, so a page on another
-//!    origin can't add the header (that needs a CORS preflight flux never
-//!    grants), and a body-less form or `no-cors` POST doesn't carry it.
+//! 2. **Unsafe methods** (`POST`, `PUT`, `PATCH`, `DELETE`) under `/api/`,
+//!    and **every** request under `/api/v1/admin/`, need the header
+//!    `X-Flux-Request: 1` (else 403). An `Origin` header, if present, must
+//!    name an allowed host as `scheme://host[:port]` (else 403). flux never
+//!    sends `Access-Control-Allow-*`, so a page on another origin can't add
+//!    the header (that needs a CORS preflight flux never grants), and a
+//!    body-less form or `no-cors` POST doesn't carry it. Admin `GET`s are
+//!    covered too because some act on the machine (the folder browser reads
+//!    any folder it is given): an `<img>` on another site must not make the
+//!    Owner's browser do that (a `\\host\share` path would hand Windows'
+//!    credentials to that host).
 //! 3. `GET`s of media, HLS, SSE and art need nothing extra (`<video>`,
 //!    hls.js segment loads and `EventSource` can't set headers).
 //! 4. `/mcp` (MCP, for agents): a `POST` needs `Content-Type:
@@ -251,7 +256,8 @@ impl HostAllowlist {
                 }
             }
         }
-        if unsafe_method && req.uri().path().starts_with("/api/") {
+        let admin = req.uri().path().starts_with("/api/v1/admin/");
+        if (unsafe_method || admin) && req.uri().path().starts_with("/api/") {
             let marked = req
                 .headers()
                 .get(REQUEST_HEADER)
@@ -554,6 +560,22 @@ mod tests {
         assert_eq!(
             status(hosts.check(&req(Method::GET, "/api/v1/events", &[local]))),
             200
+        );
+        // Admin GETs do need it: the folder browser reads the folder it is
+        // given, which an <img> on another site must not get to ask for.
+        let browse = "/api/v1/admin/browse?path=%5C%5Cevil.example%5Cshare";
+        assert_eq!(status(hosts.check(&req(Method::GET, browse, &[local]))), 403);
+        assert_eq!(
+            status(hosts.check(&req(Method::GET, browse, &[local, marked]))),
+            200
+        );
+        assert_eq!(
+            status(hosts.check(&req(
+                Method::GET,
+                "/api/v1/admin/devices",
+                &[local, marked, ("origin", "https://evil.example")]
+            ))),
+            403
         );
         // A foreign Origin is refused even with the marker; an allowed one passes.
         let evil = ("origin", "https://evil.example");

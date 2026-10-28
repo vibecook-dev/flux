@@ -735,6 +735,121 @@ export interface UpdateSettings {
   check: boolean;
 }
 
+/** `POST /api/v1/admin/owner-links`: a one-time link that makes the browser opening it an owner device. */
+export interface OwnerLink {
+  /** The path to open on this server, token included: `/own#<token>`. */
+  path: string;
+  /** Unix epoch milliseconds; it works once. */
+  expires_at: number;
+  /**
+   * Where a browser that needs the link opens it, as far as flux knows: this
+   * machine's addresses on the network, localhost on a Docker host, or this
+   * machine when its browsers are anonymous. Empty: only this machine reaches
+   * flux, and its browsers are its owner.
+   */
+  places: LinkPlace[];
+}
+
+export const PLACE_KINDS = ['network', 'this_machine', 'docker_host'] as const;
+export type PlaceKind = (typeof PLACE_KINDS)[number];
+
+/** One address an owner link opens at. */
+export interface LinkPlace {
+  /** The whole link, token included. */
+  url: string;
+  place: PlaceKind;
+}
+
+/** `POST /api/v1/owner/claim`. */
+export interface ClaimOwner {
+  token: string;
+  name: string;
+}
+
+/** What a claim answers: the new device, and the key it sends from now on (`X-Flux-Device`). */
+export interface ClaimedOwner {
+  device: DeviceInfo;
+  key: string;
+}
+
+/** An owner device: a browser an owner link made an owner (or an admin), known by its key. */
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  role: Role;
+  /** Who made the link it came from: a person, "this computer", "flux's log", "flux-server owner-link". */
+  added_by: string;
+  created_at: number;
+  last_seen_at: number;
+  /** The device asking. */
+  this_device: boolean;
+}
+
+/** `GET /api/v1/admin/browse?path=`: the setup screen's folder browser. */
+export interface BrowseResult {
+  /** The folder listed; null: where browsing starts. */
+  path: string | null;
+  parent: string | null;
+  folders: BrowseFolder[];
+  /** What the listed folder holds, as a library; null at the start. */
+  here: FolderSummary | null;
+}
+
+export interface BrowseFolder {
+  name: string;
+  path: string;
+  /** Videos in it and two levels below, up to 1,000; null when counting ran out of time. */
+  videos: number | null;
+}
+
+/** A folder's videos, read by name. */
+export interface FolderSummary {
+  videos: number;
+  /** There are more than were looked at. */
+  more: boolean;
+  films: number;
+  episodes: number;
+  /** The library kind that fits, if there are videos. */
+  kind: LibraryKind | null;
+  /** The library that already has this folder, or one inside or around it. */
+  taken_by: string | null;
+}
+
+/** `GET /api/v1/admin/addresses`: where flux answers. */
+export interface Addresses {
+  local: string;
+  /** From other devices on the network; empty: none. */
+  lan: string[];
+}
+
+/** `GET /api/v1/admin/media-tools` (flux-server's `--check`, the parts the app shows). */
+export interface MediaTools {
+  /** `macos aarch64`, `linux x86_64`, `windows x86_64`. */
+  platform: string;
+  ffmpeg: ToolInfo;
+  ffprobe: ToolInfo;
+  video: CodecChoice[];
+  aac_encoder: boolean;
+  /** Gaps, from fatal (no ffprobe) to cosmetic (no hardware encoder). */
+  missing: string[];
+  /** ffmpeg and ffprobe both run. */
+  ok: boolean;
+}
+
+export interface ToolInfo {
+  path: string;
+  version: string | null;
+  error: string | null;
+}
+
+export interface CodecChoice {
+  codec: string;
+  /** `video_toolbox`, `nvenc`, `qsv`, `vaapi`, `libx264`; null: none works. */
+  encoder: string | null;
+  hardware: boolean;
+  tonemap: string | null;
+}
+
 export const TAILNET_MODES = ['off', 'embedded', 'system'] as const;
 /** How flux reaches the tailnet: not at all, its own node (Truffle), or this machine's tailscaled. */
 export type TailnetMode = (typeof TAILNET_MODES)[number];

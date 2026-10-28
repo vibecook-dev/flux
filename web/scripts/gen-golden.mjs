@@ -46,6 +46,12 @@ const TYPES = {
   TailnetConnect: 'TailnetConnect',
   UpdateInfo: 'UpdateInfo',
   UpdateSettings: 'UpdateSettings',
+  OwnerLink: 'OwnerLink',
+  ClaimOwner: 'ClaimOwner',
+  ClaimedOwner: 'ClaimedOwner',
+  DeviceInfo: 'DeviceInfo',
+  BrowseResult: 'BrowseResult',
+  Addresses: 'Addresses',
   // The agent contract (src/api/agent.ts).
   AgentItemDetail: 'AgentItemDetail',
   ChangesListOutput: 'ChangesListOutput',

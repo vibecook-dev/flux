@@ -7,12 +7,13 @@ use std::sync::Arc;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use flux_catalog::read;
 use flux_core::api::{
-    CreateLibrary, FolderPage, FolderParams, Home, Id, ItemDetail, ItemSummary, ItemsParams, Library,
-    MarkWatched, Page, ScanStatus, ServerInfo, TailnetConnect, TailnetInfo, UpdateInfo, UpdateSettings,
+    Addresses, BrowseParams, BrowseResult, ClaimOwner, ClaimedOwner, CreateLibrary, DeviceInfo, FolderPage,
+    FolderParams, Home, Id, ItemDetail, ItemSummary, ItemsParams, Library, MarkWatched, OwnerLink, Page,
+    Role, ScanStatus, ServerInfo, TailnetConnect, TailnetInfo, UpdateInfo, UpdateSettings,
 };
 use serde::Deserialize;
 
@@ -34,6 +35,12 @@ pub fn router(st: Arc<AppState>) -> Router {
         .route("/api/v1/admin/update/settings", put(update_settings))
         .route("/api/v1/admin/update/apply", post(update_apply))
         .route("/api/v1/admin/restart", post(restart))
+        .route("/api/v1/admin/browse", get(browse))
+        .route("/api/v1/admin/addresses", get(addresses))
+        .route("/api/v1/admin/owner-links", post(owner_link))
+        .route("/api/v1/admin/devices", get(list_devices))
+        .route("/api/v1/admin/devices/{id}", delete(remove_device))
+        .route("/api/v1/owner/claim", post(claim_owner))
         .route("/api/v1/libraries", get(list_libraries).post(create_library))
         .route("/api/v1/libraries/{id}/scan", post(scan_library))
         .route("/api/v1/libraries/{id}/items", get(library_items))
@@ -64,6 +71,11 @@ pub fn router(st: Arc<AppState>) -> Router {
         )
         .route("/media/{id}/{*rest}", get(media::media))
         .fallback(web::fallback)
+        // Owner devices (`devices`): inside the guard, so only requests it let through.
+        .layer(axum::middleware::from_fn_with_state(
+            st.clone(),
+            crate::devices::attach,
+        ))
         // After every route and the fallback, so it wraps them all.
         .layer(axum::middleware::from_fn_with_state(st.clone(), guard::guard))
         .with_state(st)
@@ -151,6 +163,276 @@ async fn restart(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<S
     );
     st.updater.ask_restart(r);
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Folder browsing at once, at most: a folder that never answers (a dead
+/// network mount) keeps its thread, and its slot, after the request gave up
+/// on it, so it mustn't take them all.
+static BROWSING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// How long one look at a folder may take before the request gives up on it.
+const BROWSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `GET /api/v1/admin/browse?path=` (owner/admin): the setup screen's folder
+/// browser (`browse`): the starting places, or a folder's folders with their
+/// video counts and what it holds as a library.
+async fn browse(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    q: Result<Query<BrowseParams>, QueryRejection>,
+) -> ApiResult<Json<BrowseResult>> {
+    caller.require_admin()?;
+    let Query(p) = q?;
+    let path = p.path.filter(|p| !p.trim().is_empty());
+    if let Some(path) = &path {
+        let dir = std::path::Path::new(path);
+        if !dir.is_absolute() || crate::browse::refused(path) {
+            return Err(ApiError::bad_request(format!(
+                "{path:?} is not a folder flux can browse"
+            )));
+        }
+    }
+    let Ok(slot) = BROWSING.try_acquire() else {
+        return Err(ApiError::unavailable(
+            "flux is still waiting on folders that don't answer (a drive or share asleep or gone?): try again in a moment",
+        ));
+    };
+    let look = async {
+        let Some(path) = path else {
+            let folders = tokio::task::spawn_blocking(move || {
+                let _slot = slot;
+                crate::browse::starting_places()
+            })
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+            return Ok(BrowseResult {
+                path: None,
+                parent: None,
+                folders,
+                here: None,
+            });
+        };
+        let dir = std::path::PathBuf::from(&path);
+        let at = dir.clone();
+        let (folders, mut here) = tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            crate::browse::list(&at).map(|folders| (folders, crate::browse::summarize(&at)))
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::not_found(format!("flux can't open {path}: {e}")))?;
+        here.taken_by = match crate::roots::check_new_roots(&st.catalog, std::slice::from_ref(&path)).await {
+            Err(flux_catalog::CatalogError::RootInOtherLibrary { library, .. }) => Some(library),
+            _ => None,
+        };
+        Ok(BrowseResult {
+            parent: crate::browse::parent_of(&dir),
+            path: Some(path),
+            folders,
+            here: Some(here),
+        })
+    };
+    match tokio::time::timeout(BROWSE_TIMEOUT, look).await {
+        Ok(result) => result.map(Json),
+        Err(_) => Err(ApiError::unavailable(
+            "That folder didn't answer in time: is the drive or share it's on asleep or gone?",
+        )),
+    }
+}
+
+/// `GET /api/v1/admin/addresses` (owner/admin): where other devices reach
+/// flux (the setup screen shows them, with a QR code).
+async fn addresses(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<Json<Addresses>> {
+    caller.require_admin()?;
+    let docker = st.updater.install_kind() == flux_core::api::InstallKind::Docker;
+    Ok(Json(Addresses {
+        local: local_url(st.cfg.local_addr),
+        lan: network_urls(docker, st.cfg.lan_addr, st.cfg.local_addr),
+    }))
+}
+
+/// This machine's URLs for other devices on the network ([`lan_urls`]),
+/// none in Docker: the container's addresses are its own, and other devices
+/// reach it through the host.
+pub(crate) fn network_urls(
+    docker: bool,
+    lan: Option<std::net::SocketAddr>,
+    local: std::net::SocketAddr,
+) -> Vec<String> {
+    if docker {
+        return Vec::new();
+    }
+    lan_urls(lan, local, &crate::guard::interface_ips())
+}
+
+/// The URLs other devices on the network can use: the LAN listener's, and
+/// the local one's when it listens on every interface (Docker), by this
+/// machine's IPv4 addresses (not loopback, link-local or the tailnet's).
+fn lan_urls(
+    lan: Option<std::net::SocketAddr>,
+    local: std::net::SocketAddr,
+    ips: &[std::net::IpAddr],
+) -> Vec<String> {
+    let reachable = |ip: &std::net::IpAddr| match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !v4.is_loopback()
+                && !v4.is_link_local()
+                && !v4.is_unspecified()
+                && !(o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(_) => false,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for addr in lan.into_iter().chain([local]) {
+        if addr.ip().is_unspecified() {
+            out.extend(
+                ips.iter()
+                    .filter(|ip| reachable(ip))
+                    .map(|ip| format!("http://{ip}:{}", addr.port())),
+            );
+        } else if reachable(&addr.ip()) {
+            out.push(format!("http://{addr}"));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|u| seen.insert(u.clone()));
+    out
+}
+
+/// The local listener's address as a browser on this machine opens it:
+/// `localhost`, unless flux listens on one other address only.
+pub(crate) fn local_url(addr: std::net::SocketAddr) -> String {
+    match addr.ip() {
+        ip if ip.is_loopback() || ip.is_unspecified() => format!("http://localhost:{}", addr.port()),
+        std::net::IpAddr::V6(v6) => format!("http://[{v6}]:{}", addr.port()),
+        ip => format!("http://{ip}:{}", addr.port()),
+    }
+}
+
+/// Where an owner link opens (`devices::link_places`), for this server.
+pub(crate) fn owner_link_places(st: &AppState, path: &str) -> Vec<flux_core::api::LinkPlace> {
+    let docker = st.updater.install_kind() == flux_core::api::InstallKind::Docker;
+    let lan = network_urls(docker, st.cfg.lan_addr, st.cfg.local_addr);
+    let who = crate::devices::Local::of(st.cfg.localhost_role);
+    crate::devices::link_places(&local_url(st.cfg.local_addr), &lan, docker, who, path)
+}
+
+/// `POST /api/v1/admin/owner-links` (owner/admin): a one-time owner link
+/// (`devices`), for making a browser on another machine an owner. Its
+/// devices get the maker's role: an admin's link makes admins.
+async fn owner_link(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<Json<OwnerLink>> {
+    caller.require_admin()?;
+    let Some(who) = &caller.identity else {
+        return Err(ApiError::forbidden(
+            "Only the server's owner or an admin can do that",
+        ));
+    };
+    let by = if caller.conn.path == flux_net::NetPath::Localhost && !who.login_name.starts_with("device:") {
+        "this computer".to_string()
+    } else {
+        who.display_name.clone()
+    };
+    let role = if who.role == Role::Owner {
+        Role::Owner
+    } else {
+        Role::Admin
+    };
+    let (token, expires_at) = st.devices.new_link(role, &by);
+    let path = format!("/own#{token}");
+    Ok(Json(OwnerLink {
+        places: owner_link_places(&st, &path),
+        path,
+        expires_at,
+    }))
+}
+
+/// `POST /api/v1/owner/claim` (anyone with a link): uses an owner link; the
+/// browser becomes an owner device and gets its key. Only for a caller flux
+/// can't place by itself: anyone else's role comes from where they call
+/// from, which a device's key doesn't change, and the link stays unused.
+async fn claim_owner(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    body: Result<Json<ClaimOwner>, JsonRejection>,
+) -> ApiResult<Json<ClaimedOwner>> {
+    let Json(ClaimOwner { token, name }) = body?;
+    if let Some(who) = &caller.identity {
+        if caller.is_admin() {
+            return Err(ApiError::conflict(
+                "This browser can already set flux up, so the link wasn't used: it still works on another device.",
+            ));
+        }
+        let role = format!("{:?}", who.role).to_lowercase();
+        return Err(ApiError::forbidden(
+            if caller.conn.path == flux_net::NetPath::Localhost {
+                format!(
+                    "flux gives this machine's browsers the {role} role (--localhost-role), and an owner link \
+                     can't change that. The link wasn't used."
+                )
+            } else {
+                format!(
+                    "flux knows you as {} through Tailscale, and your login decides what you can do here \
+                     ({role}), so an owner link can't change it. The owner can make you an admin in the \
+                     tailnet's policy. The link wasn't used.",
+                    who.login_name
+                )
+            },
+        ));
+    }
+    // It saves the device list: a file write, off the async threads.
+    let state = st.clone();
+    let claimed = tokio::task::spawn_blocking(move || state.devices.claim(&token, &name))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    match claimed {
+        Ok((device, key)) => Ok(Json(ClaimedOwner { device, key })),
+        Err(crate::devices::ClaimError::BadLink) => Err(ApiError::gone(
+            "This owner link doesn't work any more: a link works once, within a day. Make a new one on the \
+             server with `flux-server owner-link`.",
+        )),
+        Err(crate::devices::ClaimError::Full) => Err(ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "flux keeps no more owner devices: remove one on the Libraries screen first.",
+        )),
+        Err(crate::devices::ClaimError::Unsaved(e)) => Err(ApiError::internal(format!(
+            "flux couldn't save the new owner device ({e}). Check that its data dir can be written, then open \
+             the link again: it still works."
+        ))),
+    }
+}
+
+/// `GET /api/v1/admin/devices` (owner/admin): the owner devices, the
+/// caller's own marked.
+async fn list_devices(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    device: Option<axum::Extension<crate::devices::DeviceId>>,
+) -> ApiResult<Json<Vec<DeviceInfo>>> {
+    caller.require_admin()?;
+    Ok(Json(st.devices.list(device.as_ref().map(|d| d.0 .0.as_str()))))
+}
+
+/// `DELETE /api/v1/admin/devices/{id}` (owner/admin): its key stops working
+/// at once.
+async fn remove_device(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    id: Result<UrlPath<String>, axum::extract::rejection::PathRejection>,
+) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    let UrlPath(id) = id.map_err(|_| ApiError::not_found("No such device"))?;
+    let state = st.clone();
+    let removed = tokio::task::spawn_blocking(move || state.devices.remove(&id))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    match removed {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(ApiError::not_found("No such device")),
+        Err(e) => Err(ApiError::internal(format!(
+            "The device is signed out, but flux couldn't save that ({e}): after a restart it would be an owner \
+             again. Check that flux's data dir can be written, then remove it again."
+        ))),
+    }
 }
 
 /// `GET /api/v1/admin/media-tools` (owner/admin): what `flux-server
@@ -534,4 +816,39 @@ async fn tailnet_connect(
     info.approve_url = None;
     info.last_error = None;
     Ok(Json(info))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn other_devices_reach_flux_by_its_lan_listener_or_an_open_local_one() {
+        let ips: Vec<std::net::IpAddr> = [
+            "127.0.0.1",
+            "192.168.1.20",
+            "169.254.3.4",
+            "100.101.102.103",
+            "10.0.0.7",
+            "::1",
+        ]
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+        let local: std::net::SocketAddr = "127.0.0.1:8096".parse().unwrap();
+        assert!(lan_urls(None, local, &ips).is_empty(), "only this computer");
+        assert_eq!(
+            lan_urls(Some("0.0.0.0:8097".parse().unwrap()), local, &ips),
+            ["http://192.168.1.20:8097", "http://10.0.0.7:8097"]
+        );
+        assert_eq!(
+            lan_urls(Some("192.168.1.20:8097".parse().unwrap()), local, &ips),
+            ["http://192.168.1.20:8097"]
+        );
+        // Docker: the local listener on every interface.
+        assert_eq!(
+            lan_urls(None, "0.0.0.0:8096".parse().unwrap(), &ips),
+            ["http://192.168.1.20:8096", "http://10.0.0.7:8096"]
+        );
+    }
 }

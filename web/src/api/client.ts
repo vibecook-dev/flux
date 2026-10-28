@@ -7,9 +7,14 @@
  */
 import { API_BASE, resolveUrl } from '../config';
 import type {
+  Addresses,
   ArtRef,
+  BrowseResult,
+  ClaimedOwner,
+  ClaimOwner,
   CreateInvite,
   CreateLibrary,
+  DeviceInfo,
   FolderPage,
   FolderSort,
   Home,
@@ -21,6 +26,8 @@ import type {
   Library,
   LibrarySort,
   MarkWatched,
+  MediaTools,
+  OwnerLink,
   Page,
   PlanPreview,
   PlayRequest,
@@ -35,6 +42,7 @@ import type {
   UpdateInfo,
   UpdateSettings,
 } from './types';
+import { deviceHeaders } from './device-key';
 
 /**
  * Sent on every fetch to `/api/`. flux rejects POST/PUT/PATCH/DELETE under
@@ -48,12 +56,15 @@ export const FLUX_REQUEST_HEADER = 'x-flux-request';
 export class FluxApiError extends Error {
   readonly status: number;
   readonly path: string;
+  /** The server's own sentence, before `apiErrorMessage` framed it ("" when it sent none). */
+  readonly said: string;
 
-  constructor(status: number, path: string, message: string) {
+  constructor(status: number, path: string, message: string, said = '') {
     super(message);
     this.name = 'FluxApiError';
     this.status = status;
     this.path = path;
+    this.said = said;
   }
 
   /** 421: the server doesn't answer to the host name this page used (DNS-rebinding guard). */
@@ -151,7 +162,7 @@ export function createFluxClient(opts: FluxClientOptions) {
 
   async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
     if (opts.ready) await opts.ready();
-    const headers: Record<string, string> = { accept: 'application/json', [FLUX_REQUEST_HEADER]: '1' };
+    const headers: Record<string, string> = { accept: 'application/json', [FLUX_REQUEST_HEADER]: '1', ...deviceHeaders() };
     if (body !== undefined) headers['content-type'] = 'application/json';
     const res = await doFetch(base + path, {
       ...init,
@@ -166,7 +177,7 @@ export function createFluxClient(opts: FluxClientOptions) {
       } catch {
         // keep the generic message
       }
-      throw new FluxApiError(res.status, path, apiErrorMessage(res.status, method, path, text, apiHost(base)));
+      throw new FluxApiError(res.status, path, apiErrorMessage(res.status, method, path, text, apiHost(base)), text);
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -248,6 +259,21 @@ export function createFluxClient(opts: FluxClientOptions) {
     setUpdateCheck: (check: boolean) => request<UpdateInfo>('PUT', '/api/v1/admin/update/settings', { check } satisfies UpdateSettings),
     /** POST /api/v1/admin/update/apply: updates to the newest release and restarts (202; progress as `update` events). */
     applyUpdate: () => post<UpdateInfo>('/api/v1/admin/update/apply'),
+
+    /** GET /api/v1/admin/browse: the starting places, or a folder's folders and what it holds. */
+    browse: (path?: string | null) => get<BrowseResult>(`/api/v1/admin/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+    /** GET /api/v1/admin/addresses: where other devices reach flux. */
+    addresses: () => get<Addresses>('/api/v1/admin/addresses'),
+    /** GET /api/v1/admin/media-tools: what ffmpeg can do here (`flux-server --check`). */
+    mediaTools: () => get<MediaTools>('/api/v1/admin/media-tools'),
+    /** POST /api/v1/admin/owner-links: a one-time owner link. */
+    ownerLink: () => post<OwnerLink>('/api/v1/admin/owner-links'),
+    /** POST /api/v1/owner/claim: this browser becomes an owner device; keep the key it answers with (`device-key`). */
+    claimOwner: (body: ClaimOwner) => post<ClaimedOwner>('/api/v1/owner/claim', body),
+    /** GET /api/v1/admin/devices */
+    devices: () => get<DeviceInfo[]>('/api/v1/admin/devices'),
+    /** DELETE /api/v1/admin/devices/{id}: its key stops working. */
+    removeDevice: (id: string) => request<void>('DELETE', `/api/v1/admin/devices/${encodeURIComponent(id)}`),
 
     /** GET /api/v1/tailnet */
     tailnet: () => get<TailnetInfo>('/api/v1/tailnet'),

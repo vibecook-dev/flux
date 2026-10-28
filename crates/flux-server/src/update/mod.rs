@@ -233,6 +233,11 @@ impl Updater {
             .filter(|v| !v.is_empty())
     }
 
+    /// How flux was installed here.
+    pub fn install_kind(&self) -> InstallKind {
+        self.s.install.kind
+    }
+
     /// How this install updates.
     pub fn install_info(&self, to: Option<&str>) -> InstallInfo {
         let to = to.unwrap_or("<version>");
