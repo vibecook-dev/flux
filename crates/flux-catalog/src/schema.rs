@@ -670,7 +670,7 @@ ALTER TABLE item_field_v9 RENAME TO item_field;
 /// checked afterwards. Idempotent: a database already at the current
 /// version is left untouched (no writes).
 ///
-/// A catalog an older flux made is copied first ([`backup_before_migrating`]):
+/// A catalog an older flux made is copied first (`backup_before_migrating`):
 /// migrating is the one step of an upgrade that the older flux can't undo.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -718,7 +718,7 @@ pub fn backup_path(db: &Path, version: i64) -> PathBuf {
     db.with_file_name(name)
 }
 
-/// The backups [`backup_before_migrating`] made beside `db`, oldest schema
+/// The backups `backup_before_migrating` made beside `db`, oldest schema
 /// first: `(version, path)`.
 pub fn backups(db: &Path) -> Vec<(i64, PathBuf)> {
     let Some(stem) = db.file_name().and_then(|n| n.to_str()).map(|n| format!("{n}.v")) else {
