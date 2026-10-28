@@ -60,7 +60,8 @@ function Wait-Answers([string] $what, [int] $seconds = 60) {
     throw "$what`: flux $Version didn't answer on 8096 within $seconds s"
 }
 
-# The flux products Windows lists (their product codes).
+# The flux products Windows lists (their product codes). Call it as
+# @(Get-Installed): PowerShell hands back a lone code as a string.
 function Get-Installed {
     @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
         Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq 'flux' } |
@@ -124,7 +125,7 @@ foreach ($want in "$program\ffmpeg\ffmpeg.exe", "data     $data", "library  Smok
 }
 
 Write-Host "== flux updates itself to the installer under test"
-$before = Get-Installed
+$before = @(Get-Installed)
 if ($before.Count -ne 1) { throw "Windows lists $($before.Count) flux installs" }
 # The release, as GitHub's API lists it, its installer and SHA256SUMS.
 $site = Join-Path ([IO.Path]::GetTempPath()) 'flux-msi-release'
@@ -167,7 +168,7 @@ try {
     $deadline = (Get-Date).AddMinutes(10)
     do {
         Start-Sleep -Seconds 3
-        $now = Get-Installed
+        $now = @(Get-Installed)
         if ((Get-Date) -gt $deadline) {
             $msiLog = Join-Path $data "updates\msi-$Version.log"
             if (Test-Path $msiLog) { Get-Content $msiLog -Tail 80 | Write-Host }
