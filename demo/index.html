@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b0b0e" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ebeaee" media="(prefers-color-scheme: light)" />
+    <meta name="description" content="flux — your movie and TV library, private and instant." />
+    <link rel="icon" type="image/svg+xml" href="/flux/demo/favicon.svg" />
+    <link rel="manifest" href="/flux/demo/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/flux/demo/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="flux" />
+    <title>flux</title>
+    <script>
+      // Resolve the theme before first paint (no flash), and colour the browser's
+      // (or the installed app's) title bar to match. Setting lives in localStorage.
+      (function () {
+        var s = 'system';
+        try {
+          s = localStorage.getItem('flux.theme') || 'system';
+        } catch (e) {}
+        var dark = s === 'dark' || (s === 'system' && !matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        var bars = document.querySelectorAll('meta[name="theme-color"]');
+        for (var i = 0; i < bars.length; i++) bars[i].content = dark ? '#0b0b0e' : '#ebeaee';
+      })();
+    </script>
+    <script type="module" crossorigin src="/flux/demo/assets/index-Df3ERQn8.js"></script>
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/react-DHsaPJjs.js">
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/client-CC7PKe2z.js">
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/blurhash-HbIpDx78.js">
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/format-3t8CxBvf.js">
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/dom-D3HwYDBK.js">
+    <link rel="modulepreload" crossorigin href="/flux/demo/assets/palette-BhehA8KE.js">
+    <link rel="stylesheet" crossorigin href="/flux/demo/assets/index-DWaKvGH1.css">
+    <meta name="flux-build" content="f1c2e1deeb19327f" />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
