@@ -675,7 +675,65 @@ export type FluxEvent =
   /** The lenses kept on the server changed. */
   | { type: 'lenses' }
   /** The collections kept on the server changed. */
-  | { type: 'collections' };
+  | { type: 'collections' }
+  /** flux's own updates: a check found a new version, or an update moved on. */
+  | { type: 'update'; info: UpdateInfo };
+
+/** How this flux was installed, and so how it updates (flux-server's `update`). */
+export const INSTALL_KINDS = ['archive', 'docker', 'homebrew', 'deb', 'rpm', 'msi', 'source'] as const;
+export type InstallKind = (typeof INSTALL_KINDS)[number];
+
+export const UPDATE_PHASES = ['idle', 'checking', 'downloading', 'verifying', 'installing', 'restarting', 'failed'] as const;
+export type UpdatePhase = (typeof UPDATE_PHASES)[number];
+
+/** A release flux may update to. */
+export interface ReleaseInfo {
+  version: string;
+  /** Unix epoch milliseconds. */
+  published_at: number | null;
+  /** Its release page, with the full notes. */
+  url: string;
+  /** The first lines of its notes, as plain text. */
+  highlights: string[];
+}
+
+export interface InstallInfo {
+  kind: InstallKind;
+  /** flux can update itself in place ("Update now"). */
+  can_apply: boolean;
+  /** Why it can't, when it is an install that otherwise could. */
+  why_not: string | null;
+  /** What to run instead (or as well). */
+  command: string | null;
+}
+
+export interface UpdateProgress {
+  done: number;
+  total: number;
+}
+
+/** `GET /api/v1/admin/update` (Owner or Admin). */
+export interface UpdateInfo {
+  current: string;
+  /** flux checks GitHub for new versions once a day. */
+  check: boolean;
+  /** `check` comes from the server's configuration, which the app can't change. */
+  check_fixed: boolean;
+  checked_at: number | null;
+  /** The newest release this server may update to, when newer than `current`. */
+  available: ReleaseInfo | null;
+  install: InstallInfo;
+  phase: UpdatePhase;
+  progress: UpdateProgress | null;
+  error: string | null;
+  /** The version the last update replaced (`flux-server update --rollback`). */
+  previous: string | null;
+}
+
+/** `PUT /api/v1/admin/update/settings`. */
+export interface UpdateSettings {
+  check: boolean;
+}
 
 export const TAILNET_MODES = ['off', 'embedded', 'system'] as const;
 /** How flux reaches the tailnet: not at all, its own node (Truffle), or this machine's tailscaled. */

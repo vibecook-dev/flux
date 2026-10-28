@@ -44,6 +44,8 @@ const TYPES = {
   MarkWatched: 'MarkWatched',
   TailnetInfo: 'TailnetInfo',
   TailnetConnect: 'TailnetConnect',
+  UpdateInfo: 'UpdateInfo',
+  UpdateSettings: 'UpdateSettings',
   // The agent contract (src/api/agent.ts).
   AgentItemDetail: 'AgentItemDetail',
   ChangesListOutput: 'ChangesListOutput',

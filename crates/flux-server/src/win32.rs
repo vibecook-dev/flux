@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_BUFFER_OVERFLOW, HANDLE, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
@@ -21,6 +22,7 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, SetThreadPriority, TerminateProcess, THREAD_MODE_BACKGROUND_BEGIN,
 };
@@ -79,6 +81,10 @@ impl Drop for KillOnCloseJob {
     }
 }
 
+/// The job [`end_helpers_with_this_process`] put this process in (its
+/// handle, as an integer: raw handles aren't `Send`).
+static HELPERS_JOB: OnceLock<usize> = OnceLock::new();
+
 /// Puts this process in a [`KillOnCloseJob`] whose handle stays open until
 /// the process ends: then Windows ends every helper flux started (ffmpeg,
 /// ffprobe), however flux ended (a crash, `taskkill /F`, the console
@@ -89,9 +95,47 @@ pub fn end_helpers_with_this_process() -> io::Result<()> {
     // SAFETY: GetCurrentProcess returns a pseudo handle, valid for as long
     // as the process runs, that needs no closing.
     job.assign(unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess()) })?;
+    let _ = HELPERS_JOB.set(job.0 as usize);
     // Closed by Windows when the process ends, which ends the job.
     std::mem::forget(job);
     Ok(())
+}
+
+/// Lets the processes flux starts from now on outlive it: clears
+/// kill-on-close on the job [`end_helpers_with_this_process`] made. For the
+/// flux that a restart starts just before this one exits (it makes a job of
+/// its own for its helpers).
+#[allow(unsafe_code)]
+pub fn let_children_outlive_this_process() -> io::Result<()> {
+    let Some(&job) = HELPERS_JOB.get() else {
+        return Ok(());
+    };
+    // No limits at all: in particular no JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+    let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    // SAFETY: the job handle stays open until the process ends; `info` is
+    // the struct this information class takes, with its size.
+    let ok = unsafe {
+        SetInformationJobObject(
+            job as HANDLE,
+            JobObjectExtendedLimitInformation,
+            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// This process runs in session 0, where services run (and service wrappers
+/// such as NSSM), not in a person's session.
+#[allow(unsafe_code)]
+pub fn in_service_session() -> bool {
+    let mut session = u32::MAX;
+    // SAFETY: `session` is a valid out pointer for the call.
+    let ok = unsafe { ProcessIdToSessionId(std::process::id(), &mut session) };
+    ok != 0 && session == 0
 }
 
 /// Makes Ctrl-C reach this process. A process started in a new process

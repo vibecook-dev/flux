@@ -31,6 +31,8 @@ import type {
   SessionDiagnostics,
   TailnetConnect,
   TailnetInfo,
+  UpdateInfo,
+  UpdateSettings,
 } from '../api/types';
 import { FOLDER_SORTS, ITEM_FILTERS, LIBRARY_SORTS } from '../api/types';
 import { channelLayout, codecShort, planLabel } from '../api/explain';
@@ -55,6 +57,8 @@ export interface MockOptions {
   metadata?: MetadataSource;
   /** The web client build the "server" serves (ServerInfo.web_build); default none. */
   webBuild?: string | null;
+  /** flux's own updates: a newer release out (this install updates itself, or is the Docker image), or none. */
+  update?: 'available' | 'docker' | 'none';
   /** Prefix for handler paths; tests in Node use an absolute origin. */
   origin?: string;
 }
@@ -124,6 +128,64 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
   });
 
   const tailnetChanged = () => broadcast({ type: 'tailnet', info: { ...tailnet } });
+
+  // flux's own updates (the Libraries screen's panel, the owner's note).
+  const docker = opts.update === 'docker';
+  const update: UpdateInfo = {
+    current: serverInfo().version,
+    check: true,
+    check_fixed: false,
+    checked_at: db.now - 3 * 3_600_000,
+    available:
+      opts.update === 'available' || docker
+        ? {
+            version: '0.1.0-alpha.5',
+            published_at: db.now - 2 * 86_400_000,
+            url: 'https://github.com/vibecook-dev/flux/releases',
+            highlights: [
+              'web: flux installs as an app and knows when it was updated',
+              'server: flux updates itself, from the Libraries screen or flux-server update',
+              'web: seamless poster flights, and a lens bar that comes back',
+            ],
+          }
+        : null,
+    install: docker
+      ? {
+          kind: 'docker',
+          can_apply: false,
+          why_not: 'The container updates from the new image, ghcr.io/vibecook-dev/flux:0.1.0-alpha.5. With Compose, pull it and recreate the container.',
+          command: 'docker compose pull && docker compose up -d',
+        }
+      : { kind: 'archive', can_apply: true, why_not: null, command: 'flux-server update' },
+    phase: 'idle',
+    progress: null,
+    error: null,
+    previous: null,
+  };
+  const updateChanged = () => broadcast({ type: 'update', info: structuredClone(update) });
+  /** The steps of an update, as the real server reports them; then "restarted" as the new version. */
+  const runUpdate = async () => {
+    const total = 25_185_736;
+    update.phase = 'downloading';
+    for (let done = 0; done < total; done = Math.min(total, done + 1_400_000)) {
+      update.progress = { done, total };
+      updateChanged();
+      await delay(140);
+    }
+    update.progress = { done: total, total };
+    updateChanged();
+    for (const phase of ['verifying', 'installing', 'restarting'] as const) {
+      update.phase = phase;
+      update.progress = null;
+      updateChanged();
+      await delay(phase === 'restarting' ? 1500 : 700);
+    }
+    update.previous = update.current;
+    update.current = update.available?.version ?? update.current;
+    update.available = null;
+    update.phase = 'idle';
+    updateChanged();
+  };
 
   /**
    * `PlayResponse.audio` as flux-hls names its renditions: `{track}` copied,
@@ -475,6 +537,39 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
         cues.push(`${ts(at)} --> ${ts(at + 3)}`, `[${label} · mock cue at ${Math.floor(at / 60)}:${String(at % 60).padStart(2, '0')}]`, '');
       }
       return new HttpResponse(cues.join('\n'), { headers: { 'content-type': 'text/vtt; charset=utf-8' } });
+    }),
+
+    http.get(u('/api/v1/admin/update'), async () => {
+      await wait();
+      return HttpResponse.json(update);
+    }),
+
+    http.post(u('/api/v1/admin/update/check'), async () => {
+      update.phase = 'checking';
+      updateChanged();
+      await delay(Math.max(latency, 600));
+      update.phase = 'idle';
+      update.checked_at = Date.now();
+      update.error = null;
+      updateChanged();
+      return HttpResponse.json(update);
+    }),
+
+    http.put(u('/api/v1/admin/update/settings'), async ({ request }) => {
+      await wait();
+      const body = (await request.json()) as UpdateSettings;
+      update.check = body.check;
+      updateChanged();
+      return HttpResponse.json(update);
+    }),
+
+    http.post(u('/api/v1/admin/update/apply'), async () => {
+      await wait();
+      if (!update.install.can_apply) return new HttpResponse(update.install.why_not, { status: 409 });
+      if (!update.available) return new HttpResponse('flux is up to date', { status: 409 });
+      if (update.phase !== 'idle' && update.phase !== 'failed') return new HttpResponse('An update is already running.', { status: 409 });
+      void runUpdate();
+      return HttpResponse.json(update, { status: 202 });
     }),
 
     http.get(u('/api/v1/tailnet'), async () => {

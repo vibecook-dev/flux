@@ -7,7 +7,7 @@ import { install, useInstallWay } from '../app/install';
 import { Link } from '../app/Link';
 import { setTheme, useTheme, type ThemeSetting } from '../app/theme';
 import { reloadNow, useUpdate } from '../app/update';
-import { useChanges, useServer, useTailnet } from '../api/queries';
+import { useChanges, useServer, useTailnet, useUpdateInfo } from '../api/queries';
 import { Icon, type IconName } from '../components/Icon';
 import { MOCK } from '../config';
 import styles from './Corner.module.css';
@@ -22,6 +22,7 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
   // Proposals waiting for a decision (Owners and Admins decide them).
   const admin = server.data?.you?.role === 'owner' || server.data?.you?.role === 'admin';
   const changes = useChanges(admin);
+  const release = useUpdateInfo(admin).data?.available ?? null;
   const { setting } = useTheme();
   const installWay = useInstallWay();
   const [installHint, setInstallHint] = useState(false);
@@ -92,6 +93,11 @@ export function Corner({ onLenses }: { onLenses: () => void }) {
         <Link to="/admin" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>
           <Icon name="settings" />
           <span>Libraries &amp; scanning</span>
+          {admin && release && (
+            <span className={styles.meta} data-tone="ok">
+              {release.version} is out
+            </span>
+          )}
         </Link>
         <Link to="/changes" role="menuitem" className={styles.item} onClick={() => setOpen(false)}>
           <Icon name="agent" />

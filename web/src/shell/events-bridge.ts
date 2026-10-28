@@ -145,6 +145,11 @@ export function useEventsBridge(): void {
           lastTailnet = state;
           break;
         }
+        case 'update': {
+          // The Libraries screen's update panel and the owner's note follow this.
+          setQueryData(keys.update, e.info);
+          break;
+        }
       }
     });
     return () => {

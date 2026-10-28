@@ -249,7 +249,8 @@ the `render` (and `video`) group.
 
 ### Upgrading
 
-Download, check and unpack the new version with the steps above (with the
+`flux-server update` does this for you ([Updating](#updating)). By hand:
+download, check and unpack the new version with the steps above (with the
 new `version=`), but move the old install aside before you move the new
 one in. A plain `mv` onto an existing `/opt/flux` puts the new directory
 *inside* it, and the old binary keeps running:
@@ -466,7 +467,8 @@ been tried on Windows yet.
 
 ### Upgrading on Windows
 
-Stop flux (or the service), swap the folder, and start it again. The data
+`flux-server update` does this for you ([Updating](#updating)). By hand:
+stop flux (or the service), swap the folder, and start it again. The data
 dir is separate and is not touched:
 
 ```powershell
@@ -558,6 +560,62 @@ flux is MIT (`/opt/flux/LICENSE`, `/opt/flux/THIRD_PARTY_LICENSES`). The
 bundled jellyfin-ffmpeg is GPL: its licence, the source links and a written
 offer are in `/usr/share/licenses/jellyfin-ffmpeg/`, and every release
 attaches the matching source tarball.
+
+## Updating
+
+flux checks GitHub for a new version once a day; GitHub sees this
+machine's address and flux's version, nothing about your library. A
+pre-release (`0.1.0-alpha.N`) follows pre-releases, a stable version
+stable releases. When one is out, the Owner sees *flux X is out* over the
+library, and the Libraries screen shows what's in it. Switch the check off
+there, or with `--update-check false` (`FLUX_UPDATE_CHECK=false`,
+`update_check = false` in the config file), which the screen then can't
+change.
+
+How flux updates depends on how it was installed:
+
+- **A release package** (unpacked by hand, as above): *Update now* on the
+  Libraries screen, or `flux-server update` in a terminal. flux downloads
+  the package for this system, checks it against the release's
+  `SHA256SUMS`, unpacks it beside the install and runs the new
+  `flux-server --version` to make sure it starts here. Only then does it
+  put the new version in place, file by file, and restart as it. Anything
+  playing stops for a moment. Files you added to the install folder stay.
+  If a step fails, nothing changes.
+  - flux has to be able to write to its folder. When it can't (`/opt/flux`
+    owned by root and flux running as a service user), run
+    `sudo flux-server update`, or on Windows `flux-server update` in a
+    terminal opened as administrator. Give it the server's `--config` or
+    `--data-dir`, so it finds the running flux and asks it to restart.
+  - `flux-server update --check` only says whether a new version is out
+    (exit status 10 when one is). `--yes` skips the question.
+- **Docker:** pull the new image and recreate the container:
+  `docker compose pull && docker compose up -d`, or
+  `docker pull ghcr.io/vibecook-dev/flux:<version>` and run it again with
+  the same options.
+- **Built from source:** pull and build again.
+
+### Restarting after an update
+
+- **macOS and Linux:** flux starts the new version in its own place (the
+  same process), so a terminal, systemd or launchd carries on with it.
+- **Windows:** run in a terminal, flux starts the new version in the same
+  window. Under a service manager or a service wrapper (NSSM, WinSW,
+  Servy), it exits with status 75 for the wrapper to start it again: NSSM
+  does by default; with WinSW, add `<onfailure action="restart"/>`.
+  `FLUX_RESTART=exit` or `spawn` makes the choice explicit.
+
+### Going back
+
+The version an update replaced stays in `.flux-previous` in the install
+folder. To go back to it, stop flux, then run `flux-server update
+--rollback` (with the server's `--config` or `--data-dir`).
+
+A newer flux that changes the catalog's format first keeps a copy of it
+(`catalog.db.v<N>.bak` in the data dir; flux keeps the two newest), because
+the older flux can't read the new format. `--rollback` puts that copy back
+too, after saying so: what changed since (scans, edits, watched state) is
+lost.
 
 ## The app on your devices
 

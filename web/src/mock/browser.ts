@@ -10,6 +10,8 @@
  *                            and made-up descriptions carry no note to developers
  *   ?mock_web_build=<id>     the client build the "server" serves (ServerInfo.web_build):
  *                            another id than the page's shows "flux was updated"
+ *   ?mock_update=available   a newer flux is out (with mock_tailnet=running you are the
+ *                            Owner who sees it); `docker`: out, for a Docker install
  *
  * Framed by another page (the product site), it also starts the demo bridge
  * (demo-bridge.ts) that lets that page switch lenses and follow along.
@@ -49,6 +51,7 @@ export async function startMock(): Promise<void> {
       path: scenario('mock_path') ?? 'localhost',
       metadata: METADATA_SOURCES.find((s) => s === metadata) ?? 'tmdb',
       webBuild: scenario('mock_web_build'),
+      update: ((u) => (u === 'available' || u === 'docker' ? u : 'none'))(scenario('mock_update')),
     }),
   );
   await worker.start({

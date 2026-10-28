@@ -16,6 +16,7 @@ import { LIBRARY_KINDS, type Library, type LibraryKind, type ScanStatus } from '
 import { Link } from '../app/Link';
 import { Icon } from '../components/Icon';
 import styles from './Admin.module.css';
+import { UpdatePanel } from './UpdatePanel';
 import { STATE_LABEL, applyScanProgress, lastScanLine, metadataNote, offlineNote, offlineRoots, scanCounters, stateLabel } from './admin-state';
 
 const KIND_LABEL: Record<LibraryKind, string> = { movies: 'Films', shows: 'Shows', mixed: 'Mixed', videos: 'Videos' };
@@ -297,6 +298,8 @@ export default function Admin() {
 
   const s = server.data;
   const noMetadata = s ? metadataNote(s.metadata.source) : null;
+  // flux's own updates are the Owner's and Admins' (the server refuses others).
+  const admin = s?.you?.role === 'owner' || s?.you?.role === 'admin';
   return (
     <div className={styles.page}>
       <header className={styles.header}>
@@ -347,6 +350,8 @@ export default function Admin() {
           </div>
         </dl>
       )}
+
+      {admin && <UpdatePanel />}
 
       {noMetadata && (
         <p className={styles.metadataNote}>

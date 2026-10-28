@@ -226,6 +226,15 @@
       "hlg",
       "dolby_vision"
     ],
+    "InstallKind": [
+      "archive",
+      "docker",
+      "homebrew",
+      "deb",
+      "rpm",
+      "msi",
+      "source"
+    ],
     "ItemFilter": [
       "unwatched",
       "in_progress",
@@ -320,6 +329,15 @@
       "subtitle",
       "attachment",
       "data"
+    ],
+    "UpdatePhase": [
+      "idle",
+      "checking",
+      "downloading",
+      "verifying",
+      "installing",
+      "restarting",
+      "failed"
     ]
   },
   "plan_labels": [
@@ -1102,6 +1120,36 @@
       },
       {
         "type": "collections"
+      },
+      {
+        "info": {
+          "available": {
+            "highlights": [
+              "web: flux installs as an app and knows when it was updated"
+            ],
+            "published_at": 1793179800000,
+            "url": "https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.5",
+            "version": "0.1.0-alpha.5"
+          },
+          "check": true,
+          "check_fixed": false,
+          "checked_at": 1793059384000,
+          "current": "0.1.0-alpha.4",
+          "error": null,
+          "install": {
+            "can_apply": true,
+            "command": "flux-server update",
+            "kind": "archive",
+            "why_not": null
+          },
+          "phase": "downloading",
+          "previous": "0.1.0-alpha.3",
+          "progress": {
+            "done": 12582912,
+            "total": 25185736
+          }
+        },
+        "type": "update"
       }
     ],
     "FixOutput": {
@@ -2071,6 +2119,36 @@
       "system_tailscale": true,
       "tailnet_name": "tail1234.ts.net",
       "url": "https://flux.tail1234.ts.net:8096"
+    },
+    "UpdateInfo": {
+      "available": {
+        "highlights": [
+          "web: flux installs as an app and knows when it was updated"
+        ],
+        "published_at": 1793179800000,
+        "url": "https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.5",
+        "version": "0.1.0-alpha.5"
+      },
+      "check": true,
+      "check_fixed": false,
+      "checked_at": 1793059384000,
+      "current": "0.1.0-alpha.4",
+      "error": null,
+      "install": {
+        "can_apply": true,
+        "command": "flux-server update",
+        "kind": "archive",
+        "why_not": null
+      },
+      "phase": "downloading",
+      "previous": "0.1.0-alpha.3",
+      "progress": {
+        "done": 12582912,
+        "total": 25185736
+      }
+    },
+    "UpdateSettings": {
+      "check": false
     }
   }
 }

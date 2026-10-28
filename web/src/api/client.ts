@@ -32,6 +32,8 @@ import type {
   TailnetConnect,
   TailnetInfo,
   TailnetMode,
+  UpdateInfo,
+  UpdateSettings,
 } from './types';
 
 /**
@@ -237,6 +239,15 @@ export function createFluxClient(opts: FluxClientOptions) {
       get<SessionDiagnostics>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/diagnostics`),
     /** URL of GET /api/v1/events (Server-Sent Events); see events.ts. */
     eventsUrl: () => `${base}/api/v1/events`,
+
+    /** GET /api/v1/admin/update (Owner or Admin): flux's version, the newest it may update to, how it updates. */
+    updateInfo: () => get<UpdateInfo>('/api/v1/admin/update'),
+    /** POST /api/v1/admin/update/check: asks GitHub now. */
+    checkForUpdate: () => post<UpdateInfo>('/api/v1/admin/update/check'),
+    /** PUT /api/v1/admin/update/settings: the daily check on or off. */
+    setUpdateCheck: (check: boolean) => request<UpdateInfo>('PUT', '/api/v1/admin/update/settings', { check } satisfies UpdateSettings),
+    /** POST /api/v1/admin/update/apply: updates to the newest release and restarts (202; progress as `update` events). */
+    applyUpdate: () => post<UpdateInfo>('/api/v1/admin/update/apply'),
 
     /** GET /api/v1/tailnet */
     tailnet: () => get<TailnetInfo>('/api/v1/tailnet'),

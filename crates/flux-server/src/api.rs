@@ -7,12 +7,12 @@ use std::sync::Arc;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use flux_catalog::read;
 use flux_core::api::{
     CreateLibrary, FolderPage, FolderParams, Home, Id, ItemDetail, ItemSummary, ItemsParams, Library,
-    MarkWatched, Page, ScanStatus, ServerInfo, TailnetConnect, TailnetInfo,
+    MarkWatched, Page, ScanStatus, ServerInfo, TailnetConnect, TailnetInfo, UpdateInfo, UpdateSettings,
 };
 use serde::Deserialize;
 
@@ -29,6 +29,11 @@ pub fn router(st: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/server", get(server_info))
         .route("/api/v1/admin/media-tools", get(media_tools))
+        .route("/api/v1/admin/update", get(update_info))
+        .route("/api/v1/admin/update/check", post(update_check))
+        .route("/api/v1/admin/update/settings", put(update_settings))
+        .route("/api/v1/admin/update/apply", post(update_apply))
+        .route("/api/v1/admin/restart", post(restart))
         .route("/api/v1/libraries", get(list_libraries).post(create_library))
         .route("/api/v1/libraries/{id}/scan", post(scan_library))
         .route("/api/v1/libraries/{id}/items", get(library_items))
@@ -85,6 +90,67 @@ async fn server_info(State(st): State<Arc<AppState>>, caller: Caller) -> Json<Se
         https_url: st.tailnet.https_url(),
         web_build: st.web.as_ref().and_then(|w| w.build()).map(str::to_string),
     })
+}
+
+/// `GET /api/v1/admin/update` (owner/admin): flux's version, the newest it
+/// may update to, and how this install updates (`update`).
+async fn update_info(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<Json<UpdateInfo>> {
+    caller.require_admin()?;
+    Ok(Json(st.updater.info()))
+}
+
+/// `POST /api/v1/admin/update/check` (owner/admin): asks GitHub now.
+async fn update_check(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<Json<UpdateInfo>> {
+    caller.require_admin()?;
+    Ok(Json(st.updater.check().await))
+}
+
+/// `PUT /api/v1/admin/update/settings` (owner/admin): the daily check on or
+/// off, remembered in the data dir (409 when the server's configuration
+/// sets it).
+async fn update_settings(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+    body: Result<Json<UpdateSettings>, JsonRejection>,
+) -> ApiResult<Json<UpdateInfo>> {
+    caller.require_admin()?;
+    let Json(UpdateSettings { check }) = body?;
+    st.updater.set_check(check).map(Json).map_err(ApiError::conflict)
+}
+
+/// `POST /api/v1/admin/update/apply` (owner/admin): updates to the newest
+/// release and restarts as it (202; progress as `update` events). 409 when
+/// this install can't update itself or an update is running.
+async fn update_apply(
+    State(st): State<Arc<AppState>>,
+    caller: Caller,
+) -> ApiResult<(StatusCode, Json<UpdateInfo>)> {
+    caller.require_admin()?;
+    st.updater
+        .apply()
+        .map(|info| (StatusCode::ACCEPTED, Json(info)))
+        .map_err(ApiError::conflict)
+}
+
+/// `POST /api/v1/admin/restart` (owner/admin): stops gracefully and starts
+/// again as the binary now on disk (202). `flux-server update` asks this
+/// after putting a new version in place.
+async fn restart(State(st): State<Arc<AppState>>, caller: Caller) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    let r = st
+        .updater
+        .restart_in_place("asked")
+        .ok_or_else(|| ApiError::unavailable("flux doesn't know where its binary is"))?;
+    tracing::info!(
+        by = caller
+            .identity
+            .as_ref()
+            .map(|i| i.login_name.as_str())
+            .unwrap_or("?"),
+        "restart asked"
+    );
+    st.updater.ask_restart(r);
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// `GET /api/v1/admin/media-tools` (owner/admin): what `flux-server

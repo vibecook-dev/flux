@@ -7,6 +7,7 @@ folder holds:
   flux-server.exe            the server
   sidecar-slim.exe           Truffle's Tailscale sidecar, for --tailnet embedded
   web\                       the web client
+  install-kind               how flux updates itself (keep it)
   LICENSE.txt                flux's licence (MIT)
   THIRD_PARTY_LICENSES.txt   the licences of the software flux includes
   README.txt                 this file
@@ -35,6 +36,11 @@ next to itself.
 
 3. Stop flux with Ctrl-C (Ctrl-Break and closing its window also stop it
    cleanly).
+
+4. To update, use Update now on the Libraries screen when flux says a new
+   version is out, or run .\flux-server.exe update here. The version it
+   replaces stays in .flux-previous; .\flux-server.exe update --rollback
+   (with flux stopped) goes back to it.
 
 The catalog, artwork and caches live in %LOCALAPPDATA%\flux unless you pass
 --data-dir. Every option is in `.\flux-server.exe --help`.

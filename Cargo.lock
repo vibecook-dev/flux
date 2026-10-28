@@ -990,6 +990,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
+ "crc32fast",
  "flate2",
  "flux-catalog",
  "flux-core",
@@ -1009,9 +1010,11 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tikv-jemalloc-sys",
@@ -3122,6 +3125,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

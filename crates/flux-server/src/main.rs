@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use flux_server::config::Command;
+use flux_server::update::Restart;
 use flux_server::{Cli, Config};
 use tracing_subscriber::EnvFilter;
 
@@ -19,8 +21,9 @@ fn main() -> ExitCode {
     #[cfg(windows)]
     let windows = WindowsSetup::run();
     let t0 = Instant::now();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let check = cli.check;
+    let command = cli.command.take();
     let cfg = match Config::resolve(cli) {
         Ok(c) => c,
         Err(e) => {
@@ -28,6 +31,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(Command::Update(args)) = &command {
+        return flux_server::update::cli::run(&cfg, args);
+    }
     if check {
         // `--check`: the paths flux would use, what ffmpeg/ffprobe can do
         // here, then exit.
@@ -80,15 +86,19 @@ fn main() -> ExitCode {
     };
     #[cfg(windows)]
     windows.log();
-    let (code, runtime_grace) = rt.block_on(async move {
+    let (code, runtime_grace, restart) = rt.block_on(async move {
         let server = match flux_server::start_at(cfg, t0).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("cannot start: {e:#}");
-                return (ExitCode::FAILURE, Duration::from_secs(2));
+                return (ExitCode::FAILURE, Duration::from_secs(2), None);
             }
         };
-        let stop = wait_for_signal().await;
+        // A signal, or flux asking itself to restart (after an update).
+        let (stop, restart) = tokio::select! {
+            stop = wait_for_signal() => (stop, None),
+            restart = server.state.updater.restart_asked() => (Stop::Asked("restart"), Some(restart)),
+        };
         tracing::info!(signal = stop.name(), "shutting down");
         let budget = stop.budget();
         if let Some(deadline) = budget.deadline {
@@ -101,13 +111,82 @@ fn main() -> ExitCode {
         server.shutdown(budget.grace).await;
         exit_watchdog(budget.exit, "\"flux stopped\"", "a shutdown bug");
         drop(state);
-        (ExitCode::SUCCESS, budget.runtime)
+        (ExitCode::SUCCESS, budget.runtime, restart)
     });
     // Dropping the runtime would wait for every blocking task, and one stuck
     // in a read (a stalled NAS, an ffprobe that ignores its kill) would keep
     // the process alive after "flux stopped" (review ROB-1).
     rt.shutdown_timeout(runtime_grace);
-    code
+    match restart {
+        Some(r) => start_again(&r),
+        None => code,
+    }
+}
+
+/// The exit status that asks a service manager to start flux again: what a
+/// restart ends with when flux can't (or, under a Windows service, shouldn't)
+/// start the new process itself. `EX_TEMPFAIL`.
+const RESTART_BY_SUPERVISOR: u8 = 75;
+
+/// Starts `r.exe` with this process's arguments once the server has stopped:
+/// in this process's place on Unix (the same PID, so systemd and launchd
+/// keep following it), as a new process on Windows, unless a service manager
+/// runs flux there (it starts flux again after the exit status).
+fn start_again(r: &Restart) -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    tracing::info!(exe = %r.exe.display(), why = r.why, "starting again");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Only returns when it fails.
+        let err = std::process::Command::new(&r.exe).args(&args).exec();
+        tracing::error!(error = %err, exe = %r.exe.display(), "cannot start flux again");
+        ExitCode::from(RESTART_BY_SUPERVISOR)
+    }
+    #[cfg(not(unix))]
+    {
+        if supervised() {
+            tracing::info!("exiting for the service manager to start flux again");
+            return ExitCode::from(RESTART_BY_SUPERVISOR);
+        }
+        // The new flux is started in flux's helper job; it must outlive this one.
+        #[cfg(windows)]
+        if let Err(e) = flux_server::win32::let_children_outlive_this_process() {
+            tracing::warn!(error = %e, "the new flux may end with this one");
+        }
+        match std::process::Command::new(&r.exe).args(&args).spawn() {
+            Ok(child) => {
+                tracing::info!(pid = child.id(), "flux started again");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                tracing::error!(error = %e, exe = %r.exe.display(), "cannot start flux again");
+                ExitCode::from(RESTART_BY_SUPERVISOR)
+            }
+        }
+    }
+}
+
+/// A service manager (or a service wrapper such as NSSM) runs flux: it
+/// restarts flux itself after the exit status, and a process flux started
+/// would escape it. `FLUX_RESTART=exit` or `spawn` says so outright;
+/// otherwise a process in session 0 (where services run) is supervised.
+#[cfg(not(unix))]
+fn supervised() -> bool {
+    match std::env::var("FLUX_RESTART").as_deref() {
+        Ok("exit") => true,
+        Ok("spawn") => false,
+        _ => {
+            #[cfg(windows)]
+            {
+                flux_server::win32::in_service_session()
+            }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        }
+    }
 }
 
 /// Why flux is stopping, which bounds how long the stop may take.

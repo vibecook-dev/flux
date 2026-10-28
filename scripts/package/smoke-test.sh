@@ -154,6 +154,7 @@ if [ "$windows" = true ]; then
   bin="$root/flux-server.exe"
   [ -f "$bin" ] || die "no flux-server.exe in $archive"
   [ -f "$root/web/index.html" ] || die "no web/index.html in $archive"
+  marker="$root/install-kind"
   docs="LICENSE.txt README.txt THIRD_PARTY_LICENSES.txt"
   if [ -f "$root/sidecar-slim.exe" ]; then
     echo "== sidecar-slim.exe: $(wc -c < "$root/sidecar-slim.exe" | tr -d ' ') bytes"
@@ -165,8 +166,11 @@ else
   bin="$root/bin/flux-server"
   [ -x "$bin" ] || die "no executable bin/flux-server in $archive"
   [ -f "$root/share/flux/web/index.html" ] || die "no share/flux/web/index.html in $archive"
+  marker="$root/share/flux/install-kind"
   docs="LICENSE README.md THIRD_PARTY_LICENSES"
 fi
+# The updater (flux-server update, "Update now") updates a package that says so.
+[ "$(cat "$marker" 2> /dev/null)" = archive ] || die "no install-kind saying \"archive\" in $archive"
 for f in $docs; do
   [ -s "$root/$f" ] || die "no $f in $archive"
 done

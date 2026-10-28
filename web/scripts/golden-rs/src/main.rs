@@ -566,6 +566,31 @@ fn agent_item_detail(guess: &NameGuess) -> AgentItemDetail {
     }
 }
 
+fn update_info() -> UpdateInfo {
+    UpdateInfo {
+        current: "0.1.0-alpha.4".into(),
+        check: true,
+        check_fixed: false,
+        checked_at: Some(1_793_059_384_000),
+        available: Some(ReleaseInfo {
+            version: "0.1.0-alpha.5".into(),
+            published_at: Some(1_793_179_800_000),
+            url: "https://github.com/vibecook-dev/flux/releases/tag/v0.1.0-alpha.5".into(),
+            highlights: vec!["web: flux installs as an app and knows when it was updated".into()],
+        }),
+        install: InstallInfo {
+            kind: InstallKind::Archive,
+            can_apply: true,
+            why_not: None,
+            command: Some("flux-server update".into()),
+        },
+        phase: UpdatePhase::Downloading,
+        progress: Some(UpdateProgress { done: 12_582_912, total: 25_185_736 }),
+        error: None,
+        previous: Some("0.1.0-alpha.3".into()),
+    }
+}
+
 fn main() {
     let enums = json!({
         "Container": variants!(Container: Matroska, WebM, Mp4, Mov, MpegTs, M2ts, Avi, Asf, Flv, RealMedia, MpegPs, Unknown),
@@ -590,6 +615,8 @@ fn main() {
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
         "MetadataSource": variants!(MetadataSource: None, Tmdb, Exports),
+        "InstallKind": variants!(InstallKind: Archive, Docker, Homebrew, Deb, Rpm, Msi, Source),
+        "UpdatePhase": variants!(UpdatePhase: Idle, Checking, Downloading, Verifying, Installing, Restarting, Failed),
         // The agent contract (flux_core::agent; web/src/api/agent.ts).
         "Gap": variants!(Gap: Identity, Year, Overview, Poster, Backdrop, EpisodeTitles, Offline),
         "MatchState": variants!(MatchState: Unmatched, Parsed, Matched, Locked),
@@ -832,7 +859,10 @@ fn main() {
             v(&Event::Changes { changeset: changeset_summary() }),
             v(&Event::Lenses),
             v(&Event::Collections),
+            v(&Event::Update { info: update_info() }),
         ],
+        "UpdateInfo": v(&update_info()),
+        "UpdateSettings": v(&UpdateSettings { check: false }),
         "AgentItemDetail": v(&agent_item_detail(&name_guess)),
         "ChangesListOutput": v(&ChangesListOutput { changesets: vec![changeset_summary()], next: None, proposed: 1 }),
         "Changeset": v(&changeset()),
