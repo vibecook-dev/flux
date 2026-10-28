@@ -13,9 +13,12 @@
 #                                   BtbN's download.sh fetches and caches it
 #   README.txt                      what is where
 #
-# Only that build's libraries: download.sh fetches every variant's (Linux,
-# non-free), over GitHub's 2 GiB limit for a release asset. It runs in BtbN's
-# public base image, so this needs Docker (GitHub's Ubuntu runners have it).
+# GitHub takes release assets under 2 GiB, and the libraries come to more,
+# so they are spread over parts as needed: ffmpeg-<version>-windows-source-2.tar
+# and on, with the same top folder, which unpack into one libraries/. Only
+# the build's own libraries: download.sh fetches every variant's (Linux,
+# non-free). It runs in BtbN's public base image, so this needs Docker
+# (GitHub's Ubuntu runners have it).
 #
 # Usage: scripts/package/ffmpeg-windows-source.sh --out DIR
 set -euo pipefail
@@ -26,7 +29,7 @@ die() { echo "ffmpeg-windows-source.sh: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out=${2:?}; shift 2 ;;
-    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -88,6 +91,42 @@ git -C "$work/FFmpeg" checkout --quiet "$FFMPEG_COMMIT"
 full=$(git -C "$work/FFmpeg" rev-parse HEAD)
 git -C "$work/FFmpeg" archive --format=tar --prefix=FFmpeg/ HEAD | xz -T0 > "$work/$name/FFmpeg-$full.tar.xz"
 
+# The parts: the largest libraries first, each into the first part with room
+# (the first part also holds FFmpeg, the build's scripts and the Dockerfile).
+limit=1900000000
+sizes=("$(du -cb "$work/$name"/*.tar.xz "$work/$name/Dockerfile" | tail -n 1 | cut -f 1)")
+declare -A part_of
+while read -r bytes file; do
+  i=0
+  while [ "$i" -lt "${#sizes[@]}" ] && [ $((sizes[i] + bytes)) -ge "$limit" ]; do
+    i=$((i + 1))
+  done
+  [ "$i" -lt "${#sizes[@]}" ] || sizes+=(0)
+  [ $((sizes[i] + bytes)) -lt "$limit" ] || die "$file alone is over $limit bytes"
+  sizes[i]=$((sizes[i] + bytes))
+  part_of[$file]=$i
+done < <(cd "$work/$name/libraries" && find . -maxdepth 1 -type f -printf '%s %f\n' | sort -rn)
+parts=${#sizes[@]}
+for file in "${!part_of[@]}"; do
+  i=${part_of[$file]}
+  if [ "$i" -gt 0 ]; then
+    mkdir -p "$work/part-$((i + 1))/$name/libraries"
+    mv "$work/$name/libraries/$file" "$work/part-$((i + 1))/$name/libraries/"
+  fi
+done
+spread=""
+if [ "$parts" -gt 1 ]; then
+  spread="
+    They come in $parts files, since GitHub takes release files under 2 GiB:
+    this one, then $name-2.tar and on. Unpack them in one place."
+  for ((k = 2; k <= parts; k++)); do
+    cat > "$work/part-$k/$name/PART-$k.txt" << EOF
+Part $k of $parts of the source of the FFmpeg in flux's Windows installer: more
+of libraries/. README.txt, in $name.tar, says what is what.
+EOF
+  done
+fi
+
 cat > "$work/$name/README.txt" << EOF
 The source of the FFmpeg in flux's Windows installer (ffmpeg\\ in its folder):
 FFmpeg $FFMPEG_VERSION, built by BtbN/FFmpeg-Builds ($BTBN_TAG,
@@ -105,7 +144,7 @@ Dockerfile
 libraries/
     The source of each of the ${#used[@]} libraries the build compiles in, at
     its pinned commit, named as the build caches it: put them in
-    FFmpeg-Builds/.cache/downloads/ and the build uses them as they are.
+    FFmpeg-Builds/.cache/downloads/ and the build uses them as they are.$spread
 
 To build it again: ./build.sh $BTBN_BUILD (FFmpeg-Builds/README.md).
 flux runs ffmpeg.exe and ffprobe.exe as separate programs and links none of
@@ -113,7 +152,13 @@ FFmpeg's libraries.
 EOF
 
 tar -C "$work" -cf "$out/$name.tar" "$name"
-size=$(stat -c %s "$out/$name.tar" 2> /dev/null || stat -f %z "$out/$name.tar")
-ls -l "$out/$name.tar"
+for ((k = 2; k <= parts; k++)); do
+  tar -C "$work/part-$k" -cf "$out/$name-$k.tar" "$name"
+done
 # GitHub refuses a release asset of 2 GiB or more.
-[ "$size" -lt 2000000000 ] || die "$name.tar is $size bytes: over GitHub's limit for a release asset"
+for f in "$out/$name.tar" "$out/$name"-*.tar; do
+  [ -f "$f" ] || continue
+  size=$(stat -c %s "$f")
+  echo "$(basename "$f"): $size bytes"
+  [ "$size" -lt 2000000000 ] || die "$(basename "$f") is $size bytes: over GitHub's limit for a release asset"
+done

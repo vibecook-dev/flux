@@ -73,8 +73,10 @@ FFmpeg $($pin.FFMPEG_VERSION), built by BtbN/FFmpeg-Builds
 Public License version 3: LICENSE.txt.
 
 Its complete source, with every library compiled into it and the scripts that
-built it, is attached to the flux release this installer comes from:
-https://github.com/vibecook-dev/flux/releases/download/v$Version/$source
+built it, is attached to the flux release this installer comes from, as
+$source (and $($source -replace '\.tar$', '-2.tar') and on, in parts
+under GitHub's 2 GiB limit for a file):
+https://github.com/vibecook-dev/flux/releases/tag/v$Version
 
 flux runs ffmpeg.exe and ffprobe.exe as separate programs and links none of
 FFmpeg's libraries.
