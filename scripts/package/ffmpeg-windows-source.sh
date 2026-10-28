@@ -79,8 +79,8 @@ for f in "${used[@]}"; do
   [ -f "$builds/$f" ] || die "download.sh fetched no $f, which the build uses"
   cp "$builds/$f" "$work/$name/libraries/"
 done
-echo "${#used[@]} libraries, largest first:"
-(cd "$work/$name/libraries" && ls -S -l | sed -n '2,16p')
+echo "${#used[@]} libraries; the largest, in MB:"
+(cd "$work/$name/libraries" && du -m -- * | sort -rn | head -15)
 
 echo "FFmpeg at $FFMPEG_COMMIT"
 git clone --quiet --filter=blob:none --no-checkout https://github.com/FFmpeg/FFmpeg.git "$work/FFmpeg"
