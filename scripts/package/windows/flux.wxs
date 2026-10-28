@@ -47,8 +47,9 @@
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATAFOLDER" Name="flux">
         <!-- SYSTEM and Administrators only, inherited by all that flux writes here
-             (catalog, log, keys): ProgramData lets every user read, and add files. -->
-        <Component Id="DataFolder" Permanent="yes">
+             (catalog, log, keys): ProgramData lets every user read, and add files.
+             WiX can't derive a GUID for a folder-only component: keep this one. -->
+        <Component Id="DataFolder" Guid="92858409-907C-4C19-BC57-9ACCAB8865F8" Permanent="yes">
           <CreateFolder>
             <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
           </CreateFolder>
