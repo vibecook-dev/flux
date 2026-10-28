@@ -161,8 +161,40 @@ pub fn run(command: ServiceCommand, args: &ServiceArgs, _cfg: &Config) -> Result
     }
 }
 
+/// Whether `path` is in the user's profile (`%USERPROFILE%`), where programs
+/// running as that user can change it without asking for administrator
+/// rights.
+pub fn in_user_profile(path: &std::path::Path) -> bool {
+    let Some(profile) = std::env::var_os("USERPROFILE").filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    let lower = |p: &std::path::Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let (path, profile) = (lower(path), lower(std::path::Path::new(&profile)));
+    path == profile || path.starts_with(&format!("{profile}\\"))
+}
+
 fn install(name: &str, args: &ServiceArgs) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // The service runs as LocalSystem: its program, and the config file that
+    // can name the ffmpeg it runs, must be where only administrators can
+    // change them, or anything running as this user could make itself
+    // SYSTEM through them.
+    if in_user_profile(&exe) {
+        return Err(format!(
+            "{} is in your user folder, where any program you run can replace it, and the service would \
+             run it as SYSTEM. Move the flux folder to C:\\Program Files\\flux (as administrator), then run \
+             `& 'C:\\Program Files\\flux\\flux-server.exe' service install` from there.",
+            exe.display()
+        ));
+    }
+    if let Some(config) = args.config.as_ref().filter(|c| in_user_profile(c)) {
+        return Err(format!(
+            "{} is in your user folder, where any program you run can change it (its ffmpeg, say), and the \
+             service would follow it as SYSTEM. Put the config file in C:\\ProgramData\\flux (as \
+             administrator) and pass that.",
+            config.display()
+        ));
+    }
     let mut args = args.clone();
     // A data dir LocalSystem and its owner both find, unless one was given.
     if args.config.is_none() && args.data_dir.is_none() {

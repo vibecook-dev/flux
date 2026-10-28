@@ -173,7 +173,36 @@ remote access). Remote access with identities goes through Tailscale
 (`--tailnet system|embedded`, README §Remote access), and can add HTTPS with
 the tailnet's certificate (`--tailnet-https`, README §HTTPS).
 
-### As a service (Linux, systemd)
+### Starting with your Mac or PC
+
+`flux-server service install` makes flux start by itself, and come back if
+it stops on its own:
+
+```sh
+flux-server service install      # with --config or --data-dir, if you use them
+flux-server service status
+```
+
+- **macOS:** a LaunchAgent for your account
+  (`~/Library/LaunchAgents/dev.vibecook.flux.plist`). flux starts when you
+  log in and reads your folders and drives as it does in a terminal; the
+  first time it reads an external or network volume, macOS asks you to
+  allow it. Its log is `~/Library/Logs/flux/flux.log`.
+- **Linux:** a systemd user unit (`~/.config/systemd/user/flux.service`),
+  started when you log in; `loginctl enable-linger` starts it at boot
+  instead. Its log: `journalctl --user -u flux`.
+
+The service runs flux with the `--config`, `--data-dir`, `--port` and
+`--bind` you give `service install`; anything else goes in the config
+file. `service stop` stops it until the next login (or `service start`),
+and `service uninstall` removes it; flux's data stays. After an update,
+flux starts the new version in its own place, so the service carries on
+with it.
+
+For a server where flux runs under an account of its own from boot, use a
+system unit instead:
+
+### As a system service (Linux, systemd)
 
 The unit below takes its settings from `/etc/flux.toml`, so create that
 file first: without it `flux-server` exits with status 2 and the service
@@ -414,41 +443,41 @@ path = '\\nas\media\TV'
 
 ### As a Windows service
 
-flux has no Windows service mode of its own: run it under a service
-wrapper such as [NSSM](https://nssm.cc/),
-[WinSW](https://github.com/winsw/winsw) or
-[Servy](https://github.com/aelassas/servy). They start `flux-server.exe`
-with a hidden console and stop it with Ctrl-C, then end it after a timeout.
-On Ctrl-C flux lets requests in flight finish for up to 5 s, then exits
-within 5 s more (at once when idle); give the wrapper 15 s (NSSM's
-`AppStopMethodConsole` defaults to 1.5 s, WinSW's `<stoptimeout>` to 15 s;
-Servy calls it `StopTimeout`). These wrappers haven't been tested with flux
-yet; the release smoke test stops flux the way they do.
-
-Under a service, some things differ:
-
-- **The account.** A service runs as LocalSystem unless you pick a user,
-  and LocalSystem's `%LOCALAPPDATA%` is under
-  `C:\Windows\System32\config\systemprofile`. Set `data_dir` (or
-  `--data-dir`), and run the service as an account that can write there
-  and read your media.
-- **Network drives.** Drive letters mapped in your session (`Z:`) don't
-  exist for a service; use UNC paths (`\\nas\media\TV`) and an account with
-  access to the share.
-- **The firewall** asks no one: see below.
-
-For example, with NSSM, flux installed in `C:\Program Files\flux` and the
-config file above (as administrator):
+flux runs as a Windows service of its own. A service runs as LocalSystem,
+so its program must be where only administrators can change it: move the
+flux folder to `C:\Program Files\flux` first, then, in a terminal opened as
+administrator:
 
 ```powershell
-nssm install flux 'C:\Program Files\flux\flux-server.exe' --config C:\ProgramData\flux\flux.toml
-nssm set flux AppStopMethodConsole 15000
-nssm set flux AppStderr C:\ProgramData\flux\flux.log
-nssm set flux ObjectName .\<user> <password>
-nssm start flux
+& 'C:\Program Files\flux\flux-server.exe' service install    # with --config, if you use one
+& 'C:\Program Files\flux\flux-server.exe' service status
 ```
 
-flux logs to stderr, without colour when it isn't a terminal.
+The service is called `flux` ("flux media server" in Services). It starts
+with Windows, a little after boot, and the service manager starts it again
+if it stops on its own, after an update too. LocalSystem can read your user
+folders and local drives. Unless you give `--config` or `--data-dir`, its
+data dir is `C:\ProgramData\flux`, and its log is `flux.log` there.
+`service stop`, `service start` and `service uninstall` (which leaves the
+data) work the same way, as administrator; so do Services and `sc stop
+flux`. `service install` refuses a program or config file in your user
+folder, where any program you run could change them.
+
+- **Another data dir than in a terminal.** flux in a terminal uses
+  `%LOCALAPPDATA%\flux`. To keep the libraries and settings from there,
+  stop flux and give `service install` `--data-dir
+  "$env:LOCALAPPDATA\flux"`.
+- **Network drives.** Drive letters mapped in your session (`Z:`) don't
+  exist for a service: use UNC paths (`\\nas\media\TV`). LocalSystem
+  reaches a share as the computer, which a NAS usually refuses; run the
+  service as a user who can read the share (Services, flux, Log On), and
+  give that user write access to the data dir.
+- **The firewall** asks no one: see below.
+
+Service wrappers such as [NSSM](https://nssm.cc/),
+[WinSW](https://github.com/winsw/winsw) and
+[Servy](https://github.com/aelassas/servy) work too. They stop flux with
+Ctrl-C; give it 15 s (NSSM's `AppStopMethodConsole` defaults to 1.5 s).
 
 ### LAN access and the firewall
 
@@ -675,10 +704,12 @@ How flux updates depends on how it was installed:
 - **macOS and Linux:** flux starts the new version in its own place (the
   same process), so a terminal, systemd or launchd carries on with it.
 - **Windows:** run in a terminal, flux starts the new version in the same
-  window. Under a service manager or a service wrapper (NSSM, WinSW,
-  Servy), it exits with status 75 for the wrapper to start it again: NSSM
-  does by default; with WinSW, add `<onfailure action="restart"/>`.
-  `FLUX_RESTART=exit` or `spawn` makes the choice explicit.
+  window. As a service (`flux-server service install`) it exits with status
+  75, and the service manager starts the new version. Under a service
+  wrapper (NSSM, WinSW, Servy) the same exit asks the wrapper to start it
+  again: NSSM does by default; with WinSW, add `<onfailure
+  action="restart"/>`. `FLUX_RESTART=exit` or `spawn` makes the choice
+  explicit.
 
 ### Going back
 

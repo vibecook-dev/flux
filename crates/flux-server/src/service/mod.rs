@@ -181,6 +181,7 @@ fn platform(_: ServiceCommand, _: &ServiceArgs, _: &Config) -> Result<String, St
 
 /// The program and its arguments, as text, for the files launchd and systemd
 /// read (they hold paths as UTF-8).
+#[cfg(unix)]
 pub(crate) fn command_line(exe: &std::path::Path, args: &ServiceArgs) -> Result<Vec<String>, String> {
     std::iter::once(exe.as_os_str().to_os_string())
         .chain(args.args())
