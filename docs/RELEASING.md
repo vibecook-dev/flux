@@ -124,7 +124,22 @@ would remove this step.
      (`scripts/package/windows-msi-smoke-test.ps1`); meanwhile an Ubuntu
      job collects that FFmpeg's complete source
      (`scripts/package/ffmpeg-windows-source.sh`);
-   - uploads the packages, `SHA256SUMS` and the two FFmpeg source archives
+   - makes the macOS app, flux.app, and its disk image
+     (`scripts/package/macos-app.sh`) on a macos-15 runner: the two macOS
+     packages' `flux-server`, `flux` and sidecar made universal with
+     `lipo`, the menu bar app (`crates/flux-app`) built for both
+     architectures, and a pinned FFmpeg (`scripts/package/ffmpeg-macos.env`);
+     signs flux.app with the Developer ID, then signs the disk image, has
+     Apple notarize it and staples the ticket to it (`macos-sign.sh --app`,
+     `--dmg`). A release fails without the Apple secrets (a dry run only
+     warns), since Gatekeeper won't open an app that isn't notarized. Then,
+     on the runner, it installs the app from the disk image, checks
+     Gatekeeper accepts both, runs it, has flux update itself to the same
+     disk image taken for a newer version (from a stand-in for GitHub's
+     releases), and quits it (`scripts/package/macos-app-smoke-test.sh`);
+     meanwhile an Ubuntu job collects that FFmpeg's complete source
+     (`scripts/package/ffmpeg-macos-source.sh`);
+   - uploads the packages, `SHA256SUMS` and the three FFmpeg source archives
      to the release, with a build-provenance attestation per package;
    - builds `ghcr.io/vibecook-dev/flux:<version>` for linux/amd64 and
      linux/arm64 from the Linux packages (`docker.yml`, through
@@ -153,8 +168,10 @@ Every push to `main` also publishes `ghcr.io/vibecook-dev/flux:edge`.
 | `flux-<version>-x86_64-pc-windows-msvc.zip` | One folder: `flux-server.exe`, `sidecar-slim.exe`, `web\`, `install-kind` (`archive`), `LICENSE.txt`, `THIRD_PARTY_LICENSES.txt` and `README.txt` (`scripts/package/README-windows.txt`). Written by `scripts/package/zip.py`: sorted entries, one timestamp, the same bytes on any OS. |
 | `flux-<version>-<amd64\|arm64>.deb`, `flux-<version>-<x86_64\|aarch64>.rpm` | The Linux packages as system packages (`linux-packages.sh`): `/usr/bin/flux-server`, `/usr/bin/flux`, `/usr/libexec/flux/sidecar-slim`, `/usr/share/flux/` (`install-kind`: `deb` or `rpm`), a system service run by a `flux` account (`/usr/lib/systemd/system/flux.service`, `/usr/lib/sysusers.d/flux.conf`), and `/etc/flux/flux.toml`. Named like the tarballs, not as `flux_0.1.0~alpha.1-1_amd64.deb`: GitHub renames a `~` in an asset's name. |
 | `flux-<version>-x86_64-pc-windows-msvc.msi` | The Windows installer (`scripts/package/windows-msi.ps1`, `scripts/package/windows/flux.wxs`, WiX 7): the zip's files in `C:\Program Files\flux` (`install-kind`: `msi`), FFmpeg in `ffmpeg\` there (BtbN's GPL build, pinned with its SHA-256 in `scripts/package/ffmpeg-windows.env`), the `flux` service (LocalSystem), `C:\ProgramData\flux` for SYSTEM and Administrators only, with a `flux.toml` it never overwrites, a firewall rule for port 8097 (private networks) and a Start menu entry. |
+| `flux-<version>-universal-apple-darwin.dmg` | The macOS app (`scripts/package/macos-app.sh`): flux.app, for Apple Silicon and Intel Macs on macOS 13 or later, beside a link to Applications. `Contents/MacOS/flux` is the menu bar app; `Contents/Helpers` has `flux-server`, `flux`, `sidecar-slim` and FFmpeg in `ffmpeg/` (jellyfin-ffmpeg's portable macOS builds, pinned with their SHA-256 in `scripts/package/ffmpeg-macos.env`), all universal; `Contents/Resources` has the web client, `install-kind` (`app`), the settings file's template and the licences. Signed with the Developer ID (`dev.vibecook.flux`; its programs `dev.vibecook.flux.<name>`), notarized, with the ticket stapled to the disk image. |
 | `SHA256SUMS` | SHA-256 of every other asset. |
 | `jellyfin-ffmpeg-<version>-source.tar.gz` | Source of the GPL ffmpeg in the Docker image. |
+| `jellyfin-ffmpeg-<version>-macos-source.tar` | The complete source of the FFmpeg in the macOS app (`scripts/package/ffmpeg-macos-source.sh`): jellyfin-ffmpeg at the commit its builds are of (FFmpeg, Jellyfin's patches and the build scripts), and the source of each library those scripts compile in for macOS, at its pinned commit or revision. |
 | `ffmpeg-<version>-windows-source.tar` | The complete source of the FFmpeg in the Windows installer (`scripts/package/ffmpeg-windows-source.sh`): FFmpeg and BtbN's build scripts at the commits the build is of, the build's Dockerfile as BtbN's `generate.sh` writes it, and the source of each library it compiles in, as BtbN's `download.sh` fetches it. GitHub takes assets under 2 GiB and those libraries come to more, so the rest go in `ffmpeg-<version>-windows-source-2.tar` (and on), with the same top folder: unpacked in one place, they make one `libraries/`. |
 
 Attestations are on the repository's Attestations page and verify with
@@ -166,7 +183,7 @@ the workflow and the commit too ([INSTALL.md](INSTALL.md#release-packages)).
 `--source-ref refs/tags/v<version>` fails: release-please.yml calls the
 release from the push to `main`, so attestations record `refs/heads/main`.
 Only the image's multi-arch index is attested, so verify the tag or the
-index digest, not a per-platform digest. `SHA256SUMS` and the two FFmpeg
+index digest, not a per-platform digest. `SHA256SUMS` and the three FFmpeg
 source archives have no attestation. The attest steps set
 `create-storage-record: false`: an artifact-metadata storage record only
 feeds the organization's Linked Artifacts page, needs the
@@ -192,6 +209,12 @@ so these are a contract with every installed flux, old ones included:
   the same `UpgradeCode` (`scripts/package/windows/flux.wxs`): the installer's
   flux downloads it and has Windows Installer install it over itself
   (`update/msi.rs`).
+- The macOS app's disk image is `flux-<version>-universal-apple-darwin.dmg`,
+  with `flux.app` at its top, in the layout above, signed by the same
+  Developer ID team: the app's flux mounts it, copies flux.app beside
+  itself, checks the team and tries the new `flux-server`, and puts it in
+  place of itself (`update/app.rs`). Its bundle identifier stays
+  `dev.vibecook.flux`.
 - `SHA256SUMS` lists each package and installer as `sha256sum` writes it. A
   package that doesn't match is refused, and immutable releases keep both from changing
   after publication.
@@ -220,8 +243,9 @@ repository access:
 - `build.yml` for all five targets, with every package's smoke test
   (x86_64 macOS under Rosetta 2, Windows with its Ctrl-C and Ctrl-Break
   stops), the macOS `minos` check, the `.deb` and `.rpm` and the Windows
-  installer, each installed and removed, and the source of the
-  installer's FFmpeg; the packages carry the version in `Cargo.toml`;
+  installer, each installed and removed, the macOS app's disk image,
+  installed, run, updated and quit, and the source of the FFmpeg in each;
+  the packages carry the version in `Cargo.toml`;
 - `scripts/package/release-assets.sh` (as `release.yml` does): the
   jellyfin-ffmpeg source tarball and `SHA256SUMS`;
 - the linux/amd64 + linux/arm64 image through `.github/actions/flux-image`
@@ -347,7 +371,25 @@ and the dry run pass them down with `secrets: inherit`.
 **macOS: Developer ID signing and notarization** (`scripts/package/macos-sign.sh`).
 Signed and notarized binaries run from a downloaded tarball without
 Gatekeeper's warning, and keep the permissions a person gave flux (an
-external drive, a network volume) across updates.
+external drive, a network volume) across updates. The same secrets sign
+the macOS app and notarize its disk image; a release needs them for that
+(`require-apple-signing`), the packages only warn without them. To make
+them, with an Apple Developer Program membership (the Account Holder or an
+Admin of the team):
+
+1. In Xcode → Settings → Accounts → Manage Certificates, or at
+   developer.apple.com → Certificates, create a *Developer ID Application*
+   certificate (the G2 sub-CA), so it lands in your login keychain with its
+   private key. In Keychain Access, export the certificate with its key as
+   a `.p12`, with a password.
+2. In App Store Connect → Users and Access → Integrations → App Store
+   Connect API → Team Keys, generate a key with the *Developer* role, and
+   download its `.p8` (once only). Note its Key ID and the Issuer ID above
+   the list.
+3. Add the six secrets below, then run the [release dry run](#release-dry-run):
+   its macOS jobs sign and notarize, the app job signs flux.app and has the
+   disk image notarized and stapled, and the smoke test checks Gatekeeper
+   accepts both.
 
 | Secret | |
 |---|---|
@@ -483,6 +525,25 @@ scripts/package/windows-msi.ps1 -Step build -Version 0.0.0-local -Stage $env:TEM
 rule, `C:\ProgramData\flux`): run it on a machine you can spare, such as a
 virtual machine. For the Docker image from local Linux packages, see
 [docker/README.md](../docker/README.md).
+
+The macOS app, on a Mac, from the two macOS packages (each made as above
+with its `--target`, the x86_64 one with `cargo build --target
+x86_64-apple-darwin`):
+
+```sh
+MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked -p flux-app \
+  --target aarch64-apple-darwin --target x86_64-apple-darwin
+scripts/package/macos-app.sh --step bundle --version 0.0.0-local --stage /tmp/flux-app \
+  --arm64 dist/flux-0.0.0-local-aarch64-apple-darwin.tar.gz \
+  --x86_64 dist/flux-0.0.0-local-x86_64-apple-darwin.tar.gz \
+  --app-arm64 "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/flux-app" \
+  --app-x86_64 "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/flux-app"
+scripts/package/macos-app.sh --step dmg --version 0.0.0-local --stage /tmp/flux-app --out dist
+```
+
+That app is signed ad hoc, which runs on the Mac that made it. Its smoke
+test, `macos-app-smoke-test.sh`, replaces `/Applications/flux.app` and uses
+your `~/Library/Application Support/flux`: run it on a Mac you can spare.
 
 ## The Truffle sidecar
 

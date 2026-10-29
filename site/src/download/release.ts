@@ -20,7 +20,7 @@ interface Release {
   assets: Asset[];
 }
 
-type System = 'mac-arm' | 'mac-intel' | 'windows' | 'linux-x64' | 'linux-arm' | 'docker';
+type System = 'mac' | 'mac-arm' | 'mac-intel' | 'windows' | 'linux-x64' | 'linux-arm' | 'docker';
 
 interface Build {
   id: System;
@@ -29,6 +29,8 @@ interface Build {
   target?: string;
   /** Its packages, best first: the first one the release has is offered. */
   exts?: string[];
+  /** Or one file for every target: `flux-<version>-<file>`. */
+  file?: string;
   icon: string;
 }
 
@@ -44,6 +46,8 @@ const ICONS = {
 };
 
 const BUILDS: Build[] = [
+  // The app (one for both Macs, FFmpeg included); releases before it, a tarball for each.
+  { id: 'mac', name: 'macOS', detail: 'Apple Silicon and Intel', file: 'universal-apple-darwin.dmg', icon: ICONS.laptop },
   { id: 'mac-arm', name: 'macOS', detail: 'Apple Silicon', target: 'aarch64-apple-darwin', exts: ['tar.gz'], icon: ICONS.laptop },
   { id: 'mac-intel', name: 'macOS', detail: 'Intel', target: 'x86_64-apple-darwin', exts: ['tar.gz'], icon: ICONS.laptop },
   // The installer (a service, FFmpeg included); releases before it, the zip.
@@ -54,7 +58,8 @@ const BUILDS: Build[] = [
 ];
 
 const version = (r: Release) => r.tag.replace(/^v/, '');
-const filesOf = (r: Release, b: Build) => (b.target ? (b.exts ?? []).map((e) => `flux-${version(r)}-${b.target}.${e}`) : []);
+const filesOf = (r: Release, b: Build) =>
+  b.file ? [`flux-${version(r)}-${b.file}`] : b.target ? (b.exts ?? []).map((e) => `flux-${version(r)}-${b.target}.${e}`) : [];
 const assetOf = (r: Release, b: Build) =>
   filesOf(r, b)
     .map((f) => r.assets.find((a) => a.name === f))
@@ -62,6 +67,11 @@ const assetOf = (r: Release, b: Build) =>
 const fileOf = (r: Release, b: Build) => assetOf(r, b)?.name ?? filesOf(r, b)[0] ?? null;
 const extOf = (file: string) => (file.endsWith('.tar.gz') ? 'tar.gz' : file.slice(file.lastIndexOf('.') + 1));
 const mb = (n: number) => `${(n / 1_000_000).toFixed(1)} MB`;
+const hasApp = (r: Release) => assetOf(r, BUILDS[0]) !== null;
+/** The builds a release offers: the macOS app in place of the two macOS tarballs, when it has one. */
+const buildsOf = (r: Release) => BUILDS.filter((b) => (hasApp(r) ? b.id !== 'mac-arm' && b.id !== 'mac-intel' : b.id !== 'mac'));
+/** The visitor's build in this release: any Mac's is the app, when there is one. */
+const forRelease = (r: Release, sys: System | null): System | null => (hasApp(r) && (sys === 'mac-arm' || sys === 'mac-intel') ? 'mac' : sys);
 
 /** A best guess at the visitor's system; Macs default to Apple Silicon, which Safari can't tell from Intel. */
 async function detect(): Promise<System | null> {
@@ -96,6 +106,15 @@ function install(r: Release, sys: System | null, tab: 'shell' | 'docker'): strin
       `    -e FLUX_LIBRARIES="Movies:movies:/media/movies" \\`,
       `    ghcr.io/${REPO}:${v}`,
       c('Then open http://localhost:8096'),
+    ].join('\n');
+  }
+  if (sys === 'mac') {
+    const dmg = `flux-${v}-universal-apple-darwin.dmg`;
+    return [
+      c('Download the app, open it and drag flux to Applications; FFmpeg included'),
+      `${p}curl -fLO https://github.com/${REPO}/releases/download/v${v}/${dmg}`,
+      `${p}open ${dmg}`,
+      c('Then open flux from Applications: it opens http://localhost:8096 to set flux up'),
     ].join('\n');
   }
   if (sys === 'windows') {
@@ -146,7 +165,8 @@ export async function startDownload(): Promise<void> {
     root.querySelector<HTMLElement>('[data-rel-pre]')!.hidden = !release.prerelease;
     root.querySelector<HTMLAnchorElement>('[data-rel-notes]')!.href = release.url;
 
-    const mine = BUILDS.find((b) => b.id === sys) ?? null;
+    const yours = forRelease(release, sys);
+    const mine = BUILDS.find((b) => b.id === yours) ?? null;
     const asset = mine ? assetOf(release, mine) : null;
     const title = root.querySelector('[data-get-title]')!;
     const sub = root.querySelector('[data-get-sub]')!;
@@ -165,15 +185,15 @@ export async function startDownload(): Promise<void> {
     }
 
     // Every build, yours first.
-    const order = [...BUILDS].sort((a, b) => Number(b.id === sys) - Number(a.id === sys));
+    const order = buildsOf(release).sort((a, b) => Number(b.id === yours) - Number(a.id === yours));
     const rows = order.map((b) => {
       const a = assetOf(release, b);
       const href = b.id === 'docker' ? `https://github.com/${REPO}/pkgs/container/flux` : (a?.url ?? release.url);
       const file = b.id === 'docker' ? `ghcr.io/${REPO}:${v}` : (fileOf(release, b) ?? '');
       const size = a ? mb(a.size) : b.id === 'docker' ? 'image' : '';
-      return `<li><a class="build" href="${href}"${b.id === sys ? ' data-yours' : ''}>
+      return `<li><a class="build" href="${href}"${b.id === yours ? ' data-yours' : ''}>
         <span class="build-icon">${b.icon}</span>
-        <span class="build-text"><span class="build-name">${b.name} <span class="build-detail">${b.detail}</span>${b.id === sys ? '<small>Yours</small>' : ''}</span><span class="build-file">${file}</span></span>
+        <span class="build-text"><span class="build-name">${b.name} <span class="build-detail">${b.detail}</span>${b.id === yours ? '<small>Yours</small>' : ''}</span><span class="build-file">${file}</span></span>
         <span class="build-size">${size}</span></a></li>`;
     });
     rows.push(`<li><a class="build" href="https://github.com/${REPO}/archive/refs/tags/${release.tag}.tar.gz">
@@ -188,14 +208,14 @@ export async function startDownload(): Promise<void> {
         <span class="build-size"></span></a></li>`);
     }
     list.innerHTML = rows.join('');
-    code.innerHTML = install(release, sys, tab);
+    code.innerHTML = install(release, yours, tab);
   };
 
   for (const t of tabs) {
     t.addEventListener('click', () => {
       tab = t.dataset.installTab as 'shell' | 'docker';
       tabs.forEach((x) => x.setAttribute('aria-selected', String(x === t)));
-      code.innerHTML = install(release, sys, tab);
+      code.innerHTML = install(release, forRelease(release, sys), tab);
     });
   }
   copyInstall.addEventListener('click', () => {

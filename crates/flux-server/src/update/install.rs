@@ -4,8 +4,9 @@
 //! The release packages carry `install-kind` (`archive`) beside the web
 //! client: `share/flux/install-kind` in the Unix tree, `install-kind` in the
 //! Windows folder. Packages made from them write their own word (Homebrew,
-//! the Debian and RPM packages, the Windows installer), and the Docker image
-//! sets [`KIND_ENV`]. No marker: a build from source.
+//! the Debian and RPM packages, the Windows installer, the macOS app, which
+//! has it in `flux.app/Contents/Resources`), and the Docker image sets
+//! [`KIND_ENV`]. No marker: a build from source.
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +48,11 @@ pub enum Layout {
     Unix,
     /// `flux-server.exe`, `web\` in one folder (Windows).
     Flat,
+    /// The macOS app: `flux.app/Contents/Helpers/flux-server`,
+    /// `Contents/Resources/web/`. It updates as a whole bundle
+    /// ([`super::app`]), never entry by entry: anything changed inside a
+    /// signed bundle breaks its signature.
+    App,
 }
 
 impl Layout {
@@ -64,9 +70,13 @@ impl Layout {
         match self {
             Layout::Unix => "bin/flux-server",
             Layout::Flat => "flux-server.exe",
+            Layout::App => "Contents/Helpers/flux-server",
         }
     }
 }
+
+/// The marker inside `flux.app`.
+pub const APP_MARKER: &str = "Contents/Resources/install-kind";
 
 /// This flux's install.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,11 +106,19 @@ impl Install {
     /// resolved); `env_kind` is [`KIND_ENV`]'s value.
     pub fn at(exe: &Path, env_kind: Option<&str>) -> Install {
         let dir = exe.parent();
+        // flux.app/Contents/Helpers/flux-server
+        let app = dir
+            .filter(|d| d.file_name().is_some_and(|n| n == "Helpers"))
+            .and_then(Path::parent)
+            .filter(|c| c.file_name().is_some_and(|n| n == "Contents"))
+            .and_then(Path::parent)
+            .filter(|top| top.join(APP_MARKER).is_file());
         let unix = dir
             .and_then(Path::parent)
             .filter(|top| top.join("share").join("flux").join(MARKER).is_file());
         let flat = dir.filter(|d| d.join(MARKER).is_file());
         let (root, layout, marker) = match (unix, flat) {
+            _ if app.is_some() => (app, Layout::App, app.map(|top| top.join(APP_MARKER))),
             (Some(top), _) => (
                 Some(top),
                 Layout::Unix,
@@ -133,14 +151,21 @@ impl Install {
         self.root.as_deref().map(|r| self.exe_in(r))
     }
 
-    /// Where the version an update replaced is kept.
+    /// Where the version an update replaced is kept (none for the app,
+    /// which keeps nothing in its signed bundle).
     pub fn previous_dir(&self) -> Option<PathBuf> {
-        self.root.as_deref().map(|r| r.join(PREVIOUS_DIR))
+        self.package_dir().map(|r| r.join(PREVIOUS_DIR))
     }
 
-    /// Where a new version is unpacked before it goes in.
+    /// Where a new version is unpacked before it goes in (the app's goes
+    /// beside the bundle: [`super::app`]).
     pub fn staging_dir(&self) -> Option<PathBuf> {
-        self.root.as_deref().map(|r| r.join(STAGING_DIR))
+        self.package_dir().map(|r| r.join(STAGING_DIR))
+    }
+
+    /// The package's folder when updates change it entry by entry.
+    fn package_dir(&self) -> Option<&Path> {
+        self.root.as_deref().filter(|_| self.layout != Layout::App)
     }
 }
 
@@ -153,6 +178,7 @@ pub fn parse_kind(s: &str) -> Option<InstallKind> {
         "deb" => InstallKind::Deb,
         "rpm" => InstallKind::Rpm,
         "msi" => InstallKind::Msi,
+        "app" => InstallKind::App,
         "source" => InstallKind::Source,
         _ => return None,
     })
@@ -185,6 +211,7 @@ mod tests {
         let marker = match layout {
             Layout::Unix => top.join("share/flux").join(MARKER),
             Layout::Flat => top.join(MARKER),
+            Layout::App => top.join(APP_MARKER),
         };
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(marker, format!("{kind}\n")).unwrap();
@@ -220,6 +247,32 @@ mod tests {
         assert_eq!(Install::at(&exe, Some("snap")).kind, InstallKind::Archive);
         let (_d, exe) = package(Layout::Flat, "zip?");
         assert_eq!(Install::at(&exe, None).kind, InstallKind::Source);
+    }
+
+    #[test]
+    fn the_macos_app_is_its_bundle() {
+        let d = tempfile::tempdir().unwrap();
+        let app = d.path().join("flux.app");
+        let exe = app.join(Layout::App.exe());
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        // Without its marker, a bundle is no package.
+        assert_eq!(Install::at(&exe, None).root, None);
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        std::fs::write(app.join(APP_MARKER), "app\n").unwrap();
+        let i = Install::at(&exe, None);
+        assert_eq!(
+            i,
+            Install {
+                kind: InstallKind::App,
+                root: Some(app.clone()),
+                layout: Layout::App
+            }
+        );
+        assert_eq!(i.exe(), Some(exe));
+        // Nothing is kept or unpacked inside the signed bundle.
+        assert_eq!(i.previous_dir(), None);
+        assert_eq!(i.staging_dir(), None);
     }
 
     #[test]

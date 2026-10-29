@@ -11,6 +11,7 @@ members = [
     "crates/flux-net",
     "crates/flux-server",
     "crates/flux-cli",
+    "crates/flux-app",
 ]
 
 [workspace.package]

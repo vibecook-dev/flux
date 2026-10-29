@@ -1,7 +1,7 @@
 # Release dry run: everything a release builds, nothing it publishes.
 #
-# Builds and packages flux-server for all five release targets (build.yml,
-# with the smoke tests), adds the jellyfin-ffmpeg source and SHA256SUMS
+# Builds and packages flux-server for all five release targets, the Windows
+# installer and the macOS app (build.yml, with the smoke tests), adds the jellyfin-ffmpeg source and SHA256SUMS
 # (scripts/package/release-assets.sh, as release.yml does), and builds the
 # linux/amd64 + linux/arm64 image (.github/actions/flux-image, as docker.yml
 # does), smoke-testing each platform on a runner of its own architecture.

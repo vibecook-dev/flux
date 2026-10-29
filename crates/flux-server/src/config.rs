@@ -159,7 +159,8 @@ impl LocalRole {
 )]
 pub struct Cli {
     /// TOML config file [default: none; with the Windows installer,
-    /// C:\ProgramData\flux\flux.toml].
+    /// C:\ProgramData\flux\flux.toml; with the macOS app,
+    /// ~/Library/Application Support/flux/flux.toml].
     #[arg(long, env = "FLUX_CONFIG", value_name = "FILE", global = true)]
     pub config: Option<PathBuf>,
     /// Where flux keeps its catalog, caches and artwork [default:
@@ -240,7 +241,7 @@ pub struct Cli {
     #[arg(long, env = "FLUX_OWNER_LOGIN", value_name = "LOGIN")]
     pub owner_login: Option<String>,
     /// ffmpeg binary [default: in ffmpeg/ next to flux-server (the Windows
-    /// installer's), else from PATH or Homebrew].
+    /// installer's and the macOS app's), else from PATH or Homebrew].
     #[arg(long, env = "FLUX_FFMPEG", value_name = "PATH")]
     pub ffmpeg: Option<PathBuf>,
     /// ffprobe binary [default: next to ffmpeg].
@@ -659,11 +660,20 @@ fn expand_home(p: PathBuf) -> PathBuf {
 
 /// The config file read when none is given: on Windows, the installer's
 /// `C:\ProgramData\flux\flux.toml`, when it is there, for its service and for
-/// commands run in a terminal (`owner-link`, `--check`). None elsewhere.
+/// commands run in a terminal (`owner-link`, `--check`); with the macOS app,
+/// `flux.toml` in the data dir (`~/Library/Application Support/flux`), which
+/// the app writes, all comments, when it first starts. None elsewhere.
 fn default_config() -> Option<PathBuf> {
     #[cfg(windows)]
     if crate::update::install::Install::detect().kind == flux_core::api::InstallKind::Msi {
         let p = crate::service::scm::default_data_dir().join("flux.toml");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if crate::update::install::Install::detect().kind == flux_core::api::InstallKind::App {
+        let p = default_data_dir().ok()?.join("flux.toml");
         if p.is_file() {
             return Some(p);
         }
@@ -760,9 +770,10 @@ fn unix_data_dir(home: Option<PathBuf>, xdg_data_home: Option<PathBuf>, macos: b
     }
 }
 
-/// `./web/dist`, then `<exe dir>/web`, then `<exe dir>/../share/flux/web`.
-/// The exe dir is the real binary's: on macOS `current_exe` is the path the
-/// binary was started by, e.g. a `/usr/local/bin/flux-server` symlink to
+/// `./web/dist`, then `<exe dir>/web`, then `<exe dir>/../share/flux/web`,
+/// then `<exe dir>/../Resources/web` (the macOS app's). The exe dir is the
+/// real binary's: on macOS `current_exe` is the path the binary was started
+/// by, e.g. a `/usr/local/bin/flux-server` symlink to
 /// `/opt/flux/bin/flux-server` (docs/INSTALL.md).
 fn default_web_dir() -> Option<PathBuf> {
     let mut candidates = vec![PathBuf::from("web/dist")];
@@ -773,6 +784,7 @@ fn default_web_dir() -> Option<PathBuf> {
     {
         candidates.push(dir.join("web"));
         candidates.push(dir.join("../share/flux/web"));
+        candidates.push(dir.join("../Resources/web"));
     }
     candidates
         .into_iter()

@@ -19,7 +19,7 @@
 //! where its config, data and address are (`--config`, `--data-dir`,
 //! `--port`, `--bind`); anything else goes in the config file. An install
 //! that comes with a service of its own (Homebrew, the .deb and .rpm, the
-//! Windows installer, Docker) says how to use that one instead.
+//! Windows installer, the macOS app, Docker) says how to use that one instead.
 
 use std::ffi::OsString;
 use std::net::IpAddr;
@@ -130,6 +130,10 @@ pub fn own_service(kind: InstallKind) -> Option<&'static str> {
         InstallKind::Msi => Some(
             "The installer set flux up as a Windows service already: it starts with Windows. Start or stop it \
              in Services (flux), or with `sc start flux` and `sc stop flux` as administrator.",
+        ),
+        InstallKind::App => Some(
+            "flux.app runs flux while it is open: to start it when you log in, choose Open at Login in its \
+             menu (the flux icon in the menu bar).",
         ),
         InstallKind::Docker => Some(
             "In Docker the container is the service: run it with `--restart unless-stopped` (in Compose, \
@@ -247,6 +251,7 @@ mod tests {
             InstallKind::Deb,
             InstallKind::Rpm,
             InstallKind::Msi,
+            InstallKind::App,
             InstallKind::Docker,
         ] {
             assert!(own_service(kind).is_some(), "{kind:?}");

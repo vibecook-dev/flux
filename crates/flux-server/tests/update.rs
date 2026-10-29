@@ -60,6 +60,7 @@ fn package() -> (String, Vec<u8>) {
                 (format!("{top}/{MARKER}"), b"archive\n".to_vec()),
             ]),
         ),
+        Layout::App => unreachable!("the native layout is a release package's"),
     }
 }
 
@@ -173,6 +174,7 @@ fn install(dir: &Path) -> PathBuf {
     let marker = match layout() {
         Layout::Unix => root.join("share/flux").join(MARKER),
         Layout::Flat => root.join(MARKER),
+        Layout::App => unreachable!("the native layout is a release package's"),
     };
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(marker, "archive\n").unwrap();

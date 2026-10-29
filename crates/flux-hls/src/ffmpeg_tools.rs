@@ -12,8 +12,8 @@ fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// `name` in `ffmpeg/` next to this program (the Windows installer bundles
-/// its own there), else on `PATH`, else in jellyfin-ffmpeg's
+/// `name` in `ffmpeg/` next to this program (the Windows installer and the
+/// macOS app bundle their own there), else on `PATH`, else in jellyfin-ffmpeg's
 /// `/usr/lib/jellyfin-ffmpeg` (the Docker image's), `/opt/homebrew/bin`,
 /// `/usr/local/bin` or `/usr/bin`.
 pub fn find(name: &str) -> Option<PathBuf> {

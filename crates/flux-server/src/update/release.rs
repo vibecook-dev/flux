@@ -3,7 +3,8 @@
 //!
 //! A release is `v<version>` with one package per target,
 //! `flux-<version>-<target>.tar.gz` (`.zip` for Windows), the Windows
-//! installer `flux-<version>-x86_64-pc-windows-msvc.msi`, and `SHA256SUMS`
+//! installer `flux-<version>-x86_64-pc-windows-msvc.msi`, the macOS app's
+//! disk image `flux-<version>-universal-apple-darwin.dmg`, and `SHA256SUMS`
 //! (docs/RELEASING.md). Those names are what the updater looks for, so they
 //! are part of the release contract.
 
@@ -113,6 +114,16 @@ pub fn package_name(version: &Version, target: &str) -> String {
 pub fn installer_name(version: &Version, target: &str) -> String {
     format!("flux-{version}-{target}.msi")
 }
+
+/// The macOS app's disk image of `version`, for both Mac architectures
+/// (`flux-<version>-universal-apple-darwin.dmg`).
+pub fn app_name(version: &Version) -> String {
+    format!("flux-{version}-{APP_TARGET}.dmg")
+}
+
+/// The target the app's disk image is named for: one bundle for Apple
+/// Silicon and Intel Macs.
+pub const APP_TARGET: &str = "universal-apple-darwin";
 
 /// The checksum asset's name.
 pub const SUMS: &str = "SHA256SUMS";
@@ -318,6 +329,7 @@ mod tests {
             installer_name(&ver, "x86_64-pc-windows-msvc"),
             "flux-0.1.0-alpha.5-x86_64-pc-windows-msvc.msi"
         );
+        assert_eq!(app_name(&ver), "flux-0.1.0-alpha.5-universal-apple-darwin.dmg");
     }
 
     #[test]

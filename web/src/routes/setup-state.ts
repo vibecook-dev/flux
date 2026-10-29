@@ -149,19 +149,24 @@ export interface LanSwitch {
   file: string;
   /** Who may change it. */
   who: string | null;
-  /** The command that restarts flux afterwards. */
-  restart: string;
+  /** The command that restarts flux afterwards… */
+  restart: string | null;
+  /** …or the menu item that does (the macOS app's menu bar menu). */
+  menu: string | null;
 }
 
 /** The settings file of a packaged install (the Windows installer, the .deb
- * and .rpm), which comes with `lan` commented out; null for the others. */
+ * and .rpm, the macOS app), which comes with `lan` commented out; null for
+ * the others. */
 export function lanSwitch(kind: InstallKind | undefined): LanSwitch | null {
   switch (kind) {
     case 'msi':
-      return { file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux' };
+      return { file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux', menu: null };
     case 'deb':
     case 'rpm':
-      return { file: '/etc/flux/flux.toml', who: null, restart: 'sudo systemctl restart flux' };
+      return { file: '/etc/flux/flux.toml', who: null, restart: 'sudo systemctl restart flux', menu: null };
+    case 'app':
+      return { file: '~/Library/Application Support/flux/flux.toml', who: null, restart: null, menu: 'Restart flux' };
     default:
       return null;
   }

@@ -11,12 +11,14 @@
 //!   against `SHA256SUMS`, unpack beside the install, try the new binary,
 //!   swap it in entry by entry (keeping the old one in `.flux-previous`),
 //!   then restart as the new version (`main.rs`). The Windows installer's
-//!   flux hands the next installer to Windows Installer ([`msi`]). Docker,
-//!   Homebrew and the Linux packages update their own way, which flux
-//!   names.
+//!   flux hands the next installer to Windows Installer ([`msi`]). The
+//!   macOS app replaces its bundle with the one in the next disk image
+//!   ([`app`]). Docker, Homebrew and the Linux packages update their own
+//!   way, which flux names.
 //! - `flux-server update` does the same from a terminal ([`cli`]), for an
 //!   install the server can't write to (`/opt/flux` owned by root).
 
+pub mod app;
 pub mod cli;
 pub mod install;
 pub mod msi;
@@ -328,6 +330,22 @@ impl Updater {
                 ),
                 Some("flux-server update".to_string()),
             ),
+            InstallKind::App => {
+                let why_not = if !PACKAGED_TARGETS.contains(&self.s.target.as_str()) {
+                    Some(format!("Releases have no app for this system ({}).", self.s.target))
+                } else {
+                    match self.s.install.root.as_deref() {
+                        Some(app) => app::why_not_replace(app),
+                        None => Some("flux can't find its flux.app.".to_string()),
+                    }
+                };
+                InstallInfo {
+                    kind: InstallKind::App,
+                    can_apply: why_not.is_none(),
+                    why_not,
+                    command: None,
+                }
+            }
             InstallKind::Source => none(
                 InstallKind::Source,
                 Some("This flux was built from source: update the checkout and build it again.".to_string()),
@@ -566,6 +584,19 @@ impl Updater {
             tracing::info!(from = %self.s.current, to = %release.version, "Windows Installer is installing the new version");
             return Ok(None);
         }
+        if self.s.install.kind == InstallKind::App {
+            let dmg = self
+                .download_app(&release, &dir, |done, total| self.progress(done, total))
+                .await?;
+            self.set_phase(UpdatePhase::Verifying);
+            self.install_app(&dmg, &dir, &release.version).await?;
+            let _ = std::fs::remove_dir_all(&dir);
+            tracing::info!(from = %self.s.current, to = %release.version, "updated flux.app; restarting as the new version");
+            return Ok(Some(Restart {
+                exe: self.s.install.exe().context("no flux.app to restart")?,
+                why: "update",
+            }));
+        }
         let top = self
             .prepare(
                 &release,
@@ -610,17 +641,57 @@ impl Updater {
         &self,
         release: &Release,
         dir: &Path,
-        mut progress: impl FnMut(u64, u64),
+        progress: impl FnMut(u64, u64),
     ) -> anyhow::Result<PathBuf> {
         let name = release::installer_name(&release.version, &self.s.target);
+        self.download_asset(release, &name, "Windows installer", dir, progress)
+            .await
+    }
+
+    /// Downloads `release`'s disk image of the macOS app into `dir` (emptied
+    /// first) and checks it against `SHA256SUMS`: returns its path.
+    pub async fn download_app(
+        &self,
+        release: &Release,
+        dir: &Path,
+        progress: impl FnMut(u64, u64),
+    ) -> anyhow::Result<PathBuf> {
+        let name = release::app_name(&release.version);
+        self.download_asset(release, &name, "disk image of the macOS app", dir, progress)
+            .await
+    }
+
+    /// Puts the flux.app in disk image `dmg` in place of this one ([`app`]);
+    /// `dir` holds the download.
+    pub async fn install_app(&self, dmg: &Path, dir: &Path, version: &Version) -> anyhow::Result<()> {
+        let app = self
+            .s
+            .install
+            .root
+            .clone()
+            .context("flux can't find its flux.app")?;
+        let (dmg, mount, version) = (dmg.to_path_buf(), app::mount_point(dir), version.clone());
+        tokio::task::spawn_blocking(move || app::install(&dmg, &app, &mount, &version)).await?
+    }
+
+    /// Downloads `release`'s asset `name` (a `what`) into `dir`, a private
+    /// folder emptied first, and checks it against `SHA256SUMS`.
+    async fn download_asset(
+        &self,
+        release: &Release,
+        name: &str,
+        what: &str,
+        dir: &Path,
+        mut progress: impl FnMut(u64, u64),
+    ) -> anyhow::Result<PathBuf> {
         let asset = release
-            .asset(&name)
-            .with_context(|| format!("release {} has no Windows installer ({name})", release.version))?
+            .asset(name)
+            .with_context(|| format!("release {} has no {what} ({name})", release.version))?
             .clone();
         let sums = self.sums(release).await?;
-        let sha = release::sum_of(&sums, &name).with_context(|| format!("SHA256SUMS lists no {name}"))?;
+        let sha = release::sum_of(&sums, name).with_context(|| format!("SHA256SUMS lists no {name}"))?;
         private_dir(dir)?;
-        let file = dir.join(&name);
+        let file = dir.join(name);
         let total = asset.size;
         package::download(&self.client, &asset.url, &file, total, &sha, |done| {
             progress(done, total)

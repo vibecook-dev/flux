@@ -627,7 +627,7 @@ fn main() {
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
         "MetadataSource": variants!(MetadataSource: None, Tmdb, Exports),
-        "InstallKind": variants!(InstallKind: Archive, Docker, Homebrew, Deb, Rpm, Msi, Source),
+        "InstallKind": variants!(InstallKind: Archive, Docker, Homebrew, Deb, Rpm, Msi, App, Source),
         "PlaceKind": variants!(PlaceKind: Network, ThisMachine, DockerHost),
         "UpdatePhase": variants!(UpdatePhase: Idle, Checking, Downloading, Verifying, Installing, Restarting, Failed),
         // The agent contract (flux_core::agent; web/src/api/agent.ts).

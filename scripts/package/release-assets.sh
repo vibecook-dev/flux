@@ -2,7 +2,8 @@
 # Completes a release's asset directory, as release.yml uploads it and as the
 # release dry run keeps it: checks that every target's package is there (a
 # .tar.gz, or a .zip for Windows, a .deb and .rpm for each Linux target, the
-# Windows installer, and the source of the FFmpeg that installer bundles),
+# Windows installer and the macOS app's disk image, and the source of the
+# FFmpeg each of those two bundles),
 # adds the source tarball of the jellyfin-ffmpeg the Docker image ships
 # (GPL), and writes SHA256SUMS over all of it. Run it from the repository
 # root.
@@ -29,12 +30,15 @@ for t in $targets; do
   [ -s "$dist/$package" ] || die "missing $package in $dist"
 done
 for p in "flux-$version-amd64.deb" "flux-$version-arm64.deb" "flux-$version-x86_64.rpm" "flux-$version-aarch64.rpm" \
-  "flux-$version-x86_64-pc-windows-msvc.msi"; do
+  "flux-$version-x86_64-pc-windows-msvc.msi" "flux-$version-universal-apple-darwin.dmg"; do
   [ -s "$dist/$p" ] || die "missing $p in $dist"
 done
 # The Windows installer's FFmpeg: its complete source (ffmpeg-windows-source.sh).
 ffw=$(sed -n 's/^FFMPEG_VERSION=//p' scripts/package/ffmpeg-windows.env)
 [ -s "$dist/ffmpeg-$ffw-windows-source.tar" ] || die "missing ffmpeg-$ffw-windows-source.tar in $dist"
+# The macOS app's (ffmpeg-macos-source.sh).
+ffm=$(sed -n 's/^JELLYFIN_FFMPEG_VERSION=//p' scripts/package/ffmpeg-macos.env)
+[ -s "$dist/jellyfin-ffmpeg-$ffm-macos-source.tar" ] || die "missing jellyfin-ffmpeg-$ffm-macos-source.tar in $dist"
 
 jf=$(sed -n 's/^ARG JELLYFIN_FFMPEG_VERSION=//p' Dockerfile)
 [ -n "$jf" ] || die "no JELLYFIN_FFMPEG_VERSION in Dockerfile"
@@ -45,9 +49,9 @@ curl -fsSL --retry 3 --proto '=https' -o "$dist/jellyfin-ffmpeg-$jf-source.tar.g
   cd "$dist"
   rm -f SHA256SUMS
   if command -v sha256sum > /dev/null; then
-    sha256sum -- *.tar.gz *.zip *.deb *.rpm *.msi *.tar > SHA256SUMS
+    sha256sum -- *.tar.gz *.zip *.deb *.rpm *.msi *.dmg *.tar > SHA256SUMS
   else
-    shasum -a 256 -- *.tar.gz *.zip *.deb *.rpm *.msi *.tar > SHA256SUMS
+    shasum -a 256 -- *.tar.gz *.zip *.deb *.rpm *.msi *.dmg *.tar > SHA256SUMS
   fi
   cat SHA256SUMS
 )

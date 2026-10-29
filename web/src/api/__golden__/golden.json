@@ -233,6 +233,7 @@
       "deb",
       "rpm",
       "msi",
+      "app",
       "source"
     ],
     "ItemFilter": [

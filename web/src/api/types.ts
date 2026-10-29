@@ -680,7 +680,7 @@ export type FluxEvent =
   | { type: 'update'; info: UpdateInfo };
 
 /** How this flux was installed, and so how it updates (flux-server's `update`). */
-export const INSTALL_KINDS = ['archive', 'docker', 'homebrew', 'deb', 'rpm', 'msi', 'source'] as const;
+export const INSTALL_KINDS = ['archive', 'docker', 'homebrew', 'deb', 'rpm', 'msi', 'app', 'source'] as const;
 export type InstallKind = (typeof INSTALL_KINDS)[number];
 
 export const UPDATE_PHASES = ['idle', 'checking', 'downloading', 'verifying', 'installing', 'restarting', 'failed'] as const;

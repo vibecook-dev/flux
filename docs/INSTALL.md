@@ -4,6 +4,8 @@ flux is one program, `flux-server`, that serves its own web client. It runs
 `ffmpeg` and `ffprobe`, which you install separately unless the way you
 install flux brings them (see [ffmpeg](#ffmpeg)). The ways to install it:
 
+- [the macOS app](#the-macos-app), `flux.app` in a disk image: flux in the
+  menu bar, FFmpeg included;
 - [Homebrew](#homebrew-macos-and-linux), on macOS or Linux: `brew install
   vibecook-dev/tap/flux`, ffmpeg included;
 - [a .deb or .rpm](#debian-ubuntu-fedora-and-rhel) for Debian and Ubuntu,
@@ -25,7 +27,7 @@ changes between them. How releases are made is in [RELEASING.md](RELEASING.md).
 
 | | |
 |---|---|
-| macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). Embedded remote access (`--tailnet embedded`) runs the bundled `bin/sidecar-slim`, which needs macOS 13 or later. |
+| macOS | 11 or later, Apple Silicon (`aarch64-apple-darwin`) or Intel (`x86_64-apple-darwin`). Embedded remote access (`--tailnet embedded`) runs the bundled `bin/sidecar-slim`, which needs macOS 13 or later, as does [the macOS app](#the-macos-app) (one app for both). |
 | Linux | x86_64 or aarch64 with glibc 2.35 or later: Debian 12+, Ubuntu 22.04+, Fedora 36+, Raspberry Pi OS (64-bit, bookworm or later), and others. Kernels with 4, 16 or 64 KiB pages all work. |
 | Windows | 64-bit Windows 10 or 11, or Windows Server 2016 or later (`x86_64-pc-windows-msvc`); tested on Windows 11 and, in CI, Windows Server 2025. Windows on Arm has no package. See [Windows](#windows). |
 | ffmpeg | `ffmpeg` and `ffprobe`, any recent version. See [ffmpeg](#ffmpeg). |
@@ -38,7 +40,8 @@ ffmpeg build works, including GPL builds, and flux stays MIT-licensed.
 Direct play and remuxing (most playback) don't use ffmpeg at all.
 
 flux looks for them first in an `ffmpeg` folder next to `flux-server`
-(where the [Windows installer](#the-windows-installer) puts its own), then
+(where the [Windows installer](#the-windows-installer) and the
+[macOS app](#the-macos-app) put their own), then
 on `PATH`, then in `/usr/lib/jellyfin-ffmpeg`, `/opt/homebrew/bin`,
 `/usr/local/bin` and `/usr/bin`. On Windows it looks only in that `ffmpeg`
 folder and on `PATH`. (When neither has them, Windows' own program search
@@ -63,7 +66,12 @@ one for video transcodes:
 
 Where to get ffmpeg:
 
-- **macOS:** `brew install ffmpeg` (has VideoToolbox and libx264).
+- **macOS:** the [app](#the-macos-app) brings its own. Otherwise
+  `brew install ffmpeg` (has VideoToolbox and libx264), or Jellyfin's
+  portable build, `jellyfin-ffmpeg_<version>_portable_macarm64-gpl.tar.xz`
+  (`mac64` for Intel) from
+  [jellyfin-ffmpeg's releases](https://github.com/jellyfin/jellyfin-ffmpeg/releases),
+  which has `tonemapx` too.
 - **Debian, Ubuntu, Raspberry Pi OS:** `sudo apt install ffmpeg` (has libx264
   and VAAPI). For Jellyfin's tuned build, install
   [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg/releases)
@@ -85,6 +93,83 @@ flux-server --check
 
 It prints the ffmpeg and ffprobe it resolved, their versions and the
 encoders it detected, and exits non-zero if something required is missing.
+
+## The macOS app
+
+<!-- x-release-please-start-version -->
+Download
+[`flux-0.1.0-alpha.4-universal-apple-darwin.dmg`](https://github.com/vibecook-dev/flux/releases/download/v0.1.0-alpha.4/flux-0.1.0-alpha.4-universal-apple-darwin.dmg),
+open it, and drag flux to Applications.
+<!-- x-release-please-end -->
+
+One app for Apple Silicon and Intel Macs, on macOS 13 (Ventura) or later,
+signed with vibecook's Developer ID and notarized by Apple. Open it from
+Applications: flux is a menu bar app, with no window and no Dock icon, just
+the flux mark in the menu bar. The first time, it:
+
+- starts flux for your account, so flux reads your folders and drives as
+  you do, and opens <http://localhost:8096> for
+  [*Set up flux*](#setting-flux-up);
+- sets itself to open when you log in (*Open at Login* in its menu turns
+  that off, as does System Settings → General → Login Items);
+- writes its settings file, `~/Library/Application Support/flux/flux.toml`,
+  all comments.
+
+Opened from its disk image (or where it was downloaded), it offers to move
+itself to Applications, where it can update itself, and opens from there.
+
+Its menu: *Open flux* (⌘O), *Restart flux*, *Open at Login*, *Edit
+Settings…* (`flux.toml` in your text editor), *Install Command Line
+Tools…*, *Show Log*, *About flux* and *Quit flux*, which stops flux too.
+While flux runs, flux.app starts it again if it stops on its own; if it
+keeps stopping, the menu says why and offers *Start flux*.
+
+- **Other devices.** Out of the box flux answers this Mac only. *Edit
+  Settings…*, remove the `#` before `lan = "0.0.0.0:8097"`, save, and
+  choose *Restart flux*. macOS asks once whether flux may find devices on
+  your local network: allow it. Phones and TVs at home then open flux on
+  port 8097 of this Mac's address (*Set up flux* lists it, with a QR code).
+  To set flux up from another device, make an
+  [owner link](#the-owner-link): `flux-server owner-link`.
+- **The command line.** *Install Command Line Tools…* links `flux` (for
+  you and your agents, [AGENT-NATIVE.md](AGENT-NATIVE.md)) and
+  `flux-server` from `/usr/local/bin`, asking for an administrator's
+  password when that folder needs one. They are flux.app's own, in
+  `/Applications/flux.app/Contents/Helpers`, and find the app's data and
+  settings by themselves (`flux-server --check`, `owner-link`, `update`).
+- **Your media.** The first time flux reads your Desktop, Documents or
+  Downloads, an external drive or a network volume, macOS asks whether flux
+  may: allow it. System Settings → Privacy & Security → Files and Folders
+  lists what flux may read.
+- **FFmpeg.** The app's is Jellyfin's, the same jellyfin-ffmpeg as the
+  [Docker image](#docker): their portable macOS builds, made into one
+  universal `ffmpeg` and `ffprobe` in `Contents/Helpers/ffmpeg`, with
+  VideoToolbox, libx264, libass, zscale and `tonemapx` (Dolby Vision plays
+  in its true colours). Its licence and `SOURCE.txt` are in
+  `Contents/Resources/ffmpeg`; each release attaches its complete source,
+  `jellyfin-ffmpeg-<version>-macos-source.tar`. flux uses it before any
+  other ffmpeg on the Mac: set `ffmpeg = "…"` in `flux.toml` for another.
+- **Updating.** When a new flux is out, the Libraries screen says so:
+  *Update now* there (or `flux-server update`) downloads the new disk
+  image, checks it against `SHA256SUMS` and that the developer who signed
+  this flux.app signed it, puts its flux.app in place of this one, and
+  starts it; flux is back as the new version in seconds. That needs
+  flux.app where you can change it, in Applications for an administrator of
+  the Mac; otherwise, install the new disk image as the first one.
+- **Another flux on this Mac.** If a flux runs already (`brew services`, a
+  [LaunchAgent](#starting-with-your-mac-or-pc), a terminal), the app leaves
+  it running and its menu says so; stop that one (`brew services stop
+  vibecook-dev/tap/flux`, `flux-server service uninstall`) and the app
+  starts its own. They use the same data dir,
+  `~/Library/Application Support/flux`, so your libraries and what you
+  watched carry over.
+- **The log** is `~/Library/Logs/flux/flux.log` (*Show Log* opens it in
+  Console); past 20 MB it starts afresh, the old one kept as `flux.log.1`.
+- **Removing.** Quit flux, then drag flux.app from Applications to the Bin;
+  macOS removes its login item with it. If you installed the command line
+  tools, remove `/usr/local/bin/flux` and `/usr/local/bin/flux-server`.
+  Your data stays in `~/Library/Application Support/flux` (and the log in
+  `~/Library/Logs/flux`); delete those folders to remove it too.
 
 ## Homebrew (macOS and Linux)
 
@@ -850,6 +935,15 @@ How flux updates depends on how it was installed:
   Windows Installer puts the old version back, and the Libraries screen
   says why, with the installer's log (`msi-<version>.log` in that
   folder). Running the new release's installer yourself works too.
+- **The macOS app:** *Update now* on the Libraries screen, or `flux-server
+  update`. flux downloads the release's disk image into
+  `~/Library/Application Support/flux/updates`, checks it against
+  `SHA256SUMS`, mounts it out of sight and copies its flux.app beside this
+  one, where it must be signed by the developer who signed this one, and
+  its `flux-server --version` must start and say the new version. Only then
+  does the new flux.app take the old one's place, and the app start again
+  as it. If a step fails, nothing changes, and the Libraries screen says
+  why. Installing the new disk image yourself works too.
 
 - **A release package** (unpacked by hand, as above): *Update now* on the
   Libraries screen, or `flux-server update` in a terminal. flux downloads
@@ -876,6 +970,8 @@ How flux updates depends on how it was installed:
 
 - **macOS and Linux:** flux starts the new version in its own place (the
   same process), so a terminal, systemd or launchd carries on with it.
+  Under the macOS app (which sets `FLUX_RESTART=exit`), flux exits with
+  status 75 instead, and the app starts itself again, as the new version.
 - **Windows:** run in a terminal, flux starts the new version in the same
   window. As a service (`flux-server service install`) it exits with status
   75, and the service manager starts the new version. The installer's

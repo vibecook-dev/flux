@@ -737,6 +737,8 @@ pub enum InstallKind {
     Rpm,
     /// The Windows installer.
     Msi,
+    /// The macOS app (`flux.app`, from the `.dmg`).
+    App,
     /// Built from source (no package marker).
     Source,
 }

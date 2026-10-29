@@ -10,7 +10,8 @@
 //! for people who'd rather type. Pass the same `--config` / `--data-dir` as
 //! the server, so the restart reaches the right one. The Windows installer's
 //! flux hands the new installer to Windows Installer (`msi.rs`), which
-//! restarts the service.
+//! restarts the service. The macOS app's flux replaces flux.app (`app.rs`),
+//! and the running app starts again as the new version.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -149,6 +150,9 @@ async fn run_async(cfg: &Config, args: &UpdateArgs) -> u8 {
     if s.install.kind == InstallKind::Msi {
         return installer(cfg, &updater, &release, progress, tty).await;
     }
+    if s.install.kind == InstallKind::App {
+        return app(cfg, &updater, &release, progress, tty).await;
+    }
     let prepared = updater
         .prepare(&release, &dir, progress, || {
             if tty {
@@ -215,6 +219,36 @@ async fn installer(
         dir.join(format!("msi-{}.log", release.version)).display()
     );
     OK
+}
+
+/// The macOS app's flux: downloads the new disk image, checks it, puts its
+/// flux.app in place of this one, and has the running flux restart (the app
+/// starts itself again, as the new version).
+async fn app(
+    cfg: &Config,
+    updater: &Updater,
+    release: &super::release::Release,
+    progress: impl FnMut(u64, u64),
+    tty: bool,
+) -> u8 {
+    let dir = cfg.data_dir.join(super::DOWNLOADS_DIR);
+    let done = async {
+        let dmg = updater.download_app(release, &dir, progress).await?;
+        if tty {
+            println!();
+        }
+        println!("Checking the download and trying the new version…");
+        updater.install_app(&dmg, &dir, &release.version).await
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = done {
+        eprintln!("flux-server: the update failed, nothing changed: {e:#}");
+        return FAILED;
+    }
+    let current = &updater.settings().current;
+    println!("flux {} is in place of flux {current}.", release.version);
+    restart_running(cfg, current, &release.version).await
 }
 
 /// The copy of flux an update handed the Windows installer to (`msi.rs`).

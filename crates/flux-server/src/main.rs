@@ -177,12 +177,18 @@ const RESTART_BY_SUPERVISOR: u8 = 75;
 /// Starts `r.exe` with this process's arguments once the server has stopped:
 /// in this process's place on Unix (the same PID, so systemd and launchd
 /// keep following it), as a new process on Windows, unless a service manager
-/// runs flux there (it starts flux again after the exit status).
+/// runs flux there (it starts flux again after the exit status). The macOS
+/// app sets `FLUX_RESTART=exit`: it starts itself again, as the new version
+/// after an update.
 fn start_again(r: &Restart) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     tracing::info!(exe = %r.exe.display(), why = r.why, "starting again");
     #[cfg(unix)]
     {
+        if std::env::var("FLUX_RESTART").as_deref() == Ok("exit") {
+            tracing::info!("exiting for the app to start flux again");
+            return ExitCode::from(RESTART_BY_SUPERVISOR);
+        }
         use std::os::unix::process::CommandExt;
         // Only returns when it fails.
         let err = std::process::Command::new(&r.exe).args(&args).exec();

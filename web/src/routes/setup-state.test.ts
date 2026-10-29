@@ -109,9 +109,10 @@ describe('playback', () => {
 
 describe('other devices', () => {
   it('names the settings file of a packaged install', () => {
-    expect(lanSwitch('msi')).toEqual({ file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux' });
+    expect(lanSwitch('msi')).toEqual({ file: 'C:\\ProgramData\\flux\\flux.toml', who: 'as administrator', restart: 'Restart-Service flux', menu: null });
     expect(lanSwitch('deb')?.file).toBe('/etc/flux/flux.toml');
     expect(lanSwitch('rpm')?.restart).toBe('sudo systemctl restart flux');
+    expect(lanSwitch('app')).toEqual({ file: '~/Library/Application Support/flux/flux.toml', who: null, restart: null, menu: 'Restart flux' });
     expect(lanSwitch('archive')).toBeNull();
     expect(lanSwitch('homebrew')).toBeNull();
     expect(lanSwitch(undefined)).toBeNull();

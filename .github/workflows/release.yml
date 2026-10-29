@@ -1,4 +1,5 @@
-# Builds and publishes one release: packages for five targets, SHA256SUMS,
+# Builds and publishes one release: packages for five targets, the Windows
+# installer and the macOS app's disk image, SHA256SUMS,
 # build-provenance attestations, the Docker image, then flips the draft
 # release that Release Please created to published. Called by
 # release-please.yml; run it by hand (Actions → Release → Run workflow) to
@@ -109,6 +110,8 @@ jobs:
       # A package without the sidecar can't run --tailnet embedded: fail the
       # build, so nothing is uploaded, pushed or published.
       require-sidecar: true
+      # Nor a macOS app that Gatekeeper won't open.
+      require-apple-signing: true
 
   assets:
     name: Upload assets
@@ -148,6 +151,7 @@ jobs:
             dist/flux-*.deb
             dist/flux-*.rpm
             dist/flux-*.msi
+            dist/flux-*.dmg
           create-storage-record: false
       # --clobber replaces the assets an earlier, failed run of this draft
       # uploaded. Check again that it is still a draft: it may have been

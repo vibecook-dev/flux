@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- flux.app's Info.plist (scripts/package/macos-app.sh fills in the
+     @…@ values). LSUIElement: a menu bar app, without a Dock icon. The usage
+     descriptions are what macOS shows when flux first reads a folder or a
+     drive it protects, or looks for devices on the network; flux-server asks,
+     but macOS asks on behalf of the app that started it. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>flux</string>
+	<key>CFBundleExecutable</key>
+	<string>flux</string>
+	<key>CFBundleIconFile</key>
+	<string>flux</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.vibecook.flux</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>flux</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUNDLE_VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.entertainment</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MINIMUM_SYSTEM@</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>flux is open source under the MIT licence; its FFmpeg under the GPL. Contents/Resources has every licence.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>flux serves your films and shows to the phones, tablets and TVs on this network.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>flux reads the films and shows you keep on external drives, to play them.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>flux reads the films and shows you keep on network drives, to play them.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>flux reads the films and shows you keep on the desktop, to play them.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>flux reads the films and shows you keep in Documents, to play them.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>flux reads the films and shows you keep in Downloads, to play them.</string>
+</dict>
+</plist>

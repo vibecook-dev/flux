@@ -380,7 +380,16 @@ function DevicesStep() {
           ) : settings ? (
             <p>
               flux answers only this computer now. To watch on the TV or a phone at home, remove the <code className="mono">#</code> before <code className="mono">lan = "0.0.0.0:8097"</code> in <code className="mono">{settings.file}</code>
-              {settings.who ? ` (${settings.who})` : ''}, then restart flux: <code className="mono">{settings.restart}</code>.
+              {settings.who ? ` (${settings.who})` : ''}
+              {settings.menu ? (
+                <>
+                  , then choose <strong>{settings.menu}</strong> from the flux icon in the menu bar.
+                </>
+              ) : (
+                <>
+                  , then restart flux: <code className="mono">{settings.restart}</code>.
+                </>
+              )}
             </p>
           ) : (
             <p>
