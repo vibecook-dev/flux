@@ -43,8 +43,8 @@ for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APP
 done
 case "$mode" in
   files) for f in "$@"; do [ -f "$f" ] || die "no such file: $f"; done ;;
-  app) [ $# -eq 1 ] && [ -f "$1/Contents/Info.plist" ] || die "--app: not an app bundle: $*" ;;
-  dmg) [ $# -eq 1 ] && [ -f "$1" ] || die "--dmg: no such disk image: $*" ;;
+  app) if [ $# -ne 1 ] || [ ! -f "$1/Contents/Info.plist" ]; then die "--app: not an app bundle: $*"; fi ;;
+  dmg) if [ $# -ne 1 ] || [ ! -f "$1" ]; then die "--dmg: no such disk image: $*"; fi ;;
 esac
 
 tmp=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flux-sign.XXXXXX")

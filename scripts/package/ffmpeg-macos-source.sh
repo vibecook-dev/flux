@@ -89,8 +89,11 @@ for script in "$jf"/builder/scripts.d/*.sh; do
   pins=$(
     for target in macarm64 mac64; do
       (
+        # Jellyfin's scripts read these, and expect unset ones to be empty.
+        set +u
+        export TARGET=$target VARIANT=gpl ADDINS_STR=""
         # shellcheck disable=SC1090
-        TARGET=$target VARIANT=gpl ADDINS_STR="" source "$script"
+        source "$script"
         [ -z "${SCRIPT_SKIP:-}" ] || exit 0
         ffbuild_enabled || exit 0
         for n in "" 2 3 4 5; do

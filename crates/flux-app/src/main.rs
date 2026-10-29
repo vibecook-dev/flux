@@ -4,9 +4,9 @@
 //! FFmpeg the app bundles) for the person logged in, as `flux-server
 //! service install` would, and keeps it running: it starts it again when it
 //! stops on its own, and starts itself again as the new version when flux
-//! updates itself ([`supervisor`]). Its menu bar icon opens flux in the
+//! updates itself (`supervisor.rs`). Its menu bar icon opens flux in the
 //! browser, says whether flux runs, and has Open at Login, the log, and the
-//! command line tools ([`mac`]). It opens flux in the browser the first time
+//! command line tools (`mac.rs`). It opens flux in the browser the first time
 //! flux is up, for Set up flux, and offers to move itself to Applications
 //! when it runs from its disk image. Settings go in
 //! `~/Library/Application Support/flux/flux.toml`, which it writes, all

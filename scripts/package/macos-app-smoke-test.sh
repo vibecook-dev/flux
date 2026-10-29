@@ -111,8 +111,10 @@ for f in MacOS/flux Helpers/flux-server Helpers/flux Helpers/ffmpeg/ffmpeg Helpe
 done
 while IFS= read -r -d '' f; do
   file -b "$f" | grep -q 'Mach-O' || continue
-  archs=$(lipo -archs "$f")
-  case " $archs " in *" arm64 "*" x86_64 "* | *" x86_64 "*" arm64 "*) ;; *) die "${f#"$app/"} is $archs only" ;; esac
+  archs=" $(lipo -archs "$f") "
+  for arch in arm64 x86_64; do
+    case "$archs" in *" $arch "*) ;; *) die "${f#"$app/"} has no $arch (it has:$archs)" ;; esac
+  done
 done < <(find "$app/Contents/MacOS" "$app/Contents/Helpers" -type f -print0)
 codesign --verify --deep --strict --verbose=2 "$app"
 if [ "$signed" = true ]; then
@@ -165,7 +167,7 @@ FLUX_UPDATE_SOURCE="$site_url/releases.json" FLUX_UPDATE_CURRENT=0.0.1-alpha.1 \
 wait_answers "after opening flux.app"
 first_app=$(app_pid)
 first_server=$(server_pid)
-[ -n "$first_app" ] && [ -n "$first_server" ] || fail "the app ($first_app) or flux-server ($first_server) isn't running"
+if [ -z "$first_app" ] || [ -z "$first_server" ]; then fail "the app ($first_app) or flux-server ($first_server) isn't running"; fi
 [ "$(ps -o ppid= -p "$first_server" | tr -d ' ')" = "$first_app" ] || fail "flux-server isn't the app's"
 grep -q 'starting' "$log" || fail "flux-server logs nowhere near $log"
 echo "flux $version answers: the app is $first_app, flux-server $first_server"
@@ -179,15 +181,16 @@ for ((i = 0; i < 600; i++)); do
   if [ -n "$now" ] && [ "$now" != "$first_app" ] && [ "$(version_at)" = "$version" ]; then break; fi
   sleep 1
 done
-[ -n "$now" ] && [ "$now" != "$first_app" ] || fail "flux.app didn't start again as a new process within 10 minutes"
+if [ -z "$now" ] || [ "$now" = "$first_app" ]; then fail "flux.app didn't start again as a new process within 10 minutes"; fi
 [ "$(stat -f %i "$app")" != "$inode" ] || fail "$app is the same bundle: the update didn't replace it"
 if ls -d /Applications/.flux-* > /dev/null 2>&1; then fail "left beside flux.app: $(ls -d /Applications/.flux-*)"; fi
 wait_answers "after updating itself"
 u=$(curl -fsS -H 'X-Flux-Request: 1' "$base/api/v1/admin/update")
 echo "flux $(jq -r .current <<< "$u") answers, $(jq -r .phase <<< "$u")"
 # Started by `open`, without the stand-in or the pretence.
-[ "$(jq -r .current <<< "$u")" = "$version" ] && [ "$(jq -r .phase <<< "$u")" = idle ] && [ "$(jq -r '.error // ""' <<< "$u")" = "" ] ||
+if [ "$(jq -r .current <<< "$u")" != "$version" ] || [ "$(jq -r .phase <<< "$u")" != idle ] || [ -n "$(jq -r '.error // ""' <<< "$u")" ]; then
   fail "after the update: $u"
+fi
 codesign --verify --deep --strict "$app"
 grep -q 'name = "Smoke"' "$data/flux.toml" || fail "the update replaced $data/flux.toml"
 
