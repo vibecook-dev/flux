@@ -145,7 +145,9 @@ for script in "$jf"/builder/images/macos/*.sh; do
     git_tree "$clone" "$ref" "macos-$base" "$work/$name/libraries/$file"
     echo "$file  $clone  $ref" >> "$listed"
   fi
-  if [ -z "$urls$clone" ] && grep -qE 'wget|curl|git clone|svn' "$script"; then
+  # Lines that install build tools (Homebrew, the builder's own helpers)
+  # fetch no source.
+  if [ -z "$urls$clone" ] && grep -vE 'brew |/opt/ffbuild/bin|images/base/' "$script" | grep -qE '\b(wget|curl|git clone|svn)\b'; then
     die "$base fetches something this script doesn't follow: read builder/images/macos/$base.sh"
   fi
 done

@@ -8,7 +8,8 @@ app = defines["app"]  # noqa: F821 (dmgbuild defines it)
 
 files = [app]
 symlinks = {"Applications": "/Applications"}
-hide_extensions = [os.path.basename(app)]
+# No hide_extensions: it sets com.apple.FinderInfo on flux.app, which breaks
+# the bundle's signature (Finder hides an app's .app anyway).
 icon = defines["icon"]  # noqa: F821
 background = defines["background"]  # noqa: F821
 

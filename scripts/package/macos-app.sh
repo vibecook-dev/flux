@@ -240,6 +240,15 @@ dmg() {
     -D app="$app" -D icon="$here/macos/flux.icns" -D background="$here/macos/dmg-background.png" \
     "flux $version" "$dmg"
   hdiutil verify "$dmg"
+  # The flux.app in it is the one signed: nothing added on the way in.
+  local mnt
+  mnt=$(mktemp -d "${TMPDIR:-/tmp}/flux-dmg.XXXXXX")
+  hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$dmg" > /dev/null
+  if ! codesign --verify --deep --strict --verbose=2 "$mnt/flux.app"; then
+    hdiutil detach "$mnt" > /dev/null
+    die "the flux.app in the disk image doesn't check out"
+  fi
+  hdiutil detach "$mnt" > /dev/null
   ls -l "$dmg"
 }
 
