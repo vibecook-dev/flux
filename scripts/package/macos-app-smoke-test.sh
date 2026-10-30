@@ -17,7 +17,7 @@
 #   (with SHA256SUMS), downloads it, puts its flux.app in place of the
 #   running one (a new bundle in /Applications, nothing left beside it), and
 #   the app starts itself again, as a new process, with a new flux-server
-#   that answers with no update error.
+#   that answers as the version, with no update error.
 # - Quitting the app stops flux-server.
 #
 # Usage: scripts/package/macos-app-smoke-test.sh --dmg dist/flux-<version>-universal-apple-darwin.dmg --version <version>
@@ -186,9 +186,11 @@ if [ -z "$now" ] || [ "$now" = "$first_app" ]; then fail "flux.app didn't start 
 if ls -d /Applications/.flux-* > /dev/null 2>&1; then fail "left beside flux.app: $(ls -d /Applications/.flux-*)"; fi
 wait_answers "after updating itself"
 u=$(curl -fsS -H 'X-Flux-Request: 1' "$base/api/v1/admin/update")
-echo "flux $(jq -r .current <<< "$u") answers, $(jq -r .phase <<< "$u")"
-# Started by `open`, without the stand-in or the pretence.
-if [ "$(jq -r .current <<< "$u")" != "$version" ] || [ "$(jq -r .phase <<< "$u")" != idle ] || [ -n "$(jq -r '.error // ""' <<< "$u")" ]; then
+echo "flux $(version_at) answers; its update panel: $(jq -r .phase <<< "$u")"
+# `open` hands the new app the old one's environment, so the update panel
+# still takes itself for the stand-in's older version (FLUX_UPDATE_CURRENT);
+# the version that answers above is the real one.
+if [ "$(jq -r .phase <<< "$u")" != idle ] || [ -n "$(jq -r '.error // ""' <<< "$u")" ]; then
   fail "after the update: $u"
 fi
 codesign --verify --deep --strict "$app"
