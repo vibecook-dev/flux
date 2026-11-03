@@ -70,7 +70,7 @@ semver = "1.0"
 tar = { version = "0.4", default-features = false }
 crc32fast = "1.5"
 # Owner links, owner devices' keys and the data dir's owner key (src/devices.rs).
-getrandom = "0.3"
+getrandom = "0.4"
 # Only to point SQLite's allocator at jemalloc (same crate as flux-catalog's).
 rusqlite = { workspace = true, optional = true }
 
