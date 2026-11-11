@@ -89,7 +89,16 @@ async fn browse_routes_over_library_tiny() {
     .await;
     assert_eq!(recent.status, StatusCode::OK, "{}", recent.text());
     // Every sort pages through the library exactly once, in its order.
-    for sort in ["title", "-title", "year", "-year", "added", "-added"] {
+    for sort in [
+        "title",
+        "-title",
+        "year",
+        "-year",
+        "added",
+        "-added",
+        "duration",
+        "-duration",
+    ] {
         let mut seen: Vec<ItemSummary> = Vec::new();
         let mut next: Option<String> = None;
         loop {
@@ -128,6 +137,22 @@ async fn browse_routes_over_library_tiny() {
                 years[first_none..].iter().all(Option::is_none),
                 "{sort}: {years:?}"
             );
+        }
+        if sort.ends_with("duration") {
+            // Ordered by length, unknown lengths last.
+            let lengths: Vec<Option<u64>> = seen.iter().map(|i| i.duration_ms).collect();
+            let first_none = lengths.iter().position(Option::is_none).unwrap_or(lengths.len());
+            assert!(
+                lengths[first_none..].iter().all(Option::is_none),
+                "{sort}: {lengths:?}"
+            );
+            let known = &lengths[..first_none];
+            let ordered = if sort == "duration" {
+                known.windows(2).all(|w| w[0] <= w[1])
+            } else {
+                known.windows(2).all(|w| w[0] >= w[1])
+            };
+            assert!(ordered, "{sort}: {lengths:?}");
         }
     }
     // A cursor belongs to its sort.

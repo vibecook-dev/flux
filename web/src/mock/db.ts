@@ -432,6 +432,15 @@ export function createMockDb(fx: Fixtures, now = Date.now(), { demo = false }: M
   /** Leaves that carry files: the item itself, or a show's / season's episodes. */
   const leavesOf = (rec: ItemRec): ItemRec[] => (rec.kind === 'show' || rec.kind === 'season' ? episodesOf(rec) : [rec]);
 
+  /** `ItemSummary.duration_ms`: the runtime (every mock version runs `runtimeMs`), or the episodes added up. */
+  const durationOf = (rec: ItemRec): number | null => {
+    if (rec.kind === 'show' || rec.kind === 'season') {
+      const known = episodesOf(rec).flatMap((e) => durationOf(e) ?? []);
+      return known.length > 0 ? known.reduce((n, d) => n + d, 0) : null;
+    }
+    return rec.files.length > 0 && rec.runtimeMs > 0 ? rec.runtimeMs : null;
+  };
+
   const artRef = (rec: ItemRec, kind: 'poster' | 'backdrop' | 'still'): ArtRef | null => {
     const owner = rec.showId !== null && kind !== 'still' ? items.get(rec.showId) ?? rec : rec;
     const seedKey = `${owner.title}|${owner.year}`;
@@ -525,6 +534,7 @@ export function createMockDb(fx: Fixtures, now = Date.now(), { demo = false }: M
       unwatched_count: rec.kind === 'show' || rec.kind === 'season' ? episodesOf(rec).filter((e) => !e.progress?.watched).length : null,
       available: leavesOf(rec).some((l) => l.files.some(fileAvailable)),
       added_at: rec.addedAt,
+      duration_ms: durationOf(rec),
     };
     summaries.set(id, s);
     return s;
@@ -623,10 +633,23 @@ export function createMockDb(fx: Fixtures, now = Date.now(), { demo = false }: M
       if (field === 'added') return rec.addedAt;
       return titleSortKey(rec.title);
     };
-    const keyed = ids.map((id) => [keyOf(id), id] as const);
-    keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
-    if (desc) keyed.reverse();
-    const out = keyed.map(([, id]) => id);
+    let out: Id[];
+    if (field === 'duration') {
+      // As flux-catalog: unknown lengths last both ways, ties by title then id.
+      const lengthOf = (id: Id): number => {
+        const rec = items.get(id);
+        const d = rec ? durationOf(rec) : null;
+        return d === null ? Number.MAX_SAFE_INTEGER : desc ? -d : d;
+      };
+      const keyed = ids.map((id) => [lengthOf(id), keyOf(id), id] as const);
+      keyed.sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[2] - b[2]));
+      out = keyed.map(([, , id]) => id);
+    } else {
+      const keyed = ids.map((id) => [keyOf(id), id] as const);
+      keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
+      if (desc) keyed.reverse();
+      out = keyed.map(([, id]) => id);
+    }
     sortedCache.set(cacheKey, out);
     return out;
   };

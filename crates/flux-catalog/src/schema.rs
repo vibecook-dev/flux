@@ -34,7 +34,7 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Ordered migrations; index `i` upgrades `user_version` `i` → `i + 1`.
 /// Never edit a released migration: append a new one.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
 const V1: &str = r#"
 CREATE TABLE library(
@@ -663,6 +663,49 @@ DROP TABLE item_field;
 ALTER TABLE item_field_v9 RENAME TO item_field;
 "#;
 
+/// Running time of every item, so lists can sort by it.
+const V10: &str = r#"
+-- Maintained by the writer's recompute, like episode_count. A film, video,
+-- episode or extra runs as long as its detail page says
+-- (read::running_time): its first version on a file that isn't gone, in
+-- the order read::item_assets lists them, or, for a multi-part stack, the
+-- parts of that version's edition added up. A season or show runs as long
+-- as its visible episodes added up.
+ALTER TABLE item ADD COLUMN duration_ms INTEGER;
+CREATE TEMP TABLE v10_first AS
+SELECT i.item_id AS item_id,
+       (SELECT a.id FROM asset_item x JOIN asset a ON a.id = x.asset_id JOIN file f ON f.id = a.file_id
+         WHERE x.item_id = i.item_id AND f.state <> 'missing'
+         ORDER BY a.edition IS NOT NULL, a.edition, a.part, a.height DESC, a.id LIMIT 1) AS asset_id
+  FROM (SELECT DISTINCT item_id FROM asset_item) i;
+UPDATE item SET duration_ms = (
+    SELECT CASE
+        WHEN (SELECT count(*) FROM asset_item x JOIN asset a ON a.id = x.asset_id
+               WHERE x.item_id = item.id AND a.part IS NOT NULL) > 1
+         AND (SELECT count(*) FROM asset_item x JOIN asset a ON a.id = x.asset_id JOIN file f ON f.id = a.file_id
+               WHERE x.item_id = item.id AND f.state <> 'missing' AND a.edition IS fa.edition) > 1
+        THEN (SELECT sum(a.duration_ms) FROM asset_item x JOIN asset a ON a.id = x.asset_id JOIN file f ON f.id = a.file_id
+               WHERE x.item_id = item.id AND f.state <> 'missing' AND a.edition IS fa.edition)
+        ELSE fa.duration_ms END
+      FROM v10_first v JOIN asset fa ON fa.id = v.asset_id
+     WHERE v.item_id = item.id)
+ WHERE kind NOT IN ('show', 'season');
+DROP TABLE v10_first;
+UPDATE item SET duration_ms = (
+    SELECT sum(c.duration_ms) FROM item c
+     WHERE c.parent_id = item.id AND c.kind = 'episode' AND c.state <> 'missing')
+ WHERE kind = 'season';
+UPDATE item SET duration_ms = (
+    SELECT sum(c.duration_ms) FROM item c
+     WHERE c.parent_id = item.id AND c.kind IN ('season', 'episode') AND c.state <> 'missing')
+ WHERE kind = 'show';
+
+-- Keyset sorts by length (read::items_page): unknown lengths last in both
+-- directions, ties by title then id, as for years.
+CREATE INDEX item_top_duration ON item(library_id, COALESCE(duration_ms, 9223372036854775807), sort_title, id) WHERE parent_id IS NULL;
+CREATE INDEX item_top_duration_desc ON item(library_id, COALESCE(duration_ms, -1) DESC, sort_title, id) WHERE parent_id IS NULL;
+"#;
+
 /// Bring the database up to [`SCHEMA_VERSION`], one transaction per step.
 ///
 /// Foreign keys are off while migrations run (a migration may rebuild a
@@ -1176,6 +1219,79 @@ mod tests {
         c.execute("DELETE FROM item WHERE id = 1", []).unwrap();
         assert_eq!(count("SELECT count(*) FROM art"), 0);
         assert_eq!(count("SELECT count(*) FROM item_field"), 0);
+    }
+
+    /// v10 works out the running time of the items an older flux catalogued,
+    /// as their detail pages give it: a film's first version on a file that
+    /// is still there, a stack's parts added up, a season's and a show's
+    /// visible episodes added up.
+    #[test]
+    fn v10_fills_in_running_times() {
+        let (_d, mut c) = open_tmp();
+        for (i, sql) in MIGRATIONS.iter().take(9).enumerate() {
+            c.execute_batch(sql).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO library(id, name, kind, created_at) VALUES (1, 'M', 'movies', 0), (2, 'S', 'shows', 0);
+             INSERT INTO root(id, library_id, path, created_at) VALUES (1, 1, '/m', 0), (2, 2, '/s', 0);
+             INSERT INTO item(id, library_id, kind, parent_id, group_key, title, sort_title, state, added_at, content_added_at, updated_at) VALUES
+               (1, 1, 'movie',   NULL, 'heat', 'Heat', 'heat', 'available', 0, 0, 0),
+               (2, 1, 'movie',   NULL, 'odd',  'Odd',  'odd',  'available', 0, 0, 0),
+               (8, 1, 'movie',   NULL, 'trip', 'Trip', 'trip', 'available', 0, 0, 0),
+               (3, 2, 'show',    NULL, 'x',    'X',    'x',    'available', 0, 0, 0),
+               (4, 2, 'season',  3,    's1',   'S1',   's1',   'available', 0, 0, 0),
+               (5, 2, 'episode', 4,    'e1',   'E1',   'e1',   'available', 0, 0, 0),
+               (6, 2, 'episode', 4,    'e2',   'E2',   'e2',   'available', 0, 0, 0),
+               (7, 2, 'episode', 4,    'e3',   'E3',   'e3',   'missing',   0, 0, 0);
+             INSERT INTO file(id, root_id, rel_path, size, mtime_ns, state, first_seen_at, updated_at) VALUES
+               (1, 1, 'heat.mkv', 1, 0, 'present', 0, 0),
+               (2, 1, 'heat 4k.mkv', 1, 0, 'unavailable', 0, 0),
+               (3, 1, 'heat cut.mkv', 1, 0, 'missing', 0, 0),
+               (4, 1, 'odd.mkv', 1, 0, 'probe_failed', 0, 0),
+               (5, 2, 'e1.mkv', 1, 0, 'present', 0, 0),
+               (6, 2, 'e2.mkv', 1, 0, 'present', 0, 0),
+               (7, 2, 'e3.mkv', 1, 0, 'missing', 0, 0),
+               (8, 1, 'trip cd1.avi', 1, 0, 'present', 0, 0),
+               (9, 1, 'trip cd2.avi', 1, 0, 'present', 0, 0),
+               (10, 1, 'heat extended.mkv', 1, 0, 'present', 0, 0);
+             INSERT INTO asset(id, item_id, file_id, duration_ms, height, edition, part, created_at, updated_at) VALUES
+               (1, 1, 1, 6000000, 1080, NULL, NULL, 0, 0),
+               (2, 1, 2, 6100000, 2160, NULL, NULL, 0, 0),
+               (3, 1, 3, 5000000, 2160, NULL, NULL, 0, 0),
+               (10, 1, 10, 9000000, 1080, 'Extended', NULL, 0, 0),
+               (4, 2, 4, NULL, NULL, NULL, NULL, 0, 0),
+               (5, 5, 5, 1500000, NULL, NULL, NULL, 0, 0), (6, 6, 6, 1600000, NULL, NULL, NULL, 0, 0),
+               (7, 7, 7, 1700000, NULL, NULL, NULL, 0, 0),
+               (8, 8, 8, 1000000, 480, NULL, 1, 0, 0), (9, 8, 9, 1200000, 480, NULL, 2, 0, 0);
+             INSERT INTO asset_item(item_id, asset_id) VALUES
+               (1, 1), (1, 2), (1, 3), (1, 10), (2, 4), (5, 5), (6, 6), (7, 7), (8, 8), (8, 9);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let got: Vec<(i64, Option<i64>)> = c
+            .prepare("SELECT id, duration_ms FROM item ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            got,
+            [
+                // The first version: no edition, the highest one still there
+                // (offline counts, deleted doesn't).
+                (1, Some(6100000)),
+                (2, None),
+                (3, Some(3100000)),
+                (4, Some(3100000)),
+                (5, Some(1500000)),
+                (6, Some(1600000)),
+                (7, None),          // its only file is gone
+                (8, Some(2200000)), // a two-part stack
+            ]
+        );
     }
 
     #[test]

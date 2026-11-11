@@ -74,6 +74,7 @@ export const goldenPageItemSummary = {
         "HDR10"
       ],
       "child_count": null,
+      "duration_ms": 9960000,
       "id": 7,
       "kind": "movie",
       "parent_title": null,
@@ -103,6 +104,7 @@ export const goldenPageItemSummary = {
       "backdrop": null,
       "badges": [],
       "child_count": 5,
+      "duration_ms": 223200000,
       "id": 10,
       "kind": "show",
       "parent_title": null,
@@ -129,6 +131,7 @@ export const goldenPageItemSummary = {
         "1080p"
       ],
       "child_count": null,
+      "duration_ms": null,
       "id": 12,
       "kind": "episode",
       "parent_title": "Breaking Bad",
@@ -326,6 +329,7 @@ export const goldenItemDetail = {
     "HDR10"
   ],
   "child_count": null,
+  "duration_ms": 9960000,
   "episode_numbers": [],
   "external_ids": [
     [
@@ -379,6 +383,7 @@ export const goldenHome = {
         "HDR10"
       ],
       "child_count": null,
+      "duration_ms": 9960000,
       "id": 7,
       "kind": "movie",
       "parent_title": null,
@@ -410,6 +415,7 @@ export const goldenHome = {
         "1080p"
       ],
       "child_count": null,
+      "duration_ms": null,
       "id": 12,
       "kind": "episode",
       "parent_title": "Breaking Bad",
@@ -442,6 +448,7 @@ export const goldenHome = {
             "HDR10"
           ],
           "child_count": null,
+          "duration_ms": 9960000,
           "id": 7,
           "kind": "movie",
           "parent_title": null,
@@ -848,6 +855,7 @@ export const goldenFolderPage = {
       "backdrop": null,
       "badges": [],
       "child_count": null,
+      "duration_ms": 9960000,
       "id": 7,
       "kind": "movie",
       "parent_title": null,

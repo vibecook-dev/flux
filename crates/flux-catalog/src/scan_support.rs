@@ -1830,33 +1830,44 @@ pub(crate) fn recompute(
         let Some((kind, parent)) = head else { continue };
         let mut rank = 2u8;
         let mut lists: Vec<Vec<String>> = Vec::new();
+        // Its running time as its detail page gives it (read::running_time):
+        // versions in read::item_assets order.
+        let mut versions: Vec<(Option<String>, Option<i64>)> = Vec::new();
+        let mut parts = 0;
         {
             let mut stmt = conn.prepare_cached(
-                "SELECT f.state, a.badges FROM asset_item ai JOIN asset a ON a.id = ai.asset_id
-                   JOIN file f ON f.id = a.file_id WHERE ai.item_id = ?1",
+                "SELECT f.state, a.badges, a.edition, a.duration_ms, a.part IS NOT NULL
+                   FROM asset_item ai JOIN asset a ON a.id = ai.asset_id
+                   JOIN file f ON f.id = a.file_id WHERE ai.item_id = ?1
+                  ORDER BY a.edition IS NOT NULL, a.edition, a.part, a.height DESC, a.id",
             )?;
             let mut rows = stmt.query([id])?;
             while let Some(r) = rows.next()? {
                 let st: String = r.get(0)?;
                 let rk = state_rank(&st);
                 rank = rank.min(rk);
+                if r.get::<_, bool>(4)? {
+                    parts += 1;
+                }
                 if rk < 2 {
                     if let Some(b) = r.get::<_, Option<String>>(1)? {
                         if let Ok(v) = serde_json::from_str::<Vec<String>>(&b) {
                             lists.push(v);
                         }
                     }
+                    versions.push((r.get(2)?, r.get(3)?));
                 }
             }
         }
+        let duration = crate::read::running_time(&versions, parts > 1);
         let state = RANK_STATE[rank as usize];
         let badges = badges_json(&merge_badges(lists.iter().map(Vec::as_slice)))?;
         let n = conn
             .prepare_cached(
-                "UPDATE item SET state = ?2, badges = ?3, updated_at = ?4
-                 WHERE id = ?1 AND (state IS NOT ?2 OR badges IS NOT ?3)",
+                "UPDATE item SET state = ?2, badges = ?3, updated_at = ?4, duration_ms = ?5
+                 WHERE id = ?1 AND (state IS NOT ?2 OR badges IS NOT ?3 OR duration_ms IS NOT ?5)",
             )?
-            .execute(params![id, state, badges, now])?;
+            .execute(params![id, state, badges, now, duration])?;
         if !created.contains_key(&id) {
             if n > 0 && state == "missing" {
                 removed.push(id);
@@ -1884,12 +1895,15 @@ pub(crate) fn recompute(
             // children that aren't hidden (a show is "4K" if an episode is).
             // `episode_count`: visible episodes below (directly, or the
             // seasons' counts), so lists never count episodes per row.
+            // `duration_ms`: the visible episodes' running times added up.
             let mut rank = 2u8;
             let mut lists: Vec<Vec<String>> = Vec::new();
             let mut episodes: i64 = 0;
+            let mut duration: Option<i64> = None;
             {
                 let mut stmt = conn.prepare_cached(
-                    "SELECT state, badges, kind, episode_count FROM item WHERE parent_id = ?1 AND kind <> 'extra'",
+                    "SELECT state, badges, kind, episode_count, duration_ms FROM item
+                      WHERE parent_id = ?1 AND kind <> 'extra'",
                 )?;
                 let mut rows = stmt.query([id])?;
                 while let Some(r) = rows.next()? {
@@ -1906,6 +1920,9 @@ pub(crate) fn recompute(
                                 lists.push(v);
                             }
                         }
+                        if let Some(ms) = r.get::<_, Option<i64>>(4)? {
+                            duration = Some(duration.unwrap_or(0) + ms);
+                        }
                     }
                 }
             }
@@ -1914,10 +1931,11 @@ pub(crate) fn recompute(
             let n = conn
                 .prepare_cached(
                     "UPDATE item SET state = ?2, badges = ?3, updated_at = ?4,
-                                     episode_count = ?5
-                     WHERE id = ?1 AND (state IS NOT ?2 OR badges IS NOT ?3 OR episode_count IS NOT ?5)",
+                                     episode_count = ?5, duration_ms = ?6
+                     WHERE id = ?1 AND (state IS NOT ?2 OR badges IS NOT ?3 OR episode_count IS NOT ?5
+                                        OR duration_ms IS NOT ?6)",
                 )?
-                .execute(params![id, state, badges, now, episodes])?;
+                .execute(params![id, state, badges, now, episodes, duration])?;
             if n > 0 && !created.contains_key(&id) {
                 if state == "missing" {
                     removed.push(id);

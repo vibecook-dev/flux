@@ -20,6 +20,7 @@ const item = (o: Partial<ItemSummary> = {}): ItemSummary => ({
   unwatched_count: null,
   available: true,
   added_at: 0,
+  duration_ms: null,
   ...o,
 });
 

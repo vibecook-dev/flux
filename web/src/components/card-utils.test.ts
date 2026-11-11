@@ -17,6 +17,7 @@ const base: ItemSummary = {
   unwatched_count: null,
   available: true,
   added_at: 0,
+  duration_ms: null,
 };
 const progress = (position_ms: number, watched: boolean) => ({ position_ms, duration_ms: 7_200_000, watched, updated_at: 0 });
 

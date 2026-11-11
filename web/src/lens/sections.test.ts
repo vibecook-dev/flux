@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemSummary } from '../api/types';
-import { colourKey, foldWords, isNew, matchesShow, matchesText, parseShow, parseSort, progressFraction, sectionOf, serverSort, visibleItems } from './sections';
+import { colourKey, foldWords, isNew, matchesShow, matchesText, parseShow, parseSort, progressFraction, sectionOf, serverSort, SORT_LABELS, SORTS, visibleItems } from './sections';
 
 const NOW = Date.UTC(2026, 9, 25);
 const DAY = 24 * 3600 * 1000;
+const MIN = 60 * 1000;
 
 function item(over: Partial<ItemSummary> = {}): ItemSummary {
   return {
@@ -21,6 +22,7 @@ function item(over: Partial<ItemSummary> = {}): ItemSummary {
     unwatched_count: null,
     available: true,
     added_at: NOW - 100 * DAY,
+    duration_ms: null,
     ...over,
   };
 }
@@ -76,6 +78,17 @@ describe('sections', () => {
     expect(sectionOf(item({ added_at: NOW - 400 * DAY }), '-added', NOW)).toBe('Earlier');
     expect(sectionOf(item(), 'colour', NOW)).toBe('');
   });
+
+  it('groups by running time, unknown lengths apart', () => {
+    expect(sectionOf(item({ duration_ms: 22 * MIN }), 'duration', NOW)).toBe('Under 30 min');
+    expect(sectionOf(item({ duration_ms: 30 * MIN }), 'duration', NOW)).toBe('30–60 min');
+    expect(sectionOf(item({ duration_ms: 59 * MIN }), '-duration', NOW)).toBe('30–60 min');
+    expect(sectionOf(item({ duration_ms: 116 * MIN }), '-duration', NOW)).toBe('1–2 hours');
+    expect(sectionOf(item({ duration_ms: 120 * MIN }), '-duration', NOW)).toBe('2–3 hours');
+    expect(sectionOf(item({ duration_ms: 180 * MIN }), '-duration', NOW)).toBe('3 hours or more');
+    expect(sectionOf(item({ duration_ms: null }), 'duration', NOW)).toBe('Unknown length');
+    expect(sectionOf(item({ duration_ms: 0 }), '-duration', NOW)).toBe('Unknown length');
+  });
 });
 
 describe('sorts and parsing', () => {
@@ -84,8 +97,16 @@ describe('sorts and parsing', () => {
     expect(serverSort('-year')).toBe('-year');
     expect(parseSort('nope')).toBe('title');
     expect(parseSort('-added')).toBe('-added');
+    expect(serverSort('-duration')).toBe('-duration');
+    expect(serverSort('duration')).toBe('duration');
+    expect(parseSort('-duration')).toBe('-duration');
+    expect(parseSort('duration')).toBe('duration');
     expect(parseShow('hdr')).toBe('hdr');
     expect(parseShow(null)).toBe('all');
+  });
+
+  it('offers Longest and Shortest after Added', () => {
+    expect(SORTS.map((s) => SORT_LABELS[s])).toEqual(['Title', 'Newest', 'Oldest', 'Added', 'Longest', 'Shortest', 'Colour']);
   });
 
   it('orders by colour round the hue circle, greys last', () => {

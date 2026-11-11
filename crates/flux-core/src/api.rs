@@ -262,12 +262,13 @@ pub enum ItemFilter {
 }
 
 /// Sort orders for library item lists. On the wire a leading `-` reverses the
-/// order: `title`, `-title`, `year`, `-year`, `added`, `-added` (the values
-/// the web client sends).
+/// order: `title`, `-title`, `year`, `-year`, `added`, `-added`, `duration`,
+/// `-duration` (the values the web client sends).
 ///
-/// flux-catalog implements all six with keyset cursors (ties break on sort
-/// title, then id; unknown years sort last), and `flux_catalog::ItemSort` is
-/// this type, so the server passes it straight through.
+/// flux-catalog implements all of them with keyset cursors (ties break on
+/// sort title, then id; unknown years and durations sort last), and
+/// `flux_catalog::ItemSort` is this type, so the server passes it straight
+/// through.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ItemSort {
     /// By sort title (articles ignored, numbers in natural order), A→Z.
@@ -287,6 +288,12 @@ pub enum ItemSort {
     /// Newest addition first ("recently added").
     #[serde(rename = "-added")]
     AddedDesc,
+    /// Shortest first, by [`ItemSummary::duration_ms`].
+    #[serde(rename = "duration")]
+    Duration,
+    /// Longest first.
+    #[serde(rename = "-duration")]
+    DurationDesc,
 }
 
 /// Query parameters of `GET /api/v1/libraries/{id}/folders`, the folder
@@ -311,7 +318,8 @@ pub struct FolderParams {
 }
 
 /// Orders of a folder's videos. On the wire a leading `-` reverses:
-/// `title`, `-title`, `date`, `-date`. Subfolders are always by name.
+/// `title`, `-title`, `date`, `-date`, `duration`, `-duration`. Subfolders
+/// are always by name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FolderSort {
     /// By name, numbers in natural order (`clip 2` before `clip 10`).
@@ -327,6 +335,12 @@ pub enum FolderSort {
     /// Newest first.
     #[serde(rename = "-date")]
     DateDesc,
+    /// Shortest first (videos of unknown length last).
+    #[serde(rename = "duration")]
+    Duration,
+    /// Longest first (videos of unknown length last).
+    #[serde(rename = "-duration")]
+    DurationDesc,
 }
 
 /// A folder of a library: what to call it and how to open it.
@@ -452,6 +466,11 @@ pub struct ItemSummary {
     /// episode) is on a reachable root. The item stays listed; Play answers 409.
     pub available: bool,
     pub added_at: i64,
+    /// Running time, as [`ItemDetail::runtime_ms`] gives it for a film,
+    /// video or episode (its first version; a multi-part stack's parts
+    /// added up); a show's or season's episodes added up. `None` when no
+    /// length is known.
+    pub duration_ms: Option<u64>,
 }
 
 /// One playable file of an item (an item can have several: 4K and 1080p, editions).

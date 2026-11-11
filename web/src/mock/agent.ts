@@ -597,6 +597,8 @@ export function agentHandlers(ctx: Ctx) {
         '-year': (a, b) => (b.year ?? -1) - (a.year ?? -1),
         added: (a, b) => a.added_at - b.added_at,
         '-added': (a, b) => b.added_at - a.added_at,
+        duration: (a, b) => (a.duration_ms ?? Number.MAX_SAFE_INTEGER) - (b.duration_ms ?? Number.MAX_SAFE_INTEGER),
+        '-duration': (a, b) => (b.duration_ms ?? -1) - (a.duration_ms ?? -1),
       };
       items.sort(by[sort] ?? by.title);
       const page: Page<ItemSummary> = { items, next: null, total: items.length };

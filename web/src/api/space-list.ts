@@ -48,6 +48,10 @@ function compare(sort: LibrarySort): (a: ItemSummary, b: ItemSummary) => number 
       return (a, b) => a.added_at - b.added_at || byTitle(a, b);
     case '-added':
       return (a, b) => b.added_at - a.added_at || byTitle(a, b);
+    case 'duration':
+      return (a, b) => (a.duration_ms ?? Number.MAX_SAFE_INTEGER) - (b.duration_ms ?? Number.MAX_SAFE_INTEGER) || byTitle(a, b);
+    case '-duration':
+      return (a, b) => (b.duration_ms ?? -1) - (a.duration_ms ?? -1) || byTitle(a, b);
   }
 }
 

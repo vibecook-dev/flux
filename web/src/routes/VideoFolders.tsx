@@ -1,7 +1,7 @@
 /**
  * A videos library by folder (Plex's "Other Videos" browsing): breadcrumbs,
  * the folder's subfolders as tiles, then its videos in the virtualised grid,
- * by name or by date. Folders are links (Back goes up again); sort and filter
+ * by name, date or length. Folders are links (Back goes up again); sort and filter
  * live in the query string like the library grid's.
  */
 import { useDeferredValue, useEffect, useRef } from 'react';

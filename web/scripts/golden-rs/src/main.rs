@@ -188,6 +188,7 @@ fn summary() -> ItemSummary {
         unwatched_count: None,
         available: true,
         added_at: 1_760_000_000_000,
+        duration_ms: Some(9_960_000),
     }
 }
 
@@ -207,6 +208,7 @@ fn episode_summary() -> ItemSummary {
         unwatched_count: None,
         available: false,
         added_at: 1_760_000_000_000,
+        duration_ms: None,
     }
 }
 
@@ -221,6 +223,7 @@ fn show_summary() -> ItemSummary {
         unwatched_count: Some(61),
         badges: vec![],
         progress: None,
+        duration_ms: Some(223_200_000),
         ..summary()
     }
 }
@@ -621,8 +624,8 @@ fn main() {
         "ScanState": variants!(ScanState: Idle, Scanning, Watching, Unavailable, Error),
         "ItemKind": variants!(ItemKind: Movie, Show, Season, Episode, Extra),
         "ArtSource": variants!(ArtSource: Provider, Local, Frame, Generated, Custom),
-        "ItemSort": variants!(ItemSort: Title, TitleDesc, Year, YearDesc, Added, AddedDesc),
-        "FolderSort": variants!(FolderSort: Title, TitleDesc, Date, DateDesc),
+        "ItemSort": variants!(ItemSort: Title, TitleDesc, Year, YearDesc, Added, AddedDesc, Duration, DurationDesc),
+        "FolderSort": variants!(FolderSort: Title, TitleDesc, Date, DateDesc, Duration, DurationDesc),
         "ItemFilter": variants!(ItemFilter: Unwatched, InProgress, Uhd, Hdr),
         "TailnetMode": variants!(TailnetMode: Off, Embedded, System),
         "TailnetState": variants!(TailnetState: Off, Starting, NeedsLogin, NeedsApproval, Running, Unavailable, Error),
