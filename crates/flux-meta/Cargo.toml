@@ -37,7 +37,7 @@ jpeg-encoder = "0.7.1"
 blurhash = "0.2.3"
 ab_glyph = "0.2.32"
 rustybuzz = "0.20.1"
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 # Corpus (FLUX_TEST_MEDIA), bench output (FLUX_BENCH_RESULTS) and clips
