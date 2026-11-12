@@ -123,6 +123,11 @@ pub fn seed(name: &str) -> ProbeResult {
     flux_catalog::synth::seed_probes().remove(name).unwrap()
 }
 
+pub fn with_duration(mut p: ProbeResult, ms: Option<u64>) -> ProbeResult {
+    p.duration_ms = ms;
+    p
+}
+
 pub fn with_size(mut p: ProbeResult, w: u32, h: u32) -> ProbeResult {
     for t in p
         .tracks

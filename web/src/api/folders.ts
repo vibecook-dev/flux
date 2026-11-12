@@ -9,6 +9,8 @@ export const FOLDER_SORT_LABELS: Record<FolderSort, string> = {
   '-title': 'Name Z–A',
   '-date': 'Newest first',
   date: 'Oldest first',
+  '-duration': 'Longest first',
+  duration: 'Shortest first',
 };
 
 /** The `fsort` query value as a sort (name order when missing or unknown). */

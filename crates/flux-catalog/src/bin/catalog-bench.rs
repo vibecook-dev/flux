@@ -773,13 +773,15 @@ mod phase_c {
     use flux_catalog::{ClaimJobs, ItemSort, ItemsQuery, JobResult, JobSpec, WriterConfig};
     use flux_core::api::ItemFilter;
 
-    const SORTS: [ItemSort; 6] = [
+    const SORTS: [ItemSort; 8] = [
         ItemSort::Title,
         ItemSort::TitleDesc,
         ItemSort::Year,
         ItemSort::YearDesc,
         ItemSort::Added,
         ItemSort::AddedDesc,
+        ItemSort::Duration,
+        ItemSort::DurationDesc,
     ];
     const FILTERS: [Option<ItemFilter>; 5] = [
         None,

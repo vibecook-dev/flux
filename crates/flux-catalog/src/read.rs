@@ -382,9 +382,9 @@ const SUMMARY_COLS: &str = "i.id, i.kind, i.title, i.year, i.season_number, i.ep
     i.parent_id, i.badges, i.added_at,
     CASE WHEN i.kind IN ('show','season') THEN
         (SELECT count(*) FROM item c WHERE c.parent_id = i.id AND c.kind <> 'extra' AND c.state <> 'missing')
-    END, i.state, i.episode_count";
+    END, i.state, i.episode_count, i.duration_ms";
 /// Number of columns in [`SUMMARY_COLS`]; extra columns of a query start here.
-const SUMMARY_N: usize = 13;
+const SUMMARY_N: usize = 14;
 
 struct SummaryRow {
     id: Id,
@@ -402,6 +402,8 @@ struct SummaryRow {
     state: String,
     /// Seasons and shows: visible episodes below (writer-maintained).
     episode_count: Option<i64>,
+    /// Running time (writer-maintained).
+    duration_ms: Option<i64>,
 }
 
 fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryRow> {
@@ -419,6 +421,7 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryRow> {
         child_count: r.get(10)?,
         state: r.get(11)?,
         episode_count: r.get(12)?,
+        duration_ms: r.get(13)?,
     })
 }
 
@@ -771,6 +774,7 @@ fn summaries_with(
             unwatched_count,
             available: row.state == "available",
             added_at: row.added_at,
+            duration_ms: row.duration_ms.and_then(|ms| u64::try_from(ms).ok()),
         });
     }
     Ok(out)
@@ -912,9 +916,8 @@ fn unhex(s: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Cursor {
     Title(String, Id),
-    /// `COALESCE(year, 99999)` (ascending) or `COALESCE(year, -1)`
-    /// (descending): unknown years sort last either way.
-    Year(i64, String, Id),
+    /// The year or duration sorts' [`num_key`], then title and id.
+    Num(i64, String, Id),
     Added(i64, Id),
 }
 
@@ -927,12 +930,19 @@ fn cursor_tag(sort: ItemSort) -> char {
         ItemSort::YearDesc => 'z',
         ItemSort::Added => 'b',
         ItemSort::AddedDesc => 'a',
+        ItemSort::Duration => 'r',
+        ItemSort::DurationDesc => 's',
     }
 }
 
-fn year_key(sort: ItemSort) -> &'static str {
+/// The number the year and duration sorts order by, with unknown values
+/// last in both directions (as the `item_top_year*` and
+/// `item_top_duration*` indexes have it).
+fn num_key(sort: ItemSort) -> &'static str {
     match sort {
         ItemSort::YearDesc => "COALESCE(i.year, -1)",
+        ItemSort::Duration => "COALESCE(i.duration_ms, 9223372036854775807)",
+        ItemSort::DurationDesc => "COALESCE(i.duration_ms, -1)",
         _ => "COALESCE(i.year, 99999)",
     }
 }
@@ -941,7 +951,7 @@ fn encode_cursor(sort: ItemSort, c: &Cursor) -> String {
     let tag = cursor_tag(sort);
     match c {
         Cursor::Title(t, id) => format!("{tag}{}.{id}", hex(t)),
-        Cursor::Year(y, t, id) => format!("{tag}{y}~{}.{id}", hex(t)),
+        Cursor::Num(n, t, id) => format!("{tag}{n}~{}.{id}", hex(t)),
         Cursor::Added(at, id) => format!("{tag}{at}.{id}"),
     }
 }
@@ -957,10 +967,10 @@ fn decode_cursor(s: &str, sort: ItemSort) -> Result<Cursor> {
     let body = chars.as_str();
     match sort {
         ItemSort::Title | ItemSort::TitleDesc => Ok(Cursor::Title(unhex(body).ok_or_else(bad)?, id)),
-        ItemSort::Year | ItemSort::YearDesc => {
-            let (y, t) = body.split_once('~').ok_or_else(bad)?;
-            Ok(Cursor::Year(
-                y.parse().map_err(|_| bad())?,
+        ItemSort::Year | ItemSort::YearDesc | ItemSort::Duration | ItemSort::DurationDesc => {
+            let (n, t) = body.split_once('~').ok_or_else(bad)?;
+            Ok(Cursor::Num(
+                n.parse().map_err(|_| bad())?,
                 unhex(t).ok_or_else(bad)?,
                 id,
             ))
@@ -970,13 +980,14 @@ fn decode_cursor(s: &str, sort: ItemSort) -> Result<Cursor> {
 }
 
 /// `ORDER BY` of a sort. The top-level indexes (`item_top_title`,
-/// `item_top_year[_desc]`, `item_top_lib_added`) deliver exactly these.
+/// `item_top_year[_desc]`, `item_top_lib_added`, `item_top_duration[_desc]`)
+/// deliver exactly these.
 fn order_sql(sort: ItemSort) -> String {
     match sort {
         ItemSort::Title => "i.sort_title, i.id".into(),
         ItemSort::TitleDesc => "i.sort_title DESC, i.id DESC".into(),
-        ItemSort::Year => format!("{}, i.sort_title, i.id", year_key(sort)),
-        ItemSort::YearDesc => format!("{} DESC, i.sort_title, i.id", year_key(sort)),
+        ItemSort::Year | ItemSort::Duration => format!("{}, i.sort_title, i.id", num_key(sort)),
+        ItemSort::YearDesc | ItemSort::DurationDesc => format!("{} DESC, i.sort_title, i.id", num_key(sort)),
         ItemSort::Added => "i.content_added_at, i.id".into(),
         ItemSort::AddedDesc => "i.content_added_at DESC, i.id DESC".into(),
     }
@@ -991,15 +1002,15 @@ fn after_sql(sort: ItemSort, cur: Cursor) -> Result<(String, Vec<Value>)> {
         (ItemSort::TitleDesc, Cursor::Title(t, id)) => {
             ("(i.sort_title, i.id) < (?, ?)".into(), vec![t.into(), id.into()])
         }
-        (ItemSort::Year, Cursor::Year(y, t, id)) => (
-            format!("({}, i.sort_title, i.id) > (?, ?, ?)", year_key(sort)),
-            vec![y.into(), t.into(), id.into()],
+        (ItemSort::Year | ItemSort::Duration, Cursor::Num(n, t, id)) => (
+            format!("({}, i.sort_title, i.id) > (?, ?, ?)", num_key(sort)),
+            vec![n.into(), t.into(), id.into()],
         ),
-        (ItemSort::YearDesc, Cursor::Year(y, t, id)) => {
-            let k = year_key(sort);
+        (ItemSort::YearDesc | ItemSort::DurationDesc, Cursor::Num(n, t, id)) => {
+            let k = num_key(sort);
             (
                 format!("({k} < ? OR ({k} = ? AND (i.sort_title, i.id) > (?, ?)))"),
-                vec![y.into(), y.into(), t.into(), id.into()],
+                vec![n.into(), n.into(), t.into(), id.into()],
             )
         }
         (ItemSort::Added, Cursor::Added(at, id)) => (
@@ -1087,8 +1098,10 @@ pub fn items_page(c: &Connection, q: &ItemsQuery) -> Result<Page<ItemSummary>> {
         rows.last().map(|(r, sort, added)| {
             let cur = match q.sort {
                 ItemSort::Title | ItemSort::TitleDesc => Cursor::Title(sort.clone(), r.id),
-                ItemSort::Year => Cursor::Year(r.year.map_or(99999, i64::from), sort.clone(), r.id),
-                ItemSort::YearDesc => Cursor::Year(r.year.map_or(-1, i64::from), sort.clone(), r.id),
+                ItemSort::Year => Cursor::Num(r.year.map_or(99999, i64::from), sort.clone(), r.id),
+                ItemSort::YearDesc => Cursor::Num(r.year.map_or(-1, i64::from), sort.clone(), r.id),
+                ItemSort::Duration => Cursor::Num(r.duration_ms.unwrap_or(i64::MAX), sort.clone(), r.id),
+                ItemSort::DurationDesc => Cursor::Num(r.duration_ms.unwrap_or(-1), sort.clone(), r.id),
                 ItemSort::Added | ItemSort::AddedDesc => Cursor::Added(*added, r.id),
             };
             encode_cursor(q.sort, &cur)
@@ -1167,11 +1180,14 @@ fn root_name(path: &str) -> String {
     }
 }
 
-/// Visible top-level items with a file in `(root, dir)`, each with its sort
-/// title and the earliest modification time of its files there.
+/// A video of a folder: id, sort title, the earliest modification time of
+/// its files there, and its running time.
+type FolderRow = (Id, String, i64, Option<i64>);
+
+/// Visible top-level items with a file in `(root, dir)`.
 /// `dir = ""` is the root itself.
-fn folder_items(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<(Id, String, i64)>> {
-    const SELECT: &str = "SELECT i.id, i.sort_title, MIN(f.mtime_ns) FROM file f
+fn folder_items(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<FolderRow>> {
+    const SELECT: &str = "SELECT i.id, i.sort_title, MIN(f.mtime_ns), i.duration_ms FROM file f
           JOIN asset a ON a.file_id = f.id JOIN item i ON i.id = a.item_id";
     const VISIBLE: &str =
         "f.state <> 'missing' AND i.state <> 'missing' AND i.parent_id IS NULL AND i.library_id = ?2";
@@ -1180,7 +1196,9 @@ fn folder_items(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<
         let mut stmt = c.prepare_cached(&format!(
             "{SELECT} WHERE f.root_id = ?1 AND instr(f.rel_path, '/') = 0 AND {VISIBLE} GROUP BY i.id"
         ))?;
-        let rows = stmt.query_map(params![root, library], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows = stmt.query_map(params![root, library], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
         for r in rows {
             out.push(r?);
         }
@@ -1194,7 +1212,7 @@ fn folder_items(c: &Connection, library: Id, root: Id, dir: &str) -> Result<Vec<
         ))?;
         let rows = stmt.query_map(
             params![root, library, lo, hi, lo.chars().count() as i64 + 1],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         for r in rows {
             out.push(r?);
@@ -1253,6 +1271,8 @@ fn folder_cursor_tag(sort: FolderSort) -> char {
         FolderSort::TitleDesc => 'u',
         FolderSort::Date => 'd',
         FolderSort::DateDesc => 'e',
+        FolderSort::Duration => 'r',
+        FolderSort::DurationDesc => 's',
     }
 }
 
@@ -1396,22 +1416,23 @@ pub fn folder_page(c: &Connection, q: &FolderQuery) -> Result<Option<FolderPage>
         at = chain.pop().unwrap_or(at);
         parents.extend(chain);
     }
-    // Order, then the page after the cursor.
-    let desc = matches!(q.sort, FolderSort::TitleDesc | FolderSort::DateDesc);
-    match q.sort {
-        FolderSort::Title | FolderSort::TitleDesc => rows.sort_by(|a, b| (&a.1, a.0).cmp(&(&b.1, b.0))),
-        FolderSort::Date | FolderSort::DateDesc => {
-            rows.sort_by(|a, b| (a.2, &a.1, a.0).cmp(&(b.2, &b.1, b.0)))
-        }
-    }
+    // Order, then the page after the cursor. A row's position in the
+    // order: (mtime or running time, 0 for the name orders; sort title; id).
+    // A video of unknown length sorts last both ways.
+    let desc = matches!(
+        q.sort,
+        FolderSort::TitleDesc | FolderSort::DateDesc | FolderSort::DurationDesc
+    );
+    let key_of = |r: &FolderRow| match q.sort {
+        FolderSort::Title | FolderSort::TitleDesc => (0, r.1.clone(), r.0),
+        FolderSort::Date | FolderSort::DateDesc => (r.2, r.1.clone(), r.0),
+        FolderSort::Duration => (r.3.unwrap_or(i64::MAX), r.1.clone(), r.0),
+        FolderSort::DurationDesc => (r.3.unwrap_or(-1), r.1.clone(), r.0),
+    };
+    rows.sort_by_cached_key(key_of);
     if desc {
         rows.reverse();
     }
-    // A row's position in the order: (mtime or 0, sort title, id).
-    let key_of = |r: &(Id, String, i64)| match q.sort {
-        FolderSort::Title | FolderSort::TitleDesc => (0, r.1.clone(), r.0),
-        FolderSort::Date | FolderSort::DateDesc => (r.2, r.1.clone(), r.0),
-    };
     // The page starts after the cursor's row (or where it was: a cursor
     // stays valid when its row goes away).
     let start = match &q.cursor {
@@ -1432,14 +1453,16 @@ pub fn folder_page(c: &Connection, q: &FolderQuery) -> Result<Option<FolderPage>
     };
     let limit = q.limit.clamp(1, 500) as usize;
     let total = rows.len() as u64;
-    let page: Vec<&(Id, String, i64)> = rows.iter().skip(start).take(limit).collect();
+    let page: Vec<&FolderRow> = rows.iter().skip(start).take(limit).collect();
     let next = match page.last() {
         Some(last) if start + page.len() < rows.len() => {
             let (t, title, id) = key_of(last);
             let tag = folder_cursor_tag(q.sort);
             Some(match q.sort {
                 FolderSort::Title | FolderSort::TitleDesc => format!("{tag}{}.{id}", hex(&title)),
-                FolderSort::Date | FolderSort::DateDesc => format!("{tag}{t}~{}.{id}", hex(&title)),
+                FolderSort::Date | FolderSort::DateDesc | FolderSort::Duration | FolderSort::DurationDesc => {
+                    format!("{tag}{t}~{}.{id}", hex(&title))
+                }
             })
         }
         _ => None,
@@ -1467,14 +1490,15 @@ pub fn folder_page(c: &Connection, q: &FolderQuery) -> Result<Option<FolderPage>
     }))
 }
 
-/// `(mtime or 0, sort title, id)` of a folder cursor.
+/// `(mtime or running time, 0 for the name orders; sort title; id)` of a
+/// folder cursor.
 fn parse_folder_cursor(s: &str, sort: FolderSort) -> Option<(i64, String, Id)> {
     let (head, id) = s.rsplit_once('.')?;
     let id: Id = id.parse().ok()?;
     let body = head.strip_prefix(folder_cursor_tag(sort))?;
     match sort {
         FolderSort::Title | FolderSort::TitleDesc => Some((0, unhex(body)?, id)),
-        FolderSort::Date | FolderSort::DateDesc => {
+        FolderSort::Date | FolderSort::DateDesc | FolderSort::Duration | FolderSort::DurationDesc => {
             let (t, title) = body.split_once('~')?;
             Some((t.parse().ok()?, unhex(title)?, id))
         }
@@ -1618,17 +1642,17 @@ pub fn item_detail(c: &Connection, id: Id, user: Option<Id>) -> Result<Option<It
     if episode_numbers.is_empty() {
         episode_numbers.extend(episode);
     }
-    // Runtime: the parts of the first version add up; otherwise its duration.
-    let runtime_ms = assets.first().and_then(|first| {
-        let parts: Vec<&AssetInfo> = assets.iter().filter(|a| a.edition == first.edition).collect();
-        let summed: u64 = parts.iter().filter_map(|a| a.duration_ms).sum();
-        let multipart = parts.len() > 1 && is_multipart(c, id).unwrap_or(false);
-        if multipart {
-            Some(summed)
-        } else {
-            first.duration_ms
-        }
-    });
+    let versions: Vec<(Option<String>, Option<i64>)> = assets
+        .iter()
+        .map(|a| {
+            (
+                a.edition.clone(),
+                a.duration_ms.and_then(|d| i64::try_from(d).ok()),
+            )
+        })
+        .collect();
+    let stacked = assets.len() > 1 && is_multipart(c, id).unwrap_or(false);
+    let runtime_ms = running_time(&versions, stacked).and_then(|d| u64::try_from(d).ok());
     let mut external_ids = Vec::new();
     if let Some(v) = tmdb {
         external_ids.push(("tmdb".to_string(), v.to_string()));
@@ -1656,6 +1680,22 @@ pub fn item_detail(c: &Connection, id: Id, user: Option<Id>) -> Result<Option<It
         match_confidence: confidence.map(|c| c as f32),
         match_evidence: lenient(evidence),
     }))
+}
+
+/// How long an item runs: what its detail page says, and what lists sort
+/// by (`item.duration_ms`, kept by the writer's recompute). `versions` are
+/// `(edition, duration)` of its files that aren't gone, in [`item_assets`]
+/// order; `stacked` when more than one of its files is a part. The first
+/// version's length, or, for a multi-part stack, the parts of that
+/// version's edition added up. `None` when no length is known.
+pub(crate) fn running_time(versions: &[(Option<String>, Option<i64>)], stacked: bool) -> Option<i64> {
+    let (edition, first) = versions.first()?;
+    let parts = versions.iter().filter(|v| &v.0 == edition);
+    if stacked && parts.clone().count() > 1 {
+        parts.filter_map(|v| v.1).reduce(|a, b| a.saturating_add(b))
+    } else {
+        *first
+    }
 }
 
 fn is_multipart(c: &Connection, item_id: Id) -> Result<bool> {
@@ -2370,10 +2410,12 @@ mod tests {
         let cases = [
             (ItemSort::Title, Cursor::Title("matrix 002001 é".into(), 42)),
             (ItemSort::TitleDesc, Cursor::Title("zz".into(), 1)),
-            (ItemSort::Year, Cursor::Year(99999, "alien".into(), 3)),
-            (ItemSort::YearDesc, Cursor::Year(-1, "".into(), 4)),
+            (ItemSort::Year, Cursor::Num(99999, "alien".into(), 3)),
+            (ItemSort::YearDesc, Cursor::Num(-1, "".into(), 4)),
             (ItemSort::Added, Cursor::Added(1_700_000_000_000, 7)),
             (ItemSort::AddedDesc, Cursor::Added(1_700_000_000_001, 8)),
+            (ItemSort::Duration, Cursor::Num(i64::MAX, "heat".into(), 9)),
+            (ItemSort::DurationDesc, Cursor::Num(5_400_000, "heat".into(), 10)),
         ];
         for (sort, c) in cases {
             let s = encode_cursor(sort, &c);
@@ -2386,6 +2428,8 @@ mod tests {
                 ItemSort::YearDesc,
                 ItemSort::Added,
                 ItemSort::AddedDesc,
+                ItemSort::Duration,
+                ItemSort::DurationDesc,
             ] {
                 if other != sort {
                     assert!(decode_cursor(&s, other).is_err(), "{s} as {other:?}");

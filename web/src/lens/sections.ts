@@ -20,7 +20,7 @@ export const SHOW_LABELS: Record<Show, string> = {
 };
 
 /** Sorts the island offers: the server's, plus colour (client-side, from the poster palettes). */
-export const SORTS = ['title', '-year', 'year', '-added', 'colour'] as const;
+export const SORTS = ['title', '-year', 'year', '-added', '-duration', 'duration', 'colour'] as const;
 export type Sort = (typeof SORTS)[number];
 
 export const SORT_LABELS: Record<Sort, string> = {
@@ -28,6 +28,8 @@ export const SORT_LABELS: Record<Sort, string> = {
   '-year': 'Newest',
   year: 'Oldest',
   '-added': 'Added',
+  '-duration': 'Longest',
+  duration: 'Shortest',
   colour: 'Colour',
 };
 
@@ -121,6 +123,7 @@ export function visibleItems(items: readonly ItemSummary[], { show, text, sort }
 }
 
 const DAY = 24 * 3600 * 1000;
+const MIN = 60 * 1000;
 
 /** The section a title belongs to under a sort; lenses that show sections use it. */
 export function sectionOf(item: ItemSummary, sort: Sort, now = Date.now()): string {
@@ -138,6 +141,16 @@ export function sectionOf(item: ItemSummary, sort: Sort, now = Date.now()): stri
       if (age < 31 * DAY) return 'This month';
       if (age < 365 * DAY) return 'This year';
       return 'Earlier';
+    }
+    case 'duration':
+    case '-duration': {
+      const ms = item.duration_ms;
+      if (!ms) return 'Unknown length';
+      if (ms < 30 * MIN) return 'Under 30 min';
+      if (ms < 60 * MIN) return '30–60 min';
+      if (ms < 120 * MIN) return '1–2 hours';
+      if (ms < 180 * MIN) return '2–3 hours';
+      return '3 hours or more';
     }
     case 'colour':
       return '';

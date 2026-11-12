@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { allLibraries, mergeSorted, settledPrefix } from './space-list';
 import type { ItemSummary, Library } from './types';
 
-const it0 = (id: number, title: string, year: number | null, added = 0): ItemSummary => ({
+const MIN = 60 * 1000;
+
+const it0 = (id: number, title: string, year: number | null, added = 0, duration: number | null = null): ItemSummary => ({
   id,
   kind: 'movie',
   title,
@@ -17,6 +19,7 @@ const it0 = (id: number, title: string, year: number | null, added = 0): ItemSum
   unwatched_count: null,
   available: true,
   added_at: added,
+  duration_ms: duration,
 });
 
 describe('mergeSorted', () => {
@@ -36,6 +39,18 @@ describe('mergeSorted', () => {
     const a = [it0(1, 'A', 2000, 50), it0(2, 'B', 2000, 10)];
     const b = [it0(3, 'C', 2000, 40)];
     expect(mergeSorted([a, b], '-added').map((i) => i.id)).toEqual([1, 3, 2]);
+  });
+
+  it('merges by length, shortest first, unknown lengths last, ties by title', () => {
+    const a = [it0(1, 'B', 2000, 0, 90 * MIN), it0(2, 'C', 2000, 0, 120 * MIN), it0(3, 'Z', 2000, 0, null)];
+    const b = [it0(4, 'A', 2000, 0, 90 * MIN), it0(5, 'D', 2000, 0, null)];
+    expect(mergeSorted([a, b], 'duration').map((i) => i.id)).toEqual([4, 1, 2, 5, 3]);
+  });
+
+  it('merges by length, longest first, unknown lengths still last', () => {
+    const a = [it0(2, 'C', 2000, 0, 120 * MIN), it0(1, 'B', 2000, 0, 90 * MIN), it0(3, 'Z', 2000, 0, null)];
+    const b = [it0(4, 'A', 2000, 0, 90 * MIN), it0(5, 'D', 2000, 0, null)];
+    expect(mergeSorted([a, b], '-duration').map((i) => i.id)).toEqual([2, 4, 1, 5, 3]);
   });
 
   it('handles empty lists', () => {

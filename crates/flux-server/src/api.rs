@@ -566,7 +566,7 @@ async fn library_items(
 ) -> ApiResult<Json<Page<ItemSummary>>> {
     let id = id_of(id)?;
     let Query(p) = params?;
-    // All six sorts have keyset cursors in the catalog (`read::ItemSort` is
+    // Every sort has keyset cursors in the catalog (`read::ItemSort` is
     // the core type); a cursor from another sort is rejected there (400).
     let sort = p.sort.unwrap_or_default();
     let exists = st.catalog.read(move |c| read::library(c, id)).await?.is_some();

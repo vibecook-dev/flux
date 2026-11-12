@@ -14,6 +14,8 @@ export interface MockFolderFile {
   mtime: number;
   /** The item's sort key (title order). */
   sortKey: string;
+  /** The item's running time; `null` when unknown. */
+  durationMs: number | null;
 }
 
 export interface MockFolderPage {
@@ -68,8 +70,15 @@ export function mockFolderPage(
   const rows = [...here.values()];
   const byTitle = (a: MockFolderFile, b: MockFolderFile) => a.sortKey.localeCompare(b.sortKey) || a.id - b.id;
   const byDate = (a: MockFolderFile, b: MockFolderFile) => a.mtime - b.mtime || byTitle(a, b);
-  rows.sort(sort === 'title' || sort === '-title' ? byTitle : byDate);
-  if (sort === '-title' || sort === '-date') rows.reverse();
+  // Unknown lengths last both ways, ties by name.
+  const byLength = (a: MockFolderFile, b: MockFolderFile) => (a.durationMs ?? Number.MAX_SAFE_INTEGER) - (b.durationMs ?? Number.MAX_SAFE_INTEGER) || byTitle(a, b);
+  const byLengthDesc = (a: MockFolderFile, b: MockFolderFile) => (b.durationMs ?? -1) - (a.durationMs ?? -1) || byTitle(a, b);
+  if (sort === 'duration') rows.sort(byLength);
+  else if (sort === '-duration') rows.sort(byLengthDesc);
+  else {
+    rows.sort(sort === 'title' || sort === '-title' ? byTitle : byDate);
+    if (sort === '-title' || sort === '-date') rows.reverse();
+  }
   const top: FolderRef = { folder: '', name: library.name };
   const parents: FolderRef[] = [];
   let at = top;

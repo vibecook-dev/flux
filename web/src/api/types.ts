@@ -430,7 +430,7 @@ export interface Page<T> {
 }
 
 /** Sort orders for `GET /libraries/{id}/items?sort=` (`ItemSort`). */
-export const LIBRARY_SORTS = ['title', '-title', 'year', '-year', 'added', '-added'] as const;
+export const LIBRARY_SORTS = ['title', '-title', 'year', '-year', 'added', '-added', 'duration', '-duration'] as const;
 export type LibrarySort = (typeof LIBRARY_SORTS)[number];
 
 /** Filters for `?filter=` (`ItemFilter`): the library chips. */
@@ -445,8 +445,8 @@ export interface ItemsParams {
   filter: ItemFilter | null;
 }
 
-/** Orders of a folder's videos (`FolderSort`): by name, or by the file's date. */
-export const FOLDER_SORTS = ['title', '-title', 'date', '-date'] as const;
+/** Orders of a folder's videos (`FolderSort`): by name, by the file's date, or by running time. */
+export const FOLDER_SORTS = ['title', '-title', 'date', '-date', 'duration', '-duration'] as const;
 export type FolderSort = (typeof FOLDER_SORTS)[number];
 
 /** Query of `GET /api/v1/libraries/{id}/folders` (every key optional on the wire). */
@@ -535,6 +535,8 @@ export interface ItemSummary {
   /** `false` when no file of the item is on a reachable root (Play answers 409). */
   available: boolean;
   added_at: number;
+  /** Running time in ms: a film's or episode's runtime (as its detail page gives it), a show's or season's episodes added up; `null` when unknown. */
+  duration_ms: number | null;
 }
 
 /** One playable file of an item (versions, editions). */

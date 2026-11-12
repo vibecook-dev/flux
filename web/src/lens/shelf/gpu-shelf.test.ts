@@ -414,6 +414,7 @@ describe('spine painting keys', () => {
     unwatched_count: null,
     available: true,
     added_at: 0,
+    duration_ms: null,
     ...o,
   });
   const look = spineLook(item(), fallbackPalette('x'));

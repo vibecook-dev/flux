@@ -13,6 +13,8 @@ describe('folder view helpers', () => {
     expect(parseFolderSort(null)).toBe('title');
     expect(parseFolderSort('newest')).toBe('title');
     expect(parseFolderSort('-date')).toBe('-date');
+    expect(parseFolderSort('duration')).toBe('duration');
+    expect(parseFolderSort('-duration')).toBe('-duration');
   });
 
   it('marks the folder on screen as the last crumb', () => {
@@ -34,11 +36,11 @@ describe('folder view helpers', () => {
 
 describe('mock folder view', () => {
   const files: MockFolderFile[] = [
-    { id: 1, rel: 'a.mp4', mtime: 50, sortKey: 'a' },
-    { id: 2, rel: 'Trip/b.mp4', mtime: 30, sortKey: 'b' },
-    { id: 3, rel: 'Trip/c.mp4', mtime: 10, sortKey: 'c' },
-    { id: 4, rel: 'Trip/Day 10/e.mp4', mtime: 40, sortKey: 'e' },
-    { id: 5, rel: 'Trip/Day 2/d.mp4', mtime: 20, sortKey: 'd' },
+    { id: 1, rel: 'a.mp4', mtime: 50, sortKey: 'a', durationMs: null },
+    { id: 2, rel: 'Trip/b.mp4', mtime: 30, sortKey: 'b', durationMs: null },
+    { id: 3, rel: 'Trip/c.mp4', mtime: 10, sortKey: 'c', durationMs: null },
+    { id: 4, rel: 'Trip/Day 10/e.mp4', mtime: 40, sortKey: 'e', durationMs: null },
+    { id: 5, rel: 'Trip/Day 2/d.mp4', mtime: 20, sortKey: 'd', durationMs: null },
   ];
   const lib = { name: 'Home', root: 7 };
 
@@ -54,5 +56,16 @@ describe('mock folder view', () => {
     expect(mockFolderPage(lib, files, '7/Trip', 'date', 0, 1)).toMatchObject({ ids: [3], next: 'o1', total: 2 });
     expect(mockFolderPage(lib, files, '7/Nope', 'title', 0, 100)).toBeNull();
     expect(mockFolderPage(lib, files, '8/Trip', 'title', 0, 100)).toBeNull();
+  });
+
+  it('sorts videos by length both ways, unknown lengths last, ties by name', () => {
+    const clips: MockFolderFile[] = [
+      { id: 1, rel: 'a.mp4', mtime: 0, sortKey: 'a', durationMs: 5000 },
+      { id: 2, rel: 'b.mp4', mtime: 0, sortKey: 'b', durationMs: null },
+      { id: 3, rel: 'c.mp4', mtime: 0, sortKey: 'c', durationMs: 9000 },
+      { id: 4, rel: 'd.mp4', mtime: 0, sortKey: 'd', durationMs: 5000 },
+    ];
+    expect(mockFolderPage(lib, clips, '', 'duration', 0, 100)?.ids).toEqual([1, 4, 3, 2]);
+    expect(mockFolderPage(lib, clips, '', '-duration', 0, 100)?.ids).toEqual([3, 1, 4, 2]);
   });
 });

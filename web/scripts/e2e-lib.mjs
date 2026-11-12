@@ -302,7 +302,7 @@ export const ITEM = '[data-kind="item"] article';
 /** Titles on the wall. */
 export const TILE = '[role="grid"] a[href^="/item/"]';
 /** The island's Sort chips, by the `sort=` value each sets. */
-export const SORT_CHIPS = { title: 'Title', '-year': 'Newest', year: 'Oldest', '-added': 'Added', colour: 'Colour' };
+export const SORT_CHIPS = { title: 'Title', '-year': 'Newest', year: 'Oldest', '-added': 'Added', '-duration': 'Longest', duration: 'Shortest', colour: 'Colour' };
 /** Init script: the first-run hint counts as seen (it floats over the wall's bottom-right corner). */
 export const SKIP_COACH = `try { localStorage.setItem('flux.coach.done', 'true'); } catch {}`;
 

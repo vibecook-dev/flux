@@ -502,7 +502,7 @@ export function createHandlers(db: MockDb, opts: MockOptions) {
         if (!rec) return [];
         return rec.files
           .filter((f) => f.path.startsWith(`${root}/`))
-          .map((f) => ({ id, rel: f.path.slice(root.length + 1), mtime: rec.addedAt, sortKey: String(i).padStart(8, '0') }));
+          .map((f) => ({ id, rel: f.path.slice(root.length + 1), mtime: rec.addedAt, sortKey: String(i).padStart(8, '0'), durationMs: db.summary(id)?.duration_ms ?? null }));
       });
       const page = mockFolderPage({ name: lib.name, root: lib.id }, files, url.searchParams.get('folder') ?? '', sort as FolderSort, offset, limit);
       if (!page) return notFound('Folder');

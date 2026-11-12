@@ -141,6 +141,53 @@ fn at(path: &str, title: &str, t: i64) -> FileUpsert {
     u
 }
 
+/// By length, both ways: unknown lengths last, a stack's parts added up,
+/// paging by cursor.
+#[test]
+fn a_folder_sorts_by_length() {
+    let e = env(LibraryKind::Videos);
+    let clip = |path: &str, title: &str, ms: Option<u64>| {
+        upsert(
+            path,
+            video(title, None),
+            Some(with_duration(seed("h264_mkv"), ms)),
+        )
+    };
+    e.apply(vec![
+        clip("Trip/long.mp4", "long", Some(900_000)),
+        clip("Trip/short.mp4", "short", Some(60_000)),
+        clip("Trip/odd.mp4", "odd", None),
+        upsert(
+            "Trip/talk part1.mp4",
+            video("talk", Some(1)),
+            Some(with_duration(seed("h264_mkv"), Some(400_000))),
+        ),
+        upsert(
+            "Trip/talk part2.mp4",
+            video("talk", Some(2)),
+            Some(with_duration(seed("h264_mkv"), Some(300_000))),
+        ),
+    ]);
+    let trip = format!("{}/Trip", e.root);
+    let shortest = page(&e, &trip, FolderSort::Duration, None, 100).unwrap();
+    assert_eq!(titles(&shortest), ["short", "talk", "long", "odd"]);
+    assert_eq!(shortest.items[1].duration_ms, Some(700_000));
+    let longest = page(&e, &trip, FolderSort::DurationDesc, None, 100).unwrap();
+    assert_eq!(titles(&longest), ["long", "talk", "short", "odd"]);
+    // One at a time, following the cursor.
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let p = page(&e, &trip, FolderSort::DurationDesc, cursor, 1).unwrap();
+        seen.extend(p.items.iter().map(|i| i.title.clone()));
+        match p.next {
+            Some(n) => cursor = Some(n),
+            None => break,
+        }
+    }
+    assert_eq!(seen, ["long", "talk", "short", "odd"]);
+}
+
 #[test]
 fn folders_browse_a_videos_library() {
     let e = env(LibraryKind::Videos);

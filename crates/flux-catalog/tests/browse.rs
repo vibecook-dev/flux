@@ -5,7 +5,7 @@ mod common;
 use std::collections::HashSet;
 
 use common::*;
-use flux_catalog::{read, ItemSort, ItemsQuery};
+use flux_catalog::{read, ItemSort, ItemsQuery, ScanBatch};
 use flux_core::api::{Identity, ItemKind, Role};
 use flux_core::LibraryKind;
 
@@ -13,13 +13,15 @@ fn titles(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("Film {i}")).collect()
 }
 
-const ALL_SORTS: [ItemSort; 6] = [
+const ALL_SORTS: [ItemSort; 8] = [
     ItemSort::Title,
     ItemSort::TitleDesc,
     ItemSort::Year,
     ItemSort::YearDesc,
     ItemSort::Added,
     ItemSort::AddedDesc,
+    ItemSort::Duration,
+    ItemSort::DurationDesc,
 ];
 
 /// Every page of a query, following cursors; asserts `total` on each page.
@@ -43,7 +45,7 @@ fn keyset_pagination_for_every_sort_is_complete_ordered_and_stable() {
     let e = env(LibraryKind::Movies);
     let ts = titles(250);
     // Several batches so added_at differs between groups; repeated years
-    // and unknown years exercise the tie-breaks.
+    // and lengths, and unknown ones, exercise the tie-breaks.
     for chunk in ts.chunks(100) {
         e.apply(
             chunk
@@ -51,7 +53,9 @@ fn keyset_pagination_for_every_sort_is_complete_ordered_and_stable() {
                 .map(|t| {
                     let n: u16 = t[5..].parse().unwrap();
                     let year = (!n.is_multiple_of(11)).then_some(1990 + n % 7);
-                    upsert(&format!("{t}.mkv"), movie(t, year), None)
+                    let ms = (!n.is_multiple_of(13)).then_some(3_600_000 + u64::from(n % 9) * 600_000);
+                    let probe = (!n.is_multiple_of(17)).then(|| with_duration(seed("h264_mkv"), ms));
+                    upsert(&format!("{t}.mkv"), movie(t, year), probe)
                 })
                 .collect(),
         );
@@ -91,6 +95,20 @@ fn keyset_pagination_for_every_sort_is_complete_ordered_and_stable() {
             }),
             ItemSort::Added => expect.sort_by_key(|i| (i.added_at, i.id)),
             ItemSort::AddedDesc => expect.sort_by_key(|i| std::cmp::Reverse((i.added_at, i.id))),
+            ItemSort::Duration => expect.sort_by_key(|i| {
+                (
+                    i.duration_ms.map_or(i64::MAX, |d| d as i64),
+                    sort_key(&i.title),
+                    i.id,
+                )
+            }),
+            ItemSort::DurationDesc => expect.sort_by_key(|i| {
+                (
+                    std::cmp::Reverse(i.duration_ms.map_or(-1, |d| d as i64)),
+                    sort_key(&i.title),
+                    i.id,
+                )
+            }),
         }
         let ids = |v: &[flux_core::api::ItemSummary]| v.iter().map(|i| i.id).collect::<Vec<_>>();
         assert_eq!(ids(&seen), ids(&expect), "{sort:?} order");
@@ -104,6 +122,15 @@ fn keyset_pagination_for_every_sort_is_complete_ordered_and_stable() {
         if sort == ItemSort::YearDesc {
             assert!(seen.last().unwrap().year.is_none(), "unknown years last");
             assert_eq!(seen[0].year, Some(1996));
+        }
+        if matches!(sort, ItemSort::Duration | ItemSort::DurationDesc) {
+            assert!(seen.last().unwrap().duration_ms.is_none(), "unknown lengths last");
+            let first = if sort == ItemSort::Duration {
+                3_600_000
+            } else {
+                8_400_000
+            };
+            assert_eq!(seen[0].duration_ms, Some(first));
         }
         // Every library-level sort walks an index (no temp b-tree sort).
         let plan = e
@@ -150,6 +177,80 @@ fn keyset_pagination_for_every_sort_is_complete_ordered_and_stable() {
             ..Default::default()
         };
         assert!(e.cat.read_blocking(|c| read::items_page(c, &bad)).is_err());
+    }
+}
+
+/// A show runs as long as its episodes added up, and keeps up as files
+/// change: a re-probe that finds another length, a new season, a file that
+/// goes away.
+#[test]
+fn running_times_add_up_and_follow_the_files() {
+    let e = env(LibraryKind::Shows);
+    let ep = |season: u16, n: u16, ms: u64| {
+        upsert(
+            &format!("Lost/S{season:02}E{n:02}.mkv"),
+            episode("Lost", Some(2004), season, &[n]),
+            Some(with_duration(seed("h264_mkv"), Some(ms))),
+        )
+    };
+    e.apply(vec![ep(1, 1, 2_400_000), ep(1, 2, 2_500_000)]);
+    let lost = e.find_top("Lost");
+    assert_eq!(lost.duration_ms, Some(4_900_000));
+    let seasons = e.children(lost.id);
+    assert_eq!(seasons[0].duration_ms, Some(4_900_000));
+    let eps: Vec<Option<u64>> = e.children(seasons[0].id).iter().map(|i| i.duration_ms).collect();
+    assert_eq!(eps, [Some(2_400_000), Some(2_500_000)]);
+    assert_eq!(e.detail(lost.id).summary.duration_ms, Some(4_900_000));
+
+    e.apply(vec![ep(1, 2, 2_600_000), ep(2, 1, 3_000_000)]);
+    assert_eq!(e.find_top("Lost").duration_ms, Some(8_000_000));
+
+    let gone = e.file_id("Lost/S01E01.mkv");
+    e.batch(ScanBatch {
+        root_id: e.root,
+        missing: vec![gone],
+        ..Default::default()
+    });
+    assert_eq!(e.find_top("Lost").duration_ms, Some(5_600_000));
+}
+
+/// A film's running time in lists is the one its detail page gives: its
+/// first version (not the longest), or a stack's parts added up.
+#[test]
+fn a_running_time_is_the_detail_pages_runtime() {
+    let e = env(LibraryKind::Movies);
+    let film = |path: &str, ms: u64, h: u32| {
+        upsert(
+            path,
+            movie("Heat", Some(1995)),
+            Some(with_duration(
+                with_size(seed("h264_mkv"), h * 16 / 9, h),
+                Some(ms),
+            )),
+        )
+    };
+    let mut cd1 = movie("Tron", Some(1982));
+    cd1.part = Some(1);
+    let mut cd2 = cd1.clone();
+    cd2.part = Some(2);
+    e.apply(vec![
+        film("Heat (1995)/Heat 1080p.mkv", 10_200_000, 1080),
+        film("Heat (1995)/Heat 2160p.mkv", 10_000_000, 2160),
+        upsert(
+            "Tron (1982)/Tron cd1.avi",
+            cd1,
+            Some(with_duration(seed("h264_mkv"), Some(3_000_000))),
+        ),
+        upsert(
+            "Tron (1982)/Tron cd2.avi",
+            cd2,
+            Some(with_duration(seed("h264_mkv"), Some(2_800_000))),
+        ),
+    ]);
+    for (title, ms) in [("Heat", 10_000_000), ("Tron", 5_800_000)] {
+        let s = e.find_top(title);
+        assert_eq!(s.duration_ms, Some(ms), "{title}");
+        assert_eq!(e.detail(s.id).runtime_ms, Some(ms), "{title}");
     }
 }
 

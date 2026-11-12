@@ -12,7 +12,7 @@ Item pages, Libraries & scanning and Remote access open over the library, which 
 
 ## Spaces, filters and sort
 
-A **space** is what the lens shows: `All` (`/`, every film and show library merged in the server's order) or one library (`/library/:id`). A videos library opens by folder. The space's filter (`show=unwatched|progress|new|4k|hdr`), sort (`sort=title|-year|year|-added|colour`) and search text (`q=`) live in the query string, so Back, Forward and shared links keep them. The shell loads, searches, filters and sorts once (`src/lens/sections.ts`, `src/api/space-list.ts`); every lens receives the result.
+A **space** is what the lens shows: `All` (`/`, every film and show library merged in the server's order) or one library (`/library/:id`). A videos library opens by folder. The space's filter (`show=unwatched|progress|new|4k|hdr`), sort (`sort=title|-year|year|-added|-duration|duration|colour`) and search text (`q=`) live in the query string, so Back, Forward and shared links keep them. The shell loads, searches, filters and sorts once (`src/lens/sections.ts`, `src/api/space-list.ts`); every lens receives the result.
 
 ## The contract
 
