@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.0-alpha.5](https://github.com/vibecook-dev/flux/compare/v0.1.0-alpha.4...v0.1.0-alpha.5) (2026-11-12)
+
+
+### Features
+
+* flux checks for updates and updates itself ([#44](https://github.com/vibecook-dev/flux/issues/44)) ([aa58372](https://github.com/vibecook-dev/flux/commit/aa583721509601e3538adb0c9c7c361c5a870511))
+* install flux on Windows with an installer, FFmpeg included ([#48](https://github.com/vibecook-dev/flux/issues/48)) ([239239b](https://github.com/vibecook-dev/flux/commit/239239b15715216e8c334aa33e252f8dfbc98d39))
+* install flux with Homebrew, or as a .deb or .rpm ([#47](https://github.com/vibecook-dev/flux/issues/47)) ([3672339](https://github.com/vibecook-dev/flux/commit/36723390b8c7f6b784a73b810bc334abc6842e7c))
+* run flux as a service of the machine ([#46](https://github.com/vibecook-dev/flux/issues/46)) ([a7e2c7e](https://github.com/vibecook-dev/flux/commit/a7e2c7ee998286a077d2823f32ae37b38b3b4e2c))
+* set flux up in the browser, with owner links for other devices ([#45](https://github.com/vibecook-dev/flux/issues/45)) ([797bcb0](https://github.com/vibecook-dev/flux/commit/797bcb08d645979d0b984e5bb30de9e0e8faed75))
+* sort by duration, longest or shortest first, in libraries and folders ([#60](https://github.com/vibecook-dev/flux/issues/60)) ([b27b65b](https://github.com/vibecook-dev/flux/commit/b27b65b3dec3caf32391696c2792c33cd8f004ac))
+* the Windows installer's flux updates itself ([#49](https://github.com/vibecook-dev/flux/issues/49)) ([0abb84c](https://github.com/vibecook-dev/flux/commit/0abb84c8658b9b6384fc559da268c280d47a3ae7))
+* **web:** a steady scrub bar, Shelf tapes that turn to show their covers, and smoother search ([#39](https://github.com/vibecook-dev/flux/issues/39)) ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+* **web:** flux installs as an app and knows when it was updated ([#43](https://github.com/vibecook-dev/flux/issues/43)) ([68a0d8a](https://github.com/vibecook-dev/flux/commit/68a0d8a43385c6cca904f5946f903ba6df7bea85))
+* **web:** seamless poster flights, a lens bar that comes back, and no stray scroll bars ([52e0003](https://github.com/vibecook-dev/flux/commit/52e0003f86a7b56577c79f4faef3662414a7b2b5))
+* **web:** seamless poster flights, whole posters on Shelf covers, and a lens bar that comes back ([#42](https://github.com/vibecook-dev/flux/issues/42)) ([52e0003](https://github.com/vibecook-dev/flux/commit/52e0003f86a7b56577c79f4faef3662414a7b2b5))
+* **web:** Shelf covers show the whole poster under a band printed like the spine ([52e0003](https://github.com/vibecook-dev/flux/commit/52e0003f86a7b56577c79f4faef3662414a7b2b5))
+* **web:** tapes on the Shelf turn to show their covers, in lit materials ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+* **web:** the Gallery has no Tour ([52e0003](https://github.com/vibecook-dev/flux/commit/52e0003f86a7b56577c79f4faef3662414a7b2b5))
+
+
+### Bug Fixes
+
+* **deps:** Bump rusqlite from 0.40.2 to 0.41.0 ([#55](https://github.com/vibecook-dev/flux/issues/55)) ([12d5602](https://github.com/vibecook-dev/flux/commit/12d560274943331f4c7c01016c0a50e53445e707))
+* keep a Windows service's default data folder to administrators ([#50](https://github.com/vibecook-dev/flux/issues/50)) ([0b500cb](https://github.com/vibecook-dev/flux/commit/0b500cbb12c43776a6f2a7ff0dfeb7b95649f56e))
+* **web:** the island dims with a title's page, and other shell details ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+* **web:** the playhead stays where you put it ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+
+
+### Performance Improvements
+
+* **web:** search does less work a keystroke, the glass light less a move ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+* **web:** the mock draws its art off the main thread ([6430657](https://github.com/vibecook-dev/flux/commit/64306570369885ce72fa725bcc3822033e004571))
+
 ## [0.1.0-alpha.4](https://github.com/vibecook-dev/flux/compare/v0.1.0-alpha.3...v0.1.0-alpha.4) (2026-10-26)
 
 
