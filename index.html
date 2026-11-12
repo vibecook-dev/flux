@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>flux · home media, rewritten</title>
+    <meta name="description" content="flux is a fast, private, open-source media server for the films and shows you own. Written in Rust, reachable anywhere with a free Tailscale account, and built for the AI agents you already use." />
+    <meta name="theme-color" content="#07070a" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/flux/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="flux · home media, rewritten" />
+    <meta property="og:description" content="A media server written in Rust: scans 14,760 files in 3.2 seconds, reaches every device through Tailscale, and works with your AI agent. Free and open source." />
+    <meta property="og:image" content="https://vibecook-dev.github.io/flux/og.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      // Hide what animates in, unless the page's script never arrives.
+      document.documentElement.classList.add('js');
+      setTimeout(function () {
+        if (!window.__fluxSite) document.documentElement.classList.remove('js');
+      }, 3000);
+    </script>
+    <script type="module" crossorigin src="/flux/assets/index-CoiwMyaY.js"></script>
+    <link rel="stylesheet" crossorigin href="/flux/assets/index-Dl2JoHzO.css">
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <!-- The island: like the app's, it floats over everything and says where you are. -->
+    <header class="nav" data-nav>
+      <nav class="island glass" aria-label="Sections">
+        <a class="brand" href="#top" aria-label="flux, back to the top">
+          <svg class="mark" viewBox="0 0 36 28" aria-hidden="true"><path d="M2 26 L20 2 L27 2 L9 26 Z" /><path d="M16 26 L28 10 L33 10 L21 26 Z" opacity=".45" /></svg>
+          <span>flux</span>
+        </a>
+        <span class="island-sep" aria-hidden="true"></span>
+        <div class="island-links" data-island-links>
+          <span class="island-thumb" aria-hidden="true" data-island-thumb></span>
+          <a href="#lenses" data-section="lenses">Lenses</a>
+          <a href="#anywhere" data-section="anywhere">Anywhere</a>
+          <a href="#speed" data-section="speed">Speed</a>
+          <a href="#agents" data-section="agents">Agents</a>
+          <a href="#download" data-section="download">Download</a>
+        </div>
+      </nav>
+      <a class="nav-github glass" href="https://github.com/vibecook-dev/flux" aria-label="flux on GitHub">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.6a10.4 10.4 0 0 0-3.3 20.3c.5.1.7-.2.7-.5v-1.8c-2.9.6-3.5-1.4-3.5-1.4-.5-1.2-1.2-1.5-1.2-1.5-.9-.6.1-.6.1-.6 1 .1 1.6 1.1 1.6 1.1.9 1.6 2.5 1.2 3.1.9.1-.7.4-1.2.7-1.4-2.3-.3-4.7-1.2-4.7-5.1 0-1.1.4-2.1 1.1-2.8-.1-.3-.5-1.4.1-2.8 0 0 .9-.3 2.9 1.1a10 10 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.5.1 2.8.7.7 1.1 1.7 1.1 2.8 0 4-2.4 4.8-4.7 5.1.4.3.7 1 .7 1.9v2.9c0 .3.2.6.7.5A10.4 10.4 0 0 0 12 1.6Z"/></svg>
+      </a>
+      <a class="nav-cta btn btn-lit btn-sm" href="#download">Download</a>
+    </header>
+
+    <main id="main">
+      <!-- ───────────── Hero ───────────── -->
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-wall" aria-hidden="true" data-hero-wall>
+          <canvas class="wall-canvas" data-wall-canvas></canvas>
+          <div class="wall-shade"></div>
+        </div>
+        <div class="hero-inner">
+          <a class="eyebrow glass" href="#speed" data-reveal>
+            <span class="eyebrow-dot" aria-hidden="true"></span>
+            Open source · Written in Rust
+            <svg class="eyebrow-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5" /></svg>
+          </a>
+          <h1 class="hero-title" id="hero-title" data-light>
+            <span class="line" data-split>Home media,</span>
+            <span class="line lit" data-split>rewritten.</span>
+          </h1>
+          <p class="hero-sub" data-reveal style="--d: 0.5s">
+            flux is a media server for the films and shows you own. It scans a whole library in seconds, plays the moment you press play, reaches all your devices through your own Tailscale network, and works hand in hand with the AI agent you already use.
+          </p>
+          <div class="hero-cta" data-reveal style="--d: 0.62s">
+            <a class="btn btn-lit" href="#download" data-magnet>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" /></svg>
+              <span data-os-cta>Download</span>
+            </a>
+            <a class="btn btn-glass glass" href="https://github.com/vibecook-dev/flux" data-magnet>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 1.6a10.4 10.4 0 0 0-3.3 20.3c.5.1.7-.2.7-.5v-1.8c-2.9.6-3.5-1.4-3.5-1.4-.5-1.2-1.2-1.5-1.2-1.5-.9-.6.1-.6.1-.6 1 .1 1.6 1.1 1.6 1.1.9 1.6 2.5 1.2 3.1.9.1-.7.4-1.2.7-1.4-2.3-.3-4.7-1.2-4.7-5.1 0-1.1.4-2.1 1.1-2.8-.1-.3-.5-1.4.1-2.8 0 0 .9-.3 2.9 1.1a10 10 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.5.1 2.8.7.7 1.1 1.7 1.1 2.8 0 4-2.4 4.8-4.7 5.1.4.3.7 1 .7 1.9v2.9c0 .3.2.6.7.5A10.4 10.4 0 0 0 12 1.6Z"/></svg>
+              View on GitHub
+            </a>
+          </div>
+          <p class="hero-meta" data-reveal style="--d: 0.74s">Free and MIT-licensed <span aria-hidden="true">·</span> macOS, Windows, Linux and Docker</p>
+        </div>
+        <a class="scroll-cue" href="#lenses" aria-label="Scroll down"><span></span></a>
+      </section>
+
+      <!-- ───────────── Lenses: the app itself, in the page ───────────── -->
+      <section class="section lenses" id="lenses" aria-labelledby="lenses-title">
+        <div class="head">
+          <p class="label" data-reveal>Lenses</p>
+          <h2 id="lenses-title"><span data-split>One library.</span> <span class="dim" data-split>Every way to see it.</span></h2>
+          <p class="lede" data-reveal>
+            Every lens is drawn on the GPU, so even thirteen thousand titles glide. Pick the one that suits the evening, or have your agent make a new one.
+          </p>
+        </div>
+
+        <div class="app-stage" data-app-stage>
+          <div class="app-glow" aria-hidden="true" data-app-glow></div>
+          <div class="app-frame" data-app-frame>
+            <iframe title="flux, with a sample library" data-app-iframe allow="autoplay; fullscreen; picture-in-picture" referrerpolicy="no-referrer"></iframe>
+            <div class="app-loading" aria-hidden="true">
+              <svg class="mark" viewBox="0 0 36 28"><path d="M2 26 L20 2 L27 2 L9 26 Z" /><path d="M16 26 L28 10 L33 10 L21 26 Z" opacity=".45" /></svg>
+            </div>
+            <button type="button" class="app-tap" data-app-tap aria-label="Open flux full screen"></button>
+            <button type="button" class="app-expand glass" data-app-full aria-label="Full screen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9V4.5H9M15 4.5h4.5V9M19.5 15v4.5H15M9 19.5H4.5V15"/></svg>
+            </button>
+            <button type="button" class="app-close glass" data-app-close aria-label="Close full screen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11m0-11-11 11" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="lens-tabs" role="tablist" aria-label="Lenses" data-lens-tabs>
+          <button type="button" class="lens-tab" role="tab" data-lens="wall" aria-selected="true">
+            <span class="tab-head"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="4.6" height="7" rx="1.1"/><rect x="9.7" y="3.5" width="4.6" height="7" rx="1.1"/><rect x="15.9" y="3.5" width="4.6" height="7" rx="1.1"/><rect x="3.5" y="13.5" width="4.6" height="7" rx="1.1"/><rect x="9.7" y="13.5" width="4.6" height="7" rx="1.1"/><rect x="15.9" y="13.5" width="4.6" height="7" rx="1.1"/></svg>Wall</span>
+            <span class="tab-line">Every title at a glance, from whole decades down to one poster.</span>
+            <span class="tab-progress" aria-hidden="true"><i></i></span>
+          </button>
+          <button type="button" class="lens-tab" role="tab" data-lens="flow" aria-selected="false">
+            <span class="tab-head"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.2" y="4" width="7.6" height="11.5" rx="1.2"/><path d="M5.6 5.8 2.6 7.3v6.9l3 1.5zM18.4 5.8l3 1.5v6.9l-3 1.5z"/><path d="M8.2 19.5h7.6" opacity=".55"/></svg>Flow</span>
+            <span class="tab-line">One cover faces you; the rest wait in stacks you flick through.</span>
+            <span class="tab-progress" aria-hidden="true"><i></i></span>
+          </button>
+          <button type="button" class="lens-tab" role="tab" data-lens="shelf" aria-selected="false">
+            <span class="tab-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 20.5h19"/><rect x="4" y="5" width="3" height="15.5" rx=".5"/><rect x="8" y="7.5" width="3" height="13" rx=".5"/><rect x="12" y="4" width="3" height="16.5" rx=".5"/><path d="m16.4 8.6 2.9-.8 3.1 12.5"/></svg>Shelf</span>
+            <span class="tab-line">Tapes on a shelf, the way the video shop kept them.</span>
+            <span class="tab-progress" aria-hidden="true"><i></i></span>
+          </button>
+          <button type="button" class="lens-tab" role="tab" data-lens="gallery" aria-selected="false">
+            <span class="tab-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 4 8.5 7.5v9l-6 3.5M21.5 4l-6 3.5v9l6 3.5"/><rect x="10.4" y="9.6" width="3.2" height="4.4" rx=".4"/><path d="M8.5 7.5h7M8.5 16.5h7"/></svg>Gallery</span>
+            <span class="tab-line">Walk your library like an exhibition, a room for every decade.</span>
+            <span class="tab-progress" aria-hidden="true"><i></i></span>
+          </button>
+          <button type="button" class="lens-tab" role="tab" data-lens="corkboard" aria-selected="false">
+            <span class="tab-head"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="8" height="10" rx="1" transform="rotate(-8 7.5 10.5)"/><rect x="11" y="8" width="9" height="11" rx="1" transform="rotate(7 15.5 13.5)"/><circle cx="7.3" cy="5.4" r="1"/><circle cx="15.7" cy="8" r="1"/></svg>Your own</span>
+            <span class="tab-line">Describe one and your agent writes it. This corkboard comes with flux.</span>
+            <span class="tab-progress" aria-hidden="true"><i></i></span>
+          </button>
+        </div>
+        <p class="lens-line" aria-live="polite" data-lens-line>Every title at a glance, from whole decades down to one poster.</p>
+        <p class="fineprint center">Titles and artwork here are generated examples.</p>
+      </section>
+
+      <!-- ───────────── Anywhere (Tailscale) ───────────── -->
+      <section class="section anywhere" id="anywhere" aria-labelledby="anywhere-title">
+        <div class="head">
+          <p class="label" data-reveal>Anywhere</p>
+          <h2 id="anywhere-title"><span data-split>All it takes is a</span> <span class="accent-blue" data-split>free Tailscale account.</span></h2>
+          <p class="lede" data-reveal>
+            No port forwarding, no reverse proxy, no certificates to renew and no new passwords. flux joins your private tailnet, and the Tailscale login you already have is how you sign in, from the sofa, a hotel room or a train.
+          </p>
+        </div>
+
+        <div class="net" data-net data-mode="usual">
+          <div class="net-toggle segmented glass" role="tablist" aria-label="How remote access works">
+            <span class="segmented-thumb" aria-hidden="true"></span>
+            <button type="button" role="tab" data-net-mode="usual" aria-selected="true">The usual way</button>
+            <button type="button" role="tab" data-net-mode="flux" aria-selected="false">With flux</button>
+          </div>
+
+          <div class="net-canvas" data-net-canvas>
+            <svg class="net-lines" data-net-lines aria-hidden="true"></svg>
+            <div class="tailnet-ring" aria-hidden="true"><span>your tailnet · private<span class="long"> · end-to-end encrypted</span></span></div>
+
+            <div class="node node-server" data-node="server">
+              <div class="node-icon server-icon">
+                <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="8" y="5" width="24" height="30" rx="4"/><path d="M13 12h14M13 17h14" opacity=".5"/><circle cx="20" cy="27" r="2.2"/></svg>
+              </div>
+              <div class="node-text"><strong>flux</strong><span>the computer with your films</span></div>
+              <div class="node-tag mono" data-flux-only>media.your-tailnet.ts.net</div>
+            </div>
+
+            <div class="node node-device" data-node="phone">
+              <div class="node-icon"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="12" y="5" width="16" height="30" rx="3.5"/><path d="M18 9.5h4" opacity=".6"/></svg></div>
+              <div class="node-text"><strong>Your phone</strong><span>on 5G</span></div>
+              <div class="node-role mono" data-flux-only>Owner</div>
+            </div>
+            <div class="node node-device" data-node="laptop">
+              <div class="node-icon"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="8" y="9" width="24" height="16" rx="2.5"/><path d="M4.5 30h31"/></svg></div>
+              <div class="node-text"><strong>Your laptop</strong><span>on hotel Wi-Fi</span></div>
+              <div class="node-role mono" data-flux-only>Owner</div>
+            </div>
+            <div class="node node-device" data-node="tv">
+              <div class="node-icon"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="5" y="8" width="30" height="19" rx="2.5"/><path d="M14 32h12M20 27v5" opacity=".7"/></svg></div>
+              <div class="node-text"><strong>Living-room TV</strong><span>at home</span></div>
+              <div class="node-role mono" data-flux-only>Viewer</div>
+            </div>
+            <div class="node node-device" data-node="tablet">
+              <div class="node-icon"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="9" y="6" width="22" height="28" rx="3"/><circle cx="20" cy="30" r=".9"/></svg></div>
+              <div class="node-text"><strong>Mum’s iPad</strong><span>300 km away</span></div>
+              <div class="node-role mono" data-flux-only>Viewer</div>
+            </div>
+
+            <div class="node node-hurdle" data-node="router" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="12" width="17" height="7" rx="1.6"/><path d="M8 12 6 5M16 12l2-7"/><circle cx="7.5" cy="15.5" r=".8"/></svg></div>
+              <span>Forward a router port</span>
+            </div>
+            <div class="node node-hurdle danger" data-node="internet" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.6 5.2 3.6 8.5s-1 6.1-3.6 8.5c-2.6-2.4-3.6-5.2-3.6-8.5s1-6.1 3.6-8.5z"/></svg></div>
+              <span>Open to the whole internet</span>
+            </div>
+            <div class="node node-hurdle" data-node="ddns" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14.5l3 3-3 3" /></svg></div>
+              <span>Dynamic DNS</span>
+            </div>
+            <div class="node node-hurdle" data-node="proxy" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="1.4"/><rect x="4" y="14" width="16" height="6" rx="1.4"/><path d="M8 7h.01M8 17h.01"/></svg></div>
+              <span>Reverse proxy</span>
+            </div>
+            <div class="node node-hurdle" data-node="cert" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg></div>
+              <span>Certificates to renew</span>
+            </div>
+            <div class="node node-hurdle" data-node="password" data-usual-only>
+              <div class="hurdle-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M9.5 12h.01M14 12h.01M18.5 12h.01" stroke-width="3"/></svg></div>
+              <span>Yet another password</span>
+            </div>
+          </div>
+          <p class="net-caption" data-net-caption>Six things to set up, keep updated and keep secure, and your server is on the open internet.</p>
+        </div>
+
+        <ol class="steps">
+          <li class="step card" data-reveal>
+            <span class="step-n mono">01</span>
+            <h3>Get Tailscale</h3>
+            <p>Install it on the computer with your films and on your devices. The Personal plan is free, for up to six people.</p>
+          </li>
+          <li class="step card" data-reveal style="--d: 0.08s">
+            <span class="step-n mono">02</span>
+            <h3>Switch on remote access</h3>
+            <p>One switch in flux’s settings, or <code>--tailnet system</code>. flux uses this computer’s Tailscale and answers on your tailnet, never the open internet.</p>
+          </li>
+          <li class="step card" data-reveal style="--d: 0.16s">
+            <span class="step-n mono">03</span>
+            <h3>Open it anywhere</h3>
+            <p>At <code>https://<i>machine</i>.<i>tailnet</i>.ts.net</code>. Switch on HTTPS and flux uses your tailnet’s own certificate, so even the GPU lenses work on your phone.</p>
+          </li>
+        </ol>
+
+        <div class="roles card" data-reveal>
+          <div class="roles-copy">
+            <h3>Your tailnet is the guest list.</h3>
+            <p>Family and friends sign in with their own Tailscale accounts, never a flux password. Your login is the Owner. Everyone else can watch, and the people you trust with the library get Admin, with one grant in your tailnet policy.</p>
+          </div>
+          <pre class="code" aria-label="A tailnet policy grant that makes someone an Admin of flux"><code><span class="t-k">"grants"</span>: [{
+  <span class="t-k">"src"</span>: [<span class="t-s">"partner@example.com"</span>],
+  <span class="t-k">"dst"</span>: [<span class="t-s">"*"</span>],
+  <span class="t-k">"app"</span>: {
+    <span class="t-s">"vibecook.dev/cap/flux"</span>: [{ <span class="t-k">"role"</span>: <span class="t-s">"admin"</span> }]
+  }
+}]</code></pre>
+        </div>
+      </section>
+
+      <!-- ───────────── Speed (Rust) ───────────── -->
+      <section class="section speed" id="speed" aria-labelledby="speed-title">
+        <div class="head">
+          <p class="label" data-reveal>Speed</p>
+          <h2 id="speed-title"><span data-split>Built in Rust.</span> <span class="accent-green" data-split>Measured, not promised.</span></h2>
+          <p class="lede" data-reveal>
+            We ran flux and Jellyfin 12.2 through the same benchmark harness, on the same Mac, against the same 14,760-file library. These are the medians.
+          </p>
+        </div>
+
+        <figure class="race card" data-race>
+          <figcaption class="race-head">
+            <div>
+              <p class="race-title">Cold scan of a 14,760-file library, until every title is browsable</p>
+              <p class="race-mode mono" data-race-mode>Real time</p>
+            </div>
+            <div class="race-clock mono" data-race-clock aria-hidden="true">00:00.00</div>
+          </figcaption>
+          <div class="lane lane-flux" data-lane="flux">
+            <div class="lane-name"><strong>flux</strong></div>
+            <div class="lane-track"><div class="lane-fill" data-fill></div></div>
+            <div class="lane-result mono" data-result>3.24 s</div>
+          </div>
+          <div class="lane lane-them" data-lane="them">
+            <div class="lane-name"><strong>Jellyfin 12.2</strong></div>
+            <div class="lane-track"><div class="lane-fill" data-fill></div></div>
+            <div class="lane-result mono" data-result>17 min 35 s</div>
+          </div>
+          <div class="race-foot">
+            <p class="race-verdict" data-race-verdict><strong>326× sooner.</strong> When flux was done, Jellyfin had seventeen and a half minutes to go.</p>
+            <button type="button" class="chip glass" data-race-again>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4"/></svg>
+              Race again
+            </button>
+          </div>
+        </figure>
+
+        <div class="metrics">
+          <article class="metric card" data-reveal data-metric data-flux="20.7" data-them="5020" data-unit="ms">
+            <h3>Restart, back to browsing</h3>
+            <p class="metric-flux mono"><span data-count>20.7</span> ms</p>
+            <p class="metric-them">Jellyfin: 5.02 s</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">243× faster</p>
+          </article>
+          <article class="metric card" data-reveal style="--d: 0.06s" data-metric data-flux="1.3" data-them="624" data-unit="ms">
+            <h3>Seek deep into a two-hour film</h3>
+            <p class="metric-flux mono"><span data-count>1.3</span> ms</p>
+            <p class="metric-them">Jellyfin: 624 ms</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">480× faster</p>
+          </article>
+          <article class="metric card" data-reveal style="--d: 0.12s" data-metric data-flux="142" data-them="19700" data-unit="ms">
+            <h3>Rescan when nothing changed</h3>
+            <p class="metric-flux mono"><span data-count>142</span> ms</p>
+            <p class="metric-them">Jellyfin: 19.7 s · flux opened 0 files and wrote nothing</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">138× faster</p>
+          </article>
+          <article class="metric card" data-reveal data-metric data-flux="17.9" data-them="617" data-unit="ms">
+            <h3>Time to the first video segment</h3>
+            <p class="metric-flux mono"><span data-count>2.8</span>–17.9 ms</p>
+            <p class="metric-them">Jellyfin: 176–617 ms, remuxing the same six files</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">25–67× faster</p>
+          </article>
+          <article class="metric card" data-reveal style="--d: 0.06s" data-metric data-flux="22" data-them="353" data-unit="MiB">
+            <h3>Memory at rest, after the scans</h3>
+            <p class="metric-flux mono"><span data-count>22</span> MiB</p>
+            <p class="metric-them">Jellyfin: 353 MiB, as Activity Monitor counts it</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">16× less</p>
+          </article>
+          <article class="metric card" data-reveal style="--d: 0.12s" data-metric data-flux="24.9" data-them="238" data-unit="MiB">
+            <h3>Everything you install</h3>
+            <p class="metric-flux mono"><span data-count>24.9</span> MiB</p>
+            <p class="metric-them">Jellyfin: 238 MiB with its .NET runtime and web app</p>
+            <div class="bars" aria-hidden="true"><b>flux</b><i class="bar-flux"></i><b>Jellyfin</b><i class="bar-them"></i></div>
+            <p class="ratio mono">9.6× smaller</p>
+          </article>
+        </div>
+
+        <div class="wide-stats">
+          <div class="wide card" data-reveal>
+            <p class="wide-n mono"><span data-count>6.5</span> s <span class="vs">vs 21 min</span></p>
+            <p>of CPU time for that cold scan. Jellyfin starts an ffprobe for every file; flux reads the headers itself.</p>
+          </div>
+          <div class="wide card" data-reveal style="--d: 0.08s">
+            <p class="wide-n mono"><span data-count>127</span> MiB <span class="vs">vs 16.4 GiB</span></p>
+            <p>written to disk by the same scan. Your SSD will notice.</p>
+          </div>
+        </div>
+
+        <div class="why">
+          <div class="why-item" data-reveal>
+            <span class="why-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+            <h3>It skips work</h3>
+            <p>It reads container indexes instead of decoding, and a rescan that finds nothing new opens no files and writes nothing.</p>
+          </div>
+          <div class="why-item" data-reveal style="--d: 0.06s">
+            <span class="why-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M8 10l3 2-3 2M13 14h3"/></svg></span>
+            <h3>No ffmpeg in the hot path</h3>
+            <p>Headers are probed and video is remuxed inside flux. ffmpeg starts only when something must be transcoded.</p>
+          </div>
+          <div class="why-item" data-reveal style="--d: 0.12s">
+            <span class="why-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="8" width="5" height="8" rx="1"/><rect x="9.5" y="8" width="5" height="8" rx="1"/><rect x="15.5" y="8" width="5" height="8" rx="1"/></svg></span>
+            <h3>Every segment stands alone</h3>
+            <p>A video segment is a pure function of the file, the recipe and its number, so a seek anywhere is one plain request.</p>
+          </div>
+          <div class="why-item" data-reveal style="--d: 0.18s">
+            <span class="why-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5 19.5 8v8L12 20.5 4.5 16V8z"/><path d="M12 12 19.5 8M12 12v8.5M12 12 4.5 8" opacity=".55"/></svg></span>
+            <h3>One small binary</h3>
+            <p>A single Rust program: memory-safe, no runtime to install, no garbage collector pausing your film.</p>
+          </div>
+        </div>
+
+        <div class="gpu card" data-reveal>
+          <div class="gpu-copy">
+            <h3>The app keeps up, too.</h3>
+            <p>Your library is drawn on the GPU with WebGPU. Zooming through 10,000 posters on the Wall takes 3.6 ms of main-thread time a frame, well inside the 8.3 ms a 120 Hz display allows, and drops no frames. The first load is 110 kB, compressed.</p>
+          </div>
+          <div class="frame-budget" aria-label="Frame time while zooming the Wall: 3.6 milliseconds of an 8.3 millisecond budget">
+            <div class="budget-track"><div class="budget-used" style="--w: 43.4%"></div></div>
+            <div class="budget-scale mono"><span>0</span><span class="b-used">3.6 ms</span><span>8.3 ms · 120 Hz</span></div>
+          </div>
+        </div>
+
+        <details class="method" data-reveal>
+          <summary>
+            <span>How we measured, and what it doesn’t say</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="method-body">
+            <ul>
+              <li>One M1 Max (64 GB) on macOS, with both servers at the same low priority, network metadata off, background jobs and folder watching off. Timed over HTTP on loopback.</li>
+              <li>A synthetic library: 7 short seed clips cloned into 14,760 media files under messy names, plus 1,911 sidecar files. Playback used real encodes.</li>
+              <li>The servers do different work by design: Jellyfin runs ffprobe on every file and reads NFOs and artwork; flux probes headers in-process and reads neither.</li>
+              <li>Small samples: 3 full-library runs for flux and 2 for Jellyfin, and Jellyfin’s cold scan has taken 900–1,063 s across sessions on this machine.</li>
+              <li>Not every result is a big win: a TrueHD 7.1 file that needs an audio transcode starts 3.5× sooner, and the first play of a long MPEG-TS only 1.5× sooner.</li>
+              <li>Nothing here was measured on Linux, a NAS or a spinning disk, and Plex wasn’t measured at all.</li>
+            </ul>
+            <a class="link" href="https://github.com/vibecook-dev/flux/blob/main/docs/prototype/benchmarks.md">Read the full benchmark report <span aria-hidden="true">→</span></a>
+          </div>
+        </details>
+      </section>
+
+      <!-- ───────────── Agents ───────────── -->
+      <section class="section agents" id="agents" aria-labelledby="agents-title">
+        <div class="head">
+          <p class="label" data-reveal>Agent-native</p>
+          <h2 id="agents-title"><span data-split>Your agent knows more</span> <span class="accent-amber" data-split>than any database.</span></h2>
+          <p class="lede" data-reveal>
+            flux has no AI of its own. It opens one contract to the agent you already use, Claude Code, Codex or anything that speaks MCP, so it can identify rare films, write descriptions, find posters and tidy your files from what it finds on the open web. Every change names its sources, and you can undo any of it.
+          </p>
+        </div>
+
+        <div class="session" data-session>
+          <div class="term card" aria-label="An agent working on a flux library">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span class="mono">claude · ~/films</span></div>
+            <div class="term-body mono" data-term aria-live="off"></div>
+          </div>
+          <div class="review card" aria-label="flux's Agents and changes screen">
+            <p class="review-label mono" data-review-label>Waiting for you · 1</p>
+            <p class="review-empty" aria-hidden="true">Nothing waiting for you yet.</p>
+            <div class="change" data-change>
+              <span class="change-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5c.6 4.3 2.2 5.9 6.5 6.5-4.3.6-5.9 2.2-6.5 6.5-.6-4.3-2.2-5.9-6.5-6.5 4.3-.6 5.9-2.2 6.5-6.5z"/></svg></span>
+              <div class="change-main">
+                <p class="change-title">Identified Castle in the Sky (1986) from its file and Wikipedia</p>
+                <p class="change-meta mono">claude-code · just now · 9 changes to 1 title</p>
+                <p class="change-sources">Sources: <span>en.wikipedia.org</span> <span>wikidata.org</span></p>
+                <div class="change-actions">
+                  <span class="btn btn-lit btn-xs" data-apply><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Apply</span>
+                  <span class="btn btn-ghost btn-xs" data-turn-down>Turn down</span>
+                  <span class="btn btn-ghost btn-xs undo" data-undo><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4"/></svg>Undo</span>
+                </div>
+              </div>
+              <span class="state mono" data-state>Waiting for you</span>
+            </div>
+            <div class="tile-row">
+              <div class="tile" data-tile>
+                <div class="tile-art tile-frame" aria-hidden="true">
+                  <span class="frame-tag mono">FRAME</span>
+                  <span class="tile-file mono">天空の城ラピュタ.mkv</span>
+                </div>
+                <div class="tile-art tile-poster" aria-hidden="true">
+                  <span class="tile-year mono">1986</span>
+                  <span class="tile-name">Castle in the Sky</span>
+                </div>
+              </div>
+              <div class="tile-facts" data-facts>
+                <p><span class="mono">title</span> Castle in the Sky</p>
+                <p><span class="mono">original</span> 天空の城ラピュタ</p>
+                <p><span class="mono">directed by</span> Hayao Miyazaki</p>
+                <p><span class="mono">released</span> 2 August 1986</p>
+              </div>
+            </div>
+            <span class="cursor" data-cursor aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 3.5 19 12l-6.3 1.4L9.4 19.8z"/></svg></span>
+          </div>
+        </div>
+
+        <div class="ways">
+          <article class="way card" data-reveal>
+            <p class="way-label mono">CLI</p>
+            <h3>A command line that ships with the server</h3>
+            <p>Every command is one operation and prints JSON, for you or your agent.</p>
+            <div class="snippet"><code>flux gaps</code><button type="button" class="copy" data-copy="flux gaps" aria-label="Copy the command">Copy</button></div>
+          </article>
+          <article class="way card" data-reveal style="--d: 0.06s">
+            <p class="way-label mono">MCP</p>
+            <h3>The same operations over MCP</h3>
+            <p>Over HTTP at <code>/mcp</code>, or over stdio with <code>flux mcp</code> for agents that start servers.</p>
+            <div class="snippet"><code>claude mcp add --transport http flux http://localhost:8096/mcp</code><button type="button" class="copy" data-copy="claude mcp add --transport http flux http://localhost:8096/mcp" aria-label="Copy the command">Copy</button></div>
+          </article>
+          <article class="way card" data-reveal style="--d: 0.12s">
+            <p class="way-label mono">Skills</p>
+            <h3>Skills that teach agents the jobs</h3>
+            <p>Identifying films, finding artwork, organising files and designing new lenses.</p>
+            <div class="snippet"><code>flux skills install</code><button type="button" class="copy" data-copy="flux skills install" aria-label="Copy the command">Copy</button></div>
+          </article>
+        </div>
+
+        <ul class="rules" data-reveal>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4"/></svg>Every change is a changeset you can undo</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Changes can wait for your approval</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Every fact cites where it came from</li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19 6.5v5.2c0 4.3-2.9 7.6-7 8.8-4.1-1.2-7-4.5-7-8.8V6.5z"/></svg>TMDB’s content never reaches an AI</li>
+        </ul>
+      </section>
+
+      <!-- ───────────── Download ───────────── -->
+      <section class="section download" id="download" aria-labelledby="download-title">
+        <div class="head">
+          <p class="label" data-reveal>Download</p>
+          <h2 id="download-title"><span data-split>Take it home.</span></h2>
+          <p class="lede" data-reveal>One program that serves its own web app. Free and open source, under the MIT license.</p>
+        </div>
+
+        <div class="get" data-get>
+          <div class="get-main card" data-reveal>
+            <div class="get-ver">
+              <span class="pill-tag mono" data-rel-tag>v0.1.0-alpha.3</span>
+              <span class="get-date" data-rel-date>Released 22 Oct 2026</span>
+              <span class="pill-tag pre mono" data-rel-pre>Pre-release</span>
+            </div>
+            <h3 class="get-title" data-get-title>flux for your computer</h3>
+            <p class="get-sub" data-get-sub>Pick your system below.</p>
+            <div class="get-cta">
+              <a class="btn btn-lit" href="https://github.com/vibecook-dev/flux/releases" data-get-primary data-magnet>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" /></svg>
+                <span data-get-primary-label>All downloads</span>
+              </a>
+              <a class="link" href="https://github.com/vibecook-dev/flux/releases" data-rel-notes>Release notes <span aria-hidden="true">→</span></a>
+            </div>
+            <div class="install">
+              <div class="install-tabs" role="tablist" aria-label="Install">
+                <button type="button" role="tab" aria-selected="true" data-install-tab="shell">Terminal</button>
+                <button type="button" role="tab" aria-selected="false" data-install-tab="docker">Docker</button>
+              </div>
+              <pre class="code install-code" data-install-code><code></code></pre>
+              <button type="button" class="copy" data-copy-install aria-label="Copy the install commands">Copy</button>
+            </div>
+          </div>
+
+          <ul class="builds" data-builds data-reveal style="--d: 0.08s">
+            <!-- Filled from src/data/release.json, then refreshed from GitHub. -->
+          </ul>
+        </div>
+
+        <ul class="notes" data-reveal>
+          <li><strong>Alpha.</strong> flux is young: expect changes between releases, and read the feature status before you point it at a library you care about.</li>
+          <li><strong>ffmpeg.</strong> Install <code>ffmpeg</code> and <code>ffprobe</code> for transcodes and frame posters (<code>brew install ffmpeg</code> on a Mac). The Docker image brings its own.</li>
+          <li><strong>Verified builds.</strong> Every package is in <code>SHA256SUMS</code> and has a build-provenance attestation from the release workflow.</li>
+        </ul>
+      </section>
+
+      <!-- ───────────── Closing ───────────── -->
+      <section class="closing" aria-labelledby="closing-title">
+        <div class="closing-light" aria-hidden="true"></div>
+        <h2 id="closing-title" data-light><span data-split>Your films deserve</span> <span class="lit" data-split>a better home.</span></h2>
+        <div class="hero-cta" data-reveal>
+          <a class="btn btn-lit" href="#download" data-magnet>Download flux</a>
+          <a class="btn btn-glass glass" href="https://github.com/vibecook-dev/flux" data-magnet><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M12 1.6a10.4 10.4 0 0 0-3.3 20.3c.5.1.7-.2.7-.5v-1.8c-2.9.6-3.5-1.4-3.5-1.4-.5-1.2-1.2-1.5-1.2-1.5-.9-.6.1-.6.1-.6 1 .1 1.6 1.1 1.6 1.1.9 1.6 2.5 1.2 3.1.9.1-.7.4-1.2.7-1.4-2.3-.3-4.7-1.2-4.7-5.1 0-1.1.4-2.1 1.1-2.8-.1-.3-.5-1.4.1-2.8 0 0 .9-.3 2.9 1.1a10 10 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.5.1 2.8.7.7 1.1 1.7 1.1 2.8 0 4-2.4 4.8-4.7 5.1.4.3.7 1 .7 1.9v2.9c0 .3.2.6.7.5A10.4 10.4 0 0 0 12 1.6Z"/></svg>View on GitHub</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <a class="brand" href="#top" aria-label="flux, back to the top">
+            <svg class="mark" viewBox="0 0 36 28" aria-hidden="true"><path d="M2 26 L20 2 L27 2 L9 26 Z" /><path d="M16 26 L28 10 L33 10 L21 26 Z" opacity=".45" /></svg>
+            <span>flux</span>
+          </a>
+          <p>A fast, private media server for the films and shows you own.</p>
+        </div>
+        <nav class="footer-links" aria-label="More about flux">
+          <div>
+            <h4>Product</h4>
+            <a href="#lenses">Lenses</a>
+            <a href="#download">Download</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/CHANGELOG.md">Changelog</a>
+          </div>
+          <div>
+            <h4>Docs</h4>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/docs/INSTALL.md">Install</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/docs/AGENT-NATIVE.md">For agents</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/docs/LENSES.md">Lenses</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/docs/prototype/benchmarks.md">Benchmarks</a>
+          </div>
+          <div>
+            <h4>Project</h4>
+            <a href="https://github.com/vibecook-dev/flux">GitHub</a>
+            <a href="https://github.com/vibecook-dev/flux/releases">Releases</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/LICENSE">MIT license</a>
+            <a href="https://github.com/vibecook-dev/flux/blob/main/SECURITY.md">Security</a>
+          </div>
+        </nav>
+      </div>
+      <p class="footer-fine">flux is an independent open-source project, not affiliated with Tailscale, Jellyfin or TMDB. Tailscale is a trademark of Tailscale Inc.</p>
+    </footer>
+  </body>
+</html>

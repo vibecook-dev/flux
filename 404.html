@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flux · not found</title>
+    <link rel="icon" href="/flux/favicon.svg" type="image/svg+xml" />
+    <script>
+      // A deep link into the live demo (a reload on /demo/item/42, say) goes back to the demo's start,
+      // on hosts that can't send the demo's own index.html for its routes (GitHub Pages).
+      (function () {
+        var demo = '/flux/demo/';
+        if (location.pathname.indexOf(demo) === 0 && location.pathname !== demo) location.replace(demo + location.search);
+      })();
+    </script>
+    <style>
+      html { background: #07070a; color: #f3f3f0; font: 17px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; text-align: center; padding: 24px; box-sizing: border-box; }
+      h1 { font-weight: 500; font-size: 44px; letter-spacing: -0.03em; margin: 0 0 12px; }
+      p { color: rgb(243 243 240 / 0.62); margin: 0 0 28px; }
+      a { display: inline-block; padding: 12px 22px; border-radius: 999px; background: #f3f3f0; color: #0b0b0e; text-decoration: none; font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nothing here.</h1>
+      <p>That page isn’t part of the flux site.</p>
+      <a href="/flux/">Back to flux</a>
+    </main>
+  </body>
+</html>

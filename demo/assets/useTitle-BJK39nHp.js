@@ -1,0 +1,1 @@
+import{t as e}from"./react-DHsaPJjs.js";var t=e();function n(e){(0,t.useEffect)(()=>{document.title=e?`${e} · flux`:`flux`},[e])}export{n as t};
