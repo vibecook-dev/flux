@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 # download: a published release package per architecture, checked against
 # the release's SHA256SUMS. Runs on the build machine's platform.
-FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS download
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS download
 ARG TARGETARCH
 ARG FLUX_VERSION
 ARG FLUX_REPOSITORY=vibecook-dev/flux
@@ -50,7 +50,7 @@ FROM scratch AS dist
 COPY --from=download /out/ /
 
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ARG TARGETARCH
 # jellyfin-ffmpeg: https://github.com/jellyfin/jellyfin-ffmpeg/releases
 # Bump the version and both .deb checksums together (docs/RELEASING.md).
